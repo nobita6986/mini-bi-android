@@ -14,6 +14,7 @@ import com.example.data.MiniBiDatabase
 import com.example.data.MiniBiRepository
 import com.example.data.WorkReportObligationEntity
 import com.example.data.WorkerProfileEntity
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import okhttp3.Cookie
 import okhttp3.HttpUrl.Companion.toHttpUrl
@@ -189,7 +190,8 @@ class AuthSessionAndSecurityContractTest {
             "createInitialWorkerProfiles",
             "getBiRecruitmentFacts",
             "getDuplicateCccdAlerts",
-            "generateStampedVerificationPhoto"
+            "generateStampedVerificationPhoto",
+            "bi2.hrpartner.vn"
         )
 
         val sourceFiles = mainDir!!.walkTopDown()
@@ -563,6 +565,68 @@ class AuthSessionAndSecurityContractTest {
             }.exceptionOrNull() as? BackendApiException
             assertNotNull("Expected fail-closed BackendApiException for payload: $payload", err)
             assertEquals(BackendFailureKind.CONTRACT_INVALID, err!!.kind)
+        }
+    }
+
+    @Test
+    fun `user deliverable build locks server domain to bi hrpartner vn and ignores stale overrides`() = runBlocking {
+        val buildGradleCandidates = listOf(
+            File("build.gradle.kts"),
+            File("app/build.gradle.kts"),
+            File(System.getProperty("user.dir") ?: ".", "build.gradle.kts"),
+            File(System.getProperty("user.dir") ?: ".", "app/build.gradle.kts")
+        )
+        val appGradle = buildGradleCandidates.firstOrNull {
+            it.exists() && it.isFile && it.readText().contains("DEFAULT_SERVER_URL")
+        }
+        assertNotNull("Could not locate app/build.gradle.kts", appGradle)
+        val gradleText = appGradle!!.readText()
+        assertTrue(
+            "Default server URL in app/build.gradle.kts must point to https://bi.hrpartner.vn",
+            gradleText.contains("\"https://bi.hrpartner.vn\"")
+        )
+        assertFalse(
+            "Legacy bi2.hrpartner.vn must not remain in app/build.gradle.kts",
+            gradleText.contains("bi2.hrpartner.vn")
+        )
+
+        val sharedPrefsFile = File(context.cacheDir, "test_prefs_${System.nanoTime()}.preferences_pb")
+        try {
+            // Simulate an older debug install that previously persisted a custom server URL in DataStore
+            val legacyDebugRepo = MiniBiRepository(
+                context = context,
+                database = database,
+                defaultServerUrl = "https://bi.hrpartner.vn",
+                allowDebugUrlOverride = true,
+                cookieStorageFile = cookieFile,
+                savedCredentialsStorageFile = savedCredentialsFile,
+                preferencesStorageFile = sharedPrefsFile,
+                cookieCipher = cipher
+            )
+            assertTrue(legacyDebugRepo.setServerUrl("https://legacy-override.example.com").isSuccess)
+            assertEquals("https://legacy-override.example.com", legacyDebugRepo.resolveEffectiveServerUrl())
+
+            // Re-open with default production/user constructor (allowDebugUrlOverride omitted -> false)
+            val userDeliverableRepo = MiniBiRepository(
+                context = context,
+                database = database,
+                defaultServerUrl = "https://bi.hrpartner.vn",
+                cookieStorageFile = cookieFile,
+                savedCredentialsStorageFile = savedCredentialsFile,
+                preferencesStorageFile = sharedPrefsFile,
+                cookieCipher = cipher
+            )
+            assertEquals("https://bi.hrpartner.vn", userDeliverableRepo.resolveEffectiveServerUrl())
+            assertEquals("https://bi.hrpartner.vn", userDeliverableRepo.serverUrlFlow.first())
+
+            val lockRes = userDeliverableRepo.setServerUrl("https://other.example.com")
+            assertTrue(lockRes.isFailure)
+            assertEquals(
+                "SERVER_URL_LOCKED",
+                (lockRes.exceptionOrNull() as? BackendApiException)?.backendCode
+            )
+        } finally {
+            runCatching { sharedPrefsFile.delete() }
         }
     }
 }

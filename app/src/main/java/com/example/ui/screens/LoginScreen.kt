@@ -1,6 +1,5 @@
 package com.example.ui.screens
 
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -26,7 +25,6 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Visibility
@@ -40,12 +38,10 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -78,9 +74,6 @@ import com.example.data.SavedLoginAccount
 fun LoginScreen(
     busy: Boolean,
     error: String?,
-    serverUrl: String,
-    canConfigureServerUrl: Boolean,
-    onUpdateServerUrl: (String) -> Unit,
     onLoginSubmit: (String, String, Boolean) -> Unit,
     savedAccounts: List<SavedLoginAccount> = emptyList(),
     onRemoveSavedAccount: (String) -> Unit = {}
@@ -94,8 +87,6 @@ fun LoginScreen(
     var rememberAccount by remember { mutableStateOf(true) }
     var hasManualEdit by remember { mutableStateOf(false) }
     var showPassword by remember { mutableStateOf(false) }
-    var showServerConfig by remember { mutableStateOf(false) }
-    var draftServerUrl by remember(serverUrl) { mutableStateOf(serverUrl) }
 
     LaunchedEffect(savedAccounts) {
         if (!hasManualEdit) {
@@ -105,10 +96,6 @@ fun LoginScreen(
                 password = top.password
             }
         }
-    }
-
-    LaunchedEffect(serverUrl) {
-        draftServerUrl = serverUrl
     }
 
     Box(
@@ -469,60 +456,6 @@ fun LoginScreen(
                                 style = MaterialTheme.typography.titleMedium,
                                 fontWeight = FontWeight.Bold
                             )
-                        }
-                    }
-
-                    if (canConfigureServerUrl) {
-                        TextButton(
-                            onClick = { showServerConfig = !showServerConfig },
-                            modifier = Modifier
-                                .align(Alignment.CenterHorizontally)
-                                .testTag("toggle_debug_server_url_button")
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Dns,
-                                contentDescription = null,
-                                modifier = Modifier.size(16.dp)
-                            )
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(
-                                text = if (showServerConfig) "Ẩn cấu hình máy chủ (Debug)" else "Cấu hình URL máy chủ (Debug)",
-                                style = MaterialTheme.typography.labelMedium
-                            )
-                        }
-
-                        AnimatedVisibility(visible = showServerConfig) {
-                            Column(
-                                modifier = Modifier.fillMaxWidth(),
-                                verticalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                OutlinedTextField(
-                                    value = draftServerUrl,
-                                    onValueChange = { draftServerUrl = it },
-                                    label = { Text("Server Base URL (Debug)") },
-                                    placeholder = { Text("https://bi2.hrpartner.vn") },
-                                    singleLine = true,
-                                    shape = RoundedCornerShape(12.dp),
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .testTag("debug_server_url_input")
-                                )
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.End
-                                ) {
-                                    OutlinedButton(
-                                        onClick = {
-                                            onUpdateServerUrl(draftServerUrl)
-                                            showServerConfig = false
-                                        },
-                                        shape = RoundedCornerShape(10.dp),
-                                        modifier = Modifier.testTag("save_debug_server_url_button")
-                                    ) {
-                                        Text("Lưu URL")
-                                    }
-                                }
-                            }
                         }
                     }
                 }
