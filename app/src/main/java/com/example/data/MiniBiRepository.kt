@@ -215,6 +215,7 @@ class MiniBiRepository(
     private val defaultServerUrl: String = BuildConfig.DEFAULT_SERVER_URL,
     private val allowDebugUrlOverride: Boolean = BuildConfig.DEBUG,
     cookieStorageFile: File = File(context.noBackupFilesDir, "session_cookies.enc"),
+    timeAnchorStorageFile: File = File(context.noBackupFilesDir, "attendance_time_anchor.enc"),
     cookieCipher: CookieCipher = AndroidKeystoreAesGcmCipher(),
     nowMillis: () -> Long = { System.currentTimeMillis() }
 ) {
@@ -266,11 +267,19 @@ class MiniBiRepository(
         dao = dao
     )
 
+    val attendanceTimeAnchorManager = AttendanceTimeAnchorManager(
+        context = context,
+        httpClient = httpClient,
+        storageFile = timeAnchorStorageFile,
+        cipher = cookieCipher,
+        deviceWallClockMs = nowMillis
+    )
+
     val attendanceOutboxService = AttendanceOutboxService(
         context = context,
         httpClient = httpClient,
         dao = dao,
-        nowMillis = nowMillis
+        timeAnchorManager = attendanceTimeAnchorManager
     )
 
     val imageLoader: ImageLoader by lazy {
@@ -425,6 +434,7 @@ class MiniBiRepository(
 
     suspend fun clearLocalSessionAndCache() {
         _activeActor.value = null
+        attendanceTimeAnchorManager.clearAnchor()
         cookieJar.clearAll()
         dao.clearWorkReportsCache()
         dao.clearAllCachedWorkers()

@@ -12,8 +12,10 @@ import coil.ImageLoader
 import com.example.BuildConfig
 import com.example.data.AppActor
 import com.example.data.AttendanceEntity
+import com.example.data.AttendanceTimeContract
 import com.example.data.BackendApiException
 import com.example.data.BackendFailureKind
+import com.example.data.CapturedAttendanceTime
 import com.example.data.DirectEntryCatalog
 import com.example.data.DirectEntryContract
 import com.example.data.DuplicateCccdGroupItem
@@ -22,6 +24,7 @@ import com.example.data.NewWorkerEntryDraft
 import com.example.data.OwnSubmissionItem
 import com.example.data.StagedDocumentRef
 import com.example.data.TeamReportSnapshot
+import com.example.data.TimeAnchorUiState
 import com.example.data.WorkReportAnalyticsSnapshot
 import com.example.data.WorkReportObligationEntity
 import com.example.data.WorkReportReviewItem
@@ -230,6 +233,8 @@ class MiniBiViewModel(application: Application) : AndroidViewModel(application) 
     private val _submittingAttendance = MutableStateFlow(false)
     val submittingAttendance: StateFlow<Boolean> = _submittingAttendance.asStateFlow()
 
+    val timeAnchorState: StateFlow<TimeAnchorUiState> = repository.attendanceTimeAnchorManager.uiState
+
     val attendanceRecords: StateFlow<List<AttendanceEntity>> = repository.attendanceFlow
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
@@ -243,6 +248,7 @@ class MiniBiViewModel(application: Application) : AndroidViewModel(application) 
             val res = repository.bootstrapSession()
             _sessionBootstrapping.value = false
             res.onSuccess { actor ->
+                syncAttendanceTimeAnchor(actor = actor, force = false)
                 refreshDashboardData(actor)
             }
         }
@@ -308,6 +314,7 @@ class MiniBiViewModel(application: Application) : AndroidViewModel(application) 
             result.onSuccess { actor ->
                 _loginError.value = null
                 showBanner("Xin chào ${actor.displayName}")
+                syncAttendanceTimeAnchor(actor = actor, force = true)
                 refreshDashboardData(actor)
             }.onFailure { err ->
                 _loginError.value = (err as? BackendApiException)?.message
@@ -1268,10 +1275,41 @@ class MiniBiViewModel(application: Application) : AndroidViewModel(application) 
     // Attendance Check-In & Durable Outbox Actions (Zero fake success)
     // =========================================================================
 
+    fun syncAttendanceTimeAnchor(actor: AppActor? = currentActor.value, force: Boolean = false) {
+        val resolvedActor = actor ?: return
+        viewModelScope.launch {
+            repository.attendanceTimeAnchorManager.syncTimeAnchor(
+                appUserId = resolvedActor.appUserId,
+                force = force
+            )
+        }
+    }
+
+    fun millisUntilTimeAnchorRefresh(appUserId: String): Long? {
+        return repository.attendanceTimeAnchorManager.millisUntilProactiveRefresh(appUserId)
+    }
+
+    fun snapshotAttendanceCaptureTime(appUserId: String? = currentActor.value?.appUserId): CapturedAttendanceTime? {
+        val cleanId = appUserId?.trim().orEmpty()
+        if (cleanId.isEmpty()) return null
+        return repository.attendanceTimeAnchorManager.resolveCaptureTime(cleanId)
+    }
+
+    fun resolveReferenceTodayIsoHcm(appUserId: String): String {
+        val eval = repository.attendanceTimeAnchorManager.evaluateAnchor(appUserId)
+        val estEpoch = eval.estimatedServerNowEpochMs
+        return if (estEpoch != null) {
+            AttendanceTimeContract.formatEpochMillisInHcmIso(estEpoch).take(10)
+        } else {
+            DirectEntryContract.todayIsoInHcm()
+        }
+    }
+
     fun submitAttendanceCheckIn(
         photoFile: File,
         photoUri: String?,
-        note: String
+        note: String,
+        capturedTime: CapturedAttendanceTime? = null
     ) {
         val actor = currentActor.value ?: run {
             showBanner("Phiên đăng nhập không hợp lệ. Vui lòng đăng nhập lại.", isError = true)
@@ -1293,7 +1331,8 @@ class MiniBiViewModel(application: Application) : AndroidViewModel(application) 
                     addressHint = gps.addressHint,
                     sourcePhotoFile = photoFile,
                     sourcePhotoUri = photoUri,
-                    note = note
+                    note = note,
+                    capturedTimeOverride = capturedTime
                 )
                 // Only `SYNCED` has isError = false with "Đã chấm công"; offline QUEUED has "Đã lưu trên thiết bị, đang chờ đồng bộ"
                 showBanner(outcome.userMessage, isError = !outcome.isSynced)

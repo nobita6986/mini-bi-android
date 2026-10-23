@@ -454,8 +454,8 @@ fun MiniBiAppRoot(viewModel: MiniBiViewModel) {
                                 actor = authenticatedActor,
                                 viewModel = viewModel,
                                 onBackToDashboard = { viewModel.navigateTo(MainDestination.DASHBOARD) },
-                                onSubmitAttendanceAction = { file, uriStr, noteText ->
-                                    viewModel.submitAttendanceCheckIn(file, uriStr, noteText)
+                                onSubmitAttendanceAction = { file, uriStr, noteText, capturedTime ->
+                                    viewModel.submitAttendanceCheckIn(file, uriStr, noteText, capturedTime)
                                 },
                                 onRetryOutboxAction = {
                                     viewModel.retryAttendanceOutbox()

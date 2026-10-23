@@ -10,6 +10,8 @@ import androidx.room.PrimaryKey
 import androidx.room.Query
 import androidx.room.Room
 import androidx.room.RoomDatabase
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import kotlinx.coroutines.flow.Flow
 
 // 1. Canonical Server-Resolved Actor Session Model (Backend is sole authority)
@@ -425,14 +427,22 @@ data class AttendanceEntity(
     val photoSha256: String,
     val clientCapturedAtIso: String,
     val epochMillis: Long,
+    val timeSource: String = AttendanceTimeSource.DEVICE_CLOCK_UNVERIFIED,
+    val timeToken: String? = null,
+    val elapsedSinceAnchorMs: Long? = null,
     val note: String,
     val syncStatus: String,
     val statusMessage: String,
     val backendErrorCode: String? = null,
     val httpStatusCode: Int? = null,
     val serverCheckinId: String? = null,
+    val serverBusinessDate: String? = null,
     val serverSequenceInDay: Int? = null,
     val serverDailyCount: Int? = null,
+    val serverCapturedAtIso: String? = null,
+    val serverReceivedAtIso: String? = null,
+    val serverTimeSource: String? = null,
+    val serverReplayed: Boolean? = null,
     val retryCount: Int = 0
 )
 
@@ -556,13 +566,26 @@ interface MiniBiDao {
         WorkReportObligationEntity::class,
         WorkerProfileEntity::class
     ],
-    version = 4,
+    version = 5,
     exportSchema = false
 )
 abstract class MiniBiDatabase : RoomDatabase() {
     abstract fun miniBiDao(): MiniBiDao
 
     companion object {
+        val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE attendance_outbox ADD COLUMN timeSource TEXT NOT NULL DEFAULT 'DEVICE_CLOCK_UNVERIFIED'")
+                db.execSQL("ALTER TABLE attendance_outbox ADD COLUMN timeToken TEXT")
+                db.execSQL("ALTER TABLE attendance_outbox ADD COLUMN elapsedSinceAnchorMs INTEGER")
+                db.execSQL("ALTER TABLE attendance_outbox ADD COLUMN serverBusinessDate TEXT")
+                db.execSQL("ALTER TABLE attendance_outbox ADD COLUMN serverCapturedAtIso TEXT")
+                db.execSQL("ALTER TABLE attendance_outbox ADD COLUMN serverReceivedAtIso TEXT")
+                db.execSQL("ALTER TABLE attendance_outbox ADD COLUMN serverTimeSource TEXT")
+                db.execSQL("ALTER TABLE attendance_outbox ADD COLUMN serverReplayed INTEGER")
+            }
+        }
+
         @Volatile
         private var INSTANCE: MiniBiDatabase? = null
 
@@ -572,7 +595,10 @@ abstract class MiniBiDatabase : RoomDatabase() {
                     context.applicationContext,
                     MiniBiDatabase::class.java,
                     "mini_bi_hrpartner.db"
-                ).fallbackToDestructiveMigration(true).build()
+                )
+                    .addMigrations(MIGRATION_4_5)
+                    .fallbackToDestructiveMigration(true)
+                    .build()
                 INSTANCE = instance
                 instance
             }

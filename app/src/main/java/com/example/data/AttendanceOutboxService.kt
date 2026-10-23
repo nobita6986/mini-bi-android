@@ -21,17 +21,19 @@ import okhttp3.RequestBody.Companion.asRequestBody
 import org.json.JSONObject
 import java.io.File
 import java.io.IOException
-import java.text.SimpleDateFormat
-import java.util.Date
 import java.util.Locale
-import java.util.TimeZone
 import java.util.UUID
 import java.util.concurrent.TimeUnit
 
 data class AttendanceCheckInServerResult(
-    val serverCheckinId: String?,
-    val serverSequenceInDay: Int?,
-    val serverDailyCount: Int?
+    val checkinId: String,
+    val businessDate: String,
+    val sequenceInDay: Int,
+    val dailyCount: Int,
+    val capturedAtIso: String,
+    val receivedAtIso: String,
+    val timeSource: String,
+    val replayed: Boolean
 )
 
 data class AttendanceFailureClassification(
@@ -64,6 +66,7 @@ object AttendanceContract {
     const val MSG_QUEUED_OFFLINE = "Đã lưu trên thiết bị, đang chờ đồng bộ"
     const val MSG_SYNCING = "Đang gửi chấm công lên máy chủ..."
     const val MSG_BACKEND_NOT_AVAILABLE = "Chức năng chấm công chưa được bật trên máy chủ"
+    const val MSG_DEVICE_TIME_UNVERIFIED = "Thời gian thiết bị — máy chủ sẽ đánh dấu cần kiểm tra"
 
     val ALLOWED_METADATA_KEYS = setOf(
         "latitude",
@@ -73,7 +76,10 @@ object AttendanceContract {
         "client_captured_at",
         "note",
         "idempotency_key",
-        "photo_sha256"
+        "photo_sha256",
+        "time_source",
+        "time_token",
+        "elapsed_since_anchor_ms"
     )
 
     private val UUID_REGEX = Regex(
@@ -81,17 +87,20 @@ object AttendanceContract {
         RegexOption.IGNORE_CASE
     )
     private val SHA256_HEX_REGEX = Regex("^[0-9a-f]{64}$")
+    private val ISO_DATE_REGEX = Regex("^\\d{4}-\\d{2}-\\d{2}$")
+    private val VALID_TIME_SOURCES = setOf(
+        AttendanceTimeSource.SERVER_ANCHORED,
+        AttendanceTimeSource.DEVICE_CLOCK_UNVERIFIED
+    )
 
     fun formatClientCapturedAtIso(epochMillis: Long): String {
-        val sdf = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSSXXX", Locale.US).apply {
-            timeZone = TimeZone.getTimeZone("Asia/Ho_Chi_Minh")
-        }
-        return sdf.format(Date(epochMillis))
+        return AttendanceTimeContract.formatEpochMillisInHcmIso(epochMillis)
     }
 
     /**
      * Builds canonical metadata JSON for `POST /api/attendance/check-in`.
-     * Never sends `checkInType`, client-invented `sequence_in_day`, or actor authority fields.
+     * Includes server-anchored time fields (`time_source`, `time_token`, `elapsed_since_anchor_ms`)
+     * and never sends `checkInType`, client-invented `sequence_in_day`, or actor authority fields.
      */
     fun buildMetadataJson(
         latitude: Double,
@@ -101,7 +110,10 @@ object AttendanceContract {
         clientCapturedAtIso: String,
         note: String,
         idempotencyKey: String,
-        photoSha256: String
+        photoSha256: String,
+        timeSource: String,
+        timeToken: String?,
+        elapsedSinceAnchorMs: Long?
     ): JSONObject {
         if (!latitude.isFinite() || latitude < -90.0 || latitude > 90.0 ||
             !longitude.isFinite() || longitude < -180.0 || longitude > 180.0
@@ -148,6 +160,37 @@ object AttendanceContract {
                 message = "Thiếu thời điểm chụp ảnh chấm công."
             )
         }
+        // Validate ISO-8601 format of client_captured_at
+        AttendanceTimeContract.parseIsoInstantToEpochMillis(normalizedCapturedAt, "client_captured_at")
+
+        val normalizedTimeSource = timeSource.trim()
+        if (normalizedTimeSource !in VALID_TIME_SOURCES) {
+            throw BackendApiException(
+                kind = BackendFailureKind.INVALID_REQUEST,
+                statusCode = 400,
+                backendCode = "TIME_SOURCE_INVALID",
+                message = "Nguồn thời gian chấm công không hợp lệ."
+            )
+        }
+
+        val tokenValue: Any
+        val elapsedValue: Any
+        if (normalizedTimeSource == AttendanceTimeSource.SERVER_ANCHORED) {
+            val cleanedToken = timeToken?.trim().orEmpty()
+            if (cleanedToken.isEmpty() || elapsedSinceAnchorMs == null || elapsedSinceAnchorMs < 0L) {
+                throw BackendApiException(
+                    kind = BackendFailureKind.INVALID_REQUEST,
+                    statusCode = 400,
+                    backendCode = "SERVER_ANCHOR_METADATA_INVALID",
+                    message = "Thiếu time_token hoặc elapsed_since_anchor_ms cho thời gian đối chiếu máy chủ."
+                )
+            }
+            tokenValue = cleanedToken
+            elapsedValue = elapsedSinceAnchorMs
+        } else {
+            tokenValue = JSONObject.NULL
+            elapsedValue = JSONObject.NULL
+        }
 
         return JSONObject().apply {
             put("latitude", latitude)
@@ -158,6 +201,9 @@ object AttendanceContract {
             put("note", note.trim())
             put("idempotency_key", normalizedIdempotencyKey)
             put("photo_sha256", normalizedSha)
+            put("time_source", normalizedTimeSource)
+            put("time_token", tokenValue)
+            put("elapsed_since_anchor_ms", elapsedValue)
         }
     }
 
@@ -186,8 +232,23 @@ object AttendanceContract {
     }
 
     /**
-     * Parses canonical 2xx response from `POST /api/attendance/check-in`.
-     * Never fabricates `sequence_in_day` or `daily_count` if server omits them.
+     * Strict single canonical contract parser for `POST /api/attendance/check-in`:
+     * ```json
+     * {
+     *   "ok": true,
+     *   "checkin": {
+     *     "checkin_id": "uuid",
+     *     "business_date": "2026-10-23",
+     *     "sequence_in_day": 1,
+     *     "daily_count": 1,
+     *     "captured_at": "2026-10-23T01:20:12.000Z",
+     *     "received_at": "2026-10-23T01:25:00.000Z",
+     *     "time_source": "SERVER_ANCHORED",
+     *     "replayed": false
+     *   }
+     * }
+     * ```
+     * Fails closed on any missing or renamed field; does not accept multi-field aliases.
      */
     fun parseCheckInSuccessResponse(json: JSONObject): AttendanceCheckInServerResult {
         if (!json.optBoolean("ok", false)) {
@@ -199,38 +260,88 @@ object AttendanceContract {
             )
         }
 
-        val container = json.optJSONObject("checkin")
-            ?: json.optJSONObject("attendance")
-            ?: json.optJSONObject("data")
-            ?: json
+        val checkin = json.optJSONObject("checkin") ?: throw BackendApiException(
+            kind = BackendFailureKind.CONTRACT_INVALID,
+            statusCode = 200,
+            backendCode = "ATTENDANCE_CHECKIN_MISSING",
+            message = "Phản hồi chấm công từ máy chủ thiếu đối tượng checkin chuẩn."
+        )
 
-        val serverId = listOf("checkin_id", "attendance_id", "id")
-            .firstNotNullOfOrNull { key ->
-                if (container.has(key) && !container.isNull(key)) {
-                    container.optString(key, "").trim().ifBlank { null }
-                } else {
-                    null
-                }
-            }
-
-        val seqInDay = if (container.has("sequence_in_day") && !container.isNull("sequence_in_day")) {
-            val parsed = container.optInt("sequence_in_day", -1)
-            parsed.takeIf { it > 0 }
-        } else {
-            null
+        val checkinId = checkin.optString("checkin_id", "").trim()
+        if (!UUID_REGEX.matches(checkinId)) {
+            throw BackendApiException(
+                kind = BackendFailureKind.CONTRACT_INVALID,
+                statusCode = 200,
+                backendCode = "ATTENDANCE_CHECKIN_ID_INVALID",
+                message = "Mã checkin_id từ máy chủ không hợp lệ."
+            )
         }
 
-        val dailyCount = if (container.has("daily_count") && !container.isNull("daily_count")) {
-            val parsed = container.optInt("daily_count", -1)
-            parsed.takeIf { it > 0 }
-        } else {
-            null
+        val businessDate = checkin.optString("business_date", "").trim()
+        if (!ISO_DATE_REGEX.matches(businessDate)) {
+            throw BackendApiException(
+                kind = BackendFailureKind.CONTRACT_INVALID,
+                statusCode = 200,
+                backendCode = "ATTENDANCE_BUSINESS_DATE_INVALID",
+                message = "Trường business_date từ máy chủ không hợp lệ."
+            )
+        }
+
+        if (!checkin.has("sequence_in_day") || checkin.isNull("sequence_in_day") ||
+            !checkin.has("daily_count") || checkin.isNull("daily_count")
+        ) {
+            throw BackendApiException(
+                kind = BackendFailureKind.CONTRACT_INVALID,
+                statusCode = 200,
+                backendCode = "ATTENDANCE_SEQUENCE_MISSING",
+                message = "Phản hồi chấm công thiếu sequence_in_day hoặc daily_count."
+            )
+        }
+        val sequenceInDay = checkin.optInt("sequence_in_day", -1)
+        val dailyCount = checkin.optInt("daily_count", -1)
+        if (sequenceInDay < 1 || dailyCount < 1) {
+            throw BackendApiException(
+                kind = BackendFailureKind.CONTRACT_INVALID,
+                statusCode = 200,
+                backendCode = "ATTENDANCE_SEQUENCE_INVALID",
+                message = "Thứ tự lượt chấm công từ máy chủ không hợp lệ."
+            )
+        }
+
+        val capturedAt = checkin.optString("captured_at", "").trim()
+        val receivedAt = checkin.optString("received_at", "").trim()
+        AttendanceTimeContract.parseIsoInstantToEpochMillis(capturedAt, "captured_at")
+        AttendanceTimeContract.parseIsoInstantToEpochMillis(receivedAt, "received_at")
+
+        val serverTimeSource = checkin.optString("time_source", "").trim()
+        if (serverTimeSource !in VALID_TIME_SOURCES) {
+            throw BackendApiException(
+                kind = BackendFailureKind.CONTRACT_INVALID,
+                statusCode = 200,
+                backendCode = "ATTENDANCE_TIME_SOURCE_INVALID",
+                message = "Trường time_source từ máy chủ không hợp lệ."
+            )
+        }
+
+        val rawReplayed = checkin.opt("replayed")
+        if (rawReplayed !is Boolean) {
+            throw BackendApiException(
+                kind = BackendFailureKind.CONTRACT_INVALID,
+                statusCode = 200,
+                backendCode = "ATTENDANCE_REPLAYED_INVALID",
+                message = "Trường replayed từ máy chủ không hợp lệ."
+            )
         }
 
         return AttendanceCheckInServerResult(
-            serverCheckinId = serverId,
-            serverSequenceInDay = seqInDay,
-            serverDailyCount = dailyCount
+            checkinId = checkinId,
+            businessDate = businessDate,
+            sequenceInDay = sequenceInDay,
+            dailyCount = dailyCount,
+            capturedAtIso = capturedAt,
+            receivedAtIso = receivedAt,
+            timeSource = serverTimeSource,
+            replayed = rawReplayed
         )
     }
 
@@ -299,9 +410,9 @@ class AttendanceOutboxService(
     private val context: Context,
     private val httpClient: BackendHttpClient,
     private val dao: MiniBiDao,
+    private val timeAnchorManager: AttendanceTimeAnchorManager,
     private val isNetworkAvailable: () -> Boolean = { isDeviceNetworkConnected(context) },
     private val idempotencyKeyGenerator: () -> String = { UUID.randomUUID().toString() },
-    private val nowMillis: () -> Long = { System.currentTimeMillis() },
     private val outboxWorkScheduler: () -> Unit = { enqueueDurableOutboxWork(context) }
 ) {
 
@@ -337,16 +448,16 @@ class AttendanceOutboxService(
     }
 
     /**
-     * Records a check-in attempt into the durable Room outbox and immediately attempts
-     * backend synchronization if network is available.
+     * Records a check-in attempt into the durable Room outbox with frozen capture time
+     * (`SERVER_ANCHORED` when a valid BI server time anchor exists, or `DEVICE_CLOCK_UNVERIFIED`
+     * when offline/expired/rebooted) and immediately attempts backend synchronization if online.
      *
      * Strict guarantees:
      * - Fails closed BEFORE saving/sending if photo file cannot be read or SHA-256 fails.
+     * - Freezes `idempotencyKey`, `clientCapturedAtIso`, `timeSource`, `timeToken`, and
+     *   `elapsedSinceAnchorMs` once at capture; retries NEVER recompute or overwrite them.
      * - Never fabricates SHA-256 or `sequence_in_day`.
-     * - Preserves fixed `idempotencyKey` across all future retries.
-     * - Reports `"Đã chấm công"` ONLY when backend returns valid 2xx `{ ok: true }`.
-     * - Reports `"Đã lưu trên thiết bị, đang chờ đồng bộ"` when queued offline.
-     * - Reports `"Chức năng chấm công chưa được bật trên máy chủ"` on HTTP 404 without retrying.
+     * - Reports `"Đã chấm công"` ONLY when backend returns valid canonical 2xx `{ ok: true, checkin: {...} }`.
      */
     suspend fun submitCheckIn(
         actor: AppActor,
@@ -356,7 +467,8 @@ class AttendanceOutboxService(
         addressHint: String,
         sourcePhotoFile: File,
         sourcePhotoUri: String?,
-        note: String
+        note: String,
+        capturedTimeOverride: CapturedAttendanceTime? = null
     ): AttendanceSubmissionOutcome = withContext(Dispatchers.IO) {
         val fixedIdempotencyKey = idempotencyKeyGenerator()
         val persistedFile = ensurePhotoPersistedInOutboxDir(sourcePhotoFile, fixedIdempotencyKey)
@@ -374,8 +486,7 @@ class AttendanceOutboxService(
             )
         }
 
-        val capturedEpochMillis = nowMillis()
-        val capturedAtIso = AttendanceContract.formatClientCapturedAtIso(capturedEpochMillis)
+        val frozenTime = capturedTimeOverride ?: timeAnchorManager.resolveCaptureTime(actor.appUserId)
 
         // Pre-validate canonical metadata contract before persisting to outbox
         AttendanceContract.buildMetadataJson(
@@ -383,10 +494,13 @@ class AttendanceOutboxService(
             longitude = longitude,
             accuracyMeters = accuracyMeters,
             addressHint = addressHint,
-            clientCapturedAtIso = capturedAtIso,
+            clientCapturedAtIso = frozenTime.clientCapturedAtIso,
             note = note,
             idempotencyKey = fixedIdempotencyKey,
-            photoSha256 = photoSha256
+            photoSha256 = photoSha256,
+            timeSource = frozenTime.timeSource,
+            timeToken = frozenTime.timeToken,
+            elapsedSinceAnchorMs = frozenTime.elapsedSinceAnchorMs
         )
 
         val resolvedPhotoUri = resolvePersistedPhotoUri(persistedFile, sourcePhotoUri)
@@ -403,16 +517,24 @@ class AttendanceOutboxService(
             photoFilePath = persistedFile.absolutePath,
             photoUri = resolvedPhotoUri,
             photoSha256 = photoSha256,
-            clientCapturedAtIso = capturedAtIso,
-            epochMillis = capturedEpochMillis,
+            clientCapturedAtIso = frozenTime.clientCapturedAtIso,
+            epochMillis = frozenTime.capturedEpochMillis,
+            timeSource = frozenTime.timeSource,
+            timeToken = frozenTime.timeToken,
+            elapsedSinceAnchorMs = frozenTime.elapsedSinceAnchorMs,
             note = note.trim(),
             syncStatus = if (onlineNow) AttendanceOutboxStatus.SYNCING else AttendanceOutboxStatus.QUEUED,
             statusMessage = if (onlineNow) AttendanceContract.MSG_SYNCING else AttendanceContract.MSG_QUEUED_OFFLINE,
             backendErrorCode = null,
             httpStatusCode = null,
             serverCheckinId = null,
+            serverBusinessDate = null,
             serverSequenceInDay = null,
             serverDailyCount = null,
+            serverCapturedAtIso = null,
+            serverReceivedAtIso = null,
+            serverTimeSource = null,
+            serverReplayed = null,
             retryCount = 0
         )
 
@@ -429,14 +551,22 @@ class AttendanceOutboxService(
             )
         }
 
-        syncExistingRecord(storedRecord, scheduleWorkOnFailure = true)
+        syncExistingRecord(
+            record = storedRecord,
+            currentActorId = actor.appUserId,
+            scheduleWorkOnFailure = true
+        )
     }
 
     suspend fun syncRecordById(
         recordId: Long,
+        currentActorId: String,
         scheduleWorkOnFailure: Boolean = true
     ): AttendanceSubmissionOutcome? = withContext(Dispatchers.IO) {
         val current = dao.getAttendanceById(recordId) ?: return@withContext null
+        if (current.appUserId != currentActorId.trim()) {
+            return@withContext null
+        }
         if (current.syncStatus == AttendanceOutboxStatus.SYNCED) {
             return@withContext AttendanceSubmissionOutcome(
                 record = current,
@@ -445,23 +575,34 @@ class AttendanceOutboxService(
                 isError = false
             )
         }
-        syncExistingRecord(current, scheduleWorkOnFailure = scheduleWorkOnFailure)
+        syncExistingRecord(
+            record = current,
+            currentActorId = currentActorId.trim(),
+            scheduleWorkOnFailure = scheduleWorkOnFailure
+        )
     }
 
     /**
-     * Retries only records in `QUEUED` or `RETRYABLE_ERROR`.
-     * Records in `BACKEND_NOT_AVAILABLE` (404), `AUTH_REQUIRED` (401), `DENIED` (403),
-     * or `REJECTED` (400/409/422) are never automatically retried.
+     * Retries only records belonging to `appUserId` that are in `QUEUED` or `RETRYABLE_ERROR`.
+     * Never sends another actor's queued records under the current session,
+     * never calls `/api/attendance/time` to mutate captured timestamps,
+     * and never retries `400`/`401`/`403`/`404`/`409`/`422`.
      */
     suspend fun flushRetryableOutbox(
-        appUserId: String? = null,
+        appUserId: String,
         scheduleWorkOnFailure: Boolean = true
     ): AttendanceOutboxFlushSummary = withContext(Dispatchers.IO) {
-        val pending = if (!appUserId.isNullOrBlank()) {
-            dao.getRetryableAttendanceOutboxForUser(appUserId)
-        } else {
-            dao.getRetryableAttendanceOutbox()
+        val cleanActorId = appUserId.trim()
+        if (cleanActorId.isEmpty()) {
+            return@withContext AttendanceOutboxFlushSummary(
+                processedCount = 0,
+                syncedCount = 0,
+                remainingRetryableCount = 0,
+                terminalFailureCount = 0
+            )
         }
+
+        val pending = dao.getRetryableAttendanceOutboxForUser(cleanActorId)
         if (pending.isEmpty()) {
             return@withContext AttendanceOutboxFlushSummary(
                 processedCount = 0,
@@ -488,7 +629,11 @@ class AttendanceOutboxService(
         var terminalFailureCount = 0
 
         for (item in pending) {
-            val outcome = syncExistingRecord(item, scheduleWorkOnFailure = false)
+            val outcome = syncExistingRecord(
+                record = item,
+                currentActorId = cleanActorId,
+                scheduleWorkOnFailure = false
+            )
             when (outcome.record.syncStatus) {
                 AttendanceOutboxStatus.SYNCED -> syncedCount++
                 AttendanceOutboxStatus.QUEUED,
@@ -511,8 +656,19 @@ class AttendanceOutboxService(
 
     private suspend fun syncExistingRecord(
         record: AttendanceEntity,
+        currentActorId: String,
         scheduleWorkOnFailure: Boolean
     ): AttendanceSubmissionOutcome {
+        // Hard actor-isolation guard: NEVER send actor A's outbox item under actor B's session
+        if (record.appUserId != currentActorId) {
+            return AttendanceSubmissionOutcome(
+                record = record,
+                isSynced = false,
+                userMessage = "Bản ghi thuộc tài khoản khác, không được phép gửi dưới phiên hiện tại.",
+                isError = true
+            )
+        }
+
         val photoFile = File(record.photoFilePath)
         val verifiedSha = try {
             MiniBiRepository.computeSha256HexStrict(photoFile)
@@ -558,7 +714,7 @@ class AttendanceOutboxService(
         }
 
         return try {
-            // Preserve the EXACT same idempotencyKey across every retry
+            // Preserve the EXACT same idempotencyKey, clientCapturedAtIso, timeSource, timeToken, and elapsedSinceAnchorMs across every retry
             val metadataJson = AttendanceContract.buildMetadataJson(
                 latitude = syncingRecord.latitude,
                 longitude = syncingRecord.longitude,
@@ -567,7 +723,10 @@ class AttendanceOutboxService(
                 clientCapturedAtIso = syncingRecord.clientCapturedAtIso,
                 note = syncingRecord.note,
                 idempotencyKey = syncingRecord.idempotencyKey,
-                photoSha256 = verifiedSha
+                photoSha256 = verifiedSha,
+                timeSource = syncingRecord.timeSource,
+                timeToken = syncingRecord.timeToken,
+                elapsedSinceAnchorMs = syncingRecord.elapsedSinceAnchorMs
             )
             val multipartBody = AttendanceContract.buildMultipartBody(
                 metadataJson = metadataJson,
@@ -586,9 +745,14 @@ class AttendanceOutboxService(
                 statusMessage = AttendanceContract.MSG_SYNCED,
                 backendErrorCode = null,
                 httpStatusCode = 200,
-                serverCheckinId = serverResult.serverCheckinId,
-                serverSequenceInDay = serverResult.serverSequenceInDay,
-                serverDailyCount = serverResult.serverDailyCount
+                serverCheckinId = serverResult.checkinId,
+                serverBusinessDate = serverResult.businessDate,
+                serverSequenceInDay = serverResult.sequenceInDay,
+                serverDailyCount = serverResult.dailyCount,
+                serverCapturedAtIso = serverResult.capturedAtIso,
+                serverReceivedAtIso = serverResult.receivedAtIso,
+                serverTimeSource = serverResult.timeSource,
+                serverReplayed = serverResult.replayed
             )
             dao.updateAttendance(synced)
             AttendanceSubmissionOutcome(
@@ -696,13 +860,13 @@ class AttendanceSyncWorker(
             ) {
                 Result.retry()
             } else {
-                // Unauthenticated (401) or non-retryable session error: mark queued items AUTH_REQUIRED?
-                // Or simply stop background retry until user logs in again.
                 Result.success()
             }
         }
 
         val actor = sessionRes.getOrNull() ?: return Result.success()
+        // Notice: We intentionally do NOT call `/api/attendance/time` to mutate queued items;
+        // each queued item preserves its original captured time & idempotency key.
         val summary = repository.attendanceOutboxService.flushRetryableOutbox(
             appUserId = actor.appUserId,
             scheduleWorkOnFailure = false
