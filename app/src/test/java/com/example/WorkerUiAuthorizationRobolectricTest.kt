@@ -362,7 +362,7 @@ class WorkerUiAuthorizationRobolectricTest {
     }
 
     @Test
-    @Config(sdk = [34], qualifiers = "w480dp-h2600dp")
+    @Config(qualifiers = "w480dp-h2600dp")
     fun `new entry screen defaults gender Nam and labor Thoi vu, removes blank gender, and confirms before reset`() {
         val server = MockWebServer()
         server.dispatcher = object : Dispatcher() {
@@ -476,7 +476,7 @@ class WorkerUiAuthorizationRobolectricTest {
     }
 
     @Test
-    @Config(sdk = [34], qualifiers = "w480dp-h1400dp")
+    @Config(qualifiers = "w480dp-h1400dp")
     fun `privileged edit and propose change dialogs enforce status transition rules and omit action reason fields`() {
         val baseWorker = sampleWorker(
             entryId = "aaaaaaaa-1111-4222-8333-444444444444",
@@ -682,7 +682,7 @@ class WorkerUiAuthorizationRobolectricTest {
     }
 
     @Test
-    @Config(sdk = [34], qualifiers = "w480dp-h2600dp")
+    @Config(qualifiers = "w480dp-h2600dp")
     fun `searchable recruiter picker, outside tap focus clearing, larger cancel button in reset dialog, and Vietnamese localization`() {
         val server = MockWebServer()
         server.dispatcher = object : Dispatcher() {
@@ -839,7 +839,7 @@ class WorkerUiAuthorizationRobolectricTest {
     }
 
     @Test
-    @Config(sdk = [34], qualifiers = "w480dp-h1400dp")
+    @Config(qualifiers = "w480dp-h1400dp")
     fun `dashboard removes Trung tam Dieu hanh card, renders Bao cao tong quat, and floating banner overlay never shifts content layout`() {
         val server = MockWebServer()
         server.dispatcher = object : Dispatcher() {
