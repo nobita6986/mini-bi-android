@@ -1,6 +1,10 @@
 package com.example.data
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Matrix
+import android.media.ExifInterface
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.net.Uri
@@ -19,8 +23,10 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.MultipartBody
 import okhttp3.RequestBody.Companion.asRequestBody
 import org.json.JSONObject
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.IOException
+import java.nio.charset.StandardCharsets
 import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.TimeUnit
@@ -67,6 +73,51 @@ object AttendanceContract {
     const val MSG_SYNCING = "Đang gửi chấm công lên máy chủ..."
     const val MSG_BACKEND_NOT_AVAILABLE = "Chức năng chấm công chưa được bật trên máy chủ"
     const val MSG_DEVICE_TIME_UNVERIFIED = "Thời gian thiết bị — máy chủ sẽ đánh dấu cần kiểm tra"
+    const val MAX_ATTENDANCE_PHOTO_BYTES = 10 * 1024 * 1024
+    const val MAX_RAW_CAMERA_PHOTO_BYTES = 60L * 1024L * 1024L
+    const val MAX_ATTENDANCE_PHOTO_DIMENSION_PX = 1920
+
+    private val FORBIDDEN_BACKEND_MARKUP_SNIPPETS = listOf(
+        "<script",
+        "<html",
+        "<?php",
+        "<svg",
+        "<!doctype"
+    )
+
+    private val LEGACY_GENERIC_FAILURE_MESSAGES = setOf(
+        "Dữ liệu gửi lên không thỏa điều kiện nghiệp vụ.",
+        "Dữ liệu gửi lên chưa hợp lệ. Vui lòng kiểm tra lại thông tin và thử lại.",
+        "Yêu cầu chấm công bị máy chủ từ chối.",
+        "Lỗi xử lý phản hồi chấm công."
+    )
+
+    private val FRIENDLY_ATTENDANCE_CODE_MESSAGES = mapOf(
+        "PHOTO_INVALID" to "Ảnh chụp từ camera chưa đúng chuẩn hệ thống. Vui lòng bấm Chấm công để chụp lại ảnh và thử lại.",
+        "PHOTO_HASH_MISMATCH" to "Ảnh chấm công bị lỗi dữ liệu khi gửi qua mạng. Vui lòng chụp lại ảnh và bấm chấm công thử lại.",
+        "PHOTO_HASH_FAILED" to "Không đọc được ảnh chấm công trên máy. Vui lòng bấm Chấm công để chụp lại ảnh và thử lại.",
+        "PHOTO_FILE_MISSING" to "Không tìm thấy ảnh vừa chụp trên thiết bị. Vui lòng bấm Chấm công để chụp lại ảnh và thử lại.",
+        "PHOTO_PERSIST_FAILED" to "Không lưu được ảnh chấm công vào bộ nhớ máy. Vui lòng kiểm tra dung lượng trống rồi thử lại.",
+        "BODY_TOO_LARGE" to "Ảnh chấm công có dung lượng quá lớn. Vui lòng chụp lại ảnh và bấm chấm công thử lại.",
+        "CAPTURED_AT_FUTURE" to "Giờ ghi nhận trên máy đang nhanh hơn giờ máy chủ. Vui lòng bấm làm mới giờ chuẩn rồi chấm công thử lại.",
+        "CAPTURED_AT_INVALID" to "Thời điểm chụp ảnh chưa hợp lệ. Vui lòng chụp lại ảnh và bấm chấm công thử lại.",
+        "CAPTURED_AT_MISSING" to "Thiếu thời điểm chụp ảnh chấm công. Vui lòng chụp lại ảnh và bấm chấm công thử lại.",
+        "ATTENDANCE_TIME_TOKEN_INVALID" to "Mốc giờ chuẩn cần được làm mới. Vui lòng bấm làm mới giờ chuẩn phía trên rồi chấm công thử lại.",
+        "ATTENDANCE_TIME_TOKEN_EXPIRED" to "Mốc giờ chuẩn đã hết hạn. Vui lòng bấm làm mới giờ chuẩn phía trên rồi chấm công thử lại.",
+        "ATTENDANCE_TIME_TOKEN_ACTOR_MISMATCH" to "Phiên giờ chuẩn không khớp tài khoản hiện tại. Vui lòng bấm làm mới giờ chuẩn rồi chấm công thử lại.",
+        "ATTENDANCE_TIME_ELAPSED_INVALID" to "Ảnh chụp đã để chờ quá 24 giờ chưa gửi. Vui lòng chụp ảnh mới và bấm chấm công thử lại.",
+        "ATTENDANCE_TIME_MISMATCH" to "Đồng hồ thiết bị lệch so với giờ chuẩn máy chủ. Vui lòng bấm làm mới giờ chuẩn rồi chấm công thử lại.",
+        "ATTENDANCE_SYNC_WINDOW_EXPIRED" to "Lượt chấm công ngoại tuyến này đã quá hạn 7 ngày đồng bộ. Vui lòng chấm công lượt mới và thử lại.",
+        "GPS_COORDINATES_INVALID" to "Tín hiệu vị trí GPS chưa ổn định. Vui lòng bấm làm mới GPS rồi chấm công thử lại.",
+        "GPS_ACCURACY_INVALID" to "Độ chính xác GPS chưa đạt yêu cầu. Vui lòng bấm làm mới GPS ở nơi thoáng sóng rồi thử lại.",
+        "IDEMPOTENCY_KEY_INVALID" to "Mã phiên gửi chấm công không hợp lệ. Vui lòng chụp lại ảnh và bấm chấm công thử lại.",
+        "IDEMPOTENCY_CONFLICT" to "Phiên gửi bị trùng mã cũ. Vui lòng bấm Chấm công để chụp mới và thử lại.",
+        "CONTENT_TYPE_INVALID" to "Dữ liệu ảnh gửi lên bị gián đoạn. Vui lòng chụp lại ảnh và bấm chấm công thử lại.",
+        "ATTENDANCE_REQUEST_INVALID" to "Dữ liệu chấm công gửi lên chưa đầy đủ. Vui lòng chụp lại ảnh, kiểm tra GPS và thử lại.",
+        "ATTENDANCE_CONFIG_REQUIRED" to "Hệ thống chấm công trên máy chủ đang bảo trì cấu hình. Vui lòng thử lại sau ít phút.",
+        "ATTENDANCE_UNAVAILABLE" to "Hệ thống chấm công đang bận tạm thời. Vui lòng thử lại sau ít phút.",
+        "ACTOR_NOT_AVAILABLE" to "Tài khoản hiện chưa được kích hoạt quyền chấm công. Vui lòng đăng nhập lại và thử lại, hoặc liên hệ quản trị viên."
+    )
 
     val ALLOWED_METADATA_KEYS = setOf(
         "latitude",
@@ -345,6 +396,226 @@ object AttendanceContract {
         )
     }
 
+    fun friendlyAttendanceErrorMessage(
+        backendCode: String?,
+        httpStatusCode: Int? = null,
+        fallbackMessage: String? = null
+    ): String {
+        val normalizedCode = backendCode?.trim()?.uppercase(Locale.ROOT)?.ifEmpty { null }
+        if (normalizedCode != null) {
+            FRIENDLY_ATTENDANCE_CODE_MESSAGES[normalizedCode]?.let { return it }
+        }
+        if (httpStatusCode == 413) {
+            return FRIENDLY_ATTENDANCE_CODE_MESSAGES.getValue("BODY_TOO_LARGE")
+        }
+        val cleanedFallback = fallbackMessage?.trim().orEmpty()
+        if (cleanedFallback.isEmpty() ||
+            cleanedFallback in LEGACY_GENERIC_FAILURE_MESSAGES ||
+            cleanedFallback.startsWith("Yêu cầu không hợp lệ (") ||
+            cleanedFallback.startsWith("Phản hồi chấm công") ||
+            cleanedFallback.startsWith("Máy chủ trả phản hồi") ||
+            cleanedFallback.startsWith("Mã checkin_id") ||
+            cleanedFallback.startsWith("Trường ")
+        ) {
+            return when (httpStatusCode) {
+                409 -> "Lượt gửi chấm công bị xung đột phiên cũ. Vui lòng bấm Chấm công để chụp ảnh mới và thử lại."
+                422 -> "Chấm công chưa thành công do ảnh chụp hoặc thời gian ghi nhận chưa khớp chuẩn hệ thống. Vui lòng bấm Chấm công để chụp lại ảnh và thử lại."
+                else -> "Chấm công chưa thành công. Vui lòng kiểm tra GPS, chụp lại ảnh và bấm chấm công thử lại."
+            }
+        }
+        val lower = cleanedFallback.lowercase(Locale.ROOT)
+        return if ("thử lại" in lower || "gửi lại" in lower || "chụp lại" in lower || "đăng nhập lại" in lower) {
+            cleanedFallback
+        } else {
+            "${cleanedFallback.trimEnd('.')} — vui lòng kiểm tra và thử lại."
+        }
+    }
+
+    fun resolveDisplayStatusMessage(
+        syncStatus: String,
+        backendErrorCode: String?,
+        httpStatusCode: Int?,
+        rawStatusMessage: String
+    ): String {
+        return when (syncStatus) {
+            AttendanceOutboxStatus.SYNCED,
+            AttendanceOutboxStatus.QUEUED,
+            AttendanceOutboxStatus.SYNCING,
+            AttendanceOutboxStatus.RETRYABLE_ERROR,
+            AttendanceOutboxStatus.BACKEND_NOT_AVAILABLE -> rawStatusMessage
+            AttendanceOutboxStatus.AUTH_REQUIRED ->
+                "Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại rồi bấm chấm công thử lại."
+            AttendanceOutboxStatus.DENIED -> {
+                val code = backendErrorCode?.trim()?.uppercase(Locale.ROOT)?.ifEmpty { null }
+                FRIENDLY_ATTENDANCE_CODE_MESSAGES[code]
+                    ?: if ("thử lại" in rawStatusMessage.lowercase(Locale.ROOT)) {
+                        rawStatusMessage
+                    } else {
+                        "${rawStatusMessage.ifBlank { "Tài khoản chưa có quyền thực hiện chấm công" }.trimEnd('.')}. Vui lòng đăng nhập lại và thử lại, hoặc báo quản trị viên."
+                    }
+            }
+            else -> friendlyAttendanceErrorMessage(
+                backendCode = backendErrorCode,
+                httpStatusCode = httpStatusCode,
+                fallbackMessage = rawStatusMessage
+            )
+        }
+    }
+
+    internal fun containsForbiddenBackendMarkup(bytes: ByteArray): Boolean {
+        if (bytes.isEmpty()) return false
+        val latin1Lower = String(bytes, StandardCharsets.ISO_8859_1).lowercase(Locale.ROOT)
+        return FORBIDDEN_BACKEND_MARKUP_SNIPPETS.any { needle -> latin1Lower.contains(needle) }
+    }
+
+    fun isStrictBackendSafeJpeg(bytes: ByteArray): Boolean {
+        if (bytes.size < 4 || bytes.size > MAX_ATTENDANCE_PHOTO_BYTES) return false
+        if ((bytes[0].toInt() and 0xFF) != 0xFF ||
+            (bytes[1].toInt() and 0xFF) != 0xD8 ||
+            (bytes[2].toInt() and 0xFF) != 0xFF
+        ) {
+            return false
+        }
+        var last = bytes.size - 1
+        while (last > 0 && bytes[last].toInt() == 0) {
+            last--
+        }
+        if (last < 3 ||
+            (bytes[last - 1].toInt() and 0xFF) != 0xFF ||
+            (bytes[last].toInt() and 0xFF) != 0xD9
+        ) {
+            return false
+        }
+        return !containsForbiddenBackendMarkup(bytes)
+    }
+
+    /**
+     * Normalizes a camera photo file into a clean, single-page, upright baseline JPEG (`<= 1920px`,
+     * `<= 10 MB`, starting with `FF D8 FF` and ending strictly with `FF D9`) so OEM camera trailers
+     * (Samsung Motion Photo `SEFT`, Xiaomi/OPPO XMP, Android 14+ Ultra HDR MPF gainmaps, HEIC, or 50MP+
+     * sensors) never trigger `422 PHOTO_INVALID` or `413 BODY_TOO_LARGE` on the backend.
+     *
+     * Returns `null` when `sourceFile` is not a decodable bitmap (for example, 9-byte synthetic
+     * test fixtures in unit tests), leaving those fixtures byte-for-byte unchanged.
+     */
+    fun normalizeAttendancePhotoBytesIfDecodable(
+        sourceFile: File,
+        maxDimensionPx: Int = MAX_ATTENDANCE_PHOTO_DIMENSION_PX,
+        initialJpegQuality: Int = 88
+    ): ByteArray? {
+        if (!sourceFile.exists() || !sourceFile.isFile || sourceFile.length() <= 0L) {
+            return null
+        }
+        if (sourceFile.length() > MAX_RAW_CAMERA_PHOTO_BYTES) {
+            throw BackendApiException(
+                kind = BackendFailureKind.INVALID_REQUEST,
+                statusCode = 413,
+                backendCode = "BODY_TOO_LARGE",
+                message = friendlyAttendanceErrorMessage("BODY_TOO_LARGE", 413, null)
+            )
+        }
+
+        val boundsOpts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeFile(sourceFile.absolutePath, boundsOpts)
+        if (boundsOpts.outWidth <= 0 || boundsOpts.outHeight <= 0) {
+            return null
+        }
+
+        var sampleSize = 1
+        while (
+            boundsOpts.outWidth / (sampleSize * 2) >= maxDimensionPx &&
+            boundsOpts.outHeight / (sampleSize * 2) >= maxDimensionPx
+        ) {
+            sampleSize *= 2
+        }
+
+        val decodeOpts = BitmapFactory.Options().apply {
+            inSampleSize = sampleSize
+            inPreferredConfig = Bitmap.Config.ARGB_8888
+        }
+        val decoded = BitmapFactory.decodeFile(sourceFile.absolutePath, decodeOpts) ?: return null
+        if (decoded.width <= 0 || decoded.height <= 0) {
+            decoded.recycle()
+            return null
+        }
+
+        val exifOrientation = runCatching {
+            ExifInterface(sourceFile.absolutePath).getAttributeInt(
+                ExifInterface.TAG_ORIENTATION,
+                ExifInterface.ORIENTATION_NORMAL
+            )
+        }.getOrDefault(ExifInterface.ORIENTATION_NORMAL)
+
+        val maxSide = maxOf(decoded.width, decoded.height)
+        val scaleRatio = if (maxDimensionPx > 0 && maxSide > maxDimensionPx) {
+            maxDimensionPx.toFloat() / maxSide.toFloat()
+        } else {
+            1f
+        }
+
+        val matrix = Matrix()
+        if (scaleRatio < 1f) {
+            matrix.postScale(scaleRatio, scaleRatio)
+        }
+        when (exifOrientation) {
+            ExifInterface.ORIENTATION_FLIP_HORIZONTAL -> matrix.postScale(-1f, 1f)
+            ExifInterface.ORIENTATION_ROTATE_180 -> matrix.postRotate(180f)
+            ExifInterface.ORIENTATION_FLIP_VERTICAL -> matrix.postScale(1f, -1f)
+            ExifInterface.ORIENTATION_TRANSPOSE -> {
+                matrix.postRotate(90f)
+                matrix.postScale(-1f, 1f)
+            }
+            ExifInterface.ORIENTATION_ROTATE_90 -> matrix.postRotate(90f)
+            ExifInterface.ORIENTATION_TRANSVERSE -> {
+                matrix.postRotate(270f)
+                matrix.postScale(-1f, 1f)
+            }
+            ExifInterface.ORIENTATION_ROTATE_270 -> matrix.postRotate(270f)
+        }
+
+        val transformed = if (!matrix.isIdentity) {
+            val created = Bitmap.createBitmap(
+                decoded,
+                0,
+                0,
+                decoded.width,
+                decoded.height,
+                matrix,
+                true
+            )
+            if (created !== decoded) {
+                decoded.recycle()
+            }
+            created
+        } else {
+            decoded
+        }
+
+        try {
+            val candidateQualities = listOf(
+                initialJpegQuality.coerceIn(50, 95),
+                80,
+                72,
+                62,
+                52,
+                51
+            ).distinct()
+
+            for (quality in candidateQualities) {
+                val baos = ByteArrayOutputStream()
+                val ok = transformed.compress(Bitmap.CompressFormat.JPEG, quality, baos)
+                if (!ok) continue
+                val compressed = baos.toByteArray()
+                if (isStrictBackendSafeJpeg(compressed)) {
+                    return compressed
+                }
+            }
+            return null
+        } finally {
+            transformed.recycle()
+        }
+    }
+
     /**
      * Strict failure classifier:
      * ONLY network, timeout, 429, and 5xx are retryable (`RETRYABLE_ERROR`).
@@ -363,23 +634,26 @@ object AttendanceContract {
             BackendFailureKind.SERVER_UNAVAILABLE -> AttendanceFailureClassification(
                 syncStatus = AttendanceOutboxStatus.RETRYABLE_ERROR,
                 shouldAutoRetry = true,
-                statusMessage = "${error.message} (đang chờ tự động đồng bộ lại)",
+                statusMessage = "${error.message} (ứng dụng sẽ tự động gửi lại)",
                 httpStatusCode = error.statusCode,
                 backendErrorCode = error.backendCode
             )
             BackendFailureKind.UNAUTHENTICATED -> AttendanceFailureClassification(
                 syncStatus = AttendanceOutboxStatus.AUTH_REQUIRED,
                 shouldAutoRetry = false,
-                statusMessage = "Phiên đăng nhập không hợp lệ hoặc đã hết hạn. Vui lòng đăng nhập lại.",
+                statusMessage = "Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại rồi bấm chấm công thử lại.",
                 httpStatusCode = error.statusCode ?: 401,
                 backendErrorCode = error.backendCode ?: "AUTH_UNAUTHENTICATED"
             )
             BackendFailureKind.FORBIDDEN -> AttendanceFailureClassification(
                 syncStatus = AttendanceOutboxStatus.DENIED,
                 shouldAutoRetry = false,
-                statusMessage = error.message.ifBlank {
-                    "Tài khoản không khả dụng hoặc không có quyền chấm công."
-                },
+                statusMessage = resolveDisplayStatusMessage(
+                    syncStatus = AttendanceOutboxStatus.DENIED,
+                    backendErrorCode = error.backendCode,
+                    httpStatusCode = error.statusCode ?: 403,
+                    rawStatusMessage = error.message
+                ),
                 httpStatusCode = error.statusCode ?: 403,
                 backendErrorCode = error.backendCode ?: "FORBIDDEN"
             )
@@ -396,9 +670,11 @@ object AttendanceContract {
             BackendFailureKind.CONTRACT_INVALID -> AttendanceFailureClassification(
                 syncStatus = AttendanceOutboxStatus.REJECTED,
                 shouldAutoRetry = false,
-                statusMessage = error.message.ifBlank {
-                    "Yêu cầu chấm công bị máy chủ từ chối."
-                },
+                statusMessage = friendlyAttendanceErrorMessage(
+                    backendCode = error.backendCode,
+                    httpStatusCode = error.statusCode,
+                    fallbackMessage = error.message
+                ),
                 httpStatusCode = error.statusCode,
                 backendErrorCode = error.backendCode ?: "REJECTED"
             )
@@ -802,24 +1078,38 @@ class AttendanceOutboxService(
                 kind = BackendFailureKind.INVALID_REQUEST,
                 statusCode = null,
                 backendCode = "PHOTO_HASH_FAILED",
-                message = "Không thể đọc tệp ảnh chấm công. Vui lòng chụp lại ảnh."
+                message = "Không đọc được ảnh chấm công vừa chụp. Vui lòng chụp lại ảnh và thử lại."
             )
         }
         val outboxDir = File(context.filesDir, "attendance_photos").apply { mkdirs() }
         val canonicalOutboxDir = runCatching { outboxDir.canonicalPath }.getOrDefault(outboxDir.absolutePath)
         val canonicalSource = runCatching { sourceFile.canonicalPath }.getOrDefault(sourceFile.absolutePath)
-        if (canonicalSource.startsWith(canonicalOutboxDir)) {
-            return sourceFile
+        val isAlreadyInOutboxDir = canonicalSource.startsWith(canonicalOutboxDir)
+
+        val normalizedBytes = AttendanceContract.normalizeAttendancePhotoBytesIfDecodable(sourceFile)
+        val destination = if (isAlreadyInOutboxDir) {
+            sourceFile
+        } else {
+            File(outboxDir, "checkin_${idempotencyKey}.jpg")
         }
-        val destination = File(outboxDir, "checkin_${idempotencyKey}.jpg")
+
         try {
-            sourceFile.copyTo(destination, overwrite = true)
+            if (normalizedBytes != null) {
+                val tmpFile = File(outboxDir, "${destination.name}.norm.tmp")
+                tmpFile.writeBytes(normalizedBytes)
+                if (!tmpFile.renameTo(destination)) {
+                    destination.writeBytes(normalizedBytes)
+                    runCatching { tmpFile.delete() }
+                }
+            } else if (!isAlreadyInOutboxDir) {
+                sourceFile.copyTo(destination, overwrite = true)
+            }
         } catch (e: IOException) {
             throw BackendApiException(
                 kind = BackendFailureKind.INVALID_REQUEST,
                 statusCode = null,
                 backendCode = "PHOTO_PERSIST_FAILED",
-                message = "Không thể lưu trữ ảnh chấm công vào bộ nhớ an toàn trên thiết bị.",
+                message = AttendanceContract.friendlyAttendanceErrorMessage("PHOTO_PERSIST_FAILED", null, null),
                 cause = e
             )
         }

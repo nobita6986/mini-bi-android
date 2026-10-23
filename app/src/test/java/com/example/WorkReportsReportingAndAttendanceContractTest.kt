@@ -1,6 +1,10 @@
 package com.example
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Canvas
+import android.graphics.Color
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import com.example.data.ActorScope
@@ -824,5 +828,130 @@ class WorkReportsReportingAndAttendanceContractTest {
         assertEquals(1, built.activeHiringDays)
         assertEquals(2.0f, built.avgPerActiveDay!!, 0.01f)
         assertEquals(2, built.byProvider.size)
+    }
+
+    @Test
+    @org.robolectric.annotation.GraphicsMode(org.robolectric.annotation.GraphicsMode.Mode.NATIVE)
+    fun `camera jpeg with OEM MotionPhoto trailer and oversized dimensions is normalized to strict backend-safe JPEG`() = runBlocking {
+        val repo = createRepository()
+        val service = AttendanceOutboxService(
+            context = context,
+            httpClient = repo.httpClient,
+            dao = database.miniBiDao(),
+            timeAnchorManager = repo.attendanceTimeAnchorManager,
+            isNetworkAvailable = { true },
+            outboxWorkScheduler = {}
+        )
+
+        // Simulate a 2400x1800 OEM camera photo saved directly inside `attendance_photos`
+        // with trailing Samsung MotionPhoto `SEFH...SEFT` + `<svg>` bytes appended after 0xFF 0xD9
+        val outboxDir = File(context.filesDir, "attendance_photos").apply { mkdirs() }
+        val cameraCaptureFile = File(outboxDir, "checkin_oem_${System.nanoTime()}.jpg")
+        val bmp = Bitmap.createBitmap(2400, 1800, Bitmap.Config.ARGB_8888)
+        Canvas(bmp).drawColor(Color.rgb(34, 85, 136))
+        val jpegOut = java.io.ByteArrayOutputStream()
+        assertTrue(bmp.compress(Bitmap.CompressFormat.JPEG, 92, jpegOut))
+        bmp.recycle()
+
+        val rawJpegBytes = jpegOut.toByteArray()
+        val oemTrailer = "\u0000MotionPhoto_Data<svg>SEFH\u0001\u0002SEFT".toByteArray(Charsets.ISO_8859_1)
+        val rawCameraWithTrailer = rawJpegBytes + oemTrailer
+        assertFalse(
+            "Unprocessed OEM camera bytes with trailing SEFT/<svg> would fail backend PHOTO_INVALID",
+            AttendanceContract.isStrictBackendSafeJpeg(rawCameraWithTrailer)
+        )
+        cameraCaptureFile.writeBytes(rawCameraWithTrailer)
+
+        server.enqueue(
+            MockResponse().setResponseCode(201).setBody(
+                """
+                {
+                  "ok": true,
+                  "checkin": {
+                    "checkin_id": "eeee9999-eeee-4888-8777-ffff66665555",
+                    "business_date": "2026-10-24",
+                    "sequence_in_day": 2,
+                    "daily_count": 2,
+                    "captured_at": "2026-10-23T18:21:37.318Z",
+                    "received_at": "2026-10-23T18:21:38.000Z",
+                    "time_source": "DEVICE_CLOCK_UNVERIFIED",
+                    "replayed": false
+                  }
+                }
+                """.trimIndent()
+            )
+        )
+
+        val outcome = service.submitCheckIn(
+            actor = testActor,
+            latitude = 21.27250,
+            longitude = 105.65334,
+            accuracyMeters = 13.0f,
+            addressHint = "Bình Nguyên, Phú Thọ",
+            sourcePhotoFile = cameraCaptureFile,
+            sourcePhotoUri = "content://test/oem_checkin.jpg",
+            note = ""
+        )
+
+        assertTrue(outcome.isSynced)
+        val persistedBytes = File(outcome.record.photoFilePath).readBytes()
+        assertTrue(
+            "Normalized photo persisted in outbox must strictly start with FF D8 FF, end with FF D9, and contain zero OEM trailer/markup",
+            AttendanceContract.isStrictBackendSafeJpeg(persistedBytes)
+        )
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(persistedBytes, 0, persistedBytes.size, bounds)
+        assertTrue(bounds.outWidth in 1..AttendanceContract.MAX_ATTENDANCE_PHOTO_DIMENSION_PX)
+        assertTrue(bounds.outHeight in 1..AttendanceContract.MAX_ATTENDANCE_PHOTO_DIMENSION_PX)
+
+        val expectedNormalizedSha = MiniBiRepository.computeSha256HexStrict(File(outcome.record.photoFilePath))
+        assertEquals(expectedNormalizedSha, outcome.record.photoSha256)
+        val recordedReq = server.takeRequest()
+        assertTrue(recordedReq.body.readUtf8().contains("\"photo_sha256\":\"$expectedNormalizedSha\""))
+    }
+
+    @Test
+    fun `attendance 422 and 413 error codes map to friendly Vietnamese messages reminding user to retry`() = runBlocking {
+        val repo = createRepository()
+        val service = AttendanceOutboxService(
+            context = context,
+            httpClient = repo.httpClient,
+            dao = database.miniBiDao(),
+            timeAnchorManager = repo.attendanceTimeAnchorManager,
+            isNetworkAvailable = { true },
+            outboxWorkScheduler = {}
+        )
+
+        val errorCases = listOf(
+            Triple(422, """{"ok":false,"code":"PHOTO_INVALID"}""", "PHOTO_INVALID"),
+            Triple(422, """{"ok":false,"error":{"code":"ATTENDANCE_TIME_MISMATCH"}}""", "ATTENDANCE_TIME_MISMATCH"),
+            Triple(413, """{"ok":false,"code":"BODY_TOO_LARGE"}""", "BODY_TOO_LARGE"),
+            Triple(422, """{"ok":false,"code":"UNMAPPED_FUTURE_CODE"}""", "UNMAPPED_FUTURE_CODE")
+        )
+
+        for ((status, body, expectedCode) in errorCases) {
+            server.enqueue(MockResponse().setResponseCode(status).setBody(body))
+            val res = service.submitCheckIn(
+                actor = testActor,
+                latitude = 21.2725,
+                longitude = 105.6533,
+                accuracyMeters = 12f,
+                addressHint = "Phú Thọ",
+                sourcePhotoFile = createValidPhotoFile("err_${expectedCode}.jpg"),
+                sourcePhotoUri = null,
+                note = ""
+            )
+            assertFalse(res.isSynced)
+            assertEquals(AttendanceOutboxStatus.REJECTED, res.record.syncStatus)
+            assertEquals(expectedCode, res.record.backendErrorCode)
+            assertFalse(
+                "Must never surface cryptic generic message for $expectedCode",
+                res.userMessage.contains("không thỏa điều kiện nghiệp vụ")
+            )
+            assertTrue(
+                "Friendly error message must remind user to retry (`thử lại`): ${res.userMessage}",
+                res.userMessage.lowercase().contains("thử lại")
+            )
+        }
     }
 }

@@ -44,8 +44,39 @@ class BackendHttpClient(
             "BANK_NOT_ACTIVE" to "Ngân hàng đã chọn không còn hoạt động trong danh mục máy chủ.",
             "OFF_REQUIRES_DATE_AND_REASON" to "Trạng thái Đã nghỉ bắt buộc có ngày nghỉ và lý do nghỉ việc.",
             "GENDER_VOCABULARY_INVALID" to "Giới tính không thuộc danh mục cho phép.",
-            "BATCH_INVALID" to "Máy chủ từ chối dữ liệu hồ sơ. Vui lòng kiểm tra lại các trường bắt buộc và danh mục."
+            "BATCH_INVALID" to "Máy chủ từ chối dữ liệu hồ sơ. Vui lòng kiểm tra lại các trường bắt buộc và danh mục.",
+            // Attendance check-in & time-anchor business codes -> clear Vietnamese + retry prompt
+            "PHOTO_INVALID" to "Ảnh chụp từ camera chưa đúng chuẩn hệ thống. Vui lòng bấm Chấm công để chụp lại ảnh và thử lại.",
+            "PHOTO_HASH_MISMATCH" to "Ảnh chấm công bị lỗi dữ liệu khi gửi qua mạng. Vui lòng chụp lại ảnh và bấm chấm công thử lại.",
+            "BODY_TOO_LARGE" to "Ảnh chấm công có dung lượng quá lớn. Vui lòng chụp lại ảnh và bấm chấm công thử lại.",
+            "CAPTURED_AT_FUTURE" to "Giờ ghi nhận trên máy đang nhanh hơn giờ máy chủ. Vui lòng bấm làm mới giờ chuẩn rồi chấm công thử lại.",
+            "CAPTURED_AT_INVALID" to "Thời điểm chụp ảnh chưa hợp lệ. Vui lòng chụp lại ảnh và bấm chấm công thử lại.",
+            "ATTENDANCE_TIME_TOKEN_INVALID" to "Mốc giờ chuẩn cần được làm mới. Vui lòng bấm làm mới giờ chuẩn phía trên rồi chấm công thử lại.",
+            "ATTENDANCE_TIME_TOKEN_EXPIRED" to "Mốc giờ chuẩn đã hết hạn. Vui lòng bấm làm mới giờ chuẩn phía trên rồi chấm công thử lại.",
+            "ATTENDANCE_TIME_TOKEN_ACTOR_MISMATCH" to "Phiên giờ chuẩn không khớp tài khoản hiện tại. Vui lòng bấm làm mới giờ chuẩn rồi chấm công thử lại.",
+            "ATTENDANCE_TIME_ELAPSED_INVALID" to "Ảnh chụp đã để chờ quá 24 giờ chưa gửi. Vui lòng chụp ảnh mới và bấm chấm công thử lại.",
+            "ATTENDANCE_TIME_MISMATCH" to "Đồng hồ thiết bị lệch so với giờ chuẩn máy chủ. Vui lòng bấm làm mới giờ chuẩn rồi chấm công thử lại.",
+            "ATTENDANCE_SYNC_WINDOW_EXPIRED" to "Lượt chấm công ngoại tuyến này đã quá hạn 7 ngày đồng bộ. Vui lòng chấm công lượt mới và thử lại.",
+            "GPS_COORDINATES_INVALID" to "Tín hiệu vị trí GPS chưa ổn định. Vui lòng bấm làm mới GPS rồi chấm công thử lại.",
+            "GPS_ACCURACY_INVALID" to "Độ chính xác GPS chưa đạt yêu cầu. Vui lòng bấm làm mới GPS ở nơi thoáng sóng rồi thử lại.",
+            "IDEMPOTENCY_KEY_INVALID" to "Mã phiên gửi chấm công không hợp lệ. Vui lòng chụp lại ảnh và bấm chấm công thử lại.",
+            "IDEMPOTENCY_CONFLICT" to "Phiên gửi bị trùng mã cũ. Vui lòng bấm Chấm công để chụp mới và thử lại.",
+            "CONTENT_TYPE_INVALID" to "Dữ liệu ảnh gửi lên bị gián đoạn. Vui lòng chụp lại ảnh và bấm chấm công thử lại.",
+            "ATTENDANCE_REQUEST_INVALID" to "Dữ liệu chấm công gửi lên chưa đầy đủ. Vui lòng chụp lại ảnh, kiểm tra GPS và thử lại.",
+            "ATTENDANCE_CONFIG_REQUIRED" to "Hệ thống chấm công trên máy chủ đang bảo trì cấu hình. Vui lòng thử lại sau ít phút.",
+            "ATTENDANCE_UNAVAILABLE" to "Hệ thống chấm công đang bận tạm thời. Vui lòng thử lại sau ít phút.",
+            "ACTOR_NOT_AVAILABLE" to "Tài khoản hiện chưa được kích hoạt quyền chấm công. Vui lòng đăng nhập lại và thử lại, hoặc liên hệ quản trị viên."
         )
+
+        internal fun extractErrorCodeAndMessage(bodyStr: String): Pair<String?, String?> {
+            val errObj = runCatching { JSONObject(bodyStr) }.getOrNull() ?: return null to null
+            val nested = errObj.optJSONObject("error")
+            val code = errObj.optString("code").ifBlank { null }
+                ?: nested?.optString("code")?.ifBlank { null }
+            val msg = errObj.optString("message").ifBlank { null }
+                ?: nested?.optString("message")?.ifBlank { null }
+            return code to msg
+        }
 
         fun extractOrigin(httpUrl: HttpUrl): String {
             val defaultPort = HttpUrl.defaultPort(httpUrl.scheme)
@@ -141,7 +172,15 @@ class BackendHttpClient(
                     backendCode = backendCode ?: "VERSION_CONFLICT",
                     message = knownBusinessMsg
                         ?: backendMessage?.takeIf { it.isNotBlank() }
-                        ?: "Dữ liệu đã thay đổi trên máy chủ (xung đột phiên bản). Vui lòng tải lại."
+                        ?: "Dữ liệu đã thay đổi trên máy chủ (xung đột phiên bản). Vui lòng tải lại và thử lại."
+                )
+                statusCode == 413 -> BackendApiException(
+                    kind = BackendFailureKind.INVALID_REQUEST,
+                    statusCode = 413,
+                    backendCode = backendCode ?: "BODY_TOO_LARGE",
+                    message = knownBusinessMsg
+                        ?: backendMessage?.takeIf { it.isNotBlank() }
+                        ?: "Tệp hoặc ảnh gửi lên có dung lượng quá lớn (tối đa 10 MB). Vui lòng chụp lại và thử lại."
                 )
                 statusCode == 422 -> BackendApiException(
                     kind = BackendFailureKind.VALIDATION,
@@ -149,7 +188,7 @@ class BackendHttpClient(
                     backendCode = backendCode ?: "VALIDATION_FAILED",
                     message = knownBusinessMsg
                         ?: backendMessage?.takeIf { it.isNotBlank() }
-                        ?: "Dữ liệu gửi lên không thỏa điều kiện nghiệp vụ."
+                        ?: "Dữ liệu gửi lên chưa hợp lệ. Vui lòng kiểm tra lại thông tin và thử lại."
                 )
                 statusCode == 429 -> BackendApiException(
                     kind = BackendFailureKind.RATE_LIMITED,
@@ -393,9 +432,7 @@ class BackendHttpClient(
             okHttpClient.newCall(request).execute().use { response ->
                 val bodyStr = response.body?.string().orEmpty()
                 if (!response.isSuccessful) {
-                    val errObj = runCatching { JSONObject(bodyStr) }.getOrNull()
-                    val code = errObj?.optString("code")?.ifBlank { null }
-                    val msg = errObj?.optString("message")?.ifBlank { null }
+                    val (code, msg) = extractErrorCodeAndMessage(bodyStr)
                     if (response.code == 401 && clearSessionOn401) {
                         onUnauthorizedResponse?.invoke()
                     }
@@ -467,9 +504,7 @@ class BackendHttpClient(
             okHttpClient.newCall(request).execute().use { response ->
                 val bodyStr = response.body?.string().orEmpty()
                 if (!response.isSuccessful) {
-                    val errObj = runCatching { JSONObject(bodyStr) }.getOrNull()
-                    val code = errObj?.optString("code")?.ifBlank { null }
-                    val msg = errObj?.optString("message")?.ifBlank { null }
+                    val (code, msg) = extractErrorCodeAndMessage(bodyStr)
                     throw mapHttpError(response.code, code, msg)
                 }
             }
@@ -501,9 +536,7 @@ class BackendHttpClient(
             okHttpClient.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) {
                     val bodyStr = response.body?.string().orEmpty()
-                    val errObj = runCatching { JSONObject(bodyStr) }.getOrNull()
-                    val code = errObj?.optString("code")?.ifBlank { null }
-                    val msg = errObj?.optString("message")?.ifBlank { null }
+                    val (code, msg) = extractErrorCodeAndMessage(bodyStr)
                     if (response.code == 401) {
                         onUnauthorizedResponse?.invoke()
                     }
