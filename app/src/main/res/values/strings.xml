@@ -1,0 +1,13 @@
+<resources>
+    <string name="app_name">Mini BI</string>
+    <string name="login_title">Đăng nhập Mini BI</string>
+    <string name="login_subtitle">Hệ thống Báo cáo Tuyển dụng &amp; Quản trị Hiệu suất</string>
+    <string name="login_identifier_label">Email hoặc ID</string>
+    <string name="login_password_label">Mật khẩu</string>
+    <string name="login_submit">Đăng nhập</string>
+    <string name="nav_dashboard">Tổng quan</string>
+    <string name="nav_work_reports">Báo cáo ngày</string>
+    <string name="nav_attendance">Chấm công</string>
+    <string name="nav_workers">Nhân sự</string>
+    <string name="nav_backend_prompt">Prompt Backend</string>
+</resources>

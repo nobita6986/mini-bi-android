@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+    <cache-path name="attendance_captures" path="attendance_captures/" />
+    <files-path name="attendance_photos" path="attendance_photos/" />
+</paths>

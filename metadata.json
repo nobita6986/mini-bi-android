@@ -1,0 +1,11 @@
+{
+  "name": "Mini BI",
+  "description": "Ứng dụng báo cáo kinh doanh tuyển dụng (Mini BI), báo cáo công việc hàng ngày và chấm công GPS kèm chụp ảnh xác thực từ xa.",
+  "requestFramePermissions": [
+    "camera",
+    "geolocation"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
