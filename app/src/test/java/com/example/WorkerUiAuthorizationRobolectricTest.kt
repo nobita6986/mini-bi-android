@@ -32,6 +32,7 @@ import com.example.data.WorkerEntryDetail
 import com.example.data.WorkerProfileEntity
 import com.example.ui.MiniBiViewModel
 import com.example.ui.screens.AttendanceHistoryCard
+import com.example.ui.screens.AttendanceScreen
 import com.example.ui.screens.DirectEntryNewWorkersScreen
 import com.example.ui.screens.LoginScreen
 import com.example.ui.screens.WorkerOperationsRowCard
@@ -65,6 +66,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import java.io.File
 import java.util.concurrent.TimeUnit
+import kotlin.math.abs
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [36], qualifiers = "w480dp-h1400dp")
@@ -1643,5 +1645,90 @@ class WorkerUiAuthorizationRobolectricTest {
 
         // UTC server timestamp converts cleanly to Vietnam local time (+07:00)
         assertEquals("2026-10-24 01:11:04", formatIsoToVietnamDateTime("2026-10-23T18:11:04.125Z"))
+    }
+
+    @Test
+    @Config(qualifiers = "w392dp-h900dp-xxhdpi")
+    fun `attendance screen omits duplicate username under header and centers enlarged camera icon between button edge and text`() {
+        val server = MockWebServer()
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                return MockResponse()
+                    .setResponseCode(404)
+                    .setHeader("Content-Type", "application/json")
+                    .setBody("""{"ok":false,"code":"NOT_FOUND"}""")
+            }
+        }
+        server.start()
+
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val db = buildTestDb(app)
+        val cookieFile = File(app.cacheDir, "ui_att_hdr_${System.nanoTime()}.enc")
+        val savedCredsFile = File(app.cacheDir, "ui_att_saved_${System.nanoTime()}.enc")
+        val anchorFile = File(app.cacheDir, "ui_att_anchor_${System.nanoTime()}.enc")
+        val prefsFile = File(app.cacheDir, "ui_att_prefs_${System.nanoTime()}.preferences_pb")
+        val repo = MiniBiRepository(
+            context = app,
+            database = db,
+            defaultServerUrl = server.url("/").toString().trimEnd('/'),
+            allowDebugUrlOverride = true,
+            cookieStorageFile = cookieFile,
+            timeAnchorStorageFile = anchorFile,
+            savedCredentialsStorageFile = savedCredsFile,
+            preferencesStorageFile = prefsFile,
+            cookieCipher = JvmAes256GcmCookieCipher()
+        )
+        val vm = MiniBiViewModel(app, repo)
+        registerTestResourcesCleanup(vm, db, server, cookieFile, savedCredsFile, anchorFile, prefsFile)
+
+        val actor = AppActor(
+            appUserId = "11111111-2222-4333-8444-555555555555",
+            displayName = "nobita6986",
+            capabilities = listOf("entry_read"),
+            scopes = listOf(ActorScope("own", "self", "2026-01-01", null)),
+            selfRecruiterSuggestion = null
+        )
+
+        composeTestRule.setContent {
+            MyApplicationTheme {
+                AttendanceScreen(
+                    actor = actor,
+                    viewModel = vm,
+                    onBackToDashboard = {}
+                )
+            }
+        }
+        composeTestRule.waitForIdle()
+
+        // 1. Header shows "Ghi nhận Chấm công" without repeating actor.displayName ("nobita6986") underneath
+        composeTestRule.onNodeWithText("Ghi nhận Chấm công").assertIsDisplayed()
+        composeTestRule.onNodeWithText("nobita6986").assertDoesNotExist()
+
+        // 2. Camera icon inside primary button is enlarged (~32dp) and centered midway between button left edge and centered label
+        val density = composeTestRule.density.density
+        val buttonBounds = composeTestRule.onNodeWithTag("primary_checkin_camera_button")
+            .fetchSemanticsNode().boundsInRoot
+        val iconBounds = composeTestRule.onNodeWithTag("primary_checkin_camera_icon", useUnmergedTree = true)
+            .fetchSemanticsNode().boundsInRoot
+        val labelBounds = composeTestRule.onNodeWithTag("primary_checkin_camera_label", useUnmergedTree = true)
+            .fetchSemanticsNode().boundsInRoot
+
+        val iconWidthDp = (iconBounds.right - iconBounds.left) / density
+        assertTrue("Expected enlarged camera icon (>= 30dp), got ${iconWidthDp}dp", iconWidthDp >= 30f)
+
+        val gapFromButtonEdgePx = iconBounds.left - buttonBounds.left
+        val gapToLabelPx = labelBounds.left - iconBounds.right
+        assertTrue("Expected positive balanced gap (> 10px), got $gapFromButtonEdgePx", gapFromButtonEdgePx > 10f)
+        assertTrue(
+            "Expected camera icon centered midway between button left edge ($gapFromButtonEdgePx px) and text ($gapToLabelPx px)",
+            abs(gapFromButtonEdgePx - gapToLabelPx) <= 2.5f
+        )
+
+        val buttonCenterX = (buttonBounds.left + buttonBounds.right) / 2f
+        val labelCenterX = (labelBounds.left + labelBounds.right) / 2f
+        assertTrue(
+            "Expected button text horizontally centered (buttonCenter=$buttonCenterX, labelCenter=$labelCenterX)",
+            abs(buttonCenterX - labelCenterX) <= 2.5f
+        )
     }
 }
