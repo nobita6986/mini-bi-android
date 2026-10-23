@@ -20,13 +20,13 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.AssignmentTurnedIn
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.EditNote
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Save
-import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -59,13 +59,16 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.AppActor
+import com.example.data.DirectEntryContract
 import com.example.data.WorkReportAnalyticsSnapshot
 import com.example.data.WorkReportObligationEntity
 import com.example.data.WorkReportReviewItem
 import com.example.data.WorkReportSectionSpec
+import com.example.data.WorkReportTemplateOption
 import com.example.data.WorkReportsContract
 import com.example.ui.MiniBiViewModel
 import com.example.ui.theme.JetBrainsMono
@@ -89,6 +92,7 @@ fun WorkReportsScreen(
     val error by viewModel.workReportsError.collectAsStateWithLifecycle()
     val reviewQueue by viewModel.reviewQueue.collectAsStateWithLifecycle()
     val analyticsSnapshot by viewModel.analyticsSnapshot.collectAsStateWithLifecycle()
+    val serverTemplates by viewModel.availableReportTemplates.collectAsStateWithLifecycle()
     val editingObligation by viewModel.editingObligation.collectAsStateWithLifecycle()
     val mutationBusy by viewModel.workReportMutationBusy.collectAsStateWithLifecycle()
 
@@ -101,13 +105,30 @@ fun WorkReportsScreen(
     val canViewAnalytics = actor.hasCapability("report_analytics_view") && hasTeamOrAllScope
 
     var selectedTab by remember { mutableIntStateOf(0) }
-    var customAnalyticsTemplateId by remember { mutableStateOf("") }
 
-    val knownTemplates = remember(reports, reviewQueue) {
-        buildMap {
-            reports.forEach { if (it.templateId.isNotBlank()) put(it.templateId, it.templateName) }
-            reviewQueue.forEach { if (it.templateId.isNotBlank()) putIfAbsent(it.templateId, it.templateName) }
-        }.entries.map { it.key to it.value }
+    val availableTemplates = remember(reports, reviewQueue, serverTemplates, analyticsSnapshot) {
+        val map = linkedMapOf<String, String>()
+        reports.forEach {
+            if (it.templateId.isNotBlank() && it.templateName.isNotBlank()) {
+                map[it.templateId] = it.templateName
+            }
+        }
+        reviewQueue.forEach {
+            if (it.templateId.isNotBlank() && it.templateName.isNotBlank()) {
+                map.putIfAbsent(it.templateId, it.templateName)
+            }
+        }
+        serverTemplates.forEach {
+            if (it.templateId.isNotBlank() && it.displayName.isNotBlank()) {
+                map.putIfAbsent(it.templateId, it.displayName)
+            }
+        }
+        analyticsSnapshot?.let { snap ->
+            if (snap.templateId.isNotBlank() && snap.templateName.isNotBlank()) {
+                map.putIfAbsent(snap.templateId, snap.templateName)
+            }
+        }
+        map.map { (tid, name) -> WorkReportTemplateOption(templateId = tid, displayName = name) }
     }
 
     val activeObligations = remember(reports) {
@@ -121,13 +142,13 @@ fun WorkReportsScreen(
     }
 
     val tabDefs = buildList {
-        add("active" to "Cần báo cáo (${activeObligations.size})")
-        add("history" to "Lịch sử báo cáo (${historyObligations.size})")
+        add("active" to "Cần nộp (${activeObligations.size})")
+        add("history" to "Đã lưu / Đã nộp (${historyObligations.size})")
         if (canReview) {
-            add("review" to "Duyệt báo cáo (${reviewQueue.size})")
+            add("review" to "Chờ duyệt (${reviewQueue.size})")
         }
         if (canViewAnalytics) {
-            add("analytics" to "Tổng hợp kết quả")
+            add("analytics" to "Tổng hợp báo cáo")
         }
     }
     val safeTab = selectedTab.coerceIn(0, (tabDefs.size - 1).coerceAtLeast(0))
@@ -174,11 +195,11 @@ fun WorkReportsScreen(
                         }
                     }
                     Text(
-                        text = "Nghĩa vụ & Phê duyệt Báo cáo",
+                        text = "Báo cáo định kỳ",
                         style = MaterialTheme.typography.headlineMedium
                     )
                     Text(
-                        text = "Biểu mẫu được kết xuất động theo cấu hình mẫu báo cáo từ máy chủ.",
+                        text = "Điền báo cáo công việc được giao, duyệt báo cáo nhóm và theo dõi kết quả tổng hợp.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -191,6 +212,7 @@ fun WorkReportsScreen(
                 selectedTabIndex = safeTab,
                 edgePadding = 0.dp,
                 containerColor = Color.Transparent,
+                indicator = {},
                 divider = {}
             ) {
                 tabDefs.forEachIndexed { index, (key, title) ->
@@ -236,7 +258,7 @@ fun WorkReportsScreen(
                         horizontalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
                         CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
-                        Text("Đang đồng bộ danh sách nghĩa vụ báo cáo…")
+                        Text("Đang tải dữ liệu báo cáo…")
                     }
                 }
             }
@@ -288,8 +310,8 @@ fun WorkReportsScreen(
                 if (activeObligations.isEmpty() && !loading) {
                     item {
                         EmptyReportBanner(
-                            title = "Chưa có nghĩa vụ báo cáo cần thực hiện",
-                            subtitle = "Các nghĩa vụ báo cáo do máy chủ phân công sẽ xuất hiện tại đây."
+                            title = "Bạn đã hoàn thành hết báo cáo đến hạn",
+                            subtitle = "Khi có kỳ báo cáo mới cần nộp, biểu mẫu sẽ hiển thị tại đây."
                         )
                     }
                 } else {
@@ -307,8 +329,8 @@ fun WorkReportsScreen(
                 if (historyObligations.isEmpty() && !loading) {
                     item {
                         EmptyReportBanner(
-                            title = "Chưa có lịch sử báo cáo",
-                            subtitle = "Các bản nháp và báo cáo đã nộp lên máy chủ sẽ hiển thị tại đây."
+                            title = "Chưa có báo cáo đã lưu hoặc đã nộp",
+                            subtitle = "Các bản nháp và báo cáo bạn đã gửi sẽ được lưu tại đây."
                         )
                     }
                 } else {
@@ -327,8 +349,8 @@ fun WorkReportsScreen(
                 if (reviewQueue.isEmpty() && !loading) {
                     item {
                         EmptyReportBanner(
-                            title = "Không có báo cáo nào đang chờ duyệt",
-                            subtitle = "Hàng đợi phê duyệt từ máy chủ hiện đang trống."
+                            title = "Không có báo cáo chờ duyệt",
+                            subtitle = "Hiện chưa có báo cáo nào từ thành viên trong nhóm cần bạn phê duyệt."
                         )
                     }
                 } else {
@@ -355,25 +377,62 @@ fun WorkReportsScreen(
             }
 
             "analytics" -> {
-                item {
-                    AnalyticsTemplateSelectorCard(
-                        knownTemplates = knownTemplates,
-                        selectedTemplateId = analyticsSnapshot?.templateId.orEmpty(),
-                        customTemplateId = customAnalyticsTemplateId,
-                        onCustomTemplateIdChange = { customAnalyticsTemplateId = it },
-                        onSelectTemplate = { tid, tname ->
-                            viewModel.loadWorkReportAnalytics(tid, tname)
-                        }
-                    )
+                if (availableTemplates.isNotEmpty() || analyticsSnapshot != null) {
+                    item {
+                        val activeTemplateId = analyticsSnapshot?.templateId
+                            ?: availableTemplates.firstOrNull()?.templateId.orEmpty()
+                        val activeTemplateName = availableTemplates
+                            .firstOrNull { it.templateId == activeTemplateId }
+                            ?.displayName
+                            ?: analyticsSnapshot?.templateName.orEmpty()
+                        val activeFinality = analyticsSnapshot?.finality ?: "final"
+                        val activeGroupBy = analyticsSnapshot?.groupBy ?: "team"
+
+                        AnalyticsFilterCard(
+                            availableTemplates = availableTemplates,
+                            selectedTemplateId = activeTemplateId,
+                            selectedFinality = activeFinality,
+                            selectedGroupBy = activeGroupBy,
+                            enabled = !loading,
+                            onSelectTemplate = { tid, tname ->
+                                viewModel.loadWorkReportAnalytics(
+                                    templateId = tid,
+                                    templateNameHint = tname,
+                                    groupBy = activeGroupBy,
+                                    finality = activeFinality
+                                )
+                            },
+                            onSelectFinality = { nextFinality ->
+                                if (activeTemplateId.isNotBlank() && nextFinality != activeFinality) {
+                                    viewModel.loadWorkReportAnalytics(
+                                        templateId = activeTemplateId,
+                                        templateNameHint = activeTemplateName,
+                                        groupBy = activeGroupBy,
+                                        finality = nextFinality
+                                    )
+                                }
+                            },
+                            onSelectGroupBy = { nextGroupBy ->
+                                if (activeTemplateId.isNotBlank() && nextGroupBy != activeGroupBy) {
+                                    viewModel.loadWorkReportAnalytics(
+                                        templateId = activeTemplateId,
+                                        templateNameHint = activeTemplateName,
+                                        groupBy = nextGroupBy,
+                                        finality = activeFinality
+                                    )
+                                }
+                            }
+                        )
+                    }
                 }
                 item {
                     val snap = analyticsSnapshot
-                    if (snap == null) {
+                    if (snap == null && !loading) {
                         EmptyReportBanner(
-                            title = "Chưa có dữ liệu tổng hợp",
-                            subtitle = "Chọn mẫu báo cáo hoặc nhập Mã mẫu (UUID) hợp lệ để tải dữ liệu phân tích từ máy chủ."
+                            title = "Chưa có số liệu tổng hợp",
+                            subtitle = "Chưa ghi nhận mẫu báo cáo đang hoạt động trong phạm vi quản lý của bạn."
                         )
-                    } else {
+                    } else if (snap != null) {
                         WorkReportAnalyticsSummaryCard(snapshot = snap)
                     }
                 }
@@ -411,17 +470,48 @@ internal fun DynamicWorkReportFormCard(
         map
     }
 
-    fun buildPayloadJson(): JSONObject {
+    var formValidationError by remember(obligation.obligationId) { mutableStateOf<String?>(null) }
+
+    fun buildPayloadJson(strictForSubmit: Boolean): JSONObject {
         val obj = JSONObject()
         sections.flatMap { it.fields }.forEach { field ->
             val raw = fieldValues[field.fieldKey].orEmpty().trim()
+            if (strictForSubmit && field.required && raw.isEmpty() && field.fieldType != "boolean") {
+                throw IllegalArgumentException("Vui lòng nhập mục bắt buộc '${field.label}'.")
+            }
             when (field.fieldType) {
-                "integer" -> if (raw.isNotEmpty()) obj.put(field.fieldKey, raw.toLongOrNull() ?: 0L)
-                "decimal" -> if (raw.isNotEmpty()) obj.put(field.fieldKey, raw.toDoubleOrNull() ?: 0.0)
+                "integer" -> if (raw.isNotEmpty()) {
+                    val parsed = raw.toLongOrNull()
+                    if (parsed != null) {
+                        obj.put(field.fieldKey, parsed)
+                    } else if (strictForSubmit) {
+                        throw IllegalArgumentException("Mục '${field.label}' phải là số nguyên hợp lệ.")
+                    }
+                }
+                "decimal" -> if (raw.isNotEmpty()) {
+                    val parsed = raw.replace(',', '.').toDoubleOrNull()
+                    if (parsed != null && parsed.isFinite()) {
+                        obj.put(field.fieldKey, parsed)
+                    } else if (strictForSubmit) {
+                        throw IllegalArgumentException("Mục '${field.label}' phải là số hợp lệ.")
+                    }
+                }
+                "date" -> if (raw.isNotEmpty()) {
+                    val iso = runCatching { DirectEntryContract.uiDateToIsoDate(raw) }.getOrNull()
+                    if (iso != null) {
+                        obj.put(field.fieldKey, iso)
+                    } else if (strictForSubmit) {
+                        throw IllegalArgumentException("Ngày '${field.label}' cần nhập theo dạng DD/MM/YYYY.")
+                    }
+                }
                 "boolean" -> obj.put(field.fieldKey, raw.equals("true", ignoreCase = true))
                 "multi_select" -> {
+                    val items = raw.split(",").map { it.trim() }.filter { it.isNotEmpty() }
+                    if (strictForSubmit && field.required && items.isEmpty()) {
+                        throw IllegalArgumentException("Vui lòng chọn ít nhất 1 mục cho '${field.label}'.")
+                    }
                     val arr = JSONArray()
-                    raw.split(",").map { it.trim() }.filter { it.isNotEmpty() }.forEach { arr.put(it) }
+                    items.forEach { arr.put(it) }
                     obj.put(field.fieldKey, arr)
                 }
                 else -> if (raw.isNotEmpty() || field.required) obj.put(field.fieldKey, raw)
@@ -444,14 +534,14 @@ internal fun DynamicWorkReportFormCard(
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         Text(
-            text = "${obligation.templateName} · Kỳ ${obligation.periodKey}",
+            text = "${obligation.templateName.ifBlank { "Báo cáo công việc" }} · Kỳ ${WorkReportsContract.formatPeriodKeyVi(obligation.periodKey)}",
             style = MaterialTheme.typography.titleMedium,
             color = MaterialTheme.colorScheme.primary
         )
 
         if (sections.isEmpty()) {
             Text(
-                text = "Máy chủ chưa trả cấu trúc trường dữ liệu chi tiết cho nghĩa vụ này.",
+                text = "Đang tải nội dung biểu mẫu báo cáo…",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -525,8 +615,27 @@ internal fun DynamicWorkReportFormCard(
                             }
                             OutlinedTextField(
                                 value = currentVal,
-                                onValueChange = { fieldValues[field.fieldKey] = it },
+                                onValueChange = { next ->
+                                    formValidationError = null
+                                    val sanitized = when (field.fieldType) {
+                                        "integer" -> next.filterIndexed { idx, ch ->
+                                            ch.isDigit() || (idx == 0 && ch == '-')
+                                        }.take(20)
+                                        "decimal" -> next.replace(',', '.').filterIndexed { idx, ch ->
+                                            ch.isDigit() || ch == '.' || (idx == 0 && ch == '-')
+                                        }.take(24)
+                                        "date" -> next.filter { ch -> ch.code >= 32 && ch.code != 127 }.take(10)
+                                        "textarea" -> next.filter { ch ->
+                                            (ch.code >= 32 && ch.code != 127) || ch == '\n' || ch == '\t'
+                                        }.take(4000)
+                                        else -> next.filter { ch -> ch.code >= 32 && ch.code != 127 }.take(1000)
+                                    }
+                                    fieldValues[field.fieldKey] = sanitized
+                                },
                                 label = { Text(labelWithReq) },
+                                placeholder = if (field.fieldType == "date") {
+                                    { Text("DD/MM/YYYY") }
+                                } else null,
                                 singleLine = field.fieldType != "textarea",
                                 minLines = if (field.fieldType == "textarea") 2 else 1,
                                 keyboardOptions = KeyboardOptions(keyboardType = kbType),
@@ -538,6 +647,14 @@ internal fun DynamicWorkReportFormCard(
                     }
                 }
             }
+        }
+
+        formValidationError?.let { errText ->
+            Text(
+                text = errText,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error
+            )
         }
 
         Row(
@@ -552,7 +669,10 @@ internal fun DynamicWorkReportFormCard(
             }
             if (canSubmit) {
                 OutlinedButton(
-                    onClick = { onSaveDraft(buildPayloadJson()) },
+                    onClick = {
+                        formValidationError = null
+                        onSaveDraft(buildPayloadJson(strictForSubmit = false))
+                    },
                     modifier = Modifier
                         .weight(1f)
                         .testTag("save_draft_report_button")
@@ -562,7 +682,12 @@ internal fun DynamicWorkReportFormCard(
                     Text("Lưu nháp")
                 }
                 Button(
-                    onClick = { onSubmitFinal(buildPayloadJson()) },
+                    onClick = {
+                        formValidationError = null
+                        runCatching { buildPayloadJson(strictForSubmit = true) }
+                            .onSuccess { payload -> onSubmitFinal(payload) }
+                            .onFailure { err -> formValidationError = err.message ?: "Dữ liệu biểu mẫu chưa hợp lệ." }
+                    },
                     modifier = Modifier
                         .weight(1.2f)
                         .testTag("submit_final_report_button")
@@ -582,19 +707,12 @@ private fun WorkReportObligationCard(
     showEditAction: Boolean,
     onOpenEdit: () -> Unit
 ) {
-    val badgeColor = when (item.submissionState) {
-        "APPROVED", "COMPLETED" -> SemanticColors.SuccessLight
-        "PENDING_REVIEW", "SUBMITTED" -> SemanticColors.RunningLight
-        "REJECTED" -> SemanticColors.ErrorLight
-        else -> SemanticColors.WarningLight
-    }
-    val stateLabel = when (item.submissionState) {
-        "APPROVED" -> "ĐÃ DUYỆT"
-        "COMPLETED" -> "HOÀN THÀNH"
-        "PENDING_REVIEW", "SUBMITTED" -> "CHỜ DUYỆT"
-        "REJECTED" -> "YÊU CẦU SỬA"
-        "DRAFT" -> "BẢN NHÁP"
-        else -> "CHƯA BẮT ĐẦU"
+    val badgeColor = submissionStateColor(item.submissionState)
+    val stateLabel = WorkReportsContract.submissionStateDisplayLabel(item.submissionState)
+    val actionLabel = when (item.submissionState) {
+        "DRAFT" -> "Tiếp tục điền"
+        "REJECTED" -> "Sửa & nộp lại"
+        else -> "Làm báo cáo"
     }
 
     Card(
@@ -612,18 +730,36 @@ private fun WorkReportObligationCard(
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+                verticalAlignment = Alignment.Top
             ) {
-                Column(modifier = Modifier.weight(1f)) {
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(end = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
                     Text(
-                        text = "${item.templateName} · Kỳ ${item.periodKey}",
-                        style = MaterialTheme.typography.titleSmall
+                        text = item.templateName.ifBlank { "Báo cáo công việc" },
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold
                     )
                     Text(
-                        text = "Hạn nộp: ${item.dueAtIso.take(16).replace('T', ' ')}",
+                        text = "Kỳ báo cáo: ${WorkReportsContract.formatPeriodKeyVi(item.periodKey)}",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+                    Text(
+                        text = "Hạn nộp: ${WorkReportsContract.formatIsoDateTimeVi(item.dueAtIso)}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    if (!item.submittedAtIso.isNullOrBlank()) {
+                        Text(
+                            text = "Đã gửi lúc: ${WorkReportsContract.formatIsoDateTimeVi(item.submittedAtIso)}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                 }
                 Surface(
                     shape = RoundedCornerShape(8.dp),
@@ -632,18 +768,27 @@ private fun WorkReportObligationCard(
                     Text(
                         text = stateLabel,
                         style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.SemiBold,
                         color = badgeColor,
+                        maxLines = 1,
+                        softWrap = false,
                         modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
                     )
                 }
             }
 
             if (!item.latestReviewReason.isNullOrBlank()) {
-                Text(
-                    text = "Nhận xét duyệt: ${item.latestReviewReason}",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = badgeColor
-                )
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = badgeColor.copy(alpha = 0.1f)
+                ) {
+                    Text(
+                        text = "Ghi chú người duyệt: ${item.latestReviewReason}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = badgeColor,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp)
+                    )
+                }
             }
 
             if (showEditAction) {
@@ -658,7 +803,7 @@ private fun WorkReportObligationCard(
                     ) {
                         Icon(Icons.Default.EditNote, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(modifier = Modifier.width(6.dp))
-                        Text("Mở biểu mẫu báo cáo")
+                        Text(actionLabel)
                     }
                 }
             }
@@ -688,29 +833,57 @@ private fun ReviewInboxItemCard(
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.Top
             ) {
-                Column(modifier = Modifier.weight(1f)) {
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(end = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
+                    val teamSuffix = item.teamDisplayName?.takeIf { it.isNotBlank() }?.let { " · $it" }.orEmpty()
                     Text(
-                        text = "${item.assigneeDisplayName} · Kỳ ${item.periodKey}",
+                        text = "${item.assigneeDisplayName}$teamSuffix",
                         style = MaterialTheme.typography.titleMedium
                     )
                     Text(
-                        text = "${item.templateName} · Nộp lúc: ${item.submittedAt?.take(16)?.replace('T', ' ') ?: "—"}",
+                        text = "${item.templateName.ifBlank { "Báo cáo công việc" }} · Kỳ ${WorkReportsContract.formatPeriodKeyVi(item.periodKey)}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        text = "Nộp lúc: ${WorkReportsContract.formatIsoDateTimeVi(item.submittedAt)}",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-                Surface(
-                    shape = RoundedCornerShape(8.dp),
-                    color = SemanticColors.RunningLight.copy(alpha = 0.14f)
+                Column(
+                    horizontalAlignment = Alignment.End,
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
-                    Text(
-                        text = "Phiên bản v${item.submissionVersion}",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = SemanticColors.RunningLight,
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                    )
+                    val statusTint = if (item.isLate) SemanticColors.WarningLight else SemanticColors.RunningLight
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = statusTint.copy(alpha = 0.14f)
+                    ) {
+                        Text(
+                            text = if (item.isLate) "Nộp muộn" else "Chờ duyệt",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.SemiBold,
+                            color = statusTint,
+                            maxLines = 1,
+                            softWrap = false,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                        )
+                    }
+                    if (item.submissionVersion > 1) {
+                        Text(
+                            text = "Lần gửi ${item.submissionVersion}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                 }
             }
 
@@ -724,18 +897,33 @@ private fun ReviewInboxItemCard(
                     verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
                     item.payloadSummary.forEach { (k, v) ->
-                        Text(
-                            text = "• $k: $v",
-                            style = MaterialTheme.typography.bodySmall
-                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                text = k,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.weight(1f)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = v,
+                                style = MaterialTheme.typography.bodySmall,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
                     }
                 }
             }
 
             OutlinedTextField(
                 value = reviewNote,
-                onValueChange = { reviewNote = it },
-                label = { Text("Nhận xét phê duyệt / lý do trả lại *") },
+                onValueChange = { next ->
+                    reviewNote = next.filter { ch -> ch.code >= 32 && ch.code != 127 }.take(2000)
+                },
+                label = { Text("Nhận xét hoặc lý do yêu cầu sửa (bắt buộc khi trả lại)") },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth()
             )
@@ -760,7 +948,7 @@ private fun ReviewInboxItemCard(
                 ) {
                     Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp))
                     Spacer(modifier = Modifier.width(6.dp))
-                    Text("Phê duyệt", color = Color.White)
+                    Text("Đồng ý duyệt", color = Color.White)
                 }
             }
         }
@@ -769,12 +957,15 @@ private fun ReviewInboxItemCard(
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun AnalyticsTemplateSelectorCard(
-    knownTemplates: List<Pair<String, String>>,
+private fun AnalyticsFilterCard(
+    availableTemplates: List<WorkReportTemplateOption>,
     selectedTemplateId: String,
-    customTemplateId: String,
-    onCustomTemplateIdChange: (String) -> Unit,
-    onSelectTemplate: (String, String) -> Unit
+    selectedFinality: String,
+    selectedGroupBy: String,
+    enabled: Boolean,
+    onSelectTemplate: (String, String) -> Unit,
+    onSelectFinality: (String) -> Unit,
+    onSelectGroupBy: (String) -> Unit
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -785,41 +976,99 @@ private fun AnalyticsTemplateSelectorCard(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            Text(
-                text = "Chọn mẫu báo cáo phân tích",
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.Bold
-            )
-            if (knownTemplates.isNotEmpty()) {
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    knownTemplates.forEach { (tid, tname) ->
-                        FilterChip(
-                            selected = selectedTemplateId == tid,
-                            onClick = { onSelectTemplate(tid, tname) },
-                            label = { Text(tname.ifBlank { tid.take(8) }) }
+            if (availableTemplates.size > 1) {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(
+                        text = "Mẫu báo cáo",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        availableTemplates.forEach { opt ->
+                            FilterChip(
+                                selected = selectedTemplateId == opt.templateId,
+                                enabled = enabled,
+                                onClick = { onSelectTemplate(opt.templateId, opt.displayName) },
+                                label = { Text(opt.displayName) }
+                            )
+                        }
+                    }
+                }
+            } else if (availableTemplates.size == 1) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Mẫu báo cáo",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.65f)
+                    ) {
+                        Text(
+                            text = availableTemplates.first().displayName,
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
                         )
                     }
                 }
             }
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                OutlinedTextField(
-                    value = customTemplateId,
-                    onValueChange = onCustomTemplateIdChange,
-                    label = { Text("Mã mẫu báo cáo (template_id UUID)") },
-                    singleLine = true,
-                    modifier = Modifier.weight(1f)
+
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(
+                    text = "Loại số liệu",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-                Button(
-                    onClick = { onSelectTemplate(customTemplateId.trim(), "") },
-                    enabled = customTemplateId.isNotBlank()
-                ) {
-                    Text("Tải")
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChip(
+                        selected = selectedFinality == "final",
+                        enabled = enabled,
+                        onClick = { onSelectFinality("final") },
+                        label = { Text("Đã chốt (Đã duyệt)") }
+                    )
+                    FilterChip(
+                        selected = selectedFinality == "provisional_included",
+                        enabled = enabled,
+                        onClick = { onSelectFinality("provisional_included") },
+                        label = { Text("Tạm tính (Gồm chờ duyệt)") }
+                    )
+                }
+            }
+
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(
+                    text = "Xem chi tiết theo",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf(
+                        "team" to "Theo nhóm",
+                        "assignee" to "Theo nhân viên",
+                        "period" to "Theo kỳ"
+                    ).forEach { (key, label) ->
+                        FilterChip(
+                            selected = selectedGroupBy == key,
+                            enabled = enabled,
+                            onClick = { onSelectGroupBy(key) },
+                            label = { Text(label) }
+                        )
+                    }
                 }
             }
         }
@@ -828,90 +1077,360 @@ private fun AnalyticsTemplateSelectorCard(
 
 @Composable
 private fun WorkReportAnalyticsSummaryCard(snapshot: WorkReportAnalyticsSnapshot) {
+    val scopeDescription = buildList {
+        if (snapshot.scopeLabel.isNotBlank()) add("Phạm vi: ${snapshot.scopeLabel}")
+        add(if (snapshot.finality == "provisional_included") "Số liệu tạm tính" else "Số liệu đã chốt")
+    }.joinToString(" · ")
+
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(20.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.5.dp)
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+            verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
-            Text(
-                text = "Tổng hợp Kết quả: ${snapshot.templateName}",
-                style = MaterialTheme.typography.titleMedium
-            )
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(
+                    text = snapshot.templateName.ifBlank { "Báo cáo định kỳ" },
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+                if (scopeDescription.isNotBlank()) {
+                    Text(
+                        text = scopeDescription,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+
+            // Highlight Banner: Tiến độ nộp báo cáo (single-line percentage, clear Vietnamese)
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(14.dp))
-                    .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f))
-                    .padding(14.dp),
+                    .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f))
+                    .padding(horizontal = 14.dp, vertical = 12.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Column {
-                    Text("Tỷ lệ hoàn thành nghĩa vụ", style = MaterialTheme.typography.labelMedium)
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(end = 12.dp),
+                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
                     Text(
-                        "${snapshot.submittedCount} / ${snapshot.totalObligations} nghĩa vụ đã hoàn thành (đúng hạn: ${snapshot.approvedCount})",
-                        style = MaterialTheme.typography.bodySmall
+                        text = "Tiến độ nộp báo cáo",
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer
+                    )
+                    Text(
+                        text = "Đã hoàn thành ${snapshot.submittedCount} / ${snapshot.totalObligations} lượt báo cáo được giao",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.85f)
                     )
                 }
                 Text(
-                    snapshot.complianceRatePct?.let { "${it}%" } ?: "—",
-                    style = MaterialTheme.typography.headlineMedium,
+                    text = WorkReportsContract.formatPercentVi(snapshot.complianceRatePct),
+                    style = MaterialTheme.typography.headlineSmall,
                     fontFamily = JetBrainsMono,
                     fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.primary
+                    color = MaterialTheme.colorScheme.primary,
+                    maxLines = 1,
+                    softWrap = false
                 )
+            }
+
+            // Clear 6-tile KPI Grid synced with App BI
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    ComplianceStatTile(
+                        label = "Phải nộp",
+                        value = snapshot.totalObligations.toString(),
+                        modifier = Modifier.weight(1f)
+                    )
+                    ComplianceStatTile(
+                        label = "Đã hoàn thành",
+                        value = snapshot.submittedCount.toString(),
+                        accentColor = SemanticColors.SuccessLight,
+                        modifier = Modifier.weight(1f)
+                    )
+                    ComplianceStatTile(
+                        label = "Đúng hạn",
+                        value = snapshot.approvedCount.toString(),
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    ComplianceStatTile(
+                        label = "Quá hạn chưa nộp",
+                        value = snapshot.overdueMissingCount.toString(),
+                        accentColor = if (snapshot.overdueMissingCount > 0) SemanticColors.ErrorLight else null,
+                        modifier = Modifier.weight(1f)
+                    )
+                    ComplianceStatTile(
+                        label = "Chờ duyệt",
+                        value = snapshot.pendingReviewCount.toString(),
+                        accentColor = if (snapshot.pendingReviewCount > 0) SemanticColors.RunningLight else null,
+                        modifier = Modifier.weight(1f)
+                    )
+                    ComplianceStatTile(
+                        label = "Nộp muộn",
+                        value = snapshot.lateSubmittedCount.toString(),
+                        accentColor = if (snapshot.lateSubmittedCount > 0) SemanticColors.WarningLight else null,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
             }
 
             if (snapshot.metrics.isNotEmpty()) {
                 HorizontalDivider()
-                Text("Chỉ số tổng hợp", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
-                snapshot.metrics.forEach { metric ->
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Text(metric.label, style = MaterialTheme.typography.bodyMedium)
-                        Text(
-                            metric.valueDisplay,
-                            style = MaterialTheme.typography.bodyMedium,
-                            fontFamily = JetBrainsMono,
-                            fontWeight = FontWeight.Bold
-                        )
+                Text(
+                    text = "Chỉ tiêu công việc tổng hợp",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold
+                )
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    snapshot.metrics.forEach { metric ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f))
+                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .padding(end = 10.dp),
+                                verticalArrangement = Arrangement.spacedBy(2.dp)
+                            ) {
+                                Text(
+                                    text = metric.label,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.Medium
+                                )
+                                metric.subtitleDisplay?.let { sub ->
+                                    Text(
+                                        text = sub,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                            Text(
+                                text = metric.valueDisplay,
+                                style = MaterialTheme.typography.titleMedium,
+                                fontFamily = JetBrainsMono,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary,
+                                maxLines = 1,
+                                softWrap = false
+                            )
+                        }
                     }
                 }
             }
 
             if (snapshot.breakdownRows.isNotEmpty()) {
                 HorizontalDivider()
-                Text("Phân rã theo nhóm", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
-                snapshot.breakdownRows.forEach { row ->
-                    val pctText = row.complianceRatePct?.let { " ($it%)" } ?: ""
-                    Text(
-                        text = "• ${row.groupLabel}: ${row.submittedCount}/${row.obligationCount} báo cáo$pctText",
-                        style = MaterialTheme.typography.bodySmall
-                    )
+                val breakdownTitle = when (snapshot.groupBy) {
+                    "assignee" -> "Chi tiết theo nhân viên"
+                    "period" -> "Chi tiết theo kỳ báo cáo"
+                    else -> "Chi tiết theo nhóm"
+                }
+                Text(
+                    text = breakdownTitle,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold
+                )
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    snapshot.breakdownRows.forEach { row ->
+                        val displayLabel = if (snapshot.groupBy == "period") {
+                            WorkReportsContract.formatPeriodKeyVi(row.groupLabel)
+                        } else {
+                            row.groupLabel
+                        }
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .border(
+                                    width = 1.dp,
+                                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f),
+                                    shape = RoundedCornerShape(12.dp)
+                                )
+                                .padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = displayLabel,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.SemiBold,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .padding(end = 8.dp)
+                                )
+                                Text(
+                                    text = WorkReportsContract.formatPercentVi(row.complianceRatePct),
+                                    style = MaterialTheme.typography.labelLarge,
+                                    fontFamily = JetBrainsMono,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.primary,
+                                    maxLines = 1,
+                                    softWrap = false
+                                )
+                            }
+                            val countsInfo = buildString {
+                                append("Đã hoàn thành ${row.submittedCount} / ${row.obligationCount} phải nộp")
+                                if (row.overdueMissingCount > 0) {
+                                    append(" · Quá hạn ${row.overdueMissingCount}")
+                                }
+                            }
+                            Text(
+                                text = countsInfo,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = if (row.overdueMissingCount > 0)
+                                    SemanticColors.ErrorLight
+                                else
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            if (row.metricsSummary.isNotEmpty()) {
+                                Text(
+                                    text = row.metricsSummary.joinToString(" · "),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
                 }
             }
 
             if (snapshot.contributions.isNotEmpty()) {
                 HorizontalDivider()
-                Text("Đóng góp báo cáo gần nhất", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
-                snapshot.contributions.take(10).forEach { contrib ->
-                    Text(
-                        text = "• ${contrib.assigneeDisplayName} · Kỳ ${contrib.periodKey} · ${contrib.submissionState}",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                Text(
+                    text = "Báo cáo đã nộp gần đây",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold
+                )
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    snapshot.contributions.take(10).forEach { contrib ->
+                        val stateColor = submissionStateColor(contrib.submissionState)
+                        val stateLabel = WorkReportsContract.submissionStateDisplayLabel(contrib.submissionState) +
+                            if (contrib.isLate) " · Muộn" else ""
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.28f))
+                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .padding(end = 8.dp),
+                                verticalArrangement = Arrangement.spacedBy(2.dp)
+                            ) {
+                                val teamPart = contrib.teamDisplayName?.takeIf { it.isNotBlank() }?.let { " · $it" }.orEmpty()
+                                Text(
+                                    text = "${contrib.assigneeDisplayName}$teamPart",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                val submittedPart = contrib.submittedAt?.let {
+                                    " · Nộp ${WorkReportsContract.formatIsoDateTimeVi(it)}"
+                                }.orEmpty()
+                                Text(
+                                    text = "Kỳ ${WorkReportsContract.formatPeriodKeyVi(contrib.periodKey)}$submittedPart",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            Surface(
+                                shape = RoundedCornerShape(6.dp),
+                                color = stateColor.copy(alpha = 0.14f)
+                            ) {
+                                Text(
+                                    text = stateLabel,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Medium,
+                                    color = stateColor,
+                                    maxLines = 1,
+                                    softWrap = false,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                                )
+                            }
+                        }
+                    }
                 }
             }
         }
     }
+}
+
+@Composable
+private fun ComplianceStatTile(
+    label: String,
+    value: String,
+    modifier: Modifier = Modifier,
+    accentColor: Color? = null
+) {
+    Column(
+        modifier = modifier
+            .clip(RoundedCornerShape(12.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f))
+            .padding(horizontal = 10.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(2.dp)
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+        Text(
+            text = value,
+            style = MaterialTheme.typography.titleMedium,
+            fontFamily = JetBrainsMono,
+            fontWeight = FontWeight.Bold,
+            color = accentColor ?: MaterialTheme.colorScheme.onSurface,
+            maxLines = 1,
+            softWrap = false
+        )
+    }
+}
+
+private fun submissionStateColor(stateCode: String): Color = when (stateCode.trim().uppercase()) {
+    "APPROVED", "COMPLETED" -> SemanticColors.SuccessLight
+    "PENDING_REVIEW", "SUBMITTED" -> SemanticColors.RunningLight
+    "REJECTED" -> SemanticColors.ErrorLight
+    else -> SemanticColors.WarningLight
 }
 
 @Composable

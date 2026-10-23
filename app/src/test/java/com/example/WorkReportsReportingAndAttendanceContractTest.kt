@@ -9,9 +9,11 @@ import com.example.data.AttendanceContract
 import com.example.data.AttendanceOutboxService
 import com.example.data.AttendanceOutboxStatus
 import com.example.data.BackendApiException
+import com.example.data.CatalogRecruiterOption
 import com.example.data.MiniBiDatabase
 import com.example.data.MiniBiRepository
 import com.example.data.WorkReportsContract
+import com.example.data.WorkerProfileEntity
 import kotlinx.coroutines.runBlocking
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
@@ -262,6 +264,157 @@ class WorkReportsReportingAndAttendanceContractTest {
         assertEquals("unknown", WorkReportsContract.encodeTeamBucketKey("unknown"))
     }
 
+    @Test
+    fun `item 15b - work report analytics preserves 0-to-100 completion_rate without 100x bug and never exposes raw uuid title`() = runBlocking {
+        val repo = createRepository()
+        val templateId = "f13f8d6d-1111-4222-8333-444455556666"
+
+        val overviewBody = """
+            {
+              "ok": true,
+              "data": {
+                "as_of": "2026-10-23T10:00:00Z",
+                "effective_scope": {"kind": "team", "label": "Team 1"},
+                "compliance": {
+                  "due_count": 7,
+                  "completed_count": 1,
+                  "on_time_count": 1,
+                  "late_submitted_count": 0,
+                  "pending_due_count": 4,
+                  "overdue_missing_count": 2,
+                  "exempted_count": 0,
+                  "pending_review_count": 1,
+                  "completion_rate": 14.29
+                },
+                "metrics": [
+                  {
+                    "metric_key": "calls_made",
+                    "label": "Số cuộc gọi",
+                    "unit": "cuộc",
+                    "compatible_group": "integer",
+                    "sum_value": 35,
+                    "avg_value": 35,
+                    "min_value": 35,
+                    "max_value": 35,
+                    "count_valid": 1,
+                    "missing_value_count": 0
+                  }
+                ]
+              }
+            }
+        """.trimIndent()
+        val breakdownBody = """
+            {
+              "ok": true,
+              "data": {
+                "as_of": "2026-10-23T10:00:00Z",
+                "effective_scope": {"kind": "team", "label": "Team 1"},
+                "group_by": "team",
+                "page": 1,
+                "page_size": 50,
+                "total_groups": 1,
+                "items": [
+                  {
+                    "group_id": "aaaa1111-bbbb-4222-8333-cccc44445555",
+                    "group_label": "Team 1",
+                    "due_count": 7,
+                    "completed_count": 1,
+                    "on_time_count": 1,
+                    "late_submitted_count": 0,
+                    "pending_due_count": 4,
+                    "overdue_missing_count": 2,
+                    "exempted_count": 0,
+                    "pending_review_count": 1,
+                    "completion_rate": 14.29,
+                    "metrics": [
+                      {
+                        "metric_key": "calls_made",
+                        "label": "Số cuộc gọi",
+                        "unit": "cuộc",
+                        "compatible_group": "integer",
+                        "sum_value": 35,
+                        "avg_value": 35,
+                        "min_value": 35,
+                        "max_value": 35,
+                        "count_valid": 1,
+                        "missing_value_count": 0
+                      }
+                    ]
+                  }
+                ]
+              }
+            }
+        """.trimIndent()
+        val contribBody = """
+            {
+              "ok": true,
+              "data": {
+                "as_of": "2026-10-23T10:00:00Z",
+                "effective_scope": {"kind": "team", "label": "Team 1"},
+                "next_cursor": null,
+                "items": [
+                  {
+                    "obligation_id": "bbbb1111-cccc-4222-8333-dddd44445555",
+                    "submission_id": "cccc1111-dddd-4222-8333-eeee44445555",
+                    "revision_no": 1,
+                    "assignee_app_user_id": "11111111-2222-4333-8444-555555555555",
+                    "assignee_display_name": "Nguyễn Thị Vinh",
+                    "snapshot_team_id": null,
+                    "team_display_name": "Team 1",
+                    "period_key": "2026-10-23",
+                    "state": "APPROVED",
+                    "submitted_at": "2026-10-23T09:30:00Z",
+                    "is_late": false,
+                    "has_post_deadline_amendment": false,
+                    "metric_contribution_value": null
+                  }
+                ]
+              }
+            }
+        """.trimIndent()
+
+        // 1. With known templateNameHint -> exact human-readable name & 14.29% (never 1429.0%!)
+        server.enqueue(MockResponse().setResponseCode(200).setBody(overviewBody))
+        server.enqueue(MockResponse().setResponseCode(200).setBody(breakdownBody))
+        server.enqueue(MockResponse().setResponseCode(200).setBody(contribBody))
+
+        val snapNamed = repo.workReportsAndReportingService.fetchAnalyticsSnapshot(
+            templateId = templateId,
+            templateNameHint = "Báo cáo công việc hằng ngày",
+            groupBy = "team",
+            finality = "final"
+        )
+        assertEquals("Báo cáo công việc hằng ngày", snapNamed.templateName)
+        assertEquals("Team 1", snapNamed.scopeLabel)
+        assertEquals(7, snapNamed.totalObligations)
+        assertEquals(1, snapNamed.submittedCount)
+        assertEquals(1, snapNamed.approvedCount)
+        assertEquals(2, snapNamed.overdueMissingCount)
+        assertEquals(1, snapNamed.pendingReviewCount)
+        assertEquals(14.29f, snapNamed.complianceRatePct!!, 0.01f)
+        assertEquals("14,29%", WorkReportsContract.formatPercentVi(snapNamed.complianceRatePct))
+        assertEquals(14.29f, snapNamed.breakdownRows.first().complianceRatePct!!, 0.01f)
+        assertEquals(listOf("Số cuộc gọi: 35 cuộc"), snapNamed.breakdownRows.first().metricsSummary)
+
+        // 2. Even if templateNameHint is empty, fallback must be human Vietnamese ("Báo cáo định kỳ"), NEVER "Mẫu f13f8d6d"
+        server.enqueue(MockResponse().setResponseCode(200).setBody(overviewBody))
+        server.enqueue(MockResponse().setResponseCode(200).setBody(breakdownBody))
+        server.enqueue(MockResponse().setResponseCode(200).setBody(contribBody))
+
+        val snapUnnamed = repo.workReportsAndReportingService.fetchAnalyticsSnapshot(
+            templateId = templateId,
+            templateNameHint = ""
+        )
+        assertEquals("Báo cáo định kỳ", snapUnnamed.templateName)
+        assertFalse(snapUnnamed.templateName.contains("f13f8d6d"))
+
+        // 3. Vietnamese display formatters
+        assertEquals("Đã duyệt", WorkReportsContract.submissionStateDisplayLabel("APPROVED"))
+        assertEquals("Chờ duyệt", WorkReportsContract.submissionStateDisplayLabel("PENDING_REVIEW"))
+        assertEquals("23/10/2026", WorkReportsContract.formatPeriodKeyVi("2026-10-23"))
+        assertEquals("16:30 23/10/2026", WorkReportsContract.formatIsoDateTimeVi("2026-10-23T09:30:00Z"))
+    }
+
     // -------------------------------------------------------------------------
     // Item 16: Attendance giữ nguyên idempotency key qua retry và không tạo SHA giả
     // -------------------------------------------------------------------------
@@ -495,5 +648,181 @@ class WorkReportsReportingAndAttendanceContractTest {
         // Only the 2 retryable records (offline QUEUED + network drop RETRYABLE_ERROR) are in retryable outbox!
         val retryableIds = database.miniBiDao().getRetryableAttendanceOutbox().map { it.id }.toSet()
         assertEquals(setOf(offlineOutcome.record.id, netDropOutcome.record.id), retryableIds)
+    }
+
+    @Test
+    fun `web bi reporting summary and team report aggregates align with server contract`() = runBlocking {
+        // 1. Pure hiring-day summary matches Web BI p1-dashboard-summary.ts
+        val daySummary = WorkReportsContract.computeHiringDaySummary(
+            byDateCounts = mapOf(
+                "2026-10-12" to 4,
+                "2026-10-10" to 4,
+                "2026-10-11" to 1,
+                "2026-10-09" to 0
+            ),
+            totalCount = 9
+        )
+        assertEquals(3, daySummary.activeHiringDays)
+        assertEquals(3.0f, daySummary.avgPerActiveDay!!, 0.01f)
+        assertEquals(4, daySummary.peakDailyCount)
+        assertEquals("2026-10-10", daySummary.peakDateIso) // earliest date wins tie
+
+        // 2. fetchTeamReport parses full Web BI report aggregates + detail rows
+        val repo = createRepository()
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "application/json")
+                .setBody(
+                    """
+                    {
+                      "bucket": {
+                        "key": "team.VEVBTV8wMQ",
+                        "display": "Nhóm Tuyển dụng Miền Bắc"
+                      },
+                      "report": {
+                        "recruitedTotal": 5,
+                        "byRecruiter": {
+                          "rec.1": {"key": "rec.1", "display": "Nguyễn Văn Tuyển", "recruitedCount": 3},
+                          "rec.2": {"key": "rec.2", "display": "Lê Thị Tuyển", "recruitedCount": 2}
+                        },
+                        "byProject": {
+                          "prj.1": {"key": "prj.1", "display": "Luxshare Bắc Giang", "recruitedCount": 5}
+                        },
+                        "byEmployment": {
+                          "emp.tv": {"key": "emp.tv", "display": "Thời vụ", "recruitedCount": 4},
+                          "emp.ct": {"key": "emp.ct", "display": "Chính thức", "recruitedCount": 1}
+                        },
+                        "byProvider": {
+                          "prv.hrp": {"key": "prv.hrp", "display": "HRP", "recruitedCount": 5}
+                        },
+                        "byDate": {
+                          "2026-10-20": 3,
+                          "2026-10-21": 2
+                        }
+                      },
+                      "detail": {
+                        "total": 5,
+                        "rows": [
+                          {
+                            "businessDate": "2026-10-21",
+                            "projectDisplay": "Luxshare Bắc Giang",
+                            "recruiterDisplay": "Nguyễn Văn Tuyển",
+                            "providerTypeDisplay": "HRP",
+                            "employmentTypeDisplay": "Thời vụ",
+                            "recruitedCount": 2,
+                            "firstWorkDate": "2026-10-21"
+                          }
+                        ],
+                        "nextCursor": null
+                      }
+                    }
+                    """.trimIndent()
+                )
+        )
+
+        val snap = repo.workReportsAndReportingService.fetchTeamReport("TEAM_01")
+        assertEquals("Nhóm Tuyển dụng Miền Bắc", snap.bucketDisplay)
+        assertEquals(5, snap.totalRecruited)
+        assertEquals(2, snap.activeRecruiterCount)
+        assertEquals(1, snap.activeProjectCount)
+        assertEquals(2, snap.activeHiringDays)
+        assertEquals(2.5f, snap.avgPerActiveDay!!, 0.01f)
+        assertEquals(3, snap.peakDailyCount)
+        assertEquals("2026-10-20", snap.peakDateIso)
+        assertEquals(2, snap.byRecruiter.size)
+        assertEquals("Nguyễn Văn Tuyển", snap.byRecruiter.first().display)
+        assertEquals(60.0f, snap.byRecruiter.first().sharePct, 0.01f)
+        assertEquals(2, snap.byEmployment.size)
+        assertEquals(1, snap.byProvider.size)
+
+        // 3. buildTeamReportFromWorkerRows builds Web-BI team report from server-authorized scope=team rows
+        val catalogMap = mapOf(
+            "rec_a" to CatalogRecruiterOption(
+                recruiterId = "rec_a",
+                displayName = "Vinh NT",
+                personnelCode = "HRP01",
+                providerType = "hrp",
+                vendorId = null,
+                teamId = "11111111-2222-4333-8444-555555555555",
+                teamDisplayName = "Team Vinh",
+                label = "Vinh NT (HRP01)"
+            ),
+            "rec_b" to CatalogRecruiterOption(
+                recruiterId = "rec_b",
+                displayName = "Vendor Cộng Tác",
+                personnelCode = "VND02",
+                providerType = "vendor",
+                vendorId = "vnd_1",
+                teamId = "11111111-2222-4333-8444-555555555555",
+                teamDisplayName = "Team Vinh",
+                label = "Vendor Cộng Tác (VND02)"
+            )
+        )
+        val workerRows = listOf(
+            WorkerProfileEntity(
+                cacheKey = "team:e1",
+                scopeKey = "team",
+                entryId = "e1",
+                entryVersion = 1,
+                submissionState = "SUBMITTED",
+                employeeCode = "HRP1001",
+                displayName = "Công Nhân 1",
+                projectId = "p1",
+                projectDisplay = "Goertek Bắc Ninh",
+                firstWorkDate = "2026-10-15",
+                laborType = "SEASONAL",
+                laborTypeDisplay = "Thời vụ",
+                employmentStatus = "ON",
+                recruiterId = "rec_a",
+                recruiterDisplay = "Vinh NT",
+                paymentSummary = "",
+                pendingRequestSummary = "",
+                lastDecisionSummary = "",
+                isProjectManager = false,
+                canView = true,
+                canProposeChange = true,
+                canDirectEdit = false
+            ),
+            WorkerProfileEntity(
+                cacheKey = "team:e2",
+                scopeKey = "team",
+                entryId = "e2",
+                entryVersion = 1,
+                submissionState = "SUBMITTED",
+                employeeCode = "HRP1002",
+                displayName = "Công Nhân 2",
+                projectId = "p1",
+                projectDisplay = "Goertek Bắc Ninh",
+                firstWorkDate = "2026-10-15",
+                laborType = "OFFICIAL",
+                laborTypeDisplay = "Chính thức",
+                employmentStatus = "OFF",
+                recruiterId = "rec_b",
+                recruiterDisplay = "Vendor Cộng Tác",
+                paymentSummary = "",
+                pendingRequestSummary = "",
+                lastDecisionSummary = "",
+                isProjectManager = false,
+                canView = true,
+                canProposeChange = false,
+                canDirectEdit = false
+            )
+        )
+        val built = WorkReportsContract.buildTeamReportFromWorkerRows(
+            bucketKey = "grant:11111111-2222-4333-8444-555555555555",
+            bucketDisplay = "Team Vinh",
+            rows = workerRows,
+            recruiterCatalogById = catalogMap
+        )
+        assertEquals(2, built.totalRecruited)
+        assertEquals(1, built.workingCount)
+        assertEquals(0, built.waitingCount)
+        assertEquals(1, built.leftCount)
+        assertEquals(2, built.activeRecruiterCount)
+        assertEquals(1, built.activeProjectCount)
+        assertEquals(1, built.activeHiringDays)
+        assertEquals(2.0f, built.avgPerActiveDay!!, 0.01f)
+        assertEquals(2, built.byProvider.size)
     }
 }

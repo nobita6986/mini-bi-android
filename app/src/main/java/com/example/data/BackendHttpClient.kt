@@ -2,6 +2,9 @@ package com.example.data
 
 import android.content.Context
 import coil.ImageLoader
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import okhttp3.CookieJar
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
@@ -13,6 +16,8 @@ import okhttp3.RequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 import java.io.IOException
+import java.io.InterruptedIOException
+import java.net.SocketTimeoutException
 import java.util.concurrent.TimeUnit
 
 class BackendHttpClient(
@@ -25,6 +30,22 @@ class BackendHttpClient(
     companion object {
         private val MUTATION_METHODS = setOf("POST", "PUT", "PATCH", "DELETE")
         val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
+
+        private val DIRECT_ENTRY_CODE_MESSAGES = mapOf(
+            "WORKER_ACTIVE_EPISODE_EXISTS" to "CCCD đã có hồ sơ làm việc đang hoạt động. Hãy kết thúc hồ sơ cũ trước khi tạo đợt làm việc mới.",
+            "WORKER_EPISODE_REOPEN_FORBIDDEN" to "Không thể mở lại hồ sơ đã kết thúc. Hãy tạo một đợt làm việc mới.",
+            "DUPLICATE_CCCD_CONFIRMATION_REQUIRED" to "Phát hiện CCCD đã tồn tại trên hệ thống. Vui lòng kiểm tra và xác nhận gửi chính thức.",
+            "PORTRAIT_PROMOTION_PENDING" to "Tệp đính kèm đang được máy chủ đồng bộ hoàn tất. Hãy bấm Lưu lại một lần nữa (không tạo trùng hồ sơ).",
+            "NATIONAL_ID_DUPLICATE" to "Số CCCD/CMND bị trùng trong cùng nhóm dòng nhập.",
+            "NATIONAL_ID_INVALID" to "Số CCCD/CMND phải gồm đúng 9 hoặc 12 chữ số.",
+            "RECRUITER_MEMBERSHIP_INVALID" to "Người tuyển chưa có nhóm/nguồn tuyển hợp lệ cho ngày bắt đầu làm việc.",
+            "PROJECT_NOT_ACTIVE" to "Dự án đã chọn không còn hoạt động trong danh mục máy chủ.",
+            "RECRUITER_NOT_ACTIVE" to "Người tuyển đã chọn không còn hoạt động trong danh mục máy chủ.",
+            "BANK_NOT_ACTIVE" to "Ngân hàng đã chọn không còn hoạt động trong danh mục máy chủ.",
+            "OFF_REQUIRES_DATE_AND_REASON" to "Trạng thái Đã nghỉ bắt buộc có ngày nghỉ và lý do nghỉ việc.",
+            "GENDER_VOCABULARY_INVALID" to "Giới tính không thuộc danh mục cho phép.",
+            "BATCH_INVALID" to "Máy chủ từ chối dữ liệu hồ sơ. Vui lòng kiểm tra lại các trường bắt buộc và danh mục."
+        )
 
         fun extractOrigin(httpUrl: HttpUrl): String {
             val defaultPort = HttpUrl.defaultPort(httpUrl.scheme)
@@ -83,6 +104,7 @@ class BackendHttpClient(
             backendCode: String?,
             backendMessage: String? = null
         ): BackendApiException {
+            val knownBusinessMsg = backendCode?.let { DIRECT_ENTRY_CODE_MESSAGES[it] }
             return when {
                 statusCode == 401 -> BackendApiException(
                     kind = BackendFailureKind.UNAUTHENTICATED,
@@ -100,7 +122,8 @@ class BackendHttpClient(
                     message = when (backendCode) {
                         "ACCOUNT_NOT_AVAILABLE" -> "Tài khoản hiện không khả dụng trên hệ thống."
                         "CSRF_REJECTED" -> "Yêu cầu bị từ chối do nguồn gửi (Origin) không hợp lệ."
-                        else -> backendMessage?.takeIf { it.isNotBlank() }
+                        else -> knownBusinessMsg
+                            ?: backendMessage?.takeIf { it.isNotBlank() }
                             ?: "Tài khoản không khả dụng hoặc không có quyền thực hiện thao tác này."
                     }
                 )
@@ -108,21 +131,24 @@ class BackendHttpClient(
                     kind = BackendFailureKind.NOT_FOUND,
                     statusCode = 404,
                     backendCode = backendCode ?: "NOT_FOUND",
-                    message = backendMessage?.takeIf { it.isNotBlank() }
+                    message = knownBusinessMsg
+                        ?: backendMessage?.takeIf { it.isNotBlank() }
                         ?: "Chức năng hoặc dữ liệu không tồn tại trên máy chủ."
                 )
                 statusCode == 409 -> BackendApiException(
                     kind = BackendFailureKind.CONFLICT,
                     statusCode = 409,
                     backendCode = backendCode ?: "VERSION_CONFLICT",
-                    message = backendMessage?.takeIf { it.isNotBlank() }
+                    message = knownBusinessMsg
+                        ?: backendMessage?.takeIf { it.isNotBlank() }
                         ?: "Dữ liệu đã thay đổi trên máy chủ (xung đột phiên bản). Vui lòng tải lại."
                 )
                 statusCode == 422 -> BackendApiException(
                     kind = BackendFailureKind.VALIDATION,
                     statusCode = 422,
                     backendCode = backendCode ?: "VALIDATION_FAILED",
-                    message = backendMessage?.takeIf { it.isNotBlank() }
+                    message = knownBusinessMsg
+                        ?: backendMessage?.takeIf { it.isNotBlank() }
                         ?: "Dữ liệu gửi lên không thỏa điều kiện nghiệp vụ."
                 )
                 statusCode == 429 -> BackendApiException(
@@ -135,13 +161,15 @@ class BackendHttpClient(
                     kind = BackendFailureKind.SERVER_UNAVAILABLE,
                     statusCode = statusCode,
                     backendCode = backendCode ?: "SERVER_UNAVAILABLE",
-                    message = "Máy chủ tạm thời không khả dụng. Vui lòng thử lại sau."
+                    message = knownBusinessMsg
+                        ?: "Máy chủ tạm thời không khả dụng. Vui lòng thử lại sau."
                 )
                 else -> BackendApiException(
                     kind = BackendFailureKind.INVALID_REQUEST,
                     statusCode = statusCode,
                     backendCode = backendCode ?: "REQUEST_INVALID",
-                    message = backendMessage?.takeIf { it.isNotBlank() }
+                    message = knownBusinessMsg
+                        ?: backendMessage?.takeIf { it.isNotBlank() }
                         ?: "Yêu cầu không hợp lệ (${backendCode ?: statusCode})."
                 )
             }
@@ -162,12 +190,21 @@ class BackendHttpClient(
         chain.proceed(builder.build())
     }
 
+    // Read/write timeouts allow multi-document R2 staging + sequential server-side promotion on full-profile batches
     val okHttpClient: OkHttpClient = OkHttpClient.Builder()
-        .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(20, TimeUnit.SECONDS)
-        .writeTimeout(25, TimeUnit.SECONDS)
+        .connectTimeout(20, TimeUnit.SECONDS)
+        .readTimeout(90, TimeUnit.SECONDS)
+        .writeTimeout(90, TimeUnit.SECONDS)
         .cookieJar(cookieJar)
         .addInterceptor(securityAndOriginInterceptor)
+        .build()
+
+    // Dedicated cookie-free, Origin-free client for presigned R2 object storage PUT uploads
+    private val externalStorageHttpClient: OkHttpClient = OkHttpClient.Builder()
+        .connectTimeout(20, TimeUnit.SECONDS)
+        .readTimeout(60, TimeUnit.SECONDS)
+        .writeTimeout(60, TimeUnit.SECONDS)
+        .cookieJar(CookieJar.NO_COOKIES)
         .build()
 
     fun createImageLoader(context: Context): ImageLoader {
@@ -279,11 +316,79 @@ class BackendHttpClient(
         return executeBinary(request)
     }
 
+    suspend fun putBinaryToSignedUrl(
+        signedUrl: String,
+        headers: Map<String, String>,
+        bytes: ByteArray,
+        fallbackMimeType: String
+    ) = withContext(Dispatchers.IO) {
+        val parsedUrl = signedUrl.trim().toHttpUrlOrNull() ?: throw BackendApiException(
+            kind = BackendFailureKind.CONTRACT_INVALID,
+            statusCode = null,
+            backendCode = "SIGNED_UPLOAD_URL_INVALID",
+            message = "Đường dẫn tải tệp lên kho lưu trữ không hợp lệ."
+        )
+        if (!allowCleartextHttp && parsedUrl.scheme != "https") {
+            throw BackendApiException(
+                kind = BackendFailureKind.INVALID_REQUEST,
+                statusCode = null,
+                backendCode = "HTTPS_REQUIRED",
+                message = "Bản phát hành chính thức chỉ cho phép kết nối HTTPS bảo mật."
+            )
+        }
+        val contentTypeHeader = headers.entries
+            .firstOrNull { it.key.equals("Content-Type", ignoreCase = true) }
+            ?.value
+            ?.takeIf { it.isNotBlank() }
+            ?: fallbackMimeType
+
+        val builder = Request.Builder()
+            .url(parsedUrl)
+            .put(bytes.toRequestBody(contentTypeHeader.toMediaType()))
+        headers.forEach { (k, v) ->
+            if (k.isNotBlank()) {
+                builder.header(k, v)
+            }
+        }
+        try {
+            externalStorageHttpClient.newCall(builder.build()).execute().use { response ->
+                if (!response.isSuccessful) {
+                    throw BackendApiException(
+                        kind = BackendFailureKind.SERVER_UNAVAILABLE,
+                        statusCode = response.code,
+                        backendCode = "SIGNED_UPLOAD_PUT_FAILED",
+                        message = "Tải ảnh/giấy tờ lên kho lưu trữ thất bại (HTTP ${response.code})."
+                    )
+                }
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: BackendApiException) {
+            throw e
+        } catch (e: SocketTimeoutException) {
+            throw BackendApiException(
+                kind = BackendFailureKind.NETWORK,
+                statusCode = null,
+                backendCode = "NETWORK_TIMEOUT",
+                message = "Tải ảnh/giấy tờ quá thời gian chờ mạng.",
+                cause = e
+            )
+        } catch (e: IOException) {
+            throw BackendApiException(
+                kind = BackendFailureKind.NETWORK,
+                statusCode = null,
+                backendCode = "NETWORK_ERROR",
+                message = "Mất kết nối mạng khi tải ảnh/giấy tờ đính kèm.",
+                cause = e
+            )
+        }
+    }
+
     suspend fun executeJson(
         request: Request,
         requireOkTrue: Boolean = true,
         clearSessionOn401: Boolean = true
-    ): JSONObject {
+    ): JSONObject = withContext(Dispatchers.IO) {
         try {
             okHttpClient.newCall(request).execute().use { response ->
                 val bodyStr = response.body?.string().orEmpty()
@@ -315,10 +420,28 @@ class BackendHttpClient(
                         message = "Máy chủ trả dữ liệu thiếu cờ xác nhận hợp lệ."
                     )
                 }
-                return parsed
+                parsed
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: BackendApiException) {
             throw e
+        } catch (e: SocketTimeoutException) {
+            throw BackendApiException(
+                kind = BackendFailureKind.NETWORK,
+                statusCode = null,
+                backendCode = "NETWORK_TIMEOUT",
+                message = "Máy chủ xử lý quá thời gian chờ. Vui lòng bấm gửi lại (hệ thống tự chống tạo trùng).",
+                cause = e
+            )
+        } catch (e: InterruptedIOException) {
+            throw BackendApiException(
+                kind = BackendFailureKind.NETWORK,
+                statusCode = null,
+                backendCode = "NETWORK_TIMEOUT",
+                message = "Máy chủ xử lý quá thời gian chờ. Vui lòng bấm gửi lại (hệ thống tự chống tạo trùng).",
+                cause = e
+            )
         } catch (e: IOException) {
             if (e.message == "HTTPS_REQUIRED") {
                 throw BackendApiException(
@@ -339,7 +462,7 @@ class BackendHttpClient(
         }
     }
 
-    private suspend fun executeNoContent(request: Request) {
+    private suspend fun executeNoContent(request: Request) = withContext(Dispatchers.IO) {
         try {
             okHttpClient.newCall(request).execute().use { response ->
                 val bodyStr = response.body?.string().orEmpty()
@@ -350,8 +473,18 @@ class BackendHttpClient(
                     throw mapHttpError(response.code, code, msg)
                 }
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: BackendApiException) {
             throw e
+        } catch (e: SocketTimeoutException) {
+            throw BackendApiException(
+                kind = BackendFailureKind.NETWORK,
+                statusCode = null,
+                backendCode = "NETWORK_TIMEOUT",
+                message = "Máy chủ xử lý quá thời gian chờ. Vui lòng thử lại.",
+                cause = e
+            )
         } catch (e: IOException) {
             throw BackendApiException(
                 kind = BackendFailureKind.NETWORK,
@@ -363,7 +496,7 @@ class BackendHttpClient(
         }
     }
 
-    private suspend fun executeBinary(request: Request): Pair<ByteArray, String?> {
+    private suspend fun executeBinary(request: Request): Pair<ByteArray, String?> = withContext(Dispatchers.IO) {
         try {
             okHttpClient.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) {
@@ -378,10 +511,20 @@ class BackendHttpClient(
                 }
                 val bytes = response.body?.bytes() ?: ByteArray(0)
                 val contentType = response.header("Content-Type")
-                return bytes to contentType
+                bytes to contentType
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: BackendApiException) {
             throw e
+        } catch (e: SocketTimeoutException) {
+            throw BackendApiException(
+                kind = BackendFailureKind.NETWORK,
+                statusCode = null,
+                backendCode = "NETWORK_TIMEOUT",
+                message = "Tải tệp quá thời gian chờ. Vui lòng thử lại.",
+                cause = e
+            )
         } catch (e: IOException) {
             throw BackendApiException(
                 kind = BackendFailureKind.NETWORK,

@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -68,8 +69,10 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -543,9 +546,10 @@ fun AttendanceScreen(
                         colors = ButtonDefaults.buttonColors(
                             containerColor = MaterialTheme.colorScheme.primary
                         ),
+                        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(56.dp)
+                            .heightIn(min = 68.dp)
                             .testTag("primary_checkin_camera_button")
                     ) {
                         Icon(
@@ -555,12 +559,14 @@ fun AttendanceScreen(
                         )
                         Spacer(modifier = Modifier.width(10.dp))
                         Text(
-                            text = if (capturedPhotoFile == null)
-                                "BẤM CHẤM CÔNG (Lấy GPS & Chụp Ảnh)"
-                            else
-                                "Chụp lại Ảnh Chấm Công",
-                            style = MaterialTheme.typography.titleSmall,
-                            fontWeight = FontWeight.Bold
+                            text = if (capturedPhotoFile == null) {
+                                "BẤM CHẤM CÔNG\n(Lấy GPS & Chụp Ảnh)"
+                            } else {
+                                "Chụp lại Ảnh Chấm Công"
+                            },
+                            style = MaterialTheme.typography.titleSmall.copy(lineHeight = 21.sp),
+                            fontWeight = FontWeight.Bold,
+                            textAlign = TextAlign.Center
                         )
                     }
 
@@ -665,7 +671,7 @@ fun AttendanceScreen(
                                 ),
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .height(52.dp)
+                                    .heightIn(min = 52.dp)
                                     .testTag("send_attendance_to_backend_button")
                             ) {
                                 if (submitting) {

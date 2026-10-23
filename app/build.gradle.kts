@@ -31,7 +31,7 @@ android {
     val resolvedServerUrl = (project.findProperty("MINI_BI_SERVER_URL") as? String)?.trim()?.takeIf { it.isNotEmpty() }
       ?: System.getenv("MINI_BI_SERVER_URL")?.trim()?.takeIf { it.isNotEmpty() }
       ?: envProps.getProperty("MINI_BI_SERVER_URL")?.trim()?.takeIf { it.isNotEmpty() }
-      ?: "https://bi.hrpartner.vn"
+      ?: "https://bi2.hrpartner.vn"
     buildConfigField("String", "DEFAULT_SERVER_URL", "\"$resolvedServerUrl\"")
   }
 
@@ -76,7 +76,24 @@ android {
     compose = true
     buildConfig = true
   }
-  testOptions { unitTests { isIncludeAndroidResources = true } }
+  testOptions {
+    unitTests {
+      isIncludeAndroidResources = true
+      all { testTask ->
+        testTask.systemProperty(
+          "robolectric.dependency.repo.url",
+          "https://maven-central.storage-download.googleapis.com/maven2"
+        )
+        testTask.testLogging {
+          events("failed")
+          exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
+          showExceptions = true
+          showCauses = true
+          showStackTraces = true
+        }
+      }
+    }
+  }
   dependenciesInfo {
     includeInApk = false
     includeInBundle = true

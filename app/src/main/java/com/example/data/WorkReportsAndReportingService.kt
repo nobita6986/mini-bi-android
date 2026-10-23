@@ -6,7 +6,10 @@ import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.URLEncoder
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
+import java.util.TimeZone
 import kotlin.math.roundToInt
 
 data class DuplicateCccdReportPage(
@@ -68,6 +71,224 @@ object WorkReportsContract {
             Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING
         )
         return "team.$encoded"
+    }
+
+    data class HiringDaySummary(
+        val activeHiringDays: Int,
+        val avgPerActiveDay: Float?,
+        val peakDailyCount: Int?,
+        val peakDateIso: String?
+    )
+
+    fun computeHiringDaySummary(
+        byDateCounts: Map<String, Int>,
+        totalCount: Int
+    ): HiringDaySummary {
+        val activeEntries = byDateCounts.entries.filter { it.key.isNotBlank() && it.value > 0 }
+        if (activeEntries.isEmpty() || totalCount <= 0) {
+            return HiringDaySummary(
+                activeHiringDays = 0,
+                avgPerActiveDay = null,
+                peakDailyCount = null,
+                peakDateIso = null
+            )
+        }
+        val activeDays = activeEntries.size
+        val avg = ((totalCount.toDouble() / activeDays.toDouble()) * 10.0).roundToInt() / 10f
+        val peakCount = activeEntries.maxOf { it.value }
+        val peakDate = activeEntries
+            .filter { it.value == peakCount }
+            .minOfOrNull { it.key }
+        return HiringDaySummary(
+            activeHiringDays = activeDays,
+            avgPerActiveDay = avg,
+            peakDailyCount = peakCount,
+            peakDateIso = peakDate
+        )
+    }
+
+    fun parseReportingBucketRecord(
+        recordObj: JSONObject?,
+        denominator: Int
+    ): List<BiBucketItem> {
+        if (recordObj == null) return emptyList()
+        val items = mutableListOf<BiBucketItem>()
+        val keys = recordObj.keys()
+        while (keys.hasNext()) {
+            val mapKey = keys.next()
+            val bucketObj = recordObj.optJSONObject(mapKey) ?: continue
+            val count = bucketObj.optInt("recruitedCount", 0)
+            if (count <= 0) continue
+            val key = bucketObj.optString("key", mapKey).ifBlank { mapKey }
+            val display = bucketObj.optString("display", key).ifBlank { key }
+            val sharePct = if (denominator > 0) {
+                ((count.toDouble() / denominator.toDouble()) * 1000.0).roundToInt() / 10f
+            } else {
+                0f
+            }
+            items.add(
+                BiBucketItem(
+                    key = key,
+                    display = display,
+                    count = count,
+                    sharePct = sharePct
+                )
+            )
+        }
+        return items.sortedWith(
+            compareByDescending<BiBucketItem> { it.count }
+                .thenBy { it.display }
+        )
+    }
+
+    fun buildBucketsFromKeyLabels(
+        pairs: Iterable<Pair<String, String>>,
+        denominator: Int
+    ): List<BiBucketItem> {
+        val grouped = linkedMapOf<String, Pair<String, Int>>()
+        for ((rawKey, rawLabel) in pairs) {
+            val key = rawKey.trim().ifEmpty { "unknown" }
+            val label = rawLabel.trim().ifEmpty { "Chưa xác định" }
+            val existing = grouped[key]
+            grouped[key] = if (existing == null) {
+                label to 1
+            } else {
+                existing.first to (existing.second + 1)
+            }
+        }
+        return grouped.entries
+            .map { (key, value) ->
+                val count = value.second
+                val sharePct = if (denominator > 0) {
+                    ((count.toDouble() / denominator.toDouble()) * 1000.0).roundToInt() / 10f
+                } else {
+                    0f
+                }
+                BiBucketItem(
+                    key = key,
+                    display = value.first,
+                    count = count,
+                    sharePct = sharePct
+                )
+            }
+            .sortedWith(
+                compareByDescending<BiBucketItem> { it.count }
+                    .thenBy { it.display }
+            )
+    }
+
+    fun buildTeamReportFromWorkerRows(
+        bucketKey: String,
+        bucketDisplay: String,
+        rows: List<WorkerProfileEntity>,
+        recruiterCatalogById: Map<String, CatalogRecruiterOption> = emptyMap(),
+        totalWorkersOverride: Int? = null
+    ): TeamReportSnapshot {
+        val total = maxOf(rows.size, totalWorkersOverride ?: 0)
+        val denominator = rows.size.coerceAtLeast(1)
+
+        val byRecruiter = if (rows.isEmpty()) {
+            emptyList()
+        } else {
+            buildBucketsFromKeyLabels(
+                pairs = rows.map {
+                    it.recruiterId.ifBlank { "unknown" } to it.recruiterDisplay.ifBlank { "Chưa rõ người tuyển" }
+                },
+                denominator = denominator
+            )
+        }
+
+        val byProject = if (rows.isEmpty()) {
+            emptyList()
+        } else {
+            buildBucketsFromKeyLabels(
+                pairs = rows.map {
+                    it.projectId.ifBlank { "unknown" } to it.projectDisplay.ifBlank { "Chưa rõ dự án" }
+                },
+                denominator = denominator
+            )
+        }
+
+        val byEmployment = if (rows.isEmpty()) {
+            emptyList()
+        } else {
+            buildBucketsFromKeyLabels(
+                pairs = rows.map {
+                    it.laborType.ifBlank { "unknown" } to it.laborTypeDisplay.ifBlank { "Loại hình khác" }
+                },
+                denominator = denominator
+            )
+        }
+
+        val byProvider = if (rows.isEmpty() || recruiterCatalogById.isEmpty()) {
+            emptyList()
+        } else {
+            buildBucketsFromKeyLabels(
+                pairs = rows.map { row ->
+                    val providerRaw = recruiterCatalogById[row.recruiterId]?.providerType?.lowercase(Locale.ROOT)
+                    when (providerRaw) {
+                        "hrp" -> "hrp" to "HRP"
+                        "vendor" -> "vendor" to "Vendor"
+                        else -> "unknown" to "Chưa phân loại"
+                    }
+                },
+                denominator = denominator
+            )
+        }
+
+        val byDateCounts = rows
+            .filter { it.firstWorkDate.isNotBlank() }
+            .groupingBy { it.firstWorkDate.trim() }
+            .eachCount()
+        val hiringSummary = computeHiringDaySummary(byDateCounts, rows.size)
+
+        val workingCount = rows.count { it.employmentStatus.equals("ON", ignoreCase = true) }
+        val waitingCount = rows.count { it.employmentStatus.equals("UNCONFIRMED", ignoreCase = true) }
+        val leftCount = rows.count { it.employmentStatus.equals("OFF", ignoreCase = true) }
+
+        val sortedDetailRows = rows
+            .sortedWith(
+                compareByDescending<WorkerProfileEntity> { it.firstWorkDate }
+                    .thenBy { it.recruiterDisplay }
+                    .thenBy { it.entryId }
+            )
+            .map { row ->
+                val providerLabel = when (recruiterCatalogById[row.recruiterId]?.providerType?.lowercase(Locale.ROOT)) {
+                    "hrp" -> "HRP"
+                    "vendor" -> "Vendor"
+                    else -> "HRP"
+                }
+                TeamDrillDownItem(
+                    businessDate = row.firstWorkDate,
+                    projectDisplay = row.projectDisplay,
+                    recruiterDisplay = row.recruiterDisplay,
+                    providerTypeDisplay = providerLabel,
+                    employmentTypeDisplay = row.laborTypeDisplay,
+                    recruitedCount = 1,
+                    firstWorkDate = row.firstWorkDate
+                )
+            }
+
+        return TeamReportSnapshot(
+            bucketKey = bucketKey,
+            bucketDisplay = bucketDisplay.ifBlank { "Nhóm phụ trách" },
+            totalRecruited = total,
+            rows = sortedDetailRows,
+            nextCursor = null,
+            activeRecruiterCount = byRecruiter.count { it.count > 0 },
+            activeProjectCount = byProject.count { it.count > 0 },
+            activeHiringDays = hiringSummary.activeHiringDays,
+            avgPerActiveDay = hiringSummary.avgPerActiveDay,
+            peakDailyCount = hiringSummary.peakDailyCount,
+            peakDateIso = hiringSummary.peakDateIso,
+            workingCount = workingCount,
+            waitingCount = waitingCount,
+            leftCount = leftCount,
+            byRecruiter = byRecruiter,
+            byProject = byProject,
+            byEmployment = byEmployment,
+            byProvider = byProvider
+        )
     }
 
     fun parseDynamicSections(schemaJsonRaw: String): List<WorkReportSectionSpec> {
@@ -442,6 +663,62 @@ object WorkReportsContract {
         "OFF" -> "Đã nghỉ"
         else -> statusCode
     }
+
+    fun submissionStateDisplayLabel(stateCode: String): String = when (stateCode.trim().uppercase(Locale.ROOT)) {
+        "APPROVED" -> "Đã duyệt"
+        "COMPLETED" -> "Hoàn thành"
+        "PENDING_REVIEW", "SUBMITTED" -> "Chờ duyệt"
+        "REJECTED" -> "Cần sửa lại"
+        "DRAFT" -> "Bản nháp"
+        "NOT_STARTED" -> "Chưa làm"
+        "" -> "—"
+        else -> "Đang xử lý"
+    }
+
+    fun formatPercentVi(pct: Float?): String {
+        if (pct == null || pct.isNaN() || pct.isInfinite()) return "—"
+        val rounded = (pct.toDouble() * 100.0).roundToInt() / 100.0
+        val raw = String.format(Locale.US, "%.2f", rounded)
+            .trimEnd('0')
+            .trimEnd('.')
+            .replace('.', ',')
+        return "$raw%"
+    }
+
+    private val ISO_DATE_ONLY_REGEX = Regex("^(\\d{4})-(\\d{2})-(\\d{2})$")
+    private val ISO_MONTH_REGEX = Regex("^(\\d{4})-(\\d{2})$")
+    private val ISO_WEEK_REGEX = Regex("^(\\d{4})-W(\\d{1,2})$", RegexOption.IGNORE_CASE)
+
+    fun formatPeriodKeyVi(periodKey: String): String {
+        val trimmed = periodKey.trim()
+        if (trimmed.isEmpty()) return "—"
+        ISO_DATE_ONLY_REGEX.matchEntire(trimmed)?.let { m ->
+            return "${m.groupValues[3]}/${m.groupValues[2]}/${m.groupValues[1]}"
+        }
+        ISO_MONTH_REGEX.matchEntire(trimmed)?.let { m ->
+            return "Tháng ${m.groupValues[2]}/${m.groupValues[1]}"
+        }
+        ISO_WEEK_REGEX.matchEntire(trimmed)?.let { m ->
+            return "Tuần ${m.groupValues[2]}/${m.groupValues[1]}"
+        }
+        return trimmed
+    }
+
+    fun formatIsoDateTimeVi(isoRaw: String?): String {
+        val trimmed = isoRaw?.trim().orEmpty()
+        if (trimmed.isEmpty()) return "—"
+        runCatching {
+            val epochMs = AttendanceTimeContract.parseIsoInstantToEpochMillis(trimmed)
+            val sdf = SimpleDateFormat("HH:mm dd/MM/yyyy", Locale.US).apply {
+                timeZone = TimeZone.getTimeZone("Asia/Ho_Chi_Minh")
+            }
+            return sdf.format(Date(epochMs))
+        }
+        ISO_DATE_ONLY_REGEX.matchEntire(trimmed)?.let { m ->
+            return "${m.groupValues[3]}/${m.groupValues[2]}/${m.groupValues[1]}"
+        }
+        return trimmed.take(16).replace('T', ' ')
+    }
 }
 
 class WorkReportsAndReportingService(
@@ -583,8 +860,54 @@ class WorkReportsAndReportingService(
     }
 
     // =========================================================================
-    // E3. Work Report Reviews
+    // E3. Work Report Reviews & Selectable Templates
     // =========================================================================
+
+    suspend fun fetchSelectableTemplates(actor: AppActor): List<WorkReportTemplateOption> =
+        withContext(Dispatchers.IO) {
+            val discovered = linkedMapOf<String, String>()
+            if (actor.hasCapability("report_assign")) {
+                runCatching {
+                    val json = httpClient.getJson(
+                        pathWithQuery = "/api/work-reports/assignments",
+                        requireOkTrue = true
+                    )
+                    val arr = json.optJSONArray("templates")
+                        ?: json.optJSONObject("data")?.optJSONArray("templates")
+                        ?: JSONArray()
+                    for (i in 0 until arr.length()) {
+                        val t = arr.optJSONObject(i) ?: continue
+                        val id = t.optString("template_id", "").trim()
+                        val name = t.optString("display_name", "").trim()
+                        if (WorkReportsContract.isUuid(id) && name.isNotEmpty()) {
+                            discovered[id] = name
+                        }
+                    }
+                }
+            }
+            if (discovered.isEmpty() && actor.hasCapability("report_template_manage")) {
+                runCatching {
+                    val json = httpClient.getJson(
+                        pathWithQuery = "/api/work-reports/templates",
+                        requireOkTrue = true
+                    )
+                    val arr = json.optJSONArray("items")
+                        ?: json.optJSONObject("data")?.optJSONArray("items")
+                        ?: JSONArray()
+                    for (i in 0 until arr.length()) {
+                        val t = arr.optJSONObject(i) ?: continue
+                        val status = t.optString("status", "ACTIVE").trim()
+                        if (status == "ARCHIVED") continue
+                        val id = t.optString("template_id", "").trim()
+                        val name = t.optString("display_name", "").trim()
+                        if (WorkReportsContract.isUuid(id) && name.isNotEmpty()) {
+                            discovered[id] = name
+                        }
+                    }
+                }
+            }
+            discovered.map { (id, name) -> WorkReportTemplateOption(templateId = id, displayName = name) }
+        }
 
     suspend fun fetchPendingReviews(
         templateId: String? = null,
@@ -594,7 +917,7 @@ class WorkReportsAndReportingService(
         val safeSize = pageSize.coerceIn(1, 100)
         val queryParts = mutableListOf("page_size=$safeSize")
         if (!templateId.isNullOrBlank()) {
-            val validTemplateId = WorkReportsContract.requireUuid(templateId, "Mã mẫu báo cáo")
+            val validTemplateId = WorkReportsContract.requireUuid(templateId, "Mẫu báo cáo")
             queryParts.add("template_id=${encodeParam(validTemplateId)}")
         }
         if (!cursor.isNullOrBlank()) {
@@ -619,7 +942,9 @@ class WorkReportsAndReportingService(
             val obj = itemsArr.optJSONObject(i) ?: continue
             val obligationId = obj.optString("obligation_id", "").trim()
             val submissionId = obj.optString("submission_id", "").trim()
-            if (!WorkReportsContract.isUuid(obligationId) || !WorkReportsContract.isUuid(submissionId)) {
+            if (!WorkReportsContract.isUuid(obligationId) ||
+                (submissionId.isNotEmpty() && !WorkReportsContract.isUuid(submissionId))
+            ) {
                 throw BackendApiException(
                     kind = BackendFailureKind.CONTRACT_INVALID,
                     statusCode = 200,
@@ -631,17 +956,22 @@ class WorkReportsAndReportingService(
                 WorkReportReviewItem(
                     obligationId = obligationId,
                     submissionId = submissionId,
-                    submissionVersion = obj.optInt("submission_version", 1),
-                    submissionState = "PENDING_REVIEW",
+                    submissionVersion = obj.optInt("submission_version", obj.optInt("version", 1)),
+                    submissionState = obj.optString("state", "PENDING_REVIEW").ifBlank { "PENDING_REVIEW" },
                     templateId = obj.optString("template_id", ""),
                     templateName = obj.optString("template_name", ""),
                     periodKey = obj.optString("period_key", ""),
                     assigneeUserId = obj.optString("assignee_app_user_id", ""),
-                    assigneeDisplayName = obj.optString("assignee_display_name", ""),
-                    teamDisplayName = obj.optNullableText("team_display_name"),
+                    assigneeDisplayName = obj.optNullableText("assignee_display_name")
+                        ?: obj.optNullableText("assignee_label")
+                        ?: "Nhân sự",
+                    teamDisplayName = obj.optNullableText("team_display_name")
+                        ?: obj.optNullableText("team_label"),
                     submittedAt = obj.optNullableText("submitted_at"),
                     payloadSummary = emptyMap(),
-                    sections = emptyList()
+                    sections = emptyList(),
+                    dueAt = obj.optNullableText("due_at"),
+                    isLate = obj.optBoolean("is_late", false)
                 )
             )
         }
@@ -660,7 +990,7 @@ class WorkReportsAndReportingService(
         obligationId: String,
         fallback: WorkReportReviewItem? = null
     ): WorkReportReviewItem = withContext(Dispatchers.IO) {
-        val validId = WorkReportsContract.requireUuid(obligationId, "Mã nghĩa vụ duyệt")
+        val validId = WorkReportsContract.requireUuid(obligationId, "Báo cáo cần duyệt")
         val json = httpClient.getJson(
             pathWithQuery = "/api/work-reports/reviews/$validId",
             requireOkTrue = true
@@ -685,6 +1015,7 @@ class WorkReportsAndReportingService(
         val schemaRaw = templateObj.optJSONObject("schema_json")?.toString().orEmpty()
         val sections = WorkReportsContract.parseDynamicSections(schemaRaw)
 
+        val currentRevisionPayload = detail.optJSONObject("current_revision")?.optJSONObject("payload_json")
         val revisionsArr = detail.optJSONArray("revisions") ?: JSONArray()
         var latestRevNo = Int.MIN_VALUE
         var latestPayload: JSONObject? = null
@@ -697,7 +1028,9 @@ class WorkReportsAndReportingService(
                 latestPayload = p
             }
         }
-        val activePayload = latestPayload ?: submissionObj.optJSONObject("draft_payload_json")
+        val activePayload = currentRevisionPayload
+            ?: latestPayload
+            ?: submissionObj.optJSONObject("draft_payload_json")
         val summaryMap = WorkReportsContract.buildPayloadDisplaySummary(sections, activePayload)
 
         WorkReportReviewItem(
@@ -709,13 +1042,20 @@ class WorkReportsAndReportingService(
             templateName = templateObj.optString("display_name", fallback?.templateName.orEmpty()),
             periodKey = obligationObj.optString("period_key", fallback?.periodKey.orEmpty()),
             assigneeUserId = obligationObj.optString("assignee_app_user_id", fallback?.assigneeUserId.orEmpty()),
-            assigneeDisplayName = obligationObj.optString("assignee_display_name", fallback?.assigneeDisplayName.orEmpty()),
-            teamDisplayName = obligationObj.optNullableText("team_display_name") ?: fallback?.teamDisplayName,
+            assigneeDisplayName = obligationObj.optNullableText("assignee_display_name")
+                ?: detail.optNullableText("assignee_display_name")
+                ?: fallback?.assigneeDisplayName
+                ?: "Nhân sự",
+            teamDisplayName = obligationObj.optNullableText("team_display_name")
+                ?: detail.optNullableText("team_display_name")
+                ?: fallback?.teamDisplayName,
             submittedAt = submissionObj.optNullableText("latest_submitted_at")
                 ?: submissionObj.optNullableText("first_submitted_at")
                 ?: fallback?.submittedAt,
             payloadSummary = summaryMap,
-            sections = sections
+            sections = sections,
+            dueAt = obligationObj.optNullableText("due_at") ?: fallback?.dueAt,
+            isLate = submissionObj.optBoolean("is_late", fallback?.isLate ?: false)
         )
     }
 
@@ -759,14 +1099,16 @@ class WorkReportsAndReportingService(
         templateId: String,
         templateNameHint: String = "",
         groupBy: String = "team",
+        finality: String = "final",
         fromDate: String? = null,
         toDate: String? = null
     ): WorkReportAnalyticsSnapshot = withContext(Dispatchers.IO) {
-        val validTemplateId = WorkReportsContract.requireUuid(templateId, "Mã mẫu báo cáo")
+        val validTemplateId = WorkReportsContract.requireUuid(templateId, "Mẫu báo cáo")
         val safeGroupBy = if (groupBy in setOf("team", "assignee", "period")) groupBy else "team"
+        val safeFinality = if (finality in setOf("final", "provisional_included")) finality else "final"
         val baseParams = buildList {
             add("template_id=${encodeParam(validTemplateId)}")
-            add("finality=final")
+            add("finality=$safeFinality")
             if (!fromDate.isNullOrBlank()) add("from=${encodeParam(fromDate.trim())}")
             if (!toDate.isNullOrBlank()) add("to=${encodeParam(toDate.trim())}")
         }.joinToString("&")
@@ -788,19 +1130,24 @@ class WorkReportsAndReportingService(
             kind = BackendFailureKind.CONTRACT_INVALID,
             statusCode = 200,
             backendCode = "ANALYTICS_OVERVIEW_INVALID",
-            message = "Dữ liệu tổng quan phân tích báo cáo không hợp lệ."
+            message = "Dữ liệu tổng hợp báo cáo không hợp lệ."
         )
         val complianceObj = overviewData.optJSONObject("compliance") ?: throw BackendApiException(
             kind = BackendFailureKind.CONTRACT_INVALID,
             statusCode = 200,
             backendCode = "ANALYTICS_COMPLIANCE_INVALID",
-            message = "Thiếu thông tin tỷ lệ hoàn thành báo cáo."
+            message = "Thiếu thông tin tiến độ nộp báo cáo."
         )
 
         val dueCount = complianceObj.optInt("due_count", 0)
         val completedCount = complianceObj.optInt("completed_count", 0)
         val onTimeCount = complianceObj.optInt("on_time_count", 0)
-        val completionRatePct = complianceObj.optNullableRatePercent("completion_rate")
+        val overdueMissingCount = complianceObj.optInt("overdue_missing_count", 0)
+        val lateSubmittedCount = complianceObj.optInt("late_submitted_count", 0)
+        val pendingDueCount = complianceObj.optInt("pending_due_count", 0)
+        val pendingReviewCount = complianceObj.optInt("pending_review_count", 0)
+        // Backend `completion_rate` is ALREADY on a 0..100 percentage scale (e.g. 1/7 -> 14.29)
+        val completionRatePct = complianceObj.optNullablePercentAlreadyScaled("completion_rate")
 
         val metricsArr = overviewData.optJSONArray("metrics") ?: JSONArray()
         val metricItems = buildList {
@@ -811,16 +1158,26 @@ class WorkReportsAndReportingService(
                 val unit = m.optString("unit", "").trim()
                 val sumVal = if (m.isNull("sum_value")) null else m.optDouble("sum_value")
                 val avgVal = if (m.isNull("avg_value")) null else m.optDouble("avg_value")
+                val countValid = m.optInt("count_valid", 0)
                 val formattedVal = when {
                     sumVal != null -> formatNumberCompact(sumVal) + if (unit.isNotEmpty()) " $unit" else ""
                     avgVal != null -> "TB " + formatNumberCompact(avgVal) + if (unit.isNotEmpty()) " $unit" else ""
                     else -> "—"
                 }
+                val subtitleParts = buildList {
+                    if (sumVal != null && avgVal != null) {
+                        add("Trung bình: ${formatNumberCompact(avgVal)}${if (unit.isNotEmpty()) " $unit" else ""}")
+                    }
+                    if (countValid > 0) {
+                        add("Từ $countValid báo cáo")
+                    }
+                }
                 add(
                     WorkReportAnalyticsMetricItem(
                         fieldKey = key,
                         label = label,
-                        valueDisplay = formattedVal
+                        valueDisplay = formattedVal,
+                        subtitleDisplay = subtitleParts.takeIf { it.isNotEmpty() }?.joinToString(" · ")
                     )
                 )
             }
@@ -832,14 +1189,29 @@ class WorkReportsAndReportingService(
             for (i in 0 until breakdownArr.length()) {
                 val row = breakdownArr.optJSONObject(i) ?: continue
                 val groupId = row.optNullableText("group_id") ?: "group_$i"
-                val groupLabel = row.optString("group_label", "Không xác định")
+                val groupLabel = row.optString("group_label", "Chưa phân nhóm")
+                val rowMetricsArr = row.optJSONArray("metrics") ?: JSONArray()
+                val rowMetricSummaries = buildList {
+                    for (k in 0 until rowMetricsArr.length()) {
+                        val rm = rowMetricsArr.optJSONObject(k) ?: continue
+                        if (rm.isNull("sum_value")) continue
+                        val rmLabel = rm.optString("label", "")
+                        val rmUnit = rm.optString("unit", "").trim()
+                        val rmSum = formatNumberCompact(rm.optDouble("sum_value", 0.0))
+                        if (rmLabel.isNotBlank()) {
+                            add("$rmLabel: $rmSum${if (rmUnit.isNotEmpty()) " $rmUnit" else ""}")
+                        }
+                    }
+                }
                 add(
                     WorkReportAnalyticsBreakdownRow(
                         groupKey = groupId,
                         groupLabel = groupLabel,
                         submittedCount = row.optInt("completed_count", 0),
                         obligationCount = row.optInt("due_count", 0),
-                        complianceRatePct = row.optNullableRatePercent("completion_rate")
+                        complianceRatePct = row.optNullablePercentAlreadyScaled("completion_rate"),
+                        overdueMissingCount = row.optInt("overdue_missing_count", 0),
+                        metricsSummary = rowMetricSummaries
                     )
                 )
             }
@@ -853,22 +1225,22 @@ class WorkReportsAndReportingService(
                 add(
                     WorkReportAnalyticsContributionItem(
                         obligationId = c.optString("obligation_id", ""),
-                        assigneeDisplayName = c.optString("assignee_display_name", ""),
+                        assigneeDisplayName = c.optString("assignee_display_name", "Nhân sự"),
                         periodKey = c.optString("period_key", ""),
                         submissionState = c.optString("state", ""),
-                        submittedAt = c.optNullableText("submitted_at")
+                        submittedAt = c.optNullableText("submitted_at"),
+                        teamDisplayName = c.optNullableText("team_display_name"),
+                        isLate = c.optBoolean("is_late", false)
                     )
                 )
             }
         }
 
-        val scopeLabel = overviewData.optJSONObject("effective_scope")?.optString("label", "").orEmpty()
-        val resolvedTitle = when {
-            templateNameHint.isNotBlank() && scopeLabel.isNotBlank() -> "$templateNameHint ($scopeLabel)"
-            templateNameHint.isNotBlank() -> templateNameHint
-            scopeLabel.isNotBlank() -> "Mẫu ${validTemplateId.take(8)} ($scopeLabel)"
-            else -> "Mẫu ${validTemplateId.take(8)}"
-        }
+        val scopeLabel = overviewData.optJSONObject("effective_scope")?.optString("label", "")?.trim().orEmpty()
+        val cleanHint = templateNameHint.trim()
+            .takeUnless { Regex("^Mẫu\\s+[0-9a-fA-F]{8}\\b.*").matches(it) }
+            .orEmpty()
+        val resolvedTitle = cleanHint.ifBlank { "Báo cáo định kỳ" }
 
         WorkReportAnalyticsSnapshot(
             templateId = validTemplateId,
@@ -879,7 +1251,14 @@ class WorkReportsAndReportingService(
             complianceRatePct = completionRatePct,
             metrics = metricItems,
             breakdownRows = breakdownRows,
-            contributions = contributionItems
+            contributions = contributionItems,
+            scopeLabel = scopeLabel,
+            finality = safeFinality,
+            groupBy = safeGroupBy,
+            overdueMissingCount = overdueMissingCount,
+            lateSubmittedCount = lateSubmittedCount,
+            pendingDueCount = pendingDueCount,
+            pendingReviewCount = pendingReviewCount
         )
     }
 
@@ -1058,13 +1437,71 @@ class WorkReportsAndReportingService(
         val reportObj = if (json.isNull("report")) null else json.optJSONObject("report")
         val totalRecruited = reportObj?.optInt("recruitedTotal", detailObj.optInt("total", 0))
             ?: detailObj.optInt("total", 0)
+        val parsedRows = parseTeamRows(rowsArr)
+
+        val byRecruiter = WorkReportsContract.parseReportingBucketRecord(
+            reportObj?.optJSONObject("byRecruiter"),
+            totalRecruited
+        )
+        val byProject = WorkReportsContract.parseReportingBucketRecord(
+            reportObj?.optJSONObject("byProject"),
+            totalRecruited
+        )
+        val byEmployment = WorkReportsContract.parseReportingBucketRecord(
+            reportObj?.optJSONObject("byEmployment"),
+            totalRecruited
+        )
+        val byProvider = WorkReportsContract.parseReportingBucketRecord(
+            reportObj?.optJSONObject("byProvider"),
+            totalRecruited
+        )
+
+        val byDateCounts = buildMap {
+            val byDateObj = reportObj?.optJSONObject("byDate")
+            if (byDateObj != null) {
+                val keys = byDateObj.keys()
+                while (keys.hasNext()) {
+                    val dateKey = keys.next()
+                    val count = byDateObj.optInt(dateKey, 0)
+                    if (count > 0) put(dateKey, count)
+                }
+            } else {
+                for (row in parsedRows) {
+                    if (row.businessDate.isNotBlank() && row.recruitedCount > 0) {
+                        put(row.businessDate, (get(row.businessDate) ?: 0) + row.recruitedCount)
+                    }
+                }
+            }
+        }
+        val hiringSummary = WorkReportsContract.computeHiringDaySummary(byDateCounts, totalRecruited)
+
+        val resolvedRecruiterCount = if (byRecruiter.isNotEmpty()) {
+            byRecruiter.count { it.count > 0 }
+        } else {
+            parsedRows.map { it.recruiterDisplay }.filter { it.isNotBlank() }.distinct().size
+        }
+        val resolvedProjectCount = if (byProject.isNotEmpty()) {
+            byProject.count { it.count > 0 }
+        } else {
+            parsedRows.map { it.projectDisplay }.filter { it.isNotBlank() }.distinct().size
+        }
 
         TeamReportSnapshot(
             bucketKey = bucketObj.optString("key", bucketKey),
-            bucketDisplay = bucketObj.optString("display", bucketKey),
+            bucketDisplay = bucketObj.optString("display", bucketKey).ifBlank { "Nhóm tuyển dụng" },
             totalRecruited = totalRecruited,
-            rows = parseTeamRows(rowsArr),
-            nextCursor = detailObj.optNullableText("nextCursor")
+            rows = parsedRows,
+            nextCursor = detailObj.optNullableText("nextCursor"),
+            activeRecruiterCount = resolvedRecruiterCount,
+            activeProjectCount = resolvedProjectCount,
+            activeHiringDays = hiringSummary.activeHiringDays,
+            avgPerActiveDay = hiringSummary.avgPerActiveDay,
+            peakDailyCount = hiringSummary.peakDailyCount,
+            peakDateIso = hiringSummary.peakDateIso,
+            byRecruiter = byRecruiter,
+            byProject = byProject,
+            byEmployment = byEmployment,
+            byProvider = byProvider
         )
     }
 
@@ -1321,4 +1758,11 @@ private fun JSONObject.optNullableRatePercent(key: String): Float? {
     val d = optDouble(key, Double.NaN)
     if (d.isNaN() || d.isInfinite()) return null
     return ((d * 1000.0).roundToInt()) / 10f
+}
+
+private fun JSONObject.optNullablePercentAlreadyScaled(key: String): Float? {
+    if (!has(key) || isNull(key)) return null
+    val d = optDouble(key, Double.NaN)
+    if (d.isNaN() || d.isInfinite()) return null
+    return ((d * 100.0).roundToInt()) / 100f
 }

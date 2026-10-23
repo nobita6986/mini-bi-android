@@ -66,6 +66,34 @@ data class WorkforceDeepMetrics(
     val projectNextCursor: String? = null
 )
 
+data class GeneralOverviewSnapshot(
+    val asOfDate: String,
+    val scopeDescription: String,
+    val totalProfiles: Int,
+    val workingCount: Int,
+    val waitingCount: Int,
+    val leftCount: Int,
+    val audienceKind: String = "own", // "all" | "team" | "own"
+    val placementRatePct: Float? = null,
+    val retention7dPct: Float? = null,
+    val retention30dPct: Float? = null,
+    val projectCount: Int = 0,
+    val recruiterCount: Int = 0,
+    val managedTotal: Int? = null,
+    val recruitedTotal: Int? = null,
+    val teamTotal: Int? = null,
+    val activeHiringDays: Int = 0,
+    val avgPerActiveDay: Float? = null,
+    val peakDailyCount: Int? = null,
+    val peakDateIso: String? = null,
+    val leadingProject: BiBucketItem? = null,
+    val byRecruiter: List<BiBucketItem> = emptyList(),
+    val byProject: List<BiBucketItem> = emptyList(),
+    val bySecondaryGroup: List<BiBucketItem> = emptyList(),
+    val secondaryGroupTitle: String = "",
+    val byProvider: List<BiBucketItem> = emptyList()
+)
+
 data class TeamDrillDownItem(
     val businessDate: String,
     val projectDisplay: String,
@@ -81,7 +109,20 @@ data class TeamReportSnapshot(
     val bucketDisplay: String,
     val totalRecruited: Int,
     val rows: List<TeamDrillDownItem>,
-    val nextCursor: String?
+    val nextCursor: String?,
+    val activeRecruiterCount: Int = 0,
+    val activeProjectCount: Int = 0,
+    val activeHiringDays: Int = 0,
+    val avgPerActiveDay: Float? = null,
+    val peakDailyCount: Int? = null,
+    val peakDateIso: String? = null,
+    val workingCount: Int? = null,
+    val waitingCount: Int? = null,
+    val leftCount: Int? = null,
+    val byRecruiter: List<BiBucketItem> = emptyList(),
+    val byProject: List<BiBucketItem> = emptyList(),
+    val byEmployment: List<BiBucketItem> = emptyList(),
+    val byProvider: List<BiBucketItem> = emptyList()
 )
 
 data class DuplicateCccdEpisodeItem(
@@ -195,7 +236,18 @@ data class StagedDocumentRef(
     val documentType: String, // "WORKER_PORTRAIT" | "CCCD_FRONT" | "CCCD_BACK" | "EMPLOYMENT_CONTRACT"
     val fileName: String,
     val mimeType: String,
-    val sizeBytes: Long
+    val sizeBytes: Long,
+    val localFilePath: String? = null
+)
+
+data class PendingEntryAttachmentTask(
+    val entryId: String,
+    val workerDisplayName: String,
+    val documentType: String,
+    val fileName: String,
+    val mimeType: String,
+    val localFilePath: String,
+    val idempotencyBaseKey: String
 )
 
 data class NewWorkerEntryDraft(
@@ -210,7 +262,7 @@ data class NewWorkerEntryDraft(
     val firstWorkDateUi: String = "", // DD/MM/YYYY
     val employmentStatusUi: String = "Đang làm", // "Đang làm" | "Đang chờ việc"
     val fullName: String = "",
-    val genderUi: String = "", // "" | "Nam" | "Nữ" | "Khác"
+    val genderUi: String = "Nam", // "Nam" | "Nữ" (mặc định Nam)
     val phone: String = "",
     val cccd: String = "",
     val cccdIssuePlace: String = "",
@@ -224,35 +276,57 @@ data class NewWorkerEntryDraft(
     val bankAccountHolder: String = "",
     val bankName: String = "",
     val note: String = "",
-    val birthDateUi: String = "", // DD/MM/YYYY
-    val cccdIssueDateUi: String = "", // DD/MM/YYYY
+    val birthDateUi: String = "", // Free text <= 10 chars (e.g. DD/MM/YYYY)
+    val cccdIssueDateUi: String = "", // Free text <= 10 chars (e.g. DD/MM/YYYY)
     val address: String = "",
     val isExpanded: Boolean = true,
     val showOptionalSection: Boolean = false
 ) {
     val isValid: Boolean
-        get() = projectId.isNotBlank() &&
-            (providerType == "hrp" || providerType == "vendor") &&
-            recruiterId.isNotBlank() &&
-            laborTypeKey.isNotBlank() &&
-            firstWorkDateUi.isNotBlank() &&
-            fullName.trim().length >= 2 &&
-            uploadingSlot == null
+        get() {
+            val providerNorm = providerType.trim().lowercase()
+            val trimmedName = fullName.trim()
+            return projectId.isNotBlank() &&
+                (providerNorm == "hrp" || providerNorm == "vendor") &&
+                DirectEntryContract.isUuid(recruiterId) &&
+                laborTypeKey.isNotBlank() &&
+                DirectEntryContract.isValidUiOrIsoDate(firstWorkDateUi) &&
+                trimmedName.isNotEmpty() &&
+                fullName.length <= 256 &&
+                (genderUi.isBlank() || genderUi.trim() in setOf("Nam", "Nữ", "MALE", "FEMALE")) &&
+                (cccd.trim().isEmpty() || DirectEntryContract.isCanonicalNationalId(cccd)) &&
+                DirectEntryContract.isValidFreeDateText(birthDateUi) &&
+                DirectEntryContract.isValidFreeDateText(cccdIssueDateUi) &&
+                phone.trim().length <= 64 &&
+                address.trim().length <= 1024 &&
+                note.trim().length <= 4000 &&
+                bankAccountNumber.trim().length <= 64 &&
+                !DirectEntryContract.hasControlCharacter(bankAccountNumber) &&
+                bankAccountHolder.trim().length <= 256 &&
+                !DirectEntryContract.hasControlCharacter(bankAccountHolder) &&
+                bankName.trim().length <= 256 &&
+                !DirectEntryContract.hasControlCharacter(bankName) &&
+                uploadingSlot == null
+        }
 
     val isStarted: Boolean
         get() = projectId.isNotBlank() ||
             providerType.isNotBlank() ||
             recruiterId.isNotBlank() ||
-            laborTypeKey.isNotBlank() ||
             fullName.isNotBlank() ||
-            genderUi.isNotBlank() ||
             phone.isNotBlank() ||
             cccd.isNotBlank() ||
+            cccdIssuePlace.isNotBlank() ||
+            birthDateUi.isNotBlank() ||
+            cccdIssueDateUi.isNotBlank() ||
+            address.isNotBlank() ||
             portraitStage != null ||
             cccdFrontStage != null ||
             cccdBackStage != null ||
             contractStage != null ||
             bankAccountNumber.isNotBlank() ||
+            bankAccountHolder.isNotBlank() ||
+            bankName.isNotBlank() ||
             note.isNotBlank()
 
     fun allStageIds(): List<String> = listOfNotNull(
@@ -260,7 +334,18 @@ data class NewWorkerEntryDraft(
         cccdFrontStage?.stageId,
         cccdBackStage?.stageId,
         contractStage?.stageId
+    ).map { it.trim() }.filter { it.isNotEmpty() }
+
+    fun allAttachments(): List<StagedDocumentRef> = listOfNotNull(
+        portraitStage,
+        cccdFrontStage,
+        cccdBackStage,
+        contractStage
     )
+
+    fun localPendingAttachments(): List<StagedDocumentRef> = allAttachments().filter {
+        it.stageId.isBlank() && !it.localFilePath.isNullOrBlank()
+    }
 }
 
 data class OwnSubmissionItem(
@@ -273,6 +358,49 @@ data class OwnSubmissionItem(
     val submittedAt: String?,
     val allowedTransitions: List<String>,
     val projectScoped: Boolean
+)
+
+data class DuplicateCccdPreflightConflict(
+    val conflictRef: String,
+    val draftDisplayName: String,
+    val projectDisplay: String?,
+    val employmentStatus: String,
+    val cccdLast4: String
+) {
+    fun formatConflictLine(): String {
+        val safeName = draftDisplayName.trim().ifEmpty { "trong bản nháp" }
+        val subject = projectDisplay?.trim()?.takeIf { it.isNotEmpty() }
+            ?.let { "tại dự án $it" }
+            ?: "trong hệ thống"
+        val statusSuffix = if (employmentStatus == "ON") {
+            "đang làm việc $subject"
+        } else {
+            "một hồ sơ $subject (Đang chờ việc)"
+        }
+        return "• NLĐ $safeName (*$cccdLast4) trùng CCCD với NLĐ $statusSuffix."
+    }
+}
+
+data class DuplicateCccdPreflightResult(
+    val submissionId: String,
+    val version: Int,
+    val fingerprint: String,
+    val conflictCount: Int,
+    val conflicts: List<DuplicateCccdPreflightConflict>
+)
+
+data class SubmissionTransitionResult(
+    val submissionId: String,
+    val state: String,
+    val version: Int
+)
+
+data class PendingDuplicateCccdSubmission(
+    val entryCount: Int,
+    val employeeCodes: List<String>,
+    val preflight: DuplicateCccdPreflightResult,
+    val navigateToWorkersOnConfirm: Boolean,
+    val pendingAttachments: List<PendingEntryAttachmentTask> = emptyList()
 )
 
 data class EntryDocumentItem(
@@ -350,6 +478,11 @@ data class WorkReportSectionSpec(
     val fields: List<WorkReportFieldSpec>
 )
 
+data class WorkReportTemplateOption(
+    val templateId: String,
+    val displayName: String
+)
+
 data class WorkReportReviewItem(
     val obligationId: String,
     val submissionId: String,
@@ -363,13 +496,16 @@ data class WorkReportReviewItem(
     val teamDisplayName: String?,
     val submittedAt: String?,
     val payloadSummary: Map<String, String>,
-    val sections: List<WorkReportSectionSpec>
+    val sections: List<WorkReportSectionSpec>,
+    val dueAt: String? = null,
+    val isLate: Boolean = false
 )
 
 data class WorkReportAnalyticsMetricItem(
     val fieldKey: String,
     val label: String,
-    val valueDisplay: String
+    val valueDisplay: String,
+    val subtitleDisplay: String? = null
 )
 
 data class WorkReportAnalyticsBreakdownRow(
@@ -377,7 +513,9 @@ data class WorkReportAnalyticsBreakdownRow(
     val groupLabel: String,
     val submittedCount: Int,
     val obligationCount: Int,
-    val complianceRatePct: Float?
+    val complianceRatePct: Float?,
+    val overdueMissingCount: Int = 0,
+    val metricsSummary: List<String> = emptyList()
 )
 
 data class WorkReportAnalyticsContributionItem(
@@ -385,7 +523,9 @@ data class WorkReportAnalyticsContributionItem(
     val assigneeDisplayName: String,
     val periodKey: String,
     val submissionState: String,
-    val submittedAt: String?
+    val submittedAt: String?,
+    val teamDisplayName: String? = null,
+    val isLate: Boolean = false
 )
 
 data class WorkReportAnalyticsSnapshot(
@@ -397,7 +537,14 @@ data class WorkReportAnalyticsSnapshot(
     val complianceRatePct: Float?,
     val metrics: List<WorkReportAnalyticsMetricItem>,
     val breakdownRows: List<WorkReportAnalyticsBreakdownRow>,
-    val contributions: List<WorkReportAnalyticsContributionItem>
+    val contributions: List<WorkReportAnalyticsContributionItem>,
+    val scopeLabel: String = "",
+    val finality: String = "final",
+    val groupBy: String = "team",
+    val overdueMissingCount: Int = 0,
+    val lateSubmittedCount: Int = 0,
+    val pendingDueCount: Int = 0,
+    val pendingReviewCount: Int = 0
 )
 
 // 5. Room Entities (Strictly Cache + Attendance Outbox — NEVER authority)
