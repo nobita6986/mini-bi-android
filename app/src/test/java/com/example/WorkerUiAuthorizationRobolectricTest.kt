@@ -211,12 +211,14 @@ class WorkerUiAuthorizationRobolectricTest {
             .allowMainThreadQueries()
             .build()
         val cookieFile = File(app.cacheDir, "ui_auth_test_${System.nanoTime()}.enc")
+        val prefsFile = File(app.cacheDir, "ui_auth_prefs_${System.nanoTime()}.preferences_pb")
         val repo = MiniBiRepository(
             context = app,
             database = db,
             defaultServerUrl = "http://127.0.0.1:1",
             allowDebugUrlOverride = true,
             cookieStorageFile = cookieFile,
+            preferencesStorageFile = prefsFile,
             cookieCipher = JvmAes256GcmCookieCipher()
         )
         val vm = MiniBiViewModel(app, repo)
@@ -250,6 +252,7 @@ class WorkerUiAuthorizationRobolectricTest {
             vm.cancelScopeForTest()
             db.close()
             cookieFile.delete()
+            prefsFile.delete()
         }
     }
 
@@ -314,12 +317,14 @@ class WorkerUiAuthorizationRobolectricTest {
             .allowMainThreadQueries()
             .build()
         val cookieFile = File(app.cacheDir, "ui_new_entry_${System.nanoTime()}.enc")
+        val prefsFile = File(app.cacheDir, "ui_new_entry_prefs_${System.nanoTime()}.preferences_pb")
         val repo = MiniBiRepository(
             context = app,
             database = db,
             defaultServerUrl = "http://127.0.0.1:1",
             allowDebugUrlOverride = true,
             cookieStorageFile = cookieFile,
+            preferencesStorageFile = prefsFile,
             cookieCipher = JvmAes256GcmCookieCipher()
         )
         val vm = MiniBiViewModel(app, repo)
@@ -352,6 +357,7 @@ class WorkerUiAuthorizationRobolectricTest {
             vm.cancelScopeForTest()
             db.close()
             cookieFile.delete()
+            prefsFile.delete()
         }
     }
 
@@ -397,12 +403,14 @@ class WorkerUiAuthorizationRobolectricTest {
             .allowMainThreadQueries()
             .build()
         val cookieFile = File(app.cacheDir, "ui_defaults_${System.nanoTime()}.enc")
+        val prefsFile = File(app.cacheDir, "ui_defaults_prefs_${System.nanoTime()}.preferences_pb")
         val repo = MiniBiRepository(
             context = app,
             database = db,
             defaultServerUrl = server.url("/").toString().trimEnd('/'),
             allowDebugUrlOverride = true,
             cookieStorageFile = cookieFile,
+            preferencesStorageFile = prefsFile,
             cookieCipher = JvmAes256GcmCookieCipher()
         )
         val vm = MiniBiViewModel(app, repo)
@@ -463,6 +471,7 @@ class WorkerUiAuthorizationRobolectricTest {
             server.shutdown()
             db.close()
             cookieFile.delete()
+            prefsFile.delete()
         }
     }
 
@@ -623,12 +632,14 @@ class WorkerUiAuthorizationRobolectricTest {
             .allowMainThreadQueries()
             .build()
         val cookieFile = File(app.cacheDir, "cancel_tab_${System.nanoTime()}.enc")
+        val prefsFile = File(app.cacheDir, "cancel_tab_prefs_${System.nanoTime()}.preferences_pb")
         val repo = MiniBiRepository(
             context = app,
             database = db,
             defaultServerUrl = server.url("/").toString().trimEnd('/'),
             allowDebugUrlOverride = true,
             cookieStorageFile = cookieFile,
+            preferencesStorageFile = prefsFile,
             cookieCipher = JvmAes256GcmCookieCipher()
         )
         val vm = MiniBiViewModel(app, repo)
@@ -666,6 +677,7 @@ class WorkerUiAuthorizationRobolectricTest {
             server.shutdown()
             db.close()
             cookieFile.delete()
+            prefsFile.delete()
         }
     }
 
@@ -728,6 +740,7 @@ class WorkerUiAuthorizationRobolectricTest {
             .build()
         val cookieFile = File(app.cacheDir, "ui_search_focus_${System.nanoTime()}.enc")
         val savedCredsFile = File(app.cacheDir, "ui_saved_${System.nanoTime()}.enc")
+        val prefsFile = File(app.cacheDir, "ui_search_prefs_${System.nanoTime()}.preferences_pb")
         val repo = MiniBiRepository(
             context = app,
             database = db,
@@ -735,6 +748,7 @@ class WorkerUiAuthorizationRobolectricTest {
             allowDebugUrlOverride = true,
             cookieStorageFile = cookieFile,
             savedCredentialsStorageFile = savedCredsFile,
+            preferencesStorageFile = prefsFile,
             cookieCipher = JvmAes256GcmCookieCipher()
         )
         val vm = MiniBiViewModel(app, repo)
@@ -820,6 +834,7 @@ class WorkerUiAuthorizationRobolectricTest {
             db.close()
             cookieFile.delete()
             savedCredsFile.delete()
+            prefsFile.delete()
         }
     }
 
@@ -921,6 +936,7 @@ class WorkerUiAuthorizationRobolectricTest {
             .build()
         val cookieFile = File(app.cacheDir, "ui_dash_overlay_${System.nanoTime()}.enc")
         val savedCredsFile = File(app.cacheDir, "ui_dash_saved_${System.nanoTime()}.enc")
+        val prefsFile = File(app.cacheDir, "ui_dash_prefs_${System.nanoTime()}.preferences_pb")
         val cipher = JvmAes256GcmCookieCipher()
         val repo = MiniBiRepository(
             context = app,
@@ -929,6 +945,7 @@ class WorkerUiAuthorizationRobolectricTest {
             allowDebugUrlOverride = true,
             cookieStorageFile = cookieFile,
             savedCredentialsStorageFile = savedCredsFile,
+            preferencesStorageFile = prefsFile,
             cookieCipher = cipher
         )
         // Pre-seed session cookie so MiniBiViewModel bootstrap authenticates directly into Dashboard
@@ -1000,6 +1017,7 @@ class WorkerUiAuthorizationRobolectricTest {
             db.close()
             cookieFile.delete()
             savedCredsFile.delete()
+            prefsFile.delete()
         }
     }
 
@@ -1101,6 +1119,7 @@ class WorkerUiAuthorizationRobolectricTest {
             .build()
         val cookieFile = File(app.cacheDir, "ui_wscope_${System.nanoTime()}.enc")
         val savedCredsFile = File(app.cacheDir, "ui_wscope_saved_${System.nanoTime()}.enc")
+        val prefsFile = File(app.cacheDir, "ui_wscope_prefs_${System.nanoTime()}.preferences_pb")
         val repo = MiniBiRepository(
             context = app,
             database = db,
@@ -1108,6 +1127,7 @@ class WorkerUiAuthorizationRobolectricTest {
             allowDebugUrlOverride = true,
             cookieStorageFile = cookieFile,
             savedCredentialsStorageFile = savedCredsFile,
+            preferencesStorageFile = prefsFile,
             cookieCipher = JvmAes256GcmCookieCipher()
         )
         val vm = MiniBiViewModel(app, repo)
@@ -1175,6 +1195,7 @@ class WorkerUiAuthorizationRobolectricTest {
             db.close()
             cookieFile.delete()
             savedCredsFile.delete()
+            prefsFile.delete()
         }
     }
 
@@ -1417,13 +1438,17 @@ class WorkerUiAuthorizationRobolectricTest {
             .build()
         val cookieFile = File(app.cacheDir, "ui_tl_dash_${System.nanoTime()}.enc")
         val savedCredsFile = File(app.cacheDir, "ui_tl_saved_${System.nanoTime()}.enc")
+        val anchorFile = File(app.cacheDir, "ui_tl_anchor_${System.nanoTime()}.enc")
+        val prefsFile = File(app.cacheDir, "ui_tl_prefs_${System.nanoTime()}.preferences_pb")
         val repo = MiniBiRepository(
             context = app,
             database = db,
             defaultServerUrl = server.url("/").toString().trimEnd('/'),
             allowDebugUrlOverride = true,
             cookieStorageFile = cookieFile,
+            timeAnchorStorageFile = anchorFile,
             savedCredentialsStorageFile = savedCredsFile,
+            preferencesStorageFile = prefsFile,
             cookieCipher = JvmAes256GcmCookieCipher()
         )
         repo.cookieJar.saveFromResponse(
@@ -1522,6 +1547,8 @@ class WorkerUiAuthorizationRobolectricTest {
             db.close()
             cookieFile.delete()
             savedCredsFile.delete()
+            anchorFile.delete()
+            prefsFile.delete()
         }
     }
 }

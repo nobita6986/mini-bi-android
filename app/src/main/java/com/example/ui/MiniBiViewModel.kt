@@ -304,6 +304,7 @@ class MiniBiViewModel internal constructor(
         workerFetchJob?.cancel()
         workerFetchJob = null
         viewModelScope.cancel()
+        repository.closeForTest()
     }
 
     fun bootstrapSession() {
@@ -353,7 +354,8 @@ class MiniBiViewModel internal constructor(
 
     fun setTheme(themeId: String) {
         viewModelScope.launch {
-            repository.setThemeId(themeId)
+            runCatching { repository.setThemeId(themeId) }
+                .onFailure { it.rethrowIfCancelled() }
         }
     }
 
@@ -621,7 +623,7 @@ class MiniBiViewModel internal constructor(
                 if (_catalog.value == null) {
                     runCatching {
                         _catalog.value = repository.directEntryService.fetchCatalog()
-                    }
+                    }.onFailure { it.rethrowIfCancelled() }
                 }
                 val recruiterMap = _catalog.value?.recruiters.orEmpty().associateBy { it.recruiterId }
 

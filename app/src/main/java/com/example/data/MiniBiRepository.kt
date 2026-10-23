@@ -1,17 +1,27 @@
 package com.example.data
 
 import android.content.Context
+import androidx.datastore.core.DataStore
+import androidx.datastore.core.handlers.ReplaceFileCorruptionHandler
+import androidx.datastore.preferences.core.PreferenceDataStoreFactory
+import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.emptyPreferences
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import coil.ImageLoader
 import com.example.BuildConfig
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineExceptionHandler
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
@@ -22,7 +32,11 @@ import java.io.IOException
 import java.security.MessageDigest
 import java.util.Locale
 
-private val Context.dataStore by preferencesDataStore(name = "mini_bi_prefs")
+private val Context.dataStore by preferencesDataStore(
+    name = "mini_bi_prefs",
+    corruptionHandler = ReplaceFileCorruptionHandler { emptyPreferences() },
+    scope = CoroutineScope(Dispatchers.IO + SupervisorJob() + CoroutineExceptionHandler { _, _ -> })
+)
 
 enum class BackendFailureKind {
     NETWORK,
@@ -218,11 +232,34 @@ class MiniBiRepository(
     cookieStorageFile: File = File(context.noBackupFilesDir, "session_cookies.enc"),
     timeAnchorStorageFile: File = File(context.noBackupFilesDir, "attendance_time_anchor.enc"),
     savedCredentialsStorageFile: File = File(context.noBackupFilesDir, "saved_login_accounts.enc"),
+    preferencesStorageFile: File? = null,
     cookieCipher: CookieCipher = AndroidKeystoreAesGcmCipher(),
     nowMillis: () -> Long = { System.currentTimeMillis() }
 ) {
 
     internal val dao = database.miniBiDao()
+
+    private val customDataStoreScope: CoroutineScope? = if (preferencesStorageFile != null) {
+        CoroutineScope(SupervisorJob() + Dispatchers.IO + CoroutineExceptionHandler { _, _ -> })
+    } else {
+        null
+    }
+
+    private val prefsDataStore: DataStore<Preferences> =
+        if (preferencesStorageFile != null && customDataStoreScope != null) {
+            PreferenceDataStoreFactory.create(
+                corruptionHandler = ReplaceFileCorruptionHandler { emptyPreferences() },
+                scope = customDataStoreScope,
+                produceFile = { preferencesStorageFile }
+            )
+        } else {
+            context.dataStore
+        }
+
+    private val safePrefsFlow: Flow<Preferences> = prefsDataStore.data.catch { err ->
+        if (err is CancellationException) throw err
+        emit(emptyPreferences())
+    }
 
     companion object {
         private val KEY_DISPLAY_IDENTIFIER = stringPreferencesKey("display_identifier_hint")
@@ -300,11 +337,11 @@ class MiniBiRepository(
     private val _activeActor = MutableStateFlow<AppActor?>(null)
     val currentActorFlow: StateFlow<AppActor?> = _activeActor.asStateFlow()
 
-    val themeIdFlow: Flow<String> = context.dataStore.data.map { prefs ->
+    val themeIdFlow: Flow<String> = safePrefsFlow.map { prefs ->
         prefs[KEY_THEME_ID] ?: "hr-partner"
     }
 
-    val serverUrlFlow: Flow<String> = context.dataStore.data.map { prefs ->
+    val serverUrlFlow: Flow<String> = safePrefsFlow.map { prefs ->
         if (allowDebugUrlOverride) {
             prefs[KEY_DEBUG_SERVER_URL]?.takeIf { it.isNotBlank() }
                 ?: defaultServerUrl.trim().trimEnd('/')
@@ -318,7 +355,7 @@ class MiniBiRepository(
 
     suspend fun resolveEffectiveServerUrl(): String {
         val raw = if (allowDebugUrlOverride) {
-            val prefs = context.dataStore.data.first()
+            val prefs = safePrefsFlow.first()
             prefs[KEY_DEBUG_SERVER_URL]?.takeIf { it.isNotBlank() } ?: defaultServerUrl
         } else {
             defaultServerUrl
@@ -327,7 +364,7 @@ class MiniBiRepository(
     }
 
     suspend fun setThemeId(themeId: String) {
-        context.dataStore.edit { it[KEY_THEME_ID] = themeId }
+        prefsDataStore.edit { it[KEY_THEME_ID] = themeId }
     }
 
     suspend fun setServerUrl(url: String): Result<String> = withContext(Dispatchers.IO) {
@@ -341,7 +378,7 @@ class MiniBiRepository(
                 )
             }
             val normalized = BackendHttpClient.normalizeBaseUrl(url, allowCleartextHttp = true)
-            context.dataStore.edit { it[KEY_DEBUG_SERVER_URL] = normalized }
+            prefsDataStore.edit { it[KEY_DEBUG_SERVER_URL] = normalized }
             Result.success(normalized)
         } catch (e: BackendApiException) {
             Result.failure(e)
@@ -360,7 +397,7 @@ class MiniBiRepository(
 
     suspend fun bootstrapSession(): Result<AppActor> = withContext(Dispatchers.IO) {
         try {
-            val displayHint = context.dataStore.data.first()[KEY_DISPLAY_IDENTIFIER]
+            val displayHint = safePrefsFlow.first()[KEY_DISPLAY_IDENTIFIER]
             val json = httpClient.getJson(
                 pathWithQuery = "/api/auth/session",
                 requireOkTrue = true,
@@ -425,7 +462,7 @@ class MiniBiRepository(
             )
             val displayId = formatDisplayIdentifier(trimmedIdentifier)
             val actor = ActorContractParser.parseEnvelopeActor(json, displayId)
-            context.dataStore.edit { prefs ->
+            prefsDataStore.edit { prefs ->
                 prefs[KEY_DISPLAY_IDENTIFIER] = displayId
             }
             if (rememberAccount) {
@@ -475,12 +512,16 @@ class MiniBiRepository(
             if (err is CancellationException) throw err
         }
         runCatching {
-            context.dataStore.edit { prefs ->
+            prefsDataStore.edit { prefs ->
                 prefs.remove(KEY_DISPLAY_IDENTIFIER)
             }
         }.onFailure { err ->
             if (err is CancellationException) throw err
         }
+    }
+
+    internal fun closeForTest() {
+        customDataStoreScope?.cancel()
     }
 
     suspend fun logout() = withContext(Dispatchers.IO) {
