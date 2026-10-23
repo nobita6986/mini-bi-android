@@ -1753,11 +1753,25 @@ class WorkerUiAuthorizationRobolectricTest {
                             {
                               "ok": true,
                               "actor": {
-                                "appUserId": "99999999-8888-4777-8666-555555555555",
-                                "displayName": "nobita6986",
-                                "capabilities": ["entry_read", "catalog_master_manage", "report_analytics_view"],
-                                "scopes": [{"kind": "all", "reference": "all", "validFrom": "2026-01-01", "validTo": null}],
-                                "selfRecruiterSuggestion": null
+                                "app_user_id": "99999999-8888-4777-8666-555555555555",
+                                "display_name": "nobita6986",
+                                "capabilities": [
+                                  "entry_own",
+                                  "entry_team",
+                                  "catalog_master_manage",
+                                  "reporting_team",
+                                  "reporting_duplicate_cccd",
+                                  "report_analytics_view"
+                                ],
+                                "scopes": [
+                                  {
+                                    "kind": "all",
+                                    "reference": "all",
+                                    "valid_from": "2026-01-01",
+                                    "valid_to": null
+                                  }
+                                ],
+                                "self_recruiter_suggestion": null
                               }
                             }
                             """.trimIndent()

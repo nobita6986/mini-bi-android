@@ -1576,10 +1576,11 @@ class WorkReportsAndReportingService(
                 ?: hintDisplayLower?.let { map["display:$it"] }
 
         val mappedInitial = resolveFromCatalog(knownTeamCodeMap)
-        val orderedCandidates = buildList {
-            if (!mappedInitial.isNullOrBlank()) add(mappedInitial)
-            addAll(WorkReportsContract.candidateTeamCodes(decodedCode))
-        }.distinct()
+        val orderedCandidates = if (!mappedInitial.isNullOrBlank()) {
+            listOf(mappedInitial)
+        } else {
+            WorkReportsContract.candidateTeamCodes(decodedCode)
+        }
 
         fun enrichWithBucketHint(snap: TeamReportSnapshot): TeamReportSnapshot {
             if (knownBucketHint == null) return snap
