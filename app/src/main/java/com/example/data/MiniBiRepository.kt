@@ -6,6 +6,7 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import coil.ImageLoader
 import com.example.BuildConfig
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -380,6 +381,7 @@ class MiniBiRepository(
             }
             Result.failure(e)
         } catch (e: Exception) {
+            if (e is CancellationException) throw e
             _activeActor.value = null
             Result.failure(
                 BackendApiException(
@@ -444,6 +446,7 @@ class MiniBiRepository(
         } catch (e: BackendApiException) {
             Result.failure(e)
         } catch (e: Exception) {
+            if (e is CancellationException) throw e
             Result.failure(
                 BackendApiException(
                     kind = BackendFailureKind.CONTRACT_INVALID,
@@ -465,10 +468,18 @@ class MiniBiRepository(
         _activeActor.value = null
         attendanceTimeAnchorManager.clearAnchor()
         cookieJar.clearAll()
-        dao.clearWorkReportsCache()
-        dao.clearAllCachedWorkers()
-        context.dataStore.edit { prefs ->
-            prefs.remove(KEY_DISPLAY_IDENTIFIER)
+        runCatching {
+            dao.clearWorkReportsCache()
+            dao.clearAllCachedWorkers()
+        }.onFailure { err ->
+            if (err is CancellationException) throw err
+        }
+        runCatching {
+            context.dataStore.edit { prefs ->
+                prefs.remove(KEY_DISPLAY_IDENTIFIER)
+            }
+        }.onFailure { err ->
+            if (err is CancellationException) throw err
         }
     }
 

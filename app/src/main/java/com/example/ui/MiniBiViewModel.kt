@@ -46,11 +46,13 @@ import com.google.android.gms.tasks.CancellationTokenSource
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -90,9 +92,11 @@ class MiniBiViewModel internal constructor(
         get() = repository.imageLoader
 
     val themeId: StateFlow<String> = repository.themeIdFlow
+        .catch { e -> if (e is CancellationException) throw e }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "hr-partner")
 
     val serverUrl: StateFlow<String> = repository.serverUrlFlow
+        .catch { e -> if (e is CancellationException) throw e }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), BuildConfig.DEFAULT_SERVER_URL)
 
     val currentActor: StateFlow<AppActor?> = repository.currentActorFlow
@@ -248,6 +252,7 @@ class MiniBiViewModel internal constructor(
 
     // Work Reports States (Backend authority only; zero seed data)
     val workReports: StateFlow<List<WorkReportObligationEntity>> = repository.workReportsFlow
+        .catch { e -> if (e is CancellationException) throw e }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     private val _workReportsLoading = MutableStateFlow(false)
@@ -287,20 +292,33 @@ class MiniBiViewModel internal constructor(
     val timeAnchorState: StateFlow<TimeAnchorUiState> = repository.attendanceTimeAnchorManager.uiState
 
     val attendanceRecords: StateFlow<List<AttendanceEntity>> = repository.attendanceFlow
+        .catch { e -> if (e is CancellationException) throw e }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     init {
         bootstrapSession()
     }
 
+    internal fun cancelScopeForTest() {
+        clearBanner()
+        workerFetchJob?.cancel()
+        workerFetchJob = null
+        viewModelScope.cancel()
+    }
+
     fun bootstrapSession() {
         _sessionBootstrapping.value = true
         viewModelScope.launch {
-            val res = repository.bootstrapSession()
-            _sessionBootstrapping.value = false
-            res.onSuccess { actor ->
-                syncAttendanceTimeAnchor(actor = actor, force = false)
-                refreshDashboardData(actor)
+            try {
+                val res = repository.bootstrapSession()
+                _sessionBootstrapping.value = false
+                res.onSuccess { actor ->
+                    syncAttendanceTimeAnchor(actor = actor, force = false)
+                    refreshDashboardData(actor)
+                }
+            } catch (e: Exception) {
+                e.rethrowIfCancelled()
+                _sessionBootstrapping.value = false
             }
         }
     }
@@ -2311,10 +2329,12 @@ class MiniBiViewModel internal constructor(
     fun syncAttendanceTimeAnchor(actor: AppActor? = currentActor.value, force: Boolean = false) {
         val resolvedActor = actor ?: return
         viewModelScope.launch {
-            repository.attendanceTimeAnchorManager.syncTimeAnchor(
-                appUserId = resolvedActor.appUserId,
-                force = force
-            )
+            runCatching {
+                repository.attendanceTimeAnchorManager.syncTimeAnchor(
+                    appUserId = resolvedActor.appUserId,
+                    force = force
+                )
+            }.onFailure { it.rethrowIfCancelled() }
         }
     }
 

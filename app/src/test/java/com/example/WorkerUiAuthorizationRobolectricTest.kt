@@ -247,6 +247,7 @@ class WorkerUiAuthorizationRobolectricTest {
             composeTestRule.onNodeWithTag("worker_scope_tab_managed").assertIsDisplayed()
             composeTestRule.onNodeWithTag("worker_scope_tab_recruited").assertIsDisplayed()
         } finally {
+            vm.cancelScopeForTest()
             db.close()
             cookieFile.delete()
         }
@@ -348,6 +349,7 @@ class WorkerUiAuthorizationRobolectricTest {
                 .performScrollToNode(hasTestTag("bottom_add_worker_row_button"))
             composeTestRule.onNodeWithTag("bottom_add_worker_row_button").assertIsDisplayed()
         } finally {
+            vm.cancelScopeForTest()
             db.close()
             cookieFile.delete()
         }
@@ -457,6 +459,7 @@ class WorkerUiAuthorizationRobolectricTest {
             composeTestRule.onNodeWithText("Nam").assertIsDisplayed()
             composeTestRule.onNodeWithText("Thời vụ").assertIsDisplayed()
         } finally {
+            vm.cancelScopeForTest()
             server.shutdown()
             db.close()
             cookieFile.delete()
@@ -659,6 +662,7 @@ class WorkerUiAuthorizationRobolectricTest {
 
             assertNull(vm.workerError.value)
         } finally {
+            vm.cancelScopeForTest()
             server.shutdown()
             db.close()
             cookieFile.delete()
@@ -811,6 +815,7 @@ class WorkerUiAuthorizationRobolectricTest {
                 cancelBounds.height > confirmBounds.height
             )
         } finally {
+            vm.cancelScopeForTest()
             server.shutdown()
             db.close()
             cookieFile.delete()
@@ -990,6 +995,7 @@ class WorkerUiAuthorizationRobolectricTest {
                 .fetchSemanticsNode().boundsInRoot.top
             assertEquals(overviewTopWithoutBanner, overviewTopAfterDismiss, 0.5f)
         } finally {
+            vm.cancelScopeForTest()
             server.shutdown()
             db.close()
             cookieFile.delete()
@@ -1164,6 +1170,7 @@ class WorkerUiAuthorizationRobolectricTest {
                 )
             }
         } finally {
+            vm.cancelScopeForTest()
             server.shutdown()
             db.close()
             cookieFile.delete()
@@ -1510,6 +1517,7 @@ class WorkerUiAuthorizationRobolectricTest {
                 gapBetweenToolbarAndGroupTextDp < 40f
             )
         } finally {
+            vm.cancelScopeForTest()
             server.shutdown()
             db.close()
             cookieFile.delete()
