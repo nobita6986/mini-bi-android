@@ -12,6 +12,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -23,6 +25,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
@@ -277,11 +280,6 @@ fun AttendanceScreen(
                         Text(
                             text = "Ghi nhận Chấm công",
                             style = MaterialTheme.typography.headlineMedium
-                        )
-                        Text(
-                            text = actor.displayName,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
 
@@ -552,28 +550,46 @@ fun AttendanceScreen(
                         colors = ButtonDefaults.buttonColors(
                             containerColor = MaterialTheme.colorScheme.primary
                         ),
-                        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+                        contentPadding = PaddingValues(horizontal = 0.dp, vertical = 12.dp),
                         modifier = Modifier
                             .fillMaxWidth()
                             .heightIn(min = 68.dp)
                             .testTag("primary_checkin_camera_button")
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.PhotoCamera,
-                            contentDescription = null,
-                            modifier = Modifier.size(22.dp)
-                        )
-                        Spacer(modifier = Modifier.width(10.dp))
-                        Text(
-                            text = if (capturedPhotoFile == null) {
-                                "BẤM CHẤM CÔNG\n(Lấy GPS & Chụp Ảnh)"
-                            } else {
-                                "Chụp lại Ảnh Chấm Công"
-                            },
-                            style = MaterialTheme.typography.titleSmall.copy(lineHeight = 21.sp),
-                            fontWeight = FontWeight.Bold,
-                            textAlign = TextAlign.Center
-                        )
+                        BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+                            val maxLabelWidth = (this.maxWidth - 88.dp).coerceAtLeast(120.dp)
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Box(
+                                    modifier = Modifier.weight(1f),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.PhotoCamera,
+                                        contentDescription = null,
+                                        modifier = Modifier
+                                            .size(32.dp)
+                                            .testTag("primary_checkin_camera_icon")
+                                    )
+                                }
+                                Text(
+                                    text = if (capturedPhotoFile == null) {
+                                        "BẤM CHẤM CÔNG\n(Lấy GPS & Chụp Ảnh)"
+                                    } else {
+                                        "Chụp lại Ảnh Chấm Công"
+                                    },
+                                    style = MaterialTheme.typography.titleSmall.copy(lineHeight = 21.sp),
+                                    fontWeight = FontWeight.Bold,
+                                    textAlign = TextAlign.Center,
+                                    modifier = Modifier
+                                        .widthIn(max = maxLabelWidth)
+                                        .testTag("primary_checkin_camera_label")
+                                )
+                                Spacer(modifier = Modifier.weight(1f))
+                            }
+                        }
                     }
 
                     AnimatedVisibility(visible = capturedPhotoFile != null && capturedPhotoUri != null) {
