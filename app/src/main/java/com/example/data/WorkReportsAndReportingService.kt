@@ -1,12 +1,14 @@
 package com.example.data
 
 import android.util.Base64
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.URLEncoder
 import java.text.SimpleDateFormat
+import java.util.Calendar
 import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
@@ -71,6 +73,93 @@ object WorkReportsContract {
             Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING
         )
         return "team.$encoded"
+    }
+
+    fun decodeTeamBucketCode(rawTeamCodeOrBucketKey: String): String {
+        val trimmed = rawTeamCodeOrBucketKey.trim()
+        if (!trimmed.startsWith("team.") || !CANONICAL_TEAM_BUCKET_REGEX.matches(trimmed)) {
+            return trimmed
+        }
+        val b64 = trimmed.removePrefix("team.")
+        val padded = b64 + "=".repeat((4 - b64.length % 4) % 4)
+        return runCatching {
+            String(Base64.decode(padded, Base64.URL_SAFE), Charsets.UTF_8).trim().ifEmpty { trimmed }
+        }.getOrDefault(trimmed)
+    }
+
+    fun candidateTeamCodes(rawKey: String): List<String> {
+        val trimmed = decodeTeamBucketCode(rawKey).trim()
+        if (trimmed.isEmpty() || trimmed == "unknown") return listOf(trimmed).filter { it.isNotEmpty() }
+        if (trimmed.equals("__system_vendor__", ignoreCase = true)) {
+            return listOf("__system_vendor__")
+        }
+        val titleCased = buildString(trimmed.length) {
+            var capitalizeNext = true
+            for (ch in trimmed.lowercase(Locale.ROOT)) {
+                if (ch == '_' || ch == '-' || ch == ' ') {
+                    append(ch)
+                    capitalizeNext = true
+                } else if (capitalizeNext && ch.isLetter()) {
+                    append(ch.titlecaseChar())
+                    capitalizeNext = false
+                } else {
+                    append(ch)
+                    capitalizeNext = false
+                }
+            }
+        }
+        return listOf(
+            trimmed,
+            trimmed.uppercase(Locale.ROOT),
+            titleCased,
+            trimmed.lowercase(Locale.ROOT)
+        ).filter { it.isNotBlank() }.distinct()
+    }
+
+    fun resolveDatePresetRange(
+        preset: DashboardDatePreset,
+        nowEpochMillis: Long = System.currentTimeMillis()
+    ): Pair<String?, String?> {
+        if (preset == DashboardDatePreset.ALL_TIME) return null to null
+        val tz = TimeZone.getTimeZone("Asia/Ho_Chi_Minh")
+        val todayCal = Calendar.getInstance(tz, Locale.US).apply {
+            timeInMillis = nowEpochMillis
+        }
+        fun formatIso(cal: Calendar): String = String.format(
+            Locale.US,
+            "%04d-%02d-%02d",
+            cal.get(Calendar.YEAR),
+            cal.get(Calendar.MONTH) + 1,
+            cal.get(Calendar.DAY_OF_MONTH)
+        )
+
+        return when (preset) {
+            DashboardDatePreset.ALL_TIME -> null to null
+            DashboardDatePreset.THIS_WEEK -> {
+                val startCal = (todayCal.clone() as Calendar).apply {
+                    val dow = get(Calendar.DAY_OF_WEEK)
+                    val offsetFromMonday = if (dow == Calendar.SUNDAY) -6 else Calendar.MONDAY - dow
+                    add(Calendar.DAY_OF_MONTH, offsetFromMonday)
+                }
+                formatIso(startCal) to formatIso(todayCal)
+            }
+            DashboardDatePreset.THIS_MONTH -> {
+                val startCal = (todayCal.clone() as Calendar).apply {
+                    set(Calendar.DAY_OF_MONTH, 1)
+                }
+                formatIso(startCal) to formatIso(todayCal)
+            }
+            DashboardDatePreset.LAST_MONTH -> {
+                val startCal = (todayCal.clone() as Calendar).apply {
+                    set(Calendar.DAY_OF_MONTH, 1)
+                    add(Calendar.MONTH, -1)
+                }
+                val endCal = (startCal.clone() as Calendar).apply {
+                    set(Calendar.DAY_OF_MONTH, getActualMaximum(Calendar.DAY_OF_MONTH))
+                }
+                formatIso(startCal) to formatIso(endCal)
+            }
+        }
     }
 
     data class HiringDaySummary(
@@ -1266,13 +1355,58 @@ class WorkReportsAndReportingService(
     // F1. Reporting Reads: Workforce Deep + Team Report + Team Drill-Down
     // =========================================================================
 
+    suspend fun fetchAdminTeamCodeMap(): Map<String, String> = withContext(Dispatchers.IO) {
+        val result = linkedMapOf(
+            "__system_vendor__" to "__system_vendor__",
+            "display:vendor" to "__system_vendor__"
+        )
+        try {
+            var page = 1
+            while (page <= 5) {
+                val json = httpClient.getJson(
+                    pathWithQuery = "/api/admin/catalog/teams?include_inactive=true&page=$page&page_size=100",
+                    requireOkTrue = true
+                )
+                val listObj = json.optJSONObject("list") ?: break
+                val teamsArr = listObj.optJSONArray("teams") ?: break
+                if (teamsArr.length() == 0) break
+                for (i in 0 until teamsArr.length()) {
+                    val t = teamsArr.optJSONObject(i) ?: continue
+                    val code = t.optString("code", "").trim()
+                    if (code.isBlank()) continue
+                    result[code.lowercase(Locale.ROOT)] = code
+                    val displayName = t.optString("display_name", "").trim()
+                    if (displayName.isNotBlank()) {
+                        result.putIfAbsent("display:${displayName.lowercase(Locale.ROOT)}", code)
+                    }
+                    val teamId = t.optString("team_id", "").trim()
+                    if (teamId.isNotBlank()) {
+                        result.putIfAbsent("id:${teamId.lowercase(Locale.ROOT)}", code)
+                    }
+                }
+                val total = listObj.optInt("total", teamsArr.length())
+                if (page * 100 >= total) break
+                page++
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Throwable) {
+            // Actors without catalog_master_manage fall back to deterministic casing candidates
+        }
+        result
+    }
+
     suspend fun fetchWorkforceDeep(
         fromDate: String? = null,
         toDate: String? = null
     ): WorkforceDeepMetrics = withContext(Dispatchers.IO) {
         val params = mutableListOf("mode=deep")
-        if (!fromDate.isNullOrBlank()) params.add("from=${encodeParam(fromDate.trim())}")
-        if (!toDate.isNullOrBlank()) params.add("to=${encodeParam(toDate.trim())}")
+        if (fromDate.isNullOrBlank() && toDate.isNullOrBlank()) {
+            params.add("range=all")
+        } else {
+            if (!fromDate.isNullOrBlank()) params.add("from=${encodeParam(fromDate.trim())}")
+            if (!toDate.isNullOrBlank()) params.add("to=${encodeParam(toDate.trim())}")
+        }
 
         val json = httpClient.getJson(
             pathWithQuery = "/api/reporting/workforce-deep?${params.joinToString("&")}",
@@ -1321,8 +1455,22 @@ class WorkReportsAndReportingService(
         val byProjectObj = dimensions?.optJSONObject("byProject")
         val byProject = parseDimensionGroupBuckets(byProjectObj, eligibleTotal)
         val projectPagination = byProjectObj?.optJSONObject("pagination")
+        val totalProjectCount = projectPagination?.optInt("totalCount", 0)?.takeIf { it > 0 }
+            ?: byProject.count { it.key != "unknown" }.coerceAtLeast(byProject.size)
         val byRecruiter = parseDimensionGroupBuckets(dimensions?.optJSONObject("byRecruiter"), eligibleTotal)
         val byProvider = parseDimensionGroupBuckets(dimensions?.optJSONObject("byProvider"), eligibleTotal)
+
+        val balanceObj = wf.optJSONObject("balance")
+        val balanceApplicable = balanceObj?.optBoolean("applicable", false) == true
+        val byStatusObj = if (balanceApplicable) balanceObj?.optJSONObject("byStatus") else null
+        val periodNewEpisodes = if (balanceApplicable) {
+            balanceObj?.optJSONObject("newEpisodesInPeriod")?.optInt("total", 0)
+        } else {
+            null
+        }
+        val periodOnInflow = byStatusObj?.optJSONObject("on")?.optInt("totalInflowCount", 0)
+        val periodOffInflow = byStatusObj?.optJSONObject("off")?.optInt("totalInflowCount", 0)
+        val periodNetOnChange = byStatusObj?.optJSONObject("on")?.optInt("netChange", 0)
 
         val leaveReasonsArr = wf.optJSONObject("leaveReasons")?.optJSONArray("byCategory") ?: JSONArray()
         val leaveReasons = buildList {
@@ -1361,7 +1509,14 @@ class WorkReportsAndReportingService(
             byProvider = byProvider,
             leaveReasons = leaveReasons,
             projectHasMore = projectPagination?.optBoolean("hasMore", false) ?: false,
-            projectNextCursor = projectPagination?.optNullableText("nextCursor")
+            projectNextCursor = projectPagination?.optNullableText("nextCursor"),
+            totalProjectCount = totalProjectCount,
+            periodFromDate = if (balanceApplicable) fromDate?.trim()?.ifBlank { null } else null,
+            periodToDate = if (balanceApplicable) toDate?.trim()?.ifBlank { null } else null,
+            periodNewEpisodes = periodNewEpisodes,
+            periodOnInflow = periodOnInflow,
+            periodOffInflow = periodOffInflow,
+            periodNetOnChange = periodNetOnChange
         )
     }
 
@@ -1375,8 +1530,12 @@ class WorkReportsAndReportingService(
             "mode=project_page",
             "cursor=${encodeParam(cursor.trim())}"
         )
-        if (!fromDate.isNullOrBlank()) params.add("from=${encodeParam(fromDate.trim())}")
-        if (!toDate.isNullOrBlank()) params.add("to=${encodeParam(toDate.trim())}")
+        if (fromDate.isNullOrBlank() && toDate.isNullOrBlank()) {
+            params.add("range=all")
+        } else {
+            if (!fromDate.isNullOrBlank()) params.add("from=${encodeParam(fromDate.trim())}")
+            if (!toDate.isNullOrBlank()) params.add("to=${encodeParam(toDate.trim())}")
+        }
 
         val json = httpClient.getJson(
             pathWithQuery = "/api/reporting/workforce-deep?${params.joinToString("&")}",
@@ -1401,8 +1560,143 @@ class WorkReportsAndReportingService(
         bucketKeyOrTeamCode: String,
         fromDate: String? = null,
         toDate: String? = null,
-        limit: Int = 25
+        limit: Int = 25,
+        knownTeamCodeMap: Map<String, String> = emptyMap(),
+        knownBucketHint: BiBucketItem? = null
     ): TeamReportSnapshot = withContext(Dispatchers.IO) {
+        val trimmedRaw = bucketKeyOrTeamCode.trim()
+        if (trimmedRaw.isEmpty()) {
+            WorkReportsContract.encodeTeamBucketKey("")
+        }
+        val decodedCode = WorkReportsContract.decodeTeamBucketCode(trimmedRaw).trim()
+        val hintDisplayLower = knownBucketHint?.display?.trim()?.lowercase(Locale.ROOT)?.takeIf { it.isNotEmpty() }
+
+        fun resolveFromCatalog(map: Map<String, String>): String? =
+            map[decodedCode.lowercase(Locale.ROOT)]
+                ?: hintDisplayLower?.let { map["display:$it"] }
+
+        val mappedInitial = resolveFromCatalog(knownTeamCodeMap)
+        val orderedCandidates = if (!mappedInitial.isNullOrBlank()) {
+            listOf(mappedInitial)
+        } else {
+            WorkReportsContract.candidateTeamCodes(decodedCode)
+        }
+
+        fun enrichWithBucketHint(snap: TeamReportSnapshot): TeamReportSnapshot {
+            if (knownBucketHint == null) return snap
+            return snap.copy(
+                workingCount = snap.workingCount ?: knownBucketHint.onCount,
+                waitingCount = snap.waitingCount ?: knownBucketHint.unconfirmedCount,
+                leftCount = snap.leftCount ?: knownBucketHint.offCount
+            )
+        }
+
+        var lastInvalidFilter: BackendApiException? = null
+        val triedCodes = linkedSetOf<String>()
+
+        for (candidate in orderedCandidates) {
+            triedCodes.add(candidate)
+            try {
+                return@withContext enrichWithBucketHint(
+                    requestTeamReportOnce(
+                        bucketKeyOrTeamCode = candidate,
+                        fromDate = fromDate,
+                        toDate = toDate,
+                        limit = limit
+                    )
+                )
+            } catch (e: BackendApiException) {
+                if (e.statusCode == 400 && e.backendCode == "INVALID_FILTER") {
+                    lastInvalidFilter = e
+                } else {
+                    throw e
+                }
+            }
+        }
+
+        // Fallback 1: if catalog map was not preloaded, probe admin team catalog once
+        var effectiveMap = knownTeamCodeMap
+        if (effectiveMap.isEmpty()) {
+            effectiveMap = fetchAdminTeamCodeMap()
+            val catalogCode = resolveFromCatalog(effectiveMap)
+            if (!catalogCode.isNullOrBlank() && triedCodes.add(catalogCode)) {
+                try {
+                    return@withContext enrichWithBucketHint(
+                        requestTeamReportOnce(
+                            bucketKeyOrTeamCode = catalogCode,
+                            fromDate = fromDate,
+                            toDate = toDate,
+                            limit = limit
+                        )
+                    )
+                } catch (e: BackendApiException) {
+                    if (e.statusCode == 400 && e.backendCode == "INVALID_FILTER") {
+                        lastInvalidFilter = e
+                    } else {
+                        throw e
+                    }
+                }
+            }
+        }
+
+        // Fallback 2: backend team-report returns 400 INVALID_FILTER when a valid team has 0 new hires in [fromDate, toDate]
+        val hasDateFilter = !fromDate.isNullOrBlank() || !toDate.isNullOrBlank()
+        if (hasDateFilter && knownBucketHint != null) {
+            val catalogVerifiedCode = resolveFromCatalog(effectiveMap)
+            if (!catalogVerifiedCode.isNullOrBlank()) {
+                return@withContext TeamReportSnapshot(
+                    bucketKey = WorkReportsContract.encodeTeamBucketKey(catalogVerifiedCode),
+                    bucketDisplay = knownBucketHint.display.ifBlank { catalogVerifiedCode },
+                    totalRecruited = 0,
+                    rows = emptyList(),
+                    nextCursor = null,
+                    workingCount = knownBucketHint.onCount,
+                    waitingCount = knownBucketHint.unconfirmedCount,
+                    leftCount = knownBucketHint.offCount
+                )
+            }
+            for (probeCandidate in triedCodes) {
+                val allTimeSnap = try {
+                    requestTeamReportOnce(
+                        bucketKeyOrTeamCode = probeCandidate,
+                        fromDate = null,
+                        toDate = null,
+                        limit = 1
+                    )
+                } catch (_: BackendApiException) {
+                    null
+                }
+                if (allTimeSnap != null) {
+                    return@withContext TeamReportSnapshot(
+                        bucketKey = allTimeSnap.bucketKey,
+                        bucketDisplay = allTimeSnap.bucketDisplay.ifBlank {
+                            knownBucketHint.display.ifBlank { probeCandidate }
+                        },
+                        totalRecruited = 0,
+                        rows = emptyList(),
+                        nextCursor = null,
+                        workingCount = knownBucketHint.onCount,
+                        waitingCount = knownBucketHint.unconfirmedCount,
+                        leftCount = knownBucketHint.offCount
+                    )
+                }
+            }
+        }
+
+        throw lastInvalidFilter ?: BackendApiException(
+            kind = BackendFailureKind.INVALID_REQUEST,
+            statusCode = 400,
+            backendCode = "INVALID_FILTER",
+            message = "Vui lòng chọn mã nhóm hợp lệ."
+        )
+    }
+
+    private suspend fun requestTeamReportOnce(
+        bucketKeyOrTeamCode: String,
+        fromDate: String?,
+        toDate: String?,
+        limit: Int
+    ): TeamReportSnapshot {
         val bucketKey = WorkReportsContract.encodeTeamBucketKey(bucketKeyOrTeamCode)
         val params = mutableListOf(
             "bucket_key=${encodeParam(bucketKey)}",
@@ -1486,7 +1780,8 @@ class WorkReportsAndReportingService(
             parsedRows.map { it.projectDisplay }.filter { it.isNotBlank() }.distinct().size
         }
 
-        TeamReportSnapshot(
+        val wfSnapshot = json.optJSONObject("workforce")?.optJSONObject("snapshot")
+        return TeamReportSnapshot(
             bucketKey = bucketObj.optString("key", bucketKey),
             bucketDisplay = bucketObj.optString("display", bucketKey).ifBlank { "Nhóm tuyển dụng" },
             totalRecruited = totalRecruited,
@@ -1498,6 +1793,9 @@ class WorkReportsAndReportingService(
             avgPerActiveDay = hiringSummary.avgPerActiveDay,
             peakDailyCount = hiringSummary.peakDailyCount,
             peakDateIso = hiringSummary.peakDateIso,
+            workingCount = if (wfSnapshot != null && wfSnapshot.has("onCount")) wfSnapshot.optInt("onCount", 0) else null,
+            waitingCount = if (wfSnapshot != null && wfSnapshot.has("unconfirmedCount")) wfSnapshot.optInt("unconfirmedCount", 0) else null,
+            leftCount = if (wfSnapshot != null && wfSnapshot.has("offCount")) wfSnapshot.optInt("offCount", 0) else null,
             byRecruiter = byRecruiter,
             byProject = byProject,
             byEmployment = byEmployment,
@@ -1695,7 +1993,10 @@ class WorkReportsAndReportingService(
                     key = b.optString("key", "bucket_$i"),
                     display = b.optString("display", ""),
                     count = count,
-                    sharePct = sharePct
+                    sharePct = sharePct,
+                    onCount = if (b.has("onCount") && !b.isNull("onCount")) b.optInt("onCount", 0) else null,
+                    unconfirmedCount = if (b.has("unconfirmedCount") && !b.isNull("unconfirmedCount")) b.optInt("unconfirmedCount", 0) else null,
+                    offCount = if (b.has("offCount") && !b.isNull("offCount")) b.optInt("offCount", 0) else null
                 )
             )
         }
@@ -1711,13 +2012,13 @@ class WorkReportsAndReportingService(
             )
             add(
                 TeamDrillDownItem(
-                    businessDate = r.optString("business_date", ""),
-                    projectDisplay = r.optString("project_display", ""),
-                    recruiterDisplay = r.optString("recruiter_display", ""),
-                    providerTypeDisplay = r.optString("provider_type_display", ""),
-                    employmentTypeDisplay = r.optString("employment_type_display", ""),
-                    recruitedCount = r.optInt("recruited_count", 0),
-                    firstWorkDate = r.optString("first_work_date", "")
+                    businessDate = r.optString("business_date", "").ifBlank { r.optString("businessDate", "") },
+                    projectDisplay = r.optString("project_display", "").ifBlank { r.optString("projectDisplay", "") },
+                    recruiterDisplay = r.optString("recruiter_display", "").ifBlank { r.optString("recruiterDisplay", "") },
+                    providerTypeDisplay = r.optString("provider_type_display", "").ifBlank { r.optString("providerTypeDisplay", "") },
+                    employmentTypeDisplay = r.optString("employment_type_display", "").ifBlank { r.optString("employmentTypeDisplay", "") },
+                    recruitedCount = if (r.has("recruited_count")) r.optInt("recruited_count", 0) else r.optInt("recruitedCount", 0),
+                    firstWorkDate = r.optString("first_work_date", "").ifBlank { r.optString("firstWorkDate", "") }
                 )
             )
         }

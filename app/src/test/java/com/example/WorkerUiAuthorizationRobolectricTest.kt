@@ -24,10 +24,12 @@ import com.example.data.AppActor
 import com.example.data.AttendanceEntity
 import com.example.data.AttendanceOutboxStatus
 import com.example.data.AttendanceTimeSource
+import com.example.data.DashboardDatePreset
 import com.example.data.DirectEntryContract
 import com.example.data.MiniBiDatabase
 import com.example.data.MiniBiRepository
 import com.example.data.SavedLoginAccount
+import com.example.data.WorkReportsContract
 import com.example.data.WorkerEntryDetail
 import com.example.data.WorkerProfileEntity
 import com.example.ui.MiniBiViewModel
@@ -1730,5 +1732,304 @@ class WorkerUiAuthorizationRobolectricTest {
             "Expected button text horizontally centered (buttonCenter=$buttonCenterX, labelCenter=$labelCenterX)",
             abs(buttonCenterX - labelCenterX) <= 2.5f
         )
+    }
+
+    @Test
+    @Config(qualifiers = "w360dp-h800dp-xxhdpi")
+    fun `all scope dashboard shows BC chuyen sau tab with bottom filter bar and loads lowercased wf04 team report without INVALID_FILTER`() {
+        val recordedPaths = java.util.Collections.synchronizedList(mutableListOf<String>())
+        val server = MockWebServer()
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val path = request.path.orEmpty()
+                recordedPaths.add(path)
+                val url = request.requestUrl
+                return when {
+                    path.startsWith("/api/auth/session") -> MockResponse()
+                        .setResponseCode(200)
+                        .setHeader("Content-Type", "application/json")
+                        .setBody(
+                            """
+                            {
+                              "ok": true,
+                              "actor": {
+                                "app_user_id": "99999999-8888-4777-8666-555555555555",
+                                "display_name": "nobita6986",
+                                "capabilities": [
+                                  "entry_own",
+                                  "entry_team",
+                                  "catalog_master_manage",
+                                  "reporting_team",
+                                  "reporting_duplicate_cccd",
+                                  "report_analytics_view"
+                                ],
+                                "scopes": [
+                                  {
+                                    "kind": "all",
+                                    "reference": "all",
+                                    "valid_from": "2026-01-01",
+                                    "valid_to": null
+                                  }
+                                ],
+                                "self_recruiter_suggestion": null
+                              }
+                            }
+                            """.trimIndent()
+                        )
+                    path.startsWith("/api/admin/catalog/teams") -> MockResponse()
+                        .setResponseCode(200)
+                        .setHeader("Content-Type", "application/json")
+                        .setBody(
+                            """
+                            {
+                              "ok": true,
+                              "list": {
+                                "authorization_date": "2026-10-24",
+                                "include_inactive": true,
+                                "search": "",
+                                "page": 1,
+                                "page_size": 100,
+                                "total": 2,
+                                "teams": [
+                                  {"team_id": "t1", "code": "TEAM_1", "display_name": "Team 1", "active": true, "version": 1, "revision_count": 1},
+                                  {"team_id": "t4", "code": "TEAM_4", "display_name": "Team 4", "active": true, "version": 1, "revision_count": 1}
+                                ]
+                              }
+                            }
+                            """.trimIndent()
+                        )
+                    path.startsWith("/api/reporting/workforce-deep") -> {
+                        val hasDateFilter = url?.queryParameter("from") != null && url.queryParameter("to") != null
+                        val balanceJson = if (hasDateFilter) {
+                            """
+                            {
+                              "applicable": true,
+                              "newEpisodesInPeriod": {"total": 42},
+                              "byStatus": {
+                                "on": {"totalInflowCount": 38, "netChange": 26},
+                                "off": {"totalInflowCount": 12}
+                              }
+                            }
+                            """.trimIndent()
+                        } else {
+                            """{"applicable": false}"""
+                        }
+                        MockResponse()
+                            .setResponseCode(200)
+                            .setHeader("Content-Type", "application/json")
+                            .setBody(
+                                """
+                                {
+                                  "ok": true,
+                                  "workforce": {
+                                    "status": "ready",
+                                    "snapshot": {
+                                      "asOfDate": "2026-10-24",
+                                      "eligibleEpisodeTotal": 1810,
+                                      "onCount": 1497,
+                                      "unconfirmedCount": 0,
+                                      "offCount": 313,
+                                      "unknownCount": 0,
+                                      "futureEpisodeCount": 0
+                                    },
+                                    "waiting": {"placementRateOfWaiting": 0.0},
+                                    "retention": {"checkpoints": {"d7": {"retentionRate": 0.91}, "d30": {"retentionRate": 0.84}}},
+                                    "duration": {"allEverOn": {"avgOnDaysPerEpisode": 45.2}},
+                                    "balance": $balanceJson,
+                                    "dimensions": {
+                                      "byTeam": {
+                                        "eligibleEpisodeTotal": 1810,
+                                        "buckets": [
+                                          {"key": "__system_vendor__", "display": "Vendor", "eligibleEpisodeCount": 702, "onCount": 600, "unconfirmedCount": 0, "offCount": 102},
+                                          {"key": "team_1", "display": "Team 1", "eligibleEpisodeCount": 271, "onCount": 230, "unconfirmedCount": 0, "offCount": 41},
+                                          {"key": "team_4", "display": "Team 4", "eligibleEpisodeCount": 215, "onCount": 180, "unconfirmedCount": 0, "offCount": 35}
+                                        ]
+                                      },
+                                      "byProject": {
+                                        "eligibleEpisodeTotal": 1810,
+                                        "buckets": [
+                                          {"key": "prj_1", "display": "Luxshare Bắc Giang", "eligibleEpisodeCount": 520}
+                                        ],
+                                        "pagination": {"totalCount": 12, "hasMore": false, "nextCursor": null}
+                                      },
+                                      "byRecruiter": {
+                                        "eligibleEpisodeTotal": 1810,
+                                        "buckets": [
+                                          {"key": "rec_1", "display": "Nguyễn Tuyển", "eligibleEpisodeCount": 95}
+                                        ]
+                                      },
+                                      "byProvider": {
+                                        "eligibleEpisodeTotal": 1810,
+                                        "buckets": [
+                                          {"key": "hrp", "display": "HRP", "eligibleEpisodeCount": 1108},
+                                          {"key": "vendor", "display": "Vendor", "eligibleEpisodeCount": 702}
+                                        ]
+                                      }
+                                    },
+                                    "leaveReasons": {"byCategory": []}
+                                  }
+                                }
+                                """.trimIndent()
+                            )
+                    }
+                    path.startsWith("/api/reporting/team-report") -> {
+                        val bKey = url?.queryParameter("bucket_key").orEmpty()
+                        val hasDateFilter = url?.queryParameter("from") != null
+                        val expectedTeam1Key = WorkReportsContract.encodeTeamBucketKey("TEAM_1")
+                        val expectedVendorKey = WorkReportsContract.encodeTeamBucketKey("__system_vendor__")
+                        // Strict backend behavior: lowercase team_1 -> 400 INVALID_FILTER; TEAM_4 in filtered period (0 hires) -> 400 INVALID_FILTER
+                        when {
+                            bKey == expectedTeam1Key -> MockResponse()
+                                .setResponseCode(200)
+                                .setHeader("Content-Type", "application/json")
+                                .setBody(
+                                    """
+                                    {
+                                      "bucket": {"key": "$expectedTeam1Key", "display": "Team 1"},
+                                      "report": {
+                                        "recruitedTotal": ${if (hasDateFilter) 18 else 271},
+                                        "byRecruiter": {"r1": {"key": "r1", "display": "Nguyễn Tuyển", "recruitedCount": ${if (hasDateFilter) 18 else 271}}},
+                                        "byProject": {"p1": {"key": "p1", "display": "Luxshare Bắc Giang", "recruitedCount": ${if (hasDateFilter) 18 else 271}}},
+                                        "byDate": {"2026-10-20": ${if (hasDateFilter) 18 else 271}}
+                                      },
+                                      "detail": {"total": ${if (hasDateFilter) 18 else 271}, "rows": [], "nextCursor": null}
+                                    }
+                                    """.trimIndent()
+                                )
+                            bKey == expectedVendorKey -> MockResponse()
+                                .setResponseCode(200)
+                                .setHeader("Content-Type", "application/json")
+                                .setBody(
+                                    """
+                                    {
+                                      "bucket": {"key": "$expectedVendorKey", "display": "Vendor"},
+                                      "report": {"recruitedTotal": 702, "byDate": {"2026-10-20": 702}},
+                                      "detail": {"total": 702, "rows": [], "nextCursor": null}
+                                    }
+                                    """.trimIndent()
+                                )
+                            else -> MockResponse()
+                                .setResponseCode(400)
+                                .setHeader("Content-Type", "application/json")
+                                .setBody("""{"ok":false,"code":"INVALID_FILTER"}""")
+                        }
+                    }
+                    else -> MockResponse()
+                        .setResponseCode(200)
+                        .setHeader("Content-Type", "application/json")
+                        .setBody("""{"ok":true,"groups":[],"total_groups":0,"total_entries":0,"page":1,"page_size":25,"has_more":false,"authorization_date":"2026-10-24","data":[]}""")
+                }
+            }
+        }
+        server.start()
+
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val db = buildTestDb(app)
+        val cookieFile = File(app.cacheDir, "ui_all_dash_${System.nanoTime()}.enc")
+        val savedCredsFile = File(app.cacheDir, "ui_all_saved_${System.nanoTime()}.enc")
+        val anchorFile = File(app.cacheDir, "ui_all_anchor_${System.nanoTime()}.enc")
+        val prefsFile = File(app.cacheDir, "ui_all_prefs_${System.nanoTime()}.preferences_pb")
+        val repo = MiniBiRepository(
+            context = app,
+            database = db,
+            defaultServerUrl = server.url("/").toString().trimEnd('/'),
+            allowDebugUrlOverride = true,
+            cookieStorageFile = cookieFile,
+            timeAnchorStorageFile = anchorFile,
+            savedCredentialsStorageFile = savedCredsFile,
+            preferencesStorageFile = prefsFile,
+            cookieCipher = JvmAes256GcmCookieCipher()
+        )
+        repo.cookieJar.saveFromResponse(
+            server.url("/api/auth/session"),
+            listOf(
+                Cookie.Builder()
+                    .name("mini_bi_sid")
+                    .value("valid_all_sid")
+                    .hostOnlyDomain(server.hostName)
+                    .path("/")
+                    .expiresAt(System.currentTimeMillis() + 3_600_000L)
+                    .build()
+            )
+        )
+        val vm = MiniBiViewModel(app, repo)
+        registerTestResourcesCleanup(vm, db, server, cookieFile, savedCredsFile, anchorFile, prefsFile)
+
+        composeTestRule.setContent {
+            MyApplicationTheme {
+                MiniBiAppRoot(viewModel = vm)
+            }
+        }
+
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            !vm.sessionBootstrapping.value &&
+                vm.generalOverview.value != null &&
+                vm.teamReport.value != null &&
+                !vm.teamReportLoading.value
+        }
+        composeTestRule.waitForIdle()
+
+        // 1. Tab 1 uses short label "BC chuyên sâu", fits on 360dp width, and matches Row 1 sibling height
+        composeTestRule.onNodeWithText("BC chuyên sâu").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Báo cáo chuyên sâu").assertDoesNotExist()
+        val tab0Bounds = composeTestRule.onNodeWithTag("dashboard_tab_0").fetchSemanticsNode().boundsInRoot
+        val tab1Bounds = composeTestRule.onNodeWithTag("dashboard_tab_1").fetchSemanticsNode().boundsInRoot
+        assertTrue(
+            "Top row tabs must have uniform height (tab0=${tab0Bounds.height}, tab1=${tab1Bounds.height})",
+            abs(tab0Bounds.height - tab1Bounds.height) <= 1.5f
+        )
+
+        // 2. Refresh button + simple time filter presets sit BELOW the tab grid and fit within 360dp width without scroll
+        val dashRight = composeTestRule.onNodeWithTag("dashboard_lazy_column").fetchSemanticsNode().boundsInRoot.right
+        val tabGridBottom = composeTestRule.onNodeWithTag("dashboard_tab_grid").fetchSemanticsNode().boundsInRoot.bottom
+        val filterBarBounds = composeTestRule.onNodeWithTag("dashboard_filter_bar").fetchSemanticsNode().boundsInRoot
+        val refreshBounds = composeTestRule.onNodeWithTag("dashboard_refresh_button").fetchSemanticsNode().boundsInRoot
+        assertTrue(
+            "Filter & refresh bar (top=${filterBarBounds.top}) must sit below tab grid (bottom=$tabGridBottom)",
+            filterBarBounds.top >= tabGridBottom - 1f
+        )
+        assertTrue("Refresh button must fit inside 360dp viewport", refreshBounds.right <= dashRight + 1f)
+        for (preset in DashboardDatePreset.entries) {
+            val chipBounds = composeTestRule.onNodeWithTag("dashboard_date_preset_${preset.key}")
+                .assertIsDisplayed()
+                .fetchSemanticsNode().boundsInRoot
+            assertTrue("Preset ${preset.label} must fit inside 360dp viewport", chipBounds.right <= dashRight + 1f)
+        }
+
+        // 3. Project count uses pagination.totalCount (12), not pageSize (1)
+        assertEquals(12, vm.generalOverview.value?.projectCount)
+
+        // 4. Switch to "Báo cáo theo nhóm" -> auto-loads Team 1 via canonical TEAM_1 code with zero INVALID_FILTER error
+        composeTestRule.onNodeWithTag("dashboard_tab_2").performClick()
+        composeTestRule.waitForIdle()
+        assertNull(vm.teamReportError.value)
+        assertEquals("Team 1", vm.teamReport.value?.bucketDisplay)
+        assertEquals(271, vm.teamReport.value?.totalRecruited)
+        composeTestRule.onNodeWithTag("team_report_detail_card").assertIsDisplayed()
+
+        // 5. Select "Tháng này" -> sends from & to to reporting endpoints and updates Team 1 + handles 0-hire Team 4 gracefully
+        composeTestRule.onNodeWithTag("dashboard_date_preset_this-month").performClick()
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            vm.dashboardDatePreset.value == DashboardDatePreset.THIS_MONTH &&
+                !vm.workforceLoading.value &&
+                !vm.teamReportLoading.value &&
+                vm.teamReport.value?.totalRecruited == 18
+        }
+        composeTestRule.waitForIdle()
+        assertEquals(42, vm.generalOverview.value?.periodNewEpisodes)
+        assertTrue(recordedPaths.any { it.startsWith("/api/reporting/workforce-deep") && it.contains("from=") && it.contains("to=") })
+
+        // Tapping Team 4 (0 new hires in Tháng này -> backend 400 INVALID_FILTER) renders 0-recruited Team 4 instead of error card
+        composeTestRule.onNodeWithTag("team_bucket_chip_TEAM_4").performClick()
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            !vm.teamReportLoading.value && vm.teamReport.value?.bucketDisplay == "Team 4"
+        }
+        composeTestRule.waitForIdle()
+        assertNull(vm.teamReportError.value)
+        assertEquals(0, vm.teamReport.value?.totalRecruited)
+        assertEquals(180, vm.teamReport.value?.workingCount)
     }
 }

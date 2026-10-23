@@ -13,7 +13,9 @@ import com.example.data.AttendanceContract
 import com.example.data.AttendanceOutboxService
 import com.example.data.AttendanceOutboxStatus
 import com.example.data.BackendApiException
+import com.example.data.BiBucketItem
 import com.example.data.CatalogRecruiterOption
+import com.example.data.DashboardDatePreset
 import com.example.data.MiniBiDatabase
 import com.example.data.MiniBiRepository
 import com.example.data.WorkReportsContract
@@ -953,5 +955,131 @@ class WorkReportsReportingAndAttendanceContractTest {
                 res.userMessage.lowercase().contains("thử lại")
             )
         }
+    }
+
+    @Test
+    fun `dashboard date presets and lowercased wf04 team report codes resolve cleanly without INVALID_FILTER`() = runBlocking {
+        // 1. Fixed epoch: 2026-10-24T01:30:00Z -> Saturday 2026-10-24 08:30:00 in Asia/Ho_Chi_Minh
+        val fixedEpochMs = 1_792_805_400_000L
+        assertEquals(
+            null to null,
+            WorkReportsContract.resolveDatePresetRange(DashboardDatePreset.ALL_TIME, fixedEpochMs)
+        )
+        assertEquals(
+            "2026-10-19" to "2026-10-24",
+            WorkReportsContract.resolveDatePresetRange(DashboardDatePreset.THIS_WEEK, fixedEpochMs)
+        )
+        assertEquals(
+            "2026-10-01" to "2026-10-24",
+            WorkReportsContract.resolveDatePresetRange(DashboardDatePreset.THIS_MONTH, fixedEpochMs)
+        )
+        assertEquals(
+            "2026-09-01" to "2026-09-30",
+            WorkReportsContract.resolveDatePresetRange(DashboardDatePreset.LAST_MONTH, fixedEpochMs)
+        )
+
+        val repo = createRepository()
+
+        // 2. fetchAdminTeamCodeMap parses canonical team codes from /api/admin/catalog/teams
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "application/json")
+                .setBody(
+                    """
+                    {
+                      "ok": true,
+                      "list": {
+                        "authorization_date": "2026-10-24",
+                        "include_inactive": true,
+                        "search": "",
+                        "page": 1,
+                        "page_size": 100,
+                        "total": 2,
+                        "teams": [
+                          {"team_id": "t1", "code": "TEAM_1", "display_name": "Team 1", "active": true, "version": 1, "revision_count": 1},
+                          {"team_id": "t5", "code": "TEAM_5", "display_name": "Team 5", "active": true, "version": 1, "revision_count": 1}
+                        ]
+                      }
+                    }
+                    """.trimIndent()
+                )
+        )
+        val codeMap = repo.workReportsAndReportingService.fetchAdminTeamCodeMap()
+        assertEquals("TEAM_1", codeMap["team_1"])
+        assertEquals("TEAM_5", codeMap["display:team 5"])
+        assertEquals("__system_vendor__", codeMap["__system_vendor__"])
+        assertEquals(
+            "/api/admin/catalog/teams?include_inactive=true&page=1&page_size=100",
+            server.takeRequest().path
+        )
+
+        // 3. Read-only BoD without preloaded catalog map calling fetchTeamReport("team_1"):
+        //    First attempt ("team_1") -> 400 INVALID_FILTER; second attempt ("TEAM_1") -> 200 OK
+        server.enqueue(
+            MockResponse().setResponseCode(400).setBody("""{"ok":false,"code":"INVALID_FILTER"}""")
+        )
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "application/json")
+                .setBody(
+                    """
+                    {
+                      "bucket": {"key": "team.VEVBTV8x", "display": "Team 1"},
+                      "report": {"recruitedTotal": 14, "byDate": {"2026-10-20": 14}},
+                      "detail": {"total": 14, "rows": [], "nextCursor": null}
+                    }
+                    """.trimIndent()
+                )
+        )
+        val resolvedSnap = repo.workReportsAndReportingService.fetchTeamReport(
+            bucketKeyOrTeamCode = "team_1",
+            knownBucketHint = BiBucketItem(
+                key = "team_1",
+                display = "Team 1",
+                count = 271,
+                sharePct = 15.0f,
+                onCount = 220,
+                unconfirmedCount = 11,
+                offCount = 40
+            )
+        )
+        assertEquals("team.VEVBTV8x", resolvedSnap.bucketKey)
+        assertEquals("Team 1", resolvedSnap.bucketDisplay)
+        assertEquals(14, resolvedSnap.totalRecruited)
+        assertEquals(220, resolvedSnap.workingCount)
+        assertEquals("/api/reporting/team-report?bucket_key=team.dGVhbV8x&limit=25", server.takeRequest().path)
+        assertEquals("/api/reporting/team-report?bucket_key=team.VEVBTV8x&limit=25", server.takeRequest().path)
+
+        // 4. Date-filtered team with 0 new hires in [from, to] returns graceful 0-recruited snapshot instead of INVALID_FILTER
+        server.enqueue(
+            MockResponse().setResponseCode(400).setBody("""{"ok":false,"code":"INVALID_FILTER"}""")
+        )
+        val zeroPeriodSnap = repo.workReportsAndReportingService.fetchTeamReport(
+            bucketKeyOrTeamCode = "team_5",
+            fromDate = "2026-10-19",
+            toDate = "2026-10-24",
+            knownTeamCodeMap = codeMap,
+            knownBucketHint = BiBucketItem(
+                key = "TEAM_5",
+                display = "Team 5",
+                count = 70,
+                sharePct = 3.9f,
+                onCount = 58,
+                unconfirmedCount = 2,
+                offCount = 10
+            )
+        )
+        assertEquals("team.VEVBTV81", zeroPeriodSnap.bucketKey)
+        assertEquals("Team 5", zeroPeriodSnap.bucketDisplay)
+        assertEquals(0, zeroPeriodSnap.totalRecruited)
+        assertEquals(58, zeroPeriodSnap.workingCount)
+        assertEquals(2, zeroPeriodSnap.waitingCount)
+        assertEquals(10, zeroPeriodSnap.leftCount)
+        assertEquals(
+            "/api/reporting/team-report?bucket_key=team.VEVBTV81&limit=25&from=2026-10-19&to=2026-10-24",
+            server.takeRequest().path
+        )
     }
 }
