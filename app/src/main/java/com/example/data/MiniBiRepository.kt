@@ -228,7 +228,7 @@ class MiniBiRepository(
     private val context: Context,
     database: MiniBiDatabase = MiniBiDatabase.getInstance(context),
     private val defaultServerUrl: String = BuildConfig.DEFAULT_SERVER_URL,
-    private val allowDebugUrlOverride: Boolean = BuildConfig.DEBUG,
+    private val allowDebugUrlOverride: Boolean = false,
     cookieStorageFile: File = File(context.noBackupFilesDir, "session_cookies.enc"),
     timeAnchorStorageFile: File = File(context.noBackupFilesDir, "attendance_time_anchor.enc"),
     savedCredentialsStorageFile: File = File(context.noBackupFilesDir, "saved_login_accounts.enc"),

@@ -1099,9 +1099,6 @@ class WorkerUiAuthorizationRobolectricTest {
                 LoginScreen(
                     busy = false,
                     error = null,
-                    serverUrl = "https://bi2.hrpartner.vn",
-                    canConfigureServerUrl = false,
-                    onUpdateServerUrl = {},
                     savedAccounts = savedAccounts,
                     onRemoveSavedAccount = { removedIdentifier = it },
                     onLoginSubmit = { id, pw, rem -> submittedTriple = Triple(id, pw, rem) }
@@ -1109,9 +1106,14 @@ class WorkerUiAuthorizationRobolectricTest {
             }
         }
 
-        // Brand heading on LoginScreen displays "HRP BI"
+        // Brand heading on LoginScreen displays "HRP BI" and hides server URL configuration UI
         composeTestRule.onNodeWithText("HRP BI").assertIsDisplayed()
         composeTestRule.onNodeWithText("HRPartner").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("toggle_debug_server_url_button").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("debug_server_url_input").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("save_debug_server_url_button").assertDoesNotExist()
+        composeTestRule.onNodeWithText("Cấu hình URL máy chủ", substring = true).assertDoesNotExist()
+        composeTestRule.onNodeWithText("Server Base URL", substring = true).assertDoesNotExist()
 
         // Most recent saved account is pre-filled automatically
         composeTestRule.onNodeWithTag("login_identifier_input")

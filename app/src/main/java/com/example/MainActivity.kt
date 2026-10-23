@@ -126,7 +126,6 @@ fun MiniBiAppRoot(viewModel: MiniBiViewModel) {
     val sessionBootstrapping by viewModel.sessionBootstrapping.collectAsStateWithLifecycle()
     val actor by viewModel.currentActor.collectAsStateWithLifecycle()
     val themeId by viewModel.themeId.collectAsStateWithLifecycle()
-    val serverUrl by viewModel.serverUrl.collectAsStateWithLifecycle()
     val loginBusy by viewModel.loginBusy.collectAsStateWithLifecycle()
     val loginError by viewModel.loginError.collectAsStateWithLifecycle()
     val savedAccounts by viewModel.savedAccounts.collectAsStateWithLifecycle()
@@ -197,9 +196,6 @@ fun MiniBiAppRoot(viewModel: MiniBiViewModel) {
                 LoginScreen(
                     busy = loginBusy,
                     error = loginError,
-                    serverUrl = serverUrl,
-                    canConfigureServerUrl = BuildConfig.DEBUG,
-                    onUpdateServerUrl = { viewModel.updateServerUrl(it) },
                     savedAccounts = savedAccounts,
                     onRemoveSavedAccount = { viewModel.removeSavedAccount(it) },
                     onLoginSubmit = { identifier, password, rememberAccount ->
