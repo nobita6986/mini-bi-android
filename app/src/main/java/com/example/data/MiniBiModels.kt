@@ -522,6 +522,9 @@ interface MiniBiDao {
     @Query("SELECT * FROM cached_work_report_obligations ORDER BY periodKey DESC, dueAtIso DESC")
     fun observeAllWorkReports(): Flow<List<WorkReportObligationEntity>>
 
+    @Query("SELECT * FROM cached_work_report_obligations ORDER BY periodKey DESC, dueAtIso DESC")
+    suspend fun getCachedWorkReportsSnapshot(): List<WorkReportObligationEntity>
+
     @Query("DELETE FROM cached_work_report_obligations")
     suspend fun clearWorkReportsCache()
 

@@ -127,6 +127,15 @@ class MiniBiViewModel(application: Application) : AndroidViewModel(application) 
     private val _duplicateError = MutableStateFlow<String?>(null)
     val duplicateError: StateFlow<String?> = _duplicateError.asStateFlow()
 
+    private val _duplicatePage = MutableStateFlow(1)
+    val duplicatePage: StateFlow<Int> = _duplicatePage.asStateFlow()
+
+    private val _duplicateHasMore = MutableStateFlow(false)
+    val duplicateHasMore: StateFlow<Boolean> = _duplicateHasMore.asStateFlow()
+
+    private val _duplicateManagedOnly = MutableStateFlow(false)
+    val duplicateManagedOnly: StateFlow<Boolean> = _duplicateManagedOnly.asStateFlow()
+
     // Direct Entry & Worker Directory States (Backend authority only; zero seed data)
     private val _catalog = MutableStateFlow<DirectEntryCatalog?>(null)
     val catalog: StateFlow<DirectEntryCatalog?> = _catalog.asStateFlow()
@@ -202,6 +211,12 @@ class MiniBiViewModel(application: Application) : AndroidViewModel(application) 
     private val _analyticsSnapshot = MutableStateFlow<WorkReportAnalyticsSnapshot?>(null)
     val analyticsSnapshot: StateFlow<WorkReportAnalyticsSnapshot?> = _analyticsSnapshot.asStateFlow()
 
+    private val _editingObligation = MutableStateFlow<WorkReportObligationEntity?>(null)
+    val editingObligation: StateFlow<WorkReportObligationEntity?> = _editingObligation.asStateFlow()
+
+    private val _workReportMutationBusy = MutableStateFlow(false)
+    val workReportMutationBusy: StateFlow<Boolean> = _workReportMutationBusy.asStateFlow()
+
     // Attendance GPS & Outbox States (Zero fake GPS fallback)
     private val _gpsSnapshot = MutableStateFlow<GpsSnapshot?>(null)
     val gpsSnapshot: StateFlow<GpsSnapshot?> = _gpsSnapshot.asStateFlow()
@@ -225,8 +240,11 @@ class MiniBiViewModel(application: Application) : AndroidViewModel(application) 
     fun bootstrapSession() {
         _sessionBootstrapping.value = true
         viewModelScope.launch {
-            repository.bootstrapSession()
+            val res = repository.bootstrapSession()
             _sessionBootstrapping.value = false
+            res.onSuccess { actor ->
+                refreshDashboardData(actor)
+            }
         }
     }
 
@@ -234,6 +252,14 @@ class MiniBiViewModel(application: Application) : AndroidViewModel(application) 
         _currentDestination.value = destination
         val actor = currentActor.value ?: return
         when (destination) {
+            MainDestination.DASHBOARD -> {
+                if (_duplicateGroups.value.isEmpty() && !_duplicateLoading.value) {
+                    refreshDashboardData(actor)
+                }
+            }
+            MainDestination.WORK_REPORTS -> {
+                refreshWorkReportsData(actor)
+            }
             MainDestination.NEW_ENTRY -> {
                 loadCatalogIfNeeded()
                 if (actor.hasCapability("submission_read")) {
@@ -282,6 +308,7 @@ class MiniBiViewModel(application: Application) : AndroidViewModel(application) 
             result.onSuccess { actor ->
                 _loginError.value = null
                 showBanner("Xin chào ${actor.displayName}")
+                refreshDashboardData(actor)
             }.onFailure { err ->
                 _loginError.value = (err as? BackendApiException)?.message
                     ?: err.message
@@ -295,8 +322,14 @@ class MiniBiViewModel(application: Application) : AndroidViewModel(application) 
             repository.logout()
             _currentDestination.value = MainDestination.DASHBOARD
             _workforceDeep.value = null
+            _workforceError.value = null
             _teamReport.value = null
+            _teamReportError.value = null
             _duplicateGroups.value = emptyList()
+            _duplicateError.value = null
+            _duplicatePage.value = 1
+            _duplicateHasMore.value = false
+            _duplicateManagedOnly.value = false
             _catalog.value = null
             _workerRows.value = emptyList()
             _ownSubmissions.value = emptyList()
@@ -309,8 +342,402 @@ class MiniBiViewModel(application: Application) : AndroidViewModel(application) 
             _proposeChangeTarget.value = null
             _directEditTarget.value = null
             _workerMutationError.value = null
+            _editingObligation.value = null
+            _workReportsError.value = null
             _reviewQueue.value = emptyList()
             _analyticsSnapshot.value = null
+        }
+    }
+
+    // =========================================================================
+    // Reporting, Dashboard & Duplicate CCCD Actions (Backend authority only)
+    // =========================================================================
+
+    fun refreshDashboardData(actor: AppActor? = currentActor.value) {
+        val resolvedActor = actor ?: return
+        refreshDuplicateCccdReport(page = _duplicatePage.value, managedOnly = _duplicateManagedOnly.value)
+        if (resolvedActor.hasScopeKind("all")) {
+            refreshWorkforceDeep()
+        } else {
+            _workforceDeep.value = null
+            _workforceError.value = null
+        }
+    }
+
+    fun refreshWorkforceDeep(fromDate: String? = null, toDate: String? = null) {
+        val actor = currentActor.value ?: return
+        if (!actor.hasScopeKind("all")) return
+        _workforceLoading.value = true
+        _workforceError.value = null
+        viewModelScope.launch {
+            try {
+                val metrics = repository.workReportsAndReportingService.fetchWorkforceDeep(fromDate, toDate)
+                _workforceDeep.value = metrics
+                // Auto-select first valid team bucket when none selected yet
+                if (_teamReport.value == null) {
+                    val candidateBucket = metrics.byTeam.firstOrNull { it.key != "unknown" }
+                        ?: metrics.byTeam.firstOrNull()
+                    if (candidateBucket != null) {
+                        loadTeamReport(candidateBucket.key, fromDate, toDate)
+                    }
+                }
+            } catch (e: Exception) {
+                _workforceError.value = (e as? BackendApiException)?.message
+                    ?: e.message
+                    ?: "Không thể tải báo cáo chuyên sâu lực lượng lao động."
+            } finally {
+                _workforceLoading.value = false
+            }
+        }
+    }
+
+    fun loadMoreWorkforceProjects() {
+        val current = _workforceDeep.value ?: return
+        val cursor = current.projectNextCursor ?: return
+        if (!current.projectHasMore || _workforceLoading.value) return
+        viewModelScope.launch {
+            _workforceLoading.value = true
+            try {
+                val (moreRows, hasMore, nextCursor) = repository.workReportsAndReportingService
+                    .fetchWorkforceProjectPage(
+                        cursor = cursor,
+                        eligibleTotal = current.eligibleEpisodeTotal
+                    )
+                _workforceDeep.value = current.copy(
+                    byProject = current.byProject + moreRows,
+                    projectHasMore = hasMore,
+                    projectNextCursor = nextCursor
+                )
+            } catch (e: Exception) {
+                showBanner(
+                    (e as? BackendApiException)?.message ?: "Không thể tải thêm danh sách dự án.",
+                    isError = true
+                )
+            } finally {
+                _workforceLoading.value = false
+            }
+        }
+    }
+
+    fun loadTeamReport(
+        bucketKeyOrTeamCode: String,
+        fromDate: String? = null,
+        toDate: String? = null
+    ) {
+        val actor = currentActor.value ?: return
+        if (!actor.hasScopeKind("all") && !actor.hasScopeKind("team")) return
+        _teamReportLoading.value = true
+        _teamReportError.value = null
+        viewModelScope.launch {
+            try {
+                val snap = repository.workReportsAndReportingService.fetchTeamReport(
+                    bucketKeyOrTeamCode = bucketKeyOrTeamCode,
+                    fromDate = fromDate,
+                    toDate = toDate
+                )
+                _teamReport.value = snap
+            } catch (e: Exception) {
+                _teamReport.value = null
+                _teamReportError.value = (e as? BackendApiException)?.message
+                    ?: e.message
+                    ?: "Không thể tải báo cáo theo nhóm."
+            } finally {
+                _teamReportLoading.value = false
+            }
+        }
+    }
+
+    fun loadMoreTeamDrillDown() {
+        val current = _teamReport.value ?: return
+        val cursor = current.nextCursor ?: return
+        if (_teamReportLoading.value) return
+        _teamReportLoading.value = true
+        viewModelScope.launch {
+            try {
+                val next = repository.workReportsAndReportingService.fetchTeamDrillDownPage(
+                    bucketKeyOrTeamCode = current.bucketKey,
+                    cursor = cursor
+                )
+                _teamReport.value = current.copy(
+                    rows = current.rows + next.rows,
+                    nextCursor = next.nextCursor
+                )
+            } catch (e: Exception) {
+                showBanner(
+                    (e as? BackendApiException)?.message ?: "Không thể tải thêm chi tiết nhóm.",
+                    isError = true
+                )
+            } finally {
+                _teamReportLoading.value = false
+            }
+        }
+    }
+
+    fun refreshDuplicateCccdReport(
+        page: Int = _duplicatePage.value,
+        managedOnly: Boolean = _duplicateManagedOnly.value
+    ) {
+        _duplicatePage.value = page.coerceIn(1, 1000)
+        _duplicateManagedOnly.value = managedOnly
+        _duplicateLoading.value = true
+        _duplicateError.value = null
+        viewModelScope.launch {
+            try {
+                val report = repository.workReportsAndReportingService.fetchDuplicateCccdReport(
+                    page = _duplicatePage.value,
+                    pageSize = 25,
+                    managedOnly = managedOnly
+                )
+                _duplicateGroups.value = report.groups
+                _duplicatePage.value = report.page
+                _duplicateHasMore.value = report.hasMore
+            } catch (e: Exception) {
+                _duplicateGroups.value = emptyList()
+                _duplicateHasMore.value = false
+                _duplicateError.value = (e as? BackendApiException)?.message
+                    ?: e.message
+                    ?: "Không thể tải danh sách cảnh báo CCCD trùng."
+            } finally {
+                _duplicateLoading.value = false
+            }
+        }
+    }
+
+    fun selfWithdrawDuplicateEpisode(
+        entryId: String,
+        expectedVersion: Int,
+        reason: String? = null
+    ) {
+        if (_duplicateLoading.value) return
+        viewModelScope.launch {
+            try {
+                repository.workReportsAndReportingService.selfWithdrawDuplicateCccd(
+                    entryId = entryId,
+                    expectedEntryVersion = expectedVersion,
+                    reason = reason
+                )
+                showBanner("Đã rút hồ sơ trùng CCCD thành công.")
+                refreshDuplicateCccdReport(page = _duplicatePage.value, managedOnly = _duplicateManagedOnly.value)
+            } catch (e: BackendApiException) {
+                showBanner(e.message, isError = true)
+                if (e.kind == BackendFailureKind.CONFLICT || e.kind == BackendFailureKind.NOT_FOUND) {
+                    refreshDuplicateCccdReport(page = _duplicatePage.value, managedOnly = _duplicateManagedOnly.value)
+                }
+            } catch (e: Exception) {
+                showBanner(e.message ?: "Không thể rút hồ sơ trùng CCCD.", isError = true)
+            }
+        }
+    }
+
+    // =========================================================================
+    // Work Reports Actions (Obligations, Draft/Submit, Reviews, Analytics)
+    // =========================================================================
+
+    fun refreshWorkReportsData(actor: AppActor? = currentActor.value) {
+        val resolvedActor = actor ?: return
+        _workReportsLoading.value = true
+        _workReportsError.value = null
+        viewModelScope.launch {
+            var loadedObligations: List<WorkReportObligationEntity> = emptyList()
+            try {
+                loadedObligations = repository.workReportsAndReportingService.fetchMyObligations()
+            } catch (e: Exception) {
+                _workReportsError.value = (e as? BackendApiException)?.message
+                    ?: e.message
+                    ?: "Không thể tải nghĩa vụ báo cáo từ máy chủ."
+            }
+
+            val canReview = resolvedActor.hasCapability("report_review") &&
+                (resolvedActor.hasScopeKind("team") || resolvedActor.hasScopeKind("all"))
+            val loadedReviews = if (canReview) {
+                runCatching { repository.workReportsAndReportingService.fetchPendingReviews() }
+                    .onFailure { err ->
+                        if (_workReportsError.value == null) {
+                            _workReportsError.value = (err as? BackendApiException)?.message
+                        }
+                    }
+                    .getOrDefault(emptyList())
+            } else {
+                emptyList()
+            }
+            _reviewQueue.value = loadedReviews
+
+            val canAnalytics = resolvedActor.hasCapability("report_analytics_view") &&
+                (resolvedActor.hasScopeKind("team") || resolvedActor.hasScopeKind("all"))
+            if (canAnalytics) {
+                val existingTemplateId = _analyticsSnapshot.value?.templateId
+                val candidateTemplate = when {
+                    !existingTemplateId.isNullOrBlank() -> existingTemplateId to ""
+                    loadedObligations.isNotEmpty() -> loadedObligations.first().templateId to loadedObligations.first().templateName
+                    loadedReviews.isNotEmpty() -> loadedReviews.first().templateId to loadedReviews.first().templateName
+                    else -> null
+                }
+                if (candidateTemplate != null && candidateTemplate.first.isNotBlank()) {
+                    runCatching {
+                        repository.workReportsAndReportingService.fetchAnalyticsSnapshot(
+                            templateId = candidateTemplate.first,
+                            templateNameHint = candidateTemplate.second
+                        )
+                    }.onSuccess { snap ->
+                        _analyticsSnapshot.value = snap
+                    }
+                }
+            } else {
+                _analyticsSnapshot.value = null
+            }
+
+            _workReportsLoading.value = false
+        }
+    }
+
+    fun openObligationEditor(item: WorkReportObligationEntity) {
+        _editingObligation.value = item
+        _workReportsError.value = null
+        viewModelScope.launch {
+            try {
+                val detailed = repository.workReportsAndReportingService.fetchObligationDetail(
+                    obligationId = item.obligationId,
+                    fallback = item
+                )
+                if (_editingObligation.value?.obligationId == item.obligationId) {
+                    _editingObligation.value = detailed
+                }
+            } catch (e: Exception) {
+                showBanner(
+                    (e as? BackendApiException)?.message ?: "Không thể tải nội dung chi tiết báo cáo.",
+                    isError = true
+                )
+            }
+        }
+    }
+
+    fun closeObligationEditor() {
+        _editingObligation.value = null
+    }
+
+    fun saveWorkReportDraft(obligation: WorkReportObligationEntity, payloadJson: JSONObject) {
+        if (_workReportMutationBusy.value) return
+        _workReportMutationBusy.value = true
+        viewModelScope.launch {
+            try {
+                val updated = repository.workReportsAndReportingService.saveDraft(
+                    obligationId = obligation.obligationId,
+                    expectedVersion = obligation.submissionVersion,
+                    payloadJson = payloadJson,
+                    fallback = obligation
+                )
+                _editingObligation.value = null
+                showBanner("Đã lưu bản nháp báo cáo lên máy chủ (v${updated.submissionVersion ?: 1}).")
+            } catch (e: BackendApiException) {
+                showBanner(e.message, isError = true)
+                if (e.kind == BackendFailureKind.CONFLICT) {
+                    val refreshed = runCatching {
+                        repository.workReportsAndReportingService.fetchObligationDetail(
+                            obligationId = obligation.obligationId,
+                            fallback = obligation
+                        )
+                    }.getOrNull()
+                    if (refreshed != null) {
+                        _editingObligation.value = refreshed
+                    }
+                }
+            } catch (e: Exception) {
+                showBanner(e.message ?: "Không thể lưu bản nháp báo cáo.", isError = true)
+            } finally {
+                _workReportMutationBusy.value = false
+            }
+        }
+    }
+
+    fun submitWorkReportFinal(obligation: WorkReportObligationEntity, payloadJson: JSONObject) {
+        if (_workReportMutationBusy.value) return
+        _workReportMutationBusy.value = true
+        viewModelScope.launch {
+            try {
+                val updated = repository.workReportsAndReportingService.submitReport(
+                    obligationId = obligation.obligationId,
+                    expectedVersion = obligation.submissionVersion,
+                    payloadJson = payloadJson,
+                    fallback = obligation
+                )
+                _editingObligation.value = null
+                showBanner("Đã nộp báo cáo lên máy chủ (trạng thái: ${updated.submissionState}).")
+            } catch (e: BackendApiException) {
+                showBanner(e.message, isError = true)
+                if (e.kind == BackendFailureKind.CONFLICT) {
+                    val refreshed = runCatching {
+                        repository.workReportsAndReportingService.fetchObligationDetail(
+                            obligationId = obligation.obligationId,
+                            fallback = obligation
+                        )
+                    }.getOrNull()
+                    if (refreshed != null) {
+                        _editingObligation.value = refreshed
+                    }
+                }
+            } catch (e: Exception) {
+                showBanner(e.message ?: "Không thể nộp báo cáo.", isError = true)
+            } finally {
+                _workReportMutationBusy.value = false
+            }
+        }
+    }
+
+    fun decideWorkReportReview(
+        item: WorkReportReviewItem,
+        approve: Boolean,
+        reason: String
+    ) {
+        val actor = currentActor.value ?: return
+        if (!actor.hasCapability("report_review")) return
+        if (_workReportMutationBusy.value) return
+        _workReportMutationBusy.value = true
+        viewModelScope.launch {
+            try {
+                repository.workReportsAndReportingService.decideReview(
+                    obligationId = item.obligationId,
+                    approve = approve,
+                    reason = reason,
+                    expectedVersion = item.submissionVersion
+                )
+                showBanner(
+                    if (approve) "Đã phê duyệt báo cáo của ${item.assigneeDisplayName}."
+                    else "Đã gửi yêu cầu chỉnh sửa báo cáo của ${item.assigneeDisplayName}."
+                )
+                refreshWorkReportsData(actor)
+            } catch (e: BackendApiException) {
+                showBanner(e.message, isError = true)
+                if (e.kind == BackendFailureKind.CONFLICT) {
+                    refreshWorkReportsData(actor)
+                }
+            } catch (e: Exception) {
+                showBanner(e.message ?: "Không thể thực hiện phê duyệt báo cáo.", isError = true)
+            } finally {
+                _workReportMutationBusy.value = false
+            }
+        }
+    }
+
+    fun loadWorkReportAnalytics(templateId: String, templateNameHint: String = "") {
+        val actor = currentActor.value ?: return
+        if (!actor.hasCapability("report_analytics_view")) return
+        _workReportsLoading.value = true
+        viewModelScope.launch {
+            try {
+                val snap = repository.workReportsAndReportingService.fetchAnalyticsSnapshot(
+                    templateId = templateId,
+                    templateNameHint = templateNameHint
+                )
+                _analyticsSnapshot.value = snap
+                _workReportsError.value = null
+            } catch (e: Exception) {
+                showBanner(
+                    (e as? BackendApiException)?.message ?: "Không thể tải số liệu phân tích báo cáo.",
+                    isError = true
+                )
+            } finally {
+                _workReportsLoading.value = false
+            }
         }
     }
 

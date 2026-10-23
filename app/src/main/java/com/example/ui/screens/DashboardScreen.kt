@@ -4,6 +4,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -22,24 +24,29 @@ import androidx.compose.material.icons.automirrored.filled.Assignment
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.VerifiedUser
 import androidx.compose.material.icons.filled.WarningAmber
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.ScrollableTabRow
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -53,6 +60,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.AppActor
+import com.example.data.BiBucketItem
 import com.example.data.DuplicateCccdGroupItem
 import com.example.data.TeamReportSnapshot
 import com.example.data.WorkforceDeepMetrics
@@ -79,8 +87,18 @@ fun DashboardScreen(
     val duplicateGroups by viewModel.duplicateGroups.collectAsStateWithLifecycle()
     val duplicateLoading by viewModel.duplicateLoading.collectAsStateWithLifecycle()
     val duplicateError by viewModel.duplicateError.collectAsStateWithLifecycle()
+    val duplicatePage by viewModel.duplicatePage.collectAsStateWithLifecycle()
+    val duplicateHasMore by viewModel.duplicateHasMore.collectAsStateWithLifecycle()
+    val duplicateManagedOnly by viewModel.duplicateManagedOnly.collectAsStateWithLifecycle()
+
+    LaunchedEffect(actor.appUserId) {
+        if (duplicateGroups.isEmpty() && !duplicateLoading && duplicateError == null) {
+            viewModel.refreshDashboardData(actor)
+        }
+    }
 
     var selectedTabIndex by remember { mutableIntStateOf(0) }
+    var customTeamCode by remember { mutableStateOf("") }
     val tabs = buildList {
         add("Báo cáo tổng quát")
         if (actor.hasScopeKind("all")) {
@@ -104,6 +122,7 @@ fun DashboardScreen(
         item {
             ExecutiveBiHeaderCard(
                 actor = actor,
+                onRefreshClick = { viewModel.refreshDashboardData(actor) },
                 onQuickCheckInClick = onQuickCheckInClick,
                 onQuickDailyReportClick = onQuickDailyReportClick
             )
@@ -160,7 +179,7 @@ fun DashboardScreen(
             currentTabLabel.startsWith("Báo cáo chuyên sâu") -> {
                 item {
                     when {
-                        workforceLoading -> LoadingSectionCard("Đang tải báo cáo chuyên sâu lực lượng lao động…")
+                        workforceLoading && workforceDeep == null -> LoadingSectionCard("Đang tải báo cáo chuyên sâu lực lượng lao động…")
                         workforceError != null -> DashboardStatusCard(
                             title = "Không thể tải báo cáo chuyên sâu",
                             subtitle = workforceError.orEmpty()
@@ -169,29 +188,90 @@ fun DashboardScreen(
                             title = "Chưa có dữ liệu báo cáo chuyên sâu",
                             subtitle = "Dữ liệu lực lượng lao động từ máy chủ sẽ hiển thị tại đây khi sẵn sàng."
                         )
-                        else -> WorkforceDeepReportSection(metrics = workforceDeep!!)
+                        else -> WorkforceDeepReportSection(
+                            metrics = workforceDeep!!,
+                            loadingMore = workforceLoading,
+                            onLoadMoreProjects = { viewModel.loadMoreWorkforceProjects() }
+                        )
                     }
                 }
             }
 
             currentTabLabel.startsWith("Báo cáo theo nhóm") -> {
                 item {
+                    TeamBucketPickerCard(
+                        teamBuckets = workforceDeep?.byTeam.orEmpty(),
+                        selectedBucketDisplay = teamReport?.bucketDisplay.orEmpty(),
+                        customTeamCode = customTeamCode,
+                        onCustomTeamCodeChange = { customTeamCode = it },
+                        onSelectBucket = { code -> viewModel.loadTeamReport(code) }
+                    )
+                }
+                item {
                     when {
-                        teamReportLoading -> LoadingSectionCard("Đang tải báo cáo theo nhóm…")
+                        teamReportLoading && teamReport == null -> LoadingSectionCard("Đang tải báo cáo theo nhóm…")
                         teamReportError != null -> DashboardStatusCard(
                             title = "Không thể tải báo cáo theo nhóm",
                             subtitle = teamReportError.orEmpty()
                         )
                         teamReport == null -> DashboardStatusCard(
                             title = "Chưa có dữ liệu báo cáo nhóm",
-                            subtitle = "Chọn nhóm tuyển dụng hợp lệ hoặc làm mới dữ liệu từ máy chủ."
+                            subtitle = "Chọn nhóm tuyển dụng hoặc nhập mã nhóm hợp lệ để tải dữ liệu từ máy chủ."
                         )
-                        else -> TeamReportDetailCard(snapshot = teamReport!!)
+                        else -> TeamReportDetailCard(
+                            snapshot = teamReport!!,
+                            loadingMore = teamReportLoading,
+                            onLoadMore = { viewModel.loadMoreTeamDrillDown() }
+                        )
                     }
                 }
             }
 
             else -> {
+                item {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        FilterChip(
+                            selected = duplicateManagedOnly,
+                            onClick = {
+                                viewModel.refreshDuplicateCccdReport(
+                                    page = 1,
+                                    managedOnly = !duplicateManagedOnly
+                                )
+                            },
+                            label = { Text("Chỉ dự án tôi phụ trách") }
+                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedButton(
+                                onClick = {
+                                    viewModel.refreshDuplicateCccdReport(
+                                        page = (duplicatePage - 1).coerceAtLeast(1),
+                                        managedOnly = duplicateManagedOnly
+                                    )
+                                },
+                                enabled = !duplicateLoading && duplicatePage > 1,
+                                shape = RoundedCornerShape(10.dp)
+                            ) {
+                                Text("Trang trước")
+                            }
+                            OutlinedButton(
+                                onClick = {
+                                    viewModel.refreshDuplicateCccdReport(
+                                        page = duplicatePage + 1,
+                                        managedOnly = duplicateManagedOnly
+                                    )
+                                },
+                                enabled = !duplicateLoading && duplicateHasMore,
+                                shape = RoundedCornerShape(10.dp)
+                            ) {
+                                Text("Trang sau")
+                            }
+                        }
+                    }
+                }
                 when {
                     duplicateLoading -> item {
                         LoadingSectionCard("Đang tải danh sách cảnh báo CCCD trùng…")
@@ -210,7 +290,12 @@ fun DashboardScreen(
                     }
                     else -> {
                         items(duplicateGroups, key = { "${it.cccdLast4}_${it.firstWorkDate}" }) { group ->
-                            DuplicateCccdGroupCard(group = group)
+                            DuplicateCccdGroupCard(
+                                group = group,
+                                onSelfWithdraw = { entryId, expectedVersion ->
+                                    viewModel.selfWithdrawDuplicateEpisode(entryId, expectedVersion)
+                                }
+                            )
                         }
                     }
                 }
@@ -222,6 +307,7 @@ fun DashboardScreen(
 @Composable
 private fun ExecutiveBiHeaderCard(
     actor: AppActor,
+    onRefreshClick: () -> Unit,
     onQuickCheckInClick: () -> Unit,
     onQuickDailyReportClick: () -> Unit
 ) {
@@ -249,20 +335,40 @@ private fun ExecutiveBiHeaderCard(
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             Column {
-                if (actor.scopes.isNotEmpty()) {
-                    Surface(
-                        shape = RoundedCornerShape(6.dp),
-                        color = MaterialTheme.colorScheme.primary
-                    ) {
-                        Text(
-                            text = "Phạm vi máy chủ: " + actor.scopes.map { it.kind }.distinct().joinToString(", "),
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onPrimary,
-                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                        )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    if (actor.scopes.isNotEmpty()) {
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = MaterialTheme.colorScheme.primary
+                        ) {
+                            Text(
+                                text = "Phạm vi máy chủ: " + actor.scopes.map { it.kind }.distinct().joinToString(", "),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onPrimary,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                            )
+                        }
+                    } else {
+                        Spacer(modifier = Modifier.width(1.dp))
                     }
-                    Spacer(modifier = Modifier.height(6.dp))
+                    OutlinedButton(
+                        onClick = onRefreshClick,
+                        shape = RoundedCornerShape(10.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Refresh,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Làm mới", style = MaterialTheme.typography.labelSmall)
+                    }
                 }
+                Spacer(modifier = Modifier.height(6.dp))
                 Text(
                     text = "Trung tâm Điều hành Tuyển dụng",
                     style = MaterialTheme.typography.headlineMedium,
@@ -458,7 +564,11 @@ internal fun BiMetricKpiCard(
 }
 
 @Composable
-internal fun WorkforceDeepReportSection(metrics: WorkforceDeepMetrics) {
+internal fun WorkforceDeepReportSection(
+    metrics: WorkforceDeepMetrics,
+    loadingMore: Boolean = false,
+    onLoadMoreProjects: (() -> Unit)? = null
+) {
     val palette = LocalMiniBiPalette.current
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Card(
@@ -519,6 +629,52 @@ internal fun WorkforceDeepReportSection(metrics: WorkforceDeepMetrics) {
             }
         }
 
+        if (metrics.byProject.isNotEmpty()) {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(20.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        text = "Phân bổ theo Dự án",
+                        style = MaterialTheme.typography.titleMedium
+                    )
+                    metrics.byProject.forEach { proj ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                text = proj.display,
+                                style = MaterialTheme.typography.bodyMedium,
+                                modifier = Modifier.weight(1f),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                text = "${proj.count} (${proj.sharePct}%)",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontFamily = JetBrainsMono
+                            )
+                        }
+                    }
+                    if (metrics.projectHasMore && onLoadMoreProjects != null) {
+                        OutlinedButton(
+                            onClick = onLoadMoreProjects,
+                            enabled = !loadingMore,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(if (loadingMore) "Đang tải thêm…" else "Tải thêm dự án")
+                        }
+                    }
+                }
+            }
+        }
+
         if (metrics.leaveReasons.isNotEmpty()) {
             Card(
                 modifier = Modifier.fillMaxWidth(),
@@ -562,8 +718,71 @@ internal fun WorkforceDeepReportSection(metrics: WorkforceDeepMetrics) {
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
-internal fun TeamReportDetailCard(snapshot: TeamReportSnapshot) {
+internal fun TeamBucketPickerCard(
+    teamBuckets: List<BiBucketItem>,
+    selectedBucketDisplay: String,
+    customTeamCode: String,
+    onCustomTeamCodeChange: (String) -> Unit,
+    onSelectBucket: (String) -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Text(
+                text = "Chọn nhóm tuyển dụng",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold
+            )
+            if (teamBuckets.isNotEmpty()) {
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    teamBuckets.forEach { bucket ->
+                        FilterChip(
+                            selected = selectedBucketDisplay == bucket.display,
+                            onClick = { onSelectBucket(bucket.key) },
+                            label = { Text("${bucket.display} (${bucket.count})") }
+                        )
+                    }
+                }
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                OutlinedTextField(
+                    value = customTeamCode,
+                    onValueChange = onCustomTeamCodeChange,
+                    label = { Text("Mã nhóm (team_code)") },
+                    singleLine = true,
+                    modifier = Modifier.weight(1f)
+                )
+                Button(
+                    onClick = { onSelectBucket(customTeamCode.trim()) },
+                    enabled = customTeamCode.isNotBlank()
+                ) {
+                    Text("Xem")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+internal fun TeamReportDetailCard(
+    snapshot: TeamReportSnapshot,
+    loadingMore: Boolean = false,
+    onLoadMore: (() -> Unit)? = null
+) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(20.dp),
@@ -593,20 +812,37 @@ internal fun TeamReportDetailCard(snapshot: TeamReportSnapshot) {
                 )
             }
             HorizontalDivider()
-            snapshot.rows.forEach { row ->
-                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                    Text(
-                        text = "${row.projectDisplay} · ${row.recruiterDisplay}",
-                        style = MaterialTheme.typography.bodyMedium,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                    Text(
-                        text = "Ngày ${row.businessDate} · ${row.providerTypeDisplay} · ${row.employmentTypeDisplay} · SL: ${row.recruitedCount}",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+            if (snapshot.rows.isEmpty()) {
+                Text(
+                    text = "Chưa có dòng tuyển dụng chi tiết trong nhóm này.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            } else {
+                snapshot.rows.forEach { row ->
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(
+                            text = "${row.projectDisplay} · ${row.recruiterDisplay}",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Text(
+                            text = "Ngày ${row.businessDate} · ${row.providerTypeDisplay} · ${row.employmentTypeDisplay} · SL: ${row.recruitedCount}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))
                 }
-                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))
+            }
+            if (snapshot.nextCursor != null && onLoadMore != null) {
+                OutlinedButton(
+                    onClick = onLoadMore,
+                    enabled = !loadingMore,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(if (loadingMore) "Đang tải thêm…" else "Tải thêm dòng chi tiết")
+                }
             }
         }
     }

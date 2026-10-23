@@ -261,6 +261,11 @@ class MiniBiRepository(
         dao = dao
     )
 
+    val workReportsAndReportingService = WorkReportsAndReportingService(
+        httpClient = httpClient,
+        dao = dao
+    )
+
     val imageLoader: ImageLoader by lazy {
         httpClient.createImageLoader(context)
     }

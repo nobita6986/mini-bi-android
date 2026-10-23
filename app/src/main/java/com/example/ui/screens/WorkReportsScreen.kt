@@ -24,6 +24,7 @@ import androidx.compose.material.icons.filled.AssignmentTurnedIn
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.EditNote
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material3.Button
@@ -44,6 +45,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateMapOf
@@ -64,6 +66,7 @@ import com.example.data.WorkReportAnalyticsSnapshot
 import com.example.data.WorkReportObligationEntity
 import com.example.data.WorkReportReviewItem
 import com.example.data.WorkReportSectionSpec
+import com.example.data.WorkReportsContract
 import com.example.ui.MiniBiViewModel
 import com.example.ui.theme.JetBrainsMono
 import com.example.ui.theme.SemanticColors
@@ -86,13 +89,26 @@ fun WorkReportsScreen(
     val error by viewModel.workReportsError.collectAsStateWithLifecycle()
     val reviewQueue by viewModel.reviewQueue.collectAsStateWithLifecycle()
     val analyticsSnapshot by viewModel.analyticsSnapshot.collectAsStateWithLifecycle()
+    val editingObligation by viewModel.editingObligation.collectAsStateWithLifecycle()
+    val mutationBusy by viewModel.workReportMutationBusy.collectAsStateWithLifecycle()
 
-    val canReview = actor.hasCapability("report_review")
-    val canViewAnalytics = actor.hasCapability("report_analytics_view")
-    val canSubmit = actor.hasCapability("report_submit")
+    LaunchedEffect(actor.appUserId) {
+        viewModel.refreshWorkReportsData(actor)
+    }
+
+    val hasTeamOrAllScope = actor.hasScopeKind("team") || actor.hasScopeKind("all")
+    val canReview = actor.hasCapability("report_review") && hasTeamOrAllScope
+    val canViewAnalytics = actor.hasCapability("report_analytics_view") && hasTeamOrAllScope
 
     var selectedTab by remember { mutableIntStateOf(0) }
-    var editingObligation by remember { mutableStateOf<WorkReportObligationEntity?>(null) }
+    var customAnalyticsTemplateId by remember { mutableStateOf("") }
+
+    val knownTemplates = remember(reports, reviewQueue) {
+        buildMap {
+            reports.forEach { if (it.templateId.isNotBlank()) put(it.templateId, it.templateName) }
+            reviewQueue.forEach { if (it.templateId.isNotBlank()) putIfAbsent(it.templateId, it.templateName) }
+        }.entries.map { it.key to it.value }
+    }
 
     val activeObligations = remember(reports) {
         reports.filter {
@@ -137,11 +153,26 @@ fun WorkReportsScreen(
                         .padding(16.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Text(
-                        text = "BÁO CÁO CÔNG VIỆC",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.primary
-                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "BÁO CÁO CÔNG VIỆC",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        OutlinedButton(
+                            onClick = { viewModel.refreshWorkReportsData(actor) },
+                            enabled = !loading && !mutationBusy,
+                            shape = RoundedCornerShape(10.dp)
+                        ) {
+                            Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Làm mới", style = MaterialTheme.typography.labelMedium)
+                        }
+                    }
                     Text(
                         text = "Nghĩa vụ & Phê duyệt Báo cáo",
                         style = MaterialTheme.typography.headlineMedium
@@ -225,18 +256,28 @@ fun WorkReportsScreen(
                 val sections = remember(target.schemaJsonRaw) {
                     parseDynamicSections(target.schemaJsonRaw)
                 }
+                val isEditableObligation = target.obligationStatus == "ACTIVE" &&
+                    target.submissionState in listOf("NOT_STARTED", "DRAFT", "REJECTED")
                 DynamicWorkReportFormCard(
                     obligation = target,
                     sections = sections,
-                    canSubmit = canSubmit,
-                    onCancel = { editingObligation = null },
+                    canSubmit = isEditableObligation && !mutationBusy,
+                    onCancel = { viewModel.closeObligationEditor() },
                     onSaveDraft = { payload ->
-                        onSaveDraftAction?.invoke(target, payload)
-                        editingObligation = null
+                        if (onSaveDraftAction != null) {
+                            onSaveDraftAction(target, payload)
+                            viewModel.closeObligationEditor()
+                        } else {
+                            viewModel.saveWorkReportDraft(target, payload)
+                        }
                     },
                     onSubmitFinal = { payload ->
-                        onSubmitFinalAction?.invoke(target, payload)
-                        editingObligation = null
+                        if (onSubmitFinalAction != null) {
+                            onSubmitFinalAction(target, payload)
+                            viewModel.closeObligationEditor()
+                        } else {
+                            viewModel.submitWorkReportFinal(target, payload)
+                        }
                     }
                 )
             }
@@ -255,8 +296,8 @@ fun WorkReportsScreen(
                     items(activeObligations, key = { it.obligationId }) { item ->
                         WorkReportObligationCard(
                             item = item,
-                            showEditAction = canSubmit,
-                            onOpenEdit = { editingObligation = item }
+                            showEditAction = item.obligationStatus == "ACTIVE",
+                            onOpenEdit = { viewModel.openObligationEditor(item) }
                         )
                     }
                 }
@@ -274,8 +315,9 @@ fun WorkReportsScreen(
                     items(historyObligations, key = { it.obligationId }) { item ->
                         WorkReportObligationCard(
                             item = item,
-                            showEditAction = canSubmit && item.submissionState in listOf("DRAFT", "REJECTED"),
-                            onOpenEdit = { editingObligation = item }
+                            showEditAction = item.obligationStatus == "ACTIVE" &&
+                                item.submissionState in listOf("DRAFT", "REJECTED"),
+                            onOpenEdit = { viewModel.openObligationEditor(item) }
                         )
                     }
                 }
@@ -293,8 +335,20 @@ fun WorkReportsScreen(
                     items(reviewQueue, key = { it.obligationId }) { item ->
                         ReviewInboxItemCard(
                             item = item,
-                            onApprove = { reason -> onReviewDecisionAction?.invoke(item, true, reason) },
-                            onReject = { reason -> onReviewDecisionAction?.invoke(item, false, reason) }
+                            onApprove = { reason ->
+                                if (onReviewDecisionAction != null) {
+                                    onReviewDecisionAction(item, true, reason)
+                                } else {
+                                    viewModel.decideWorkReportReview(item, true, reason)
+                                }
+                            },
+                            onReject = { reason ->
+                                if (onReviewDecisionAction != null) {
+                                    onReviewDecisionAction(item, false, reason)
+                                } else {
+                                    viewModel.decideWorkReportReview(item, false, reason)
+                                }
+                            }
                         )
                     }
                 }
@@ -302,11 +356,22 @@ fun WorkReportsScreen(
 
             "analytics" -> {
                 item {
+                    AnalyticsTemplateSelectorCard(
+                        knownTemplates = knownTemplates,
+                        selectedTemplateId = analyticsSnapshot?.templateId.orEmpty(),
+                        customTemplateId = customAnalyticsTemplateId,
+                        onCustomTemplateIdChange = { customAnalyticsTemplateId = it },
+                        onSelectTemplate = { tid, tname ->
+                            viewModel.loadWorkReportAnalytics(tid, tname)
+                        }
+                    )
+                }
+                item {
                     val snap = analyticsSnapshot
                     if (snap == null) {
                         EmptyReportBanner(
                             title = "Chưa có dữ liệu tổng hợp",
-                            subtitle = "Dữ liệu phân tích báo cáo công việc theo mẫu sẽ hiển thị khi có mẫu báo cáo hợp lệ."
+                            subtitle = "Chọn mẫu báo cáo hoặc nhập Mã mẫu (UUID) hợp lệ để tải dữ liệu phân tích từ máy chủ."
                         )
                     } else {
                         WorkReportAnalyticsSummaryCard(snapshot = snap)
@@ -317,110 +382,8 @@ fun WorkReportsScreen(
     }
 }
 
-internal fun parseDynamicSections(schemaJsonRaw: String): List<WorkReportSectionSpec> {
-    if (schemaJsonRaw.isBlank()) return emptyList()
-    return runCatching {
-        val root = JSONObject(schemaJsonRaw)
-        val sectionsArr = root.optJSONArray("sections") ?: JSONArray()
-        val fieldsArr = root.optJSONArray("fields") ?: JSONArray()
-
-        val allFields = mutableListOf<com.example.data.WorkReportFieldSpec>()
-        for (i in 0 until fieldsArr.length()) {
-            val f = fieldsArr.optJSONObject(i) ?: continue
-            val optsArr = f.optJSONArray("options")
-            val options = mutableListOf<com.example.data.WorkReportFieldOption>()
-            if (optsArr != null) {
-                for (j in 0 until optsArr.length()) {
-                    val o = optsArr.optJSONObject(j) ?: continue
-                    options.add(
-                        com.example.data.WorkReportFieldOption(
-                            value = o.optString("value", ""),
-                            label = o.optString("label", o.optString("value", ""))
-                        )
-                    )
-                }
-            }
-            allFields.add(
-                com.example.data.WorkReportFieldSpec(
-                    fieldKey = f.optString("key", f.optString("field_key", "")),
-                    sectionKey = f.optString("section_key", "default"),
-                    sortOrder = f.optInt("sort_order", i),
-                    label = f.optString("label", f.optString("key", "")),
-                    description = f.optString("description", "").ifBlank { null },
-                    fieldType = f.optString("type", f.optString("field_type", "text")),
-                    required = f.optBoolean("required", false),
-                    defaultValue = if (f.isNull("default_value")) null else f.optString("default_value", "").ifBlank { null },
-                    options = options
-                )
-            )
-        }
-
-        if (sectionsArr.length() == 0) {
-            if (allFields.isEmpty()) emptyList()
-            else listOf(
-                WorkReportSectionSpec(
-                    sectionKey = "default",
-                    label = "Nội dung báo cáo",
-                    description = null,
-                    sortOrder = 0,
-                    fields = allFields.sortedBy { it.sortOrder }
-                )
-            )
-        } else {
-            val result = mutableListOf<WorkReportSectionSpec>()
-            for (i in 0 until sectionsArr.length()) {
-                val s = sectionsArr.optJSONObject(i) ?: continue
-                val sKey = s.optString("key", s.optString("section_key", "section_$i"))
-                val nestedFieldsArr = s.optJSONArray("fields")
-                val sectionFields = if (nestedFieldsArr != null && nestedFieldsArr.length() > 0) {
-                    val nested = mutableListOf<com.example.data.WorkReportFieldSpec>()
-                    for (k in 0 until nestedFieldsArr.length()) {
-                        val nf = nestedFieldsArr.optJSONObject(k) ?: continue
-                        val optsArr = nf.optJSONArray("options")
-                        val options = mutableListOf<com.example.data.WorkReportFieldOption>()
-                        if (optsArr != null) {
-                            for (j in 0 until optsArr.length()) {
-                                val o = optsArr.optJSONObject(j) ?: continue
-                                options.add(
-                                    com.example.data.WorkReportFieldOption(
-                                        value = o.optString("value", ""),
-                                        label = o.optString("label", o.optString("value", ""))
-                                    )
-                                )
-                            }
-                        }
-                        nested.add(
-                            com.example.data.WorkReportFieldSpec(
-                                fieldKey = nf.optString("key", nf.optString("field_key", "")),
-                                sectionKey = sKey,
-                                sortOrder = nf.optInt("sort_order", k),
-                                label = nf.optString("label", nf.optString("key", "")),
-                                description = nf.optString("description", "").ifBlank { null },
-                                fieldType = nf.optString("type", nf.optString("field_type", "text")),
-                                required = nf.optBoolean("required", false),
-                                defaultValue = if (nf.isNull("default_value")) null else nf.optString("default_value", "").ifBlank { null },
-                                options = options
-                            )
-                        )
-                    }
-                    nested.sortedBy { it.sortOrder }
-                } else {
-                    allFields.filter { it.sectionKey == sKey }.sortedBy { it.sortOrder }
-                }
-                result.add(
-                    WorkReportSectionSpec(
-                        sectionKey = sKey,
-                        label = s.optString("label", "Mục ${i + 1}"),
-                        description = s.optString("description", "").ifBlank { null },
-                        sortOrder = s.optInt("sort_order", i),
-                        fields = sectionFields
-                    )
-                )
-            }
-            result.sortedBy { it.sortOrder }
-        }
-    }.getOrDefault(emptyList())
-}
+internal fun parseDynamicSections(schemaJsonRaw: String): List<WorkReportSectionSpec> =
+    WorkReportsContract.parseDynamicSections(schemaJsonRaw)
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -620,13 +583,14 @@ private fun WorkReportObligationCard(
     onOpenEdit: () -> Unit
 ) {
     val badgeColor = when (item.submissionState) {
-        "APPROVED" -> SemanticColors.SuccessLight
+        "APPROVED", "COMPLETED" -> SemanticColors.SuccessLight
         "PENDING_REVIEW", "SUBMITTED" -> SemanticColors.RunningLight
         "REJECTED" -> SemanticColors.ErrorLight
         else -> SemanticColors.WarningLight
     }
     val stateLabel = when (item.submissionState) {
         "APPROVED" -> "ĐÃ DUYỆT"
+        "COMPLETED" -> "HOÀN THÀNH"
         "PENDING_REVIEW", "SUBMITTED" -> "CHỜ DUYỆT"
         "REJECTED" -> "YÊU CẦU SỬA"
         "DRAFT" -> "BẢN NHÁP"
@@ -803,6 +767,65 @@ private fun ReviewInboxItemCard(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun AnalyticsTemplateSelectorCard(
+    knownTemplates: List<Pair<String, String>>,
+    selectedTemplateId: String,
+    customTemplateId: String,
+    onCustomTemplateIdChange: (String) -> Unit,
+    onSelectTemplate: (String, String) -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Text(
+                text = "Chọn mẫu báo cáo phân tích",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold
+            )
+            if (knownTemplates.isNotEmpty()) {
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    knownTemplates.forEach { (tid, tname) ->
+                        FilterChip(
+                            selected = selectedTemplateId == tid,
+                            onClick = { onSelectTemplate(tid, tname) },
+                            label = { Text(tname.ifBlank { tid.take(8) }) }
+                        )
+                    }
+                }
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                OutlinedTextField(
+                    value = customTemplateId,
+                    onValueChange = onCustomTemplateIdChange,
+                    label = { Text("Mã mẫu báo cáo (template_id UUID)") },
+                    singleLine = true,
+                    modifier = Modifier.weight(1f)
+                )
+                Button(
+                    onClick = { onSelectTemplate(customTemplateId.trim(), "") },
+                    enabled = customTemplateId.isNotBlank()
+                ) {
+                    Text("Tải")
+                }
+            }
+        }
+    }
+}
+
 @Composable
 private fun WorkReportAnalyticsSummaryCard(snapshot: WorkReportAnalyticsSnapshot) {
     Card(
@@ -832,7 +855,7 @@ private fun WorkReportAnalyticsSummaryCard(snapshot: WorkReportAnalyticsSnapshot
                 Column {
                     Text("Tỷ lệ hoàn thành nghĩa vụ", style = MaterialTheme.typography.labelMedium)
                     Text(
-                        "${snapshot.submittedCount} / ${snapshot.totalObligations} nghĩa vụ đã nộp",
+                        "${snapshot.submittedCount} / ${snapshot.totalObligations} nghĩa vụ đã hoàn thành (đúng hạn: ${snapshot.approvedCount})",
                         style = MaterialTheme.typography.bodySmall
                     )
                 }
@@ -847,6 +870,7 @@ private fun WorkReportAnalyticsSummaryCard(snapshot: WorkReportAnalyticsSnapshot
 
             if (snapshot.metrics.isNotEmpty()) {
                 HorizontalDivider()
+                Text("Chỉ số tổng hợp", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
                 snapshot.metrics.forEach { metric ->
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -865,10 +889,24 @@ private fun WorkReportAnalyticsSummaryCard(snapshot: WorkReportAnalyticsSnapshot
 
             if (snapshot.breakdownRows.isNotEmpty()) {
                 HorizontalDivider()
+                Text("Phân rã theo nhóm", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
                 snapshot.breakdownRows.forEach { row ->
+                    val pctText = row.complianceRatePct?.let { " ($it%)" } ?: ""
                     Text(
-                        text = "• ${row.groupLabel}: ${row.submittedCount}/${row.obligationCount} báo cáo",
+                        text = "• ${row.groupLabel}: ${row.submittedCount}/${row.obligationCount} báo cáo$pctText",
                         style = MaterialTheme.typography.bodySmall
+                    )
+                }
+            }
+
+            if (snapshot.contributions.isNotEmpty()) {
+                HorizontalDivider()
+                Text("Đóng góp báo cáo gần nhất", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+                snapshot.contributions.take(10).forEach { contrib ->
+                    Text(
+                        text = "• ${contrib.assigneeDisplayName} · Kỳ ${contrib.periodKey} · ${contrib.submissionState}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }
