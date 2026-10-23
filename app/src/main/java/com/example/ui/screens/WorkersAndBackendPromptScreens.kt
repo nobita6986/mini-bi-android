@@ -1,5 +1,6 @@
 package com.example.ui.screens
 
+import android.content.Intent
 import android.net.Uri
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -66,8 +67,8 @@ import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -76,14 +77,19 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.core.content.FileProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import coil.compose.AsyncImage
 import com.example.data.AppActor
 import com.example.data.DirectEntryCatalog
+import com.example.data.DirectEntryContract
 import com.example.data.NewWorkerEntryDraft
 import com.example.data.OwnSubmissionItem
 import com.example.data.StagedDocumentRef
@@ -92,6 +98,8 @@ import com.example.data.WorkerProfileEntity
 import com.example.ui.MiniBiViewModel
 import com.example.ui.theme.JetBrainsMono
 import com.example.ui.theme.SemanticColors
+import org.json.JSONObject
+import java.io.File
 import java.util.UUID
 
 private val ENTRY_STATUS_OPTIONS = listOf("Đang làm", "Đang chờ việc")
@@ -126,12 +134,34 @@ fun DirectEntryNewWorkersScreen(
     val catalogLoading by viewModel.catalogLoading.collectAsStateWithLifecycle()
     val catalogError by viewModel.catalogError.collectAsStateWithLifecycle()
     val ownSubmissions by viewModel.ownSubmissions.collectAsStateWithLifecycle()
+    val mutationBusy by viewModel.workerMutationBusy.collectAsStateWithLifecycle()
+
+    val effectiveUploadStageFile: (String, String, Uri, (StagedDocumentRef) -> Unit, (String) -> Unit) -> Unit =
+        onUploadStageFile ?: { _, documentType, uri, onStaged, onError ->
+            viewModel.uploadStageDocument(documentType, uri, onStaged, onError)
+        }
+    val effectiveDeleteStageId: (String) -> Unit =
+        onDeleteStageId ?: { stageId -> viewModel.deleteStageDocument(stageId) }
+    val effectiveSubmitValidDrafts: (List<NewWorkerEntryDraft>, () -> Unit) -> Unit =
+        onSubmitValidDrafts ?: { validRows, onSuccess ->
+            viewModel.submitFullProfileDrafts(validRows, onSuccess)
+        }
+
+    LaunchedEffect(actor.appUserId) {
+        viewModel.loadCatalogIfNeeded()
+        if (actor.hasCapability("submission_read")) {
+            viewModel.refreshOwnSubmissionsForHistory()
+        }
+    }
 
     var showBatchHistoryDialog by remember { mutableStateOf(false) }
 
     val draftRows = remember {
         mutableStateListOf(
-            NewWorkerEntryDraft(localId = UUID.randomUUID().toString())
+            NewWorkerEntryDraft(
+                localId = UUID.randomUUID().toString(),
+                firstWorkDateUi = DirectEntryContract.todayUiInHcm()
+            )
         )
     }
 
@@ -153,41 +183,35 @@ fun DirectEntryNewWorkersScreen(
                     "EMPLOYMENT_CONTRACT" -> draftRows[index].contractStage?.stageId
                     else -> null
                 }
-                if (onUploadStageFile != null) {
-                    draftRows[index] = draftRows[index].copy(uploadingSlot = documentType, slotError = null)
-                    onUploadStageFile(
-                        rowId,
-                        documentType,
-                        uri,
-                        { staged ->
-                            val currentIdx = draftRows.indexOfFirst { it.localId == rowId }
-                            if (currentIdx >= 0) {
-                                existingStageId?.let { oldId -> onDeleteStageId?.invoke(oldId) }
-                                val cur = draftRows[currentIdx]
-                                draftRows[currentIdx] = when (documentType) {
-                                    "WORKER_PORTRAIT" -> cur.copy(portraitStage = staged, uploadingSlot = null, slotError = null)
-                                    "CCCD_FRONT" -> cur.copy(cccdFrontStage = staged, uploadingSlot = null, slotError = null)
-                                    "CCCD_BACK" -> cur.copy(cccdBackStage = staged, uploadingSlot = null, slotError = null)
-                                    "EMPLOYMENT_CONTRACT" -> cur.copy(contractStage = staged, uploadingSlot = null, slotError = null)
-                                    else -> cur.copy(uploadingSlot = null)
-                                }
-                            }
-                        },
-                        { errMsg ->
-                            val currentIdx = draftRows.indexOfFirst { it.localId == rowId }
-                            if (currentIdx >= 0) {
-                                draftRows[currentIdx] = draftRows[currentIdx].copy(
-                                    uploadingSlot = null,
-                                    slotError = errMsg
-                                )
+                draftRows[index] = draftRows[index].copy(uploadingSlot = documentType, slotError = null)
+                effectiveUploadStageFile(
+                    rowId,
+                    documentType,
+                    uri,
+                    { staged ->
+                        val currentIdx = draftRows.indexOfFirst { it.localId == rowId }
+                        if (currentIdx >= 0) {
+                            existingStageId?.let { oldId -> effectiveDeleteStageId(oldId) }
+                            val cur = draftRows[currentIdx]
+                            draftRows[currentIdx] = when (documentType) {
+                                "WORKER_PORTRAIT" -> cur.copy(portraitStage = staged, uploadingSlot = null, slotError = null)
+                                "CCCD_FRONT" -> cur.copy(cccdFrontStage = staged, uploadingSlot = null, slotError = null)
+                                "CCCD_BACK" -> cur.copy(cccdBackStage = staged, uploadingSlot = null, slotError = null)
+                                "EMPLOYMENT_CONTRACT" -> cur.copy(contractStage = staged, uploadingSlot = null, slotError = null)
+                                else -> cur.copy(uploadingSlot = null)
                             }
                         }
-                    )
-                } else {
-                    draftRows[index] = draftRows[index].copy(
-                        slotError = "Chức năng tải hồ sơ tạm lên máy chủ chưa sẵn sàng."
-                    )
-                }
+                    },
+                    { errMsg ->
+                        val currentIdx = draftRows.indexOfFirst { it.localId == rowId }
+                        if (currentIdx >= 0) {
+                            draftRows[currentIdx] = draftRows[currentIdx].copy(
+                                uploadingSlot = null,
+                                slotError = errMsg
+                            )
+                        }
+                    }
+                )
             }
         }
     }
@@ -356,7 +380,12 @@ fun DirectEntryNewWorkersScreen(
                     Spacer(modifier = Modifier.width(10.dp))
                     OutlinedButton(
                         onClick = {
-                            draftRows.add(NewWorkerEntryDraft(localId = UUID.randomUUID().toString()))
+                            draftRows.add(
+                                NewWorkerEntryDraft(
+                                    localId = UUID.randomUUID().toString(),
+                                    firstWorkDateUi = DirectEntryContract.todayUiInHcm()
+                                )
+                            )
                         },
                         shape = RoundedCornerShape(12.dp),
                         modifier = Modifier.testTag("top_add_worker_row_button")
@@ -376,18 +405,26 @@ fun DirectEntryNewWorkersScreen(
                 catalog = catalog,
                 selfRecruiterId = actor.selfRecruiterSuggestion,
                 canRemove = draftRows.size > 1,
-                onUpdate = { updated -> draftRows[index] = updated },
+                onUpdate = { updated ->
+                    draftRows[index] = updated
+                    runCatching { DirectEntryContract.uiDateToIsoDate(updated.firstWorkDateUi) }
+                        .getOrNull()
+                        ?.let { iso -> viewModel.loadCatalogIfNeeded(iso) }
+                },
                 onRemove = {
-                    row.allStageIds().forEach { stageId -> onDeleteStageId?.invoke(stageId) }
+                    row.allStageIds().forEach { stageId -> effectiveDeleteStageId(stageId) }
                     if (draftRows.size > 1) {
                         draftRows.removeAt(index)
                     } else {
-                        draftRows[0] = NewWorkerEntryDraft(localId = UUID.randomUUID().toString())
+                        draftRows[0] = NewWorkerEntryDraft(
+                            localId = UUID.randomUUID().toString(),
+                            firstWorkDateUi = DirectEntryContract.todayUiInHcm()
+                        )
                     }
                 },
                 onPickFile = { docType -> pickDocumentForRow(row.localId, docType) },
                 onClearStage = { docType, stageId ->
-                    onDeleteStageId?.invoke(stageId)
+                    effectiveDeleteStageId(stageId)
                     val cur = draftRows[index]
                     draftRows[index] = when (docType) {
                         "WORKER_PORTRAIT" -> cur.copy(portraitStage = null)
@@ -419,7 +456,12 @@ fun DirectEntryNewWorkersScreen(
                     ) {
                         OutlinedButton(
                             onClick = {
-                                draftRows.add(NewWorkerEntryDraft(localId = UUID.randomUUID().toString()))
+                                draftRows.add(
+                                    NewWorkerEntryDraft(
+                                        localId = UUID.randomUUID().toString(),
+                                        firstWorkDateUi = DirectEntryContract.todayUiInHcm()
+                                    )
+                                )
                             },
                             shape = RoundedCornerShape(12.dp),
                             modifier = Modifier
@@ -435,27 +477,40 @@ fun DirectEntryNewWorkersScreen(
                         Button(
                             onClick = {
                                 val validRows = draftRows.filter { it.isValid }
-                                if (validRows.isNotEmpty() && onSubmitValidDrafts != null) {
-                                    onSubmitValidDrafts(validRows) {
+                                if (validRows.isNotEmpty() && !mutationBusy) {
+                                    effectiveSubmitValidDrafts(validRows) {
                                         val remaining = draftRows.filter { !it.isValid && it.isStarted }
                                         draftRows.clear()
                                         if (remaining.isNotEmpty()) {
                                             draftRows.addAll(remaining)
                                         } else {
-                                            draftRows.add(NewWorkerEntryDraft(localId = UUID.randomUUID().toString()))
+                                            draftRows.add(
+                                                NewWorkerEntryDraft(
+                                                    localId = UUID.randomUUID().toString(),
+                                                    firstWorkDateUi = DirectEntryContract.todayUiInHcm()
+                                                )
+                                            )
                                         }
                                         onNavigateToWorkersList()
                                     }
                                 }
                             },
-                            enabled = validCount > 0 && onSubmitValidDrafts != null,
+                            enabled = validCount > 0 && !mutationBusy,
                             shape = RoundedCornerShape(12.dp),
                             modifier = Modifier
                                 .weight(1.2f)
                                 .height(48.dp)
                                 .testTag("save_valid_workers_button")
                         ) {
-                            Icon(Icons.Default.Save, contentDescription = null, modifier = Modifier.size(18.dp))
+                            if (mutationBusy) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(18.dp),
+                                    strokeWidth = 2.dp,
+                                    color = MaterialTheme.colorScheme.onPrimary
+                                )
+                            } else {
+                                Icon(Icons.Default.Save, contentDescription = null, modifier = Modifier.size(18.dp))
+                            }
                             Spacer(modifier = Modifier.width(6.dp))
                             Text(
                                 text = if (validCount > 0) "Lưu các NLĐ hợp lệ ($validCount)" else "Lưu các NLĐ hợp lệ",
@@ -1154,15 +1209,35 @@ data class WorkerScopeTabSpec(
 
 fun resolveVisibleWorkerTabs(actor: AppActor): List<WorkerScopeTabSpec> {
     return buildList {
-        add(WorkerScopeTabSpec("managed", "Dự án tôi quản lý"))
-        add(WorkerScopeTabSpec("recruited", "Người tôi tuyển"))
-        if (actor.hasScopeKind("team") || actor.hasCapability("entry_team")) {
-            add(WorkerScopeTabSpec("team", "Team tôi quản lý"))
+        if (actor.hasCapability("entry_read")) {
+            add(WorkerScopeTabSpec("managed", "Dự án tôi quản lý"))
+            add(WorkerScopeTabSpec("recruited", "Người tôi tuyển"))
+            if (actor.hasScopeKind("team")) {
+                add(WorkerScopeTabSpec("team", "Team tôi quản lý"))
+            }
         }
-        add(WorkerScopeTabSpec("uploader", "Tôi đã nhập"))
-        if (actor.hasScopeKind("all") && (actor.hasCapability("entry_admin") || actor.hasCapability("change_review"))) {
+        if (actor.hasCapability("submission_read")) {
+            add(WorkerScopeTabSpec("uploader", "Tôi đã nhập"))
+        }
+        if (
+            actor.hasCapability("entry_read") &&
+            actor.hasScopeKind("all") &&
+            (actor.hasCapability("entry_admin") || actor.hasCapability("change_review"))
+        ) {
             add(WorkerScopeTabSpec("all", "Toàn bộ NLĐ"))
         }
+    }
+}
+
+private fun shareOrViewCachedFile(context: android.content.Context, file: File, mimeType: String) {
+    runCatching {
+        val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+        val intent = Intent(Intent.ACTION_SEND).apply {
+            type = mimeType
+            putExtra(Intent.EXTRA_STREAM, uri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        context.startActivity(Intent.createChooser(intent, file.name))
     }
 }
 
@@ -1182,21 +1257,77 @@ fun WorkersAndDirectEntryScreen(
 ) {
     BackHandler(onBack = onBackToDashboard)
 
+    val context = LocalContext.current
+    val serverUrl by viewModel.serverUrl.collectAsStateWithLifecycle()
     val workers by viewModel.workerRows.collectAsStateWithLifecycle()
     val workerLoading by viewModel.workerLoading.collectAsStateWithLifecycle()
     val workerError by viewModel.workerError.collectAsStateWithLifecycle()
     val ownSubmissions by viewModel.ownSubmissions.collectAsStateWithLifecycle()
     val catalog by viewModel.catalog.collectAsStateWithLifecycle()
     val selectedDetail by viewModel.selectedEntryDetail.collectAsStateWithLifecycle()
+    val activeTabKeyFromVm by viewModel.activeWorkerTabKey.collectAsStateWithLifecycle()
+    val workerHasMore by viewModel.workerHasMore.collectAsStateWithLifecycle()
+    val submissionsHasMore by viewModel.submissionsHasMore.collectAsStateWithLifecycle()
+    val workerSummary by viewModel.workerSummary.collectAsStateWithLifecycle()
+    val proposeTarget by viewModel.proposeChangeTarget.collectAsStateWithLifecycle()
+    val directEditTarget by viewModel.directEditTarget.collectAsStateWithLifecycle()
+    val mutationBusy by viewModel.workerMutationBusy.collectAsStateWithLifecycle()
+    val mutationError by viewModel.workerMutationError.collectAsStateWithLifecycle()
 
     val visibleTabs = remember(actor) { resolveVisibleWorkerTabs(actor) }
-    var selectedScopeTabIndex by remember { mutableIntStateOf(0) }
-    val safeTabIdx = selectedScopeTabIndex.coerceIn(0, (visibleTabs.size - 1).coerceAtLeast(0))
+    val safeTabIdx = visibleTabs.indexOfFirst { it.key == activeTabKeyFromVm }.takeIf { it >= 0 } ?: 0
     val activeScopeKey = visibleTabs.getOrNull(safeTabIdx)?.key ?: "managed"
 
     var searchQuery by remember { mutableStateOf("") }
     var selectedProjectId by remember { mutableStateOf<String?>(null) }
+    var selectedRecruiterId by remember { mutableStateOf<String?>(null) }
     var selectedStatusCode by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(actor.appUserId) {
+        viewModel.loadCatalogIfNeeded()
+        viewModel.ensureInitialWorkerTabLoaded(actor)
+    }
+
+    val effectiveSelectTab: (String) -> Unit = onSelectScopeTab ?: { scopeKey ->
+        viewModel.selectWorkerTab(
+            tabKey = scopeKey,
+            search = searchQuery,
+            projectId = selectedProjectId,
+            recruiterId = selectedRecruiterId,
+            employmentStatus = selectedStatusCode
+        )
+    }
+    val effectiveFilterChange: (String, String?, String?, String?) -> Unit = { q, proj, rec, status ->
+        if (onSearchAndFilterChange != null) {
+            onSearchAndFilterChange(q, proj, status)
+        } else {
+            viewModel.selectWorkerTab(
+                tabKey = activeScopeKey,
+                search = q,
+                projectId = proj,
+                recruiterId = rec,
+                employmentStatus = status
+            )
+        }
+    }
+    val effectiveExportExcel: (String, String?, String?) -> Unit = onExportWorkersExcel ?: { scopeKey, proj, status ->
+        viewModel.exportWorkersExcel(
+            scopeKey = scopeKey,
+            projectId = proj,
+            recruiterId = selectedRecruiterId,
+            employmentStatus = status
+        ) { file ->
+            shareOrViewCachedFile(
+                context = context,
+                file = file,
+                mimeType = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+        }
+    }
+    val effectiveOpenDetail: (String) -> Unit = onOpenEntryDetail ?: { viewModel.openEntryDetail(it) }
+    val effectiveCloseDetail: () -> Unit = onCloseEntryDetail ?: { viewModel.closeEntryDetail() }
+    val effectiveOpenPropose: (WorkerProfileEntity) -> Unit = onOpenProposeChange ?: { viewModel.openProposeChange(it) }
+    val effectiveOpenDirectEdit: (WorkerProfileEntity) -> Unit = onOpenDirectEdit ?: { viewModel.openDirectEdit(it) }
 
     val canCreateEntry = actor.hasCapability("entry_create") && actor.hasCapability("submission_create")
     val isSubmissionTab = activeScopeKey == "uploader"
@@ -1228,7 +1359,11 @@ fun WorkersAndDirectEntryScreen(
                             fontWeight = FontWeight.Bold
                         )
                         Text(
-                            text = "Dữ liệu và quyền thao tác trên từng hồ sơ do máy chủ quyết định.",
+                            text = if (!isSubmissionTab && workerSummary != null) {
+                                "Tổng: ${workerSummary!!.totalWorkers} NLĐ · ${workerSummary!!.projectCount} dự án · ${workerSummary!!.recruiterCount} người tuyển"
+                            } else {
+                                "Dữ liệu và quyền thao tác trên từng hồ sơ do máy chủ quyết định."
+                            },
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -1251,10 +1386,10 @@ fun WorkersAndDirectEntryScreen(
                                 Text("Cấp mới NLĐ")
                             }
                         }
-                        if (!isSubmissionTab && onExportWorkersExcel != null) {
+                        if (!isSubmissionTab && visibleTabs.isNotEmpty()) {
                             OutlinedButton(
                                 onClick = {
-                                    onExportWorkersExcel(activeScopeKey, selectedProjectId, selectedStatusCode)
+                                    effectiveExportExcel(activeScopeKey, selectedProjectId, selectedStatusCode)
                                 },
                                 shape = RoundedCornerShape(12.dp),
                                 modifier = Modifier.testTag("export_workers_excel_button")
@@ -1266,52 +1401,53 @@ fun WorkersAndDirectEntryScreen(
                         }
                     }
 
-                    ScrollableTabRow(
-                        selectedTabIndex = safeTabIdx,
-                        edgePadding = 0.dp,
-                        containerColor = Color.Transparent,
-                        divider = {}
-                    ) {
-                        visibleTabs.forEachIndexed { idx, tab ->
-                            val selected = safeTabIdx == idx
-                            Tab(
-                                selected = selected,
-                                onClick = {
-                                    selectedScopeTabIndex = idx
-                                    onSelectScopeTab?.invoke(tab.key)
-                                },
-                                modifier = Modifier
-                                    .padding(end = 6.dp)
-                                    .clip(RoundedCornerShape(12.dp))
-                                    .background(
-                                        if (selected) MaterialTheme.colorScheme.primary
-                                        else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
-                                    )
-                                    .testTag("worker_scope_tab_${tab.key}"),
-                                text = {
-                                    Text(
-                                        text = tab.label,
-                                        style = MaterialTheme.typography.labelLarge,
-                                        fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
-                                        color = if (selected) MaterialTheme.colorScheme.onPrimary
-                                        else MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
-                            )
+                    if (visibleTabs.isNotEmpty()) {
+                        ScrollableTabRow(
+                            selectedTabIndex = safeTabIdx,
+                            edgePadding = 0.dp,
+                            containerColor = Color.Transparent,
+                            divider = {}
+                        ) {
+                            visibleTabs.forEachIndexed { idx, tab ->
+                                val selected = safeTabIdx == idx
+                                Tab(
+                                    selected = selected,
+                                    onClick = {
+                                        effectiveSelectTab(tab.key)
+                                    },
+                                    modifier = Modifier
+                                        .padding(end = 6.dp)
+                                        .clip(RoundedCornerShape(12.dp))
+                                        .background(
+                                            if (selected) MaterialTheme.colorScheme.primary
+                                            else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
+                                        )
+                                        .testTag("worker_scope_tab_${tab.key}"),
+                                    text = {
+                                        Text(
+                                            text = tab.label,
+                                            style = MaterialTheme.typography.labelLarge,
+                                            fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                                            color = if (selected) MaterialTheme.colorScheme.onPrimary
+                                            else MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                )
+                            }
                         }
                     }
                 }
             }
         }
 
-        if (!isSubmissionTab) {
+        if (!isSubmissionTab && visibleTabs.isNotEmpty()) {
             item {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedTextField(
                         value = searchQuery,
                         onValueChange = { q ->
                             searchQuery = q
-                            onSearchAndFilterChange?.invoke(q, selectedProjectId, selectedStatusCode)
+                            effectiveFilterChange(q, selectedProjectId, selectedRecruiterId, selectedStatusCode)
                         },
                         leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
                         label = { Text("Tìm theo họ tên, mã NLĐ…") },
@@ -1333,7 +1469,7 @@ fun WorkersAndDirectEntryScreen(
                             selected = selectedStatusCode == null,
                             onClick = {
                                 selectedStatusCode = null
-                                onSearchAndFilterChange?.invoke(searchQuery, selectedProjectId, null)
+                                effectiveFilterChange(searchQuery, selectedProjectId, selectedRecruiterId, null)
                             },
                             label = { Text("Mọi trạng thái") }
                         )
@@ -1343,7 +1479,7 @@ fun WorkersAndDirectEntryScreen(
                                 onClick = {
                                     val next = if (selectedStatusCode == code) null else code
                                     selectedStatusCode = next
-                                    onSearchAndFilterChange?.invoke(searchQuery, selectedProjectId, next)
+                                    effectiveFilterChange(searchQuery, selectedProjectId, selectedRecruiterId, next)
                                 },
                                 label = { Text(label) }
                             )
@@ -1354,18 +1490,30 @@ fun WorkersAndDirectEntryScreen(
                                 onClick = {
                                     val next = if (selectedProjectId == proj.projectId) null else proj.projectId
                                     selectedProjectId = next
-                                    onSearchAndFilterChange?.invoke(searchQuery, next, selectedStatusCode)
+                                    effectiveFilterChange(searchQuery, next, selectedRecruiterId, selectedStatusCode)
                                 },
                                 label = { Text(proj.displayName) }
                             )
                         }
-                        if (selectedStatusCode != null || selectedProjectId != null || searchQuery.isNotBlank()) {
+                        catalog?.recruiters?.take(12)?.forEach { rec ->
+                            FilterChip(
+                                selected = selectedRecruiterId == rec.recruiterId,
+                                onClick = {
+                                    val next = if (selectedRecruiterId == rec.recruiterId) null else rec.recruiterId
+                                    selectedRecruiterId = next
+                                    effectiveFilterChange(searchQuery, selectedProjectId, next, selectedStatusCode)
+                                },
+                                label = { Text("NT: ${rec.displayName}") }
+                            )
+                        }
+                        if (selectedStatusCode != null || selectedProjectId != null || selectedRecruiterId != null || searchQuery.isNotBlank()) {
                             TextButton(
                                 onClick = {
                                     selectedStatusCode = null
                                     selectedProjectId = null
+                                    selectedRecruiterId = null
                                     searchQuery = ""
-                                    onSearchAndFilterChange?.invoke("", null, null)
+                                    effectiveFilterChange("", null, null, null)
                                 }
                             ) {
                                 Icon(Icons.Default.FilterAltOff, contentDescription = null, modifier = Modifier.size(16.dp))
@@ -1426,6 +1574,20 @@ fun WorkersAndDirectEntryScreen(
                 items(ownSubmissions, key = { it.submissionId }) { sub ->
                     OwnSubmissionRowCard(item = sub)
                 }
+                if (submissionsHasMore) {
+                    item {
+                        OutlinedButton(
+                            onClick = { viewModel.loadMoreWorkersOrSubmissions() },
+                            enabled = !workerLoading,
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("load_more_submissions_button")
+                        ) {
+                            Text("Tải thêm đợt nhập liệu")
+                        }
+                    }
+                }
             }
         } else {
             if (workers.isEmpty() && !workerLoading) {
@@ -1439,10 +1601,24 @@ fun WorkersAndDirectEntryScreen(
                 items(workers, key = { it.cacheKey }) { worker ->
                     WorkerOperationsRowCard(
                         worker = worker,
-                        onViewDetail = { onOpenEntryDetail?.invoke(worker.entryId) },
-                        onProposeChange = { onOpenProposeChange?.invoke(worker) },
-                        onDirectEdit = { onOpenDirectEdit?.invoke(worker) }
+                        onViewDetail = { effectiveOpenDetail(worker.entryId) },
+                        onProposeChange = { effectiveOpenPropose(worker) },
+                        onDirectEdit = { effectiveOpenDirectEdit(worker) }
                     )
+                }
+                if (workerHasMore) {
+                    item {
+                        OutlinedButton(
+                            onClick = { viewModel.loadMoreWorkersOrSubmissions() },
+                            enabled = !workerLoading,
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("load_more_workers_button")
+                        ) {
+                            Text("Tải thêm hồ sơ (keyset)")
+                        }
+                    }
                 }
             }
         }
@@ -1451,7 +1627,55 @@ fun WorkersAndDirectEntryScreen(
     selectedDetail?.let { detail ->
         WorkerEntryDetailDialog(
             detail = detail,
-            onDismiss = { onCloseEntryDetail?.invoke() }
+            serverBaseUrl = serverUrl,
+            onDismiss = effectiveCloseDetail,
+            onDownloadDocument = { downloadPath ->
+                viewModel.downloadEntryDocument(
+                    downloadPath = downloadPath,
+                    fallbackFileName = "${detail.employeeCode}_attachment"
+                ) { file ->
+                    shareOrViewCachedFile(context, file, "*/*")
+                }
+            }
+        )
+    }
+
+    proposeTarget?.let { (worker, detailBaseline) ->
+        WorkerProposeChangeDialog(
+            worker = worker,
+            baselineDetail = detailBaseline,
+            catalog = catalog,
+            busy = mutationBusy,
+            error = mutationError,
+            onDismiss = { viewModel.closeProposeChange() },
+            onSubmit = { targetKind, expectedVer, proposal, reason ->
+                viewModel.submitProposeChange(
+                    entryId = worker.entryId,
+                    targetKind = targetKind,
+                    expectedVersion = expectedVer,
+                    proposal = proposal,
+                    reason = reason
+                )
+            }
+        )
+    }
+
+    directEditTarget?.let { (worker, detailBaseline) ->
+        WorkerPrivilegedEditDialog(
+            worker = worker,
+            baselineDetail = detailBaseline,
+            catalog = catalog,
+            busy = mutationBusy,
+            error = mutationError,
+            onDismiss = { viewModel.closeDirectEdit() },
+            onSubmit = { expectedEntryVersion, patch, reason ->
+                viewModel.submitDirectEdit(
+                    entryId = worker.entryId,
+                    expectedEntryVersion = expectedEntryVersion,
+                    patch = patch,
+                    reason = reason
+                )
+            }
         )
     }
 }
@@ -1732,9 +1956,11 @@ internal fun WorkerOperationsRowCard(
 @Composable
 internal fun WorkerEntryDetailDialog(
     detail: WorkerEntryDetail,
+    serverBaseUrl: String = "",
     onDismiss: () -> Unit,
     onDownloadDocument: ((downloadPath: String) -> Unit)? = null
 ) {
+    val cleanBase = serverBaseUrl.trim().trimEnd('/')
     AlertDialog(
         onDismissRequest = onDismiss,
         title = {
@@ -1759,14 +1985,30 @@ internal fun WorkerEntryDetailDialog(
                     .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
+                if (!detail.portraitPreviewPath.isNullOrBlank() && cleanBase.isNotEmpty()) {
+                    AsyncImage(
+                        model = "$cleanBase${detail.portraitPreviewPath}",
+                        contentDescription = "Ảnh chân dung ${detail.displayName}",
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier
+                            .size(96.dp)
+                            .clip(RoundedCornerShape(14.dp))
+                            .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.35f), RoundedCornerShape(14.dp))
+                    )
+                }
                 DetailItemRow("Ngày đầu đi làm", detail.firstWorkDate)
                 DetailItemRow("Loại hình LĐ", detail.laborTypeDisplay)
                 DetailItemRow("Trạng thái", "${detail.employmentStatus} (${detail.employmentEffectiveDate})")
+                if (!detail.employmentLeaveReason.isNullOrBlank()) {
+                    DetailItemRow("Lý do nghỉ", detail.employmentLeaveReason)
+                }
                 HorizontalDivider()
                 DetailItemRow("Giới tính", detail.gender ?: "—")
                 DetailItemRow("Ngày sinh", detail.dateOfBirth ?: "—")
                 DetailItemRow("Số điện thoại", detail.phone ?: "—")
                 DetailItemRow("Số CCCD", detail.nationalId ?: "—")
+                DetailItemRow("Ngày cấp CCCD", detail.nationalIdIssuedAt ?: "—")
+                DetailItemRow("Nơi cấp CCCD", detail.nationalIdIssuedPlace ?: "—")
                 DetailItemRow("Địa chỉ", detail.address ?: "—")
                 HorizontalDivider()
                 DetailItemRow("Ngân hàng", detail.bankName ?: "—")
@@ -1784,21 +2026,38 @@ internal fun WorkerEntryDetailDialog(
                         fontWeight = FontWeight.Bold
                     )
                     detail.documents.forEach { doc ->
-                        Row(
+                        Column(
                             modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
-                            Text(
-                                text = "${doc.documentType} (${doc.uploadStatus})",
-                                style = MaterialTheme.typography.bodySmall,
-                                modifier = Modifier.weight(1f)
-                            )
-                            val dl = doc.downloadPath
-                            if (!dl.isNullOrBlank() && onDownloadDocument != null) {
-                                TextButton(onClick = { onDownloadDocument(dl) }) {
-                                    Text("Tải về")
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "${doc.documentType} (${doc.uploadStatus})",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                val dl = doc.downloadPath
+                                if (!dl.isNullOrBlank() && onDownloadDocument != null) {
+                                    TextButton(onClick = { onDownloadDocument(dl) }) {
+                                        Text("Tải về")
+                                    }
                                 }
+                            }
+                            if (!doc.previewPath.isNullOrBlank() && cleanBase.isNotEmpty()) {
+                                AsyncImage(
+                                    model = "$cleanBase${doc.previewPath}",
+                                    contentDescription = doc.documentType,
+                                    contentScale = ContentScale.Fit,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(140.dp)
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f))
+                                )
                             }
                         }
                     }
@@ -1808,6 +2067,462 @@ internal fun WorkerEntryDetailDialog(
         confirmButton = {
             Button(onClick = onDismiss) {
                 Text("Đóng")
+            }
+        }
+    )
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+internal fun WorkerProposeChangeDialog(
+    worker: WorkerProfileEntity,
+    baselineDetail: WorkerEntryDetail?,
+    catalog: DirectEntryCatalog?,
+    busy: Boolean,
+    error: String?,
+    onDismiss: () -> Unit,
+    onSubmit: (targetKind: String, expectedVersion: Int, proposal: JSONObject, reason: String?) -> Unit
+) {
+    val expectedVersion = baselineDetail?.version ?: worker.entryVersion
+    var selectedTargetKind by remember { mutableStateOf("ENTRY_FIELD") }
+
+    // ENTRY_FIELD fields
+    var projectId by remember(baselineDetail, worker) {
+        mutableStateOf(baselineDetail?.projectId ?: worker.projectId)
+    }
+    var firstWorkDateUi by remember(baselineDetail, worker) {
+        mutableStateOf(DirectEntryContract.isoDateToUiDate(baselineDetail?.firstWorkDate ?: worker.firstWorkDate))
+    }
+    var laborTypeKey by remember(baselineDetail, worker) {
+        mutableStateOf(baselineDetail?.laborType ?: worker.laborType)
+    }
+    var displayName by remember(baselineDetail, worker) {
+        mutableStateOf(baselineDetail?.displayName ?: worker.displayName)
+    }
+    var phone by remember(baselineDetail) {
+        mutableStateOf(baselineDetail?.phone.orEmpty())
+    }
+
+    // PAYMENT fields
+    var bankId by remember(baselineDetail, catalog) {
+        mutableStateOf(baselineDetail?.bankId ?: catalog?.banks?.firstOrNull()?.bankId.orEmpty())
+    }
+    var accountNumber by remember(baselineDetail) {
+        mutableStateOf(baselineDetail?.accountNumber.orEmpty())
+    }
+    var accountHolderName by remember(baselineDetail, worker) {
+        mutableStateOf(baselineDetail?.accountHolderName ?: worker.displayName)
+    }
+
+    // WORK_STATUS fields
+    var targetStatus by remember(baselineDetail, worker) {
+        mutableStateOf(if ((baselineDetail?.employmentStatus ?: worker.employmentStatus) == "ON") "OFF" else "ON")
+    }
+    var effectiveDateUi by remember { mutableStateOf(DirectEntryContract.todayUiInHcm()) }
+    var leaveReason by remember { mutableStateOf("") }
+
+    var actionReason by remember { mutableStateOf("") }
+    var localError by remember { mutableStateOf<String?>(null) }
+
+    val targetOptions = listOf(
+        "ENTRY_FIELD" to "Thông tin hồ sơ",
+        "PAYMENT" to "Tài khoản NH",
+        "WORK_STATUS" to "Trạng thái LĐ"
+    )
+
+    AlertDialog(
+        onDismissRequest = { if (!busy) onDismiss() },
+        title = {
+            Column {
+                Text("Đề xuất thay đổi", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                Text(
+                    text = "${worker.displayName} (${worker.employeeCode}) · v$expectedVersion",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    targetOptions.forEach { (kind, label) ->
+                        FilterChip(
+                            selected = selectedTargetKind == kind,
+                            onClick = {
+                                selectedTargetKind = kind
+                                localError = null
+                            },
+                            label = { Text(label) },
+                            modifier = Modifier.testTag("propose_target_$kind")
+                        )
+                    }
+                }
+
+                when (selectedTargetKind) {
+                    "ENTRY_FIELD" -> {
+                        if (catalog != null && catalog.projects.isNotEmpty()) {
+                            KeyedSelectDropdownField(
+                                label = "Dự án",
+                                selectedLabel = catalog.projects.firstOrNull { it.projectId == projectId }?.displayName ?: projectId,
+                                placeholder = "Chọn dự án",
+                                options = catalog.projects.map { DropdownOptionItem(it.projectId, it.displayName) },
+                                onSelect = { projectId = it.id },
+                                testTag = "propose_project_dropdown"
+                            )
+                        }
+                        if (catalog != null && catalog.laborTypes.isNotEmpty()) {
+                            KeyedSelectDropdownField(
+                                label = "Loại hình lao động",
+                                selectedLabel = catalog.laborTypes.firstOrNull { it.laborTypeKey == laborTypeKey }?.displayName ?: laborTypeKey,
+                                placeholder = "Chọn loại hình LĐ",
+                                options = catalog.laborTypes.map { DropdownOptionItem(it.laborTypeKey, it.displayName) },
+                                onSelect = { laborTypeKey = it.id },
+                                testTag = "propose_labor_type_dropdown"
+                            )
+                        }
+                        OutlinedTextField(
+                            value = firstWorkDateUi,
+                            onValueChange = { firstWorkDateUi = it },
+                            label = { Text("Ngày bắt đầu (DD/MM/YYYY)") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        OutlinedTextField(
+                            value = displayName,
+                            onValueChange = { displayName = it },
+                            label = { Text("Họ và tên") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        if (baselineDetail != null) {
+                            OutlinedTextField(
+                                value = phone,
+                                onValueChange = { phone = it },
+                                label = { Text("Số điện thoại") },
+                                singleLine = true,
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        }
+                    }
+
+                    "PAYMENT" -> {
+                        if (catalog != null && catalog.banks.isNotEmpty()) {
+                            KeyedSelectDropdownField(
+                                label = "Ngân hàng *",
+                                selectedLabel = catalog.banks.firstOrNull { it.bankId == bankId }?.displayName.orEmpty(),
+                                placeholder = "Chọn ngân hàng",
+                                options = catalog.banks.map { DropdownOptionItem(it.bankId, it.displayName) },
+                                onSelect = { bankId = it.id },
+                                testTag = "propose_bank_dropdown"
+                            )
+                        } else {
+                            OutlinedTextField(
+                                value = bankId,
+                                onValueChange = { bankId = it },
+                                label = { Text("Mã ngân hàng *") },
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        }
+                        OutlinedTextField(
+                            value = accountNumber,
+                            onValueChange = { accountNumber = it },
+                            label = { Text("Số tài khoản (chỉ chữ số) *") },
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        OutlinedTextField(
+                            value = accountHolderName,
+                            onValueChange = { accountHolderName = it },
+                            label = { Text("Tên chủ tài khoản *") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+
+                    "WORK_STATUS" -> {
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            WORK_STATUS_FILTER_OPTIONS.forEach { (code, label) ->
+                                FilterChip(
+                                    selected = targetStatus == code,
+                                    onClick = { targetStatus = code },
+                                    label = { Text(label) }
+                                )
+                            }
+                        }
+                        OutlinedTextField(
+                            value = effectiveDateUi,
+                            onValueChange = { effectiveDateUi = it },
+                            label = { Text("Ngày hiệu lực (DD/MM/YYYY) *") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        if (targetStatus == "OFF") {
+                            OutlinedTextField(
+                                value = leaveReason,
+                                onValueChange = { leaveReason = it },
+                                label = { Text("Lý do nghỉ *") },
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        }
+                    }
+                }
+
+                OutlinedTextField(
+                    value = actionReason,
+                    onValueChange = { actionReason = it },
+                    label = { Text("Lý do đề xuất") },
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                (localError ?: error)?.let { errMsg ->
+                    Text(
+                        text = errMsg,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss, enabled = !busy) {
+                Text("Hủy")
+            }
+        },
+        confirmButton = {
+            Button(
+                enabled = !busy,
+                onClick = {
+                    localError = null
+                    try {
+                        val proposal = when (selectedTargetKind) {
+                            "ENTRY_FIELD" -> {
+                                JSONObject().apply {
+                                    val baseProj = baselineDetail?.projectId ?: worker.projectId
+                                    if (projectId.isNotBlank() && projectId != baseProj) {
+                                        put("project_id", projectId.trim())
+                                    }
+                                    val isoFirst = DirectEntryContract.uiDateToIsoDate(firstWorkDateUi)
+                                    val baseFirst = baselineDetail?.firstWorkDate ?: worker.firstWorkDate
+                                    if (isoFirst != baseFirst) {
+                                        put("first_work_date", isoFirst)
+                                    }
+                                    val baseLabor = baselineDetail?.laborType ?: worker.laborType
+                                    if (laborTypeKey.isNotBlank() && laborTypeKey != baseLabor) {
+                                        put("labor_type", laborTypeKey.trim())
+                                    }
+                                    if (baselineDetail != null &&
+                                        (displayName.trim() != baselineDetail.displayName || phone.trim() != baselineDetail.phone.orEmpty())
+                                    ) {
+                                        put(
+                                            "worker_details",
+                                            JSONObject().apply {
+                                                put("display_name", displayName.trim())
+                                                put("date_of_birth", DirectEntryContract.optionalTextField(baselineDetail.dateOfBirth.orEmpty()))
+                                                put("national_id", DirectEntryContract.optionalTextField(baselineDetail.nationalId.orEmpty()))
+                                                put("address", DirectEntryContract.optionalTextField(baselineDetail.address.orEmpty()))
+                                                put("phone", DirectEntryContract.optionalTextField(phone))
+                                            }
+                                        )
+                                    }
+                                }
+                            }
+                            "PAYMENT" -> DirectEntryContract.buildPaymentChangeProposal(
+                                state = "provided",
+                                accountNumber = accountNumber,
+                                bankId = bankId,
+                                accountHolderName = accountHolderName
+                            )
+                            "WORK_STATUS" -> DirectEntryContract.buildWorkStatusChangeProposal(
+                                status = targetStatus,
+                                effectiveDateUiOrIso = effectiveDateUi,
+                                leaveReason = leaveReason
+                            )
+                            else -> JSONObject()
+                        }
+                        if (proposal.length() == 0) {
+                            localError = "Chưa có trường nào thay đổi so với dữ liệu gốc."
+                            return@Button
+                        }
+                        onSubmit(selectedTargetKind, expectedVersion, proposal, actionReason)
+                    } catch (e: Exception) {
+                        localError = e.message ?: "Dữ liệu đề xuất chưa hợp lệ."
+                    }
+                }
+            ) {
+                Text(if (busy) "Đang gửi…" else "Gửi đề xuất")
+            }
+        }
+    )
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+internal fun WorkerPrivilegedEditDialog(
+    worker: WorkerProfileEntity,
+    baselineDetail: WorkerEntryDetail,
+    catalog: DirectEntryCatalog?,
+    busy: Boolean,
+    error: String?,
+    onDismiss: () -> Unit,
+    onSubmit: (expectedEntryVersion: Int, patch: JSONObject, reason: String?) -> Unit
+) {
+    var projectId by remember(baselineDetail) { mutableStateOf(baselineDetail.projectId) }
+    var firstWorkDateUi by remember(baselineDetail) {
+        mutableStateOf(DirectEntryContract.isoDateToUiDate(baselineDetail.firstWorkDate))
+    }
+    var laborTypeKey by remember(baselineDetail) { mutableStateOf(baselineDetail.laborType) }
+    var statusCode by remember(baselineDetail) { mutableStateOf(baselineDetail.employmentStatus) }
+    var statusEffectiveDateUi by remember(baselineDetail) {
+        mutableStateOf(DirectEntryContract.isoDateToUiDate(baselineDetail.employmentEffectiveDate))
+    }
+    var leaveReason by remember(baselineDetail) { mutableStateOf(baselineDetail.employmentLeaveReason.orEmpty()) }
+    var actionReason by remember { mutableStateOf("") }
+    var localError by remember { mutableStateOf<String?>(null) }
+
+    AlertDialog(
+        onDismissRequest = { if (!busy) onDismiss() },
+        title = {
+            Column {
+                Text("Sửa trực tiếp hồ sơ", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                Text(
+                    text = "${baselineDetail.displayName} (${baselineDetail.employeeCode}) · v${baselineDetail.version}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                if (catalog != null && catalog.projects.isNotEmpty()) {
+                    KeyedSelectDropdownField(
+                        label = "Dự án",
+                        selectedLabel = catalog.projects.firstOrNull { it.projectId == projectId }?.displayName ?: projectId,
+                        placeholder = "Chọn dự án",
+                        options = catalog.projects.map { DropdownOptionItem(it.projectId, it.displayName) },
+                        onSelect = { projectId = it.id },
+                        testTag = "edit_project_dropdown"
+                    )
+                }
+                if (catalog != null && catalog.laborTypes.isNotEmpty()) {
+                    KeyedSelectDropdownField(
+                        label = "Loại hình lao động",
+                        selectedLabel = catalog.laborTypes.firstOrNull { it.laborTypeKey == laborTypeKey }?.displayName ?: laborTypeKey,
+                        placeholder = "Chọn loại hình LĐ",
+                        options = catalog.laborTypes.map { DropdownOptionItem(it.laborTypeKey, it.displayName) },
+                        onSelect = { laborTypeKey = it.id },
+                        testTag = "edit_labor_type_dropdown"
+                    )
+                }
+                OutlinedTextField(
+                    value = firstWorkDateUi,
+                    onValueChange = { firstWorkDateUi = it },
+                    label = { Text("Ngày bắt đầu (DD/MM/YYYY)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Text("Trạng thái làm việc", style = MaterialTheme.typography.labelLarge)
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    WORK_STATUS_FILTER_OPTIONS.forEach { (code, label) ->
+                        FilterChip(
+                            selected = statusCode == code,
+                            onClick = { statusCode = code },
+                            label = { Text(label) }
+                        )
+                    }
+                }
+                OutlinedTextField(
+                    value = statusEffectiveDateUi,
+                    onValueChange = { statusEffectiveDateUi = it },
+                    label = { Text("Ngày hiệu lực trạng thái (DD/MM/YYYY)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                if (statusCode == "OFF") {
+                    OutlinedTextField(
+                        value = leaveReason,
+                        onValueChange = { leaveReason = it },
+                        label = { Text("Lý do nghỉ *") },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+                OutlinedTextField(
+                    value = actionReason,
+                    onValueChange = { actionReason = it },
+                    label = { Text("Lý do chỉnh sửa") },
+                    modifier = Modifier.fillMaxWidth()
+                )
+                (localError ?: error)?.let { errMsg ->
+                    Text(
+                        text = errMsg,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss, enabled = !busy) {
+                Text("Hủy")
+            }
+        },
+        confirmButton = {
+            Button(
+                enabled = !busy,
+                onClick = {
+                    localError = null
+                    try {
+                        val patch = JSONObject()
+                        if (projectId.isNotBlank() && projectId != baselineDetail.projectId) {
+                            patch.put("project_id", projectId.trim())
+                        }
+                        val isoFirst = DirectEntryContract.uiDateToIsoDate(firstWorkDateUi)
+                        if (isoFirst != baselineDetail.firstWorkDate) {
+                            patch.put("first_work_date", isoFirst)
+                        }
+                        if (laborTypeKey.isNotBlank() && laborTypeKey != baselineDetail.laborType) {
+                            patch.put("labor_type", laborTypeKey.trim())
+                        }
+                        val isoEff = DirectEntryContract.uiDateToIsoDate(statusEffectiveDateUi)
+                        if (statusCode != baselineDetail.employmentStatus ||
+                            isoEff != baselineDetail.employmentEffectiveDate ||
+                            (statusCode == "OFF" && leaveReason.trim() != baselineDetail.employmentLeaveReason.orEmpty())
+                        ) {
+                            patch.put(
+                                "employment_status",
+                                DirectEntryContract.buildPrivilegedEditEmploymentStatus(
+                                    status = statusCode,
+                                    effectiveDateUiOrIso = isoEff,
+                                    leaveReason = leaveReason
+                                )
+                            )
+                        }
+                        if (patch.length() == 0) {
+                            localError = "Chưa có trường nào thay đổi so với dữ liệu gốc."
+                            return@Button
+                        }
+                        onSubmit(baselineDetail.version, patch, actionReason)
+                    } catch (e: Exception) {
+                        localError = e.message ?: "Dữ liệu chỉnh sửa chưa hợp lệ."
+                    }
+                }
+            ) {
+                Text(if (busy) "Đang lưu…" else "Lưu thay đổi")
             }
         }
     )

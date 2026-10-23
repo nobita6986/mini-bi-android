@@ -5,6 +5,7 @@ import android.app.Application
 import android.content.Context
 import android.location.Geocoder
 import android.location.LocationManager
+import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import coil.ImageLoader
@@ -12,21 +13,28 @@ import com.example.BuildConfig
 import com.example.data.AppActor
 import com.example.data.AttendanceEntity
 import com.example.data.BackendApiException
+import com.example.data.BackendFailureKind
 import com.example.data.DirectEntryCatalog
+import com.example.data.DirectEntryContract
 import com.example.data.DuplicateCccdGroupItem
 import com.example.data.MiniBiRepository
+import com.example.data.NewWorkerEntryDraft
 import com.example.data.OwnSubmissionItem
+import com.example.data.StagedDocumentRef
 import com.example.data.TeamReportSnapshot
 import com.example.data.WorkReportAnalyticsSnapshot
 import com.example.data.WorkReportObligationEntity
 import com.example.data.WorkReportReviewItem
+import com.example.data.WorkerDirectorySummary
 import com.example.data.WorkerEntryDetail
 import com.example.data.WorkerProfileEntity
 import com.example.data.WorkforceDeepMetrics
+import com.example.ui.screens.resolveVisibleWorkerTabs
 import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
 import com.google.android.gms.tasks.CancellationTokenSource
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -35,6 +43,8 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import org.json.JSONObject
+import java.io.File
 import java.util.Locale
 import kotlin.coroutines.resume
 
@@ -139,8 +149,42 @@ class MiniBiViewModel(application: Application) : AndroidViewModel(application) 
     private val _ownSubmissions = MutableStateFlow<List<OwnSubmissionItem>>(emptyList())
     val ownSubmissions: StateFlow<List<OwnSubmissionItem>> = _ownSubmissions.asStateFlow()
 
+    private val _activeWorkerTabKey = MutableStateFlow("managed")
+    val activeWorkerTabKey: StateFlow<String> = _activeWorkerTabKey.asStateFlow()
+
+    private val _workerHasMore = MutableStateFlow(false)
+    val workerHasMore: StateFlow<Boolean> = _workerHasMore.asStateFlow()
+
+    private val _workerNextCursor = MutableStateFlow<String?>(null)
+
+    private val _submissionsHasMore = MutableStateFlow(false)
+    val submissionsHasMore: StateFlow<Boolean> = _submissionsHasMore.asStateFlow()
+
+    private val _submissionsNextCursor = MutableStateFlow<String?>(null)
+
+    private val _workerSummary = MutableStateFlow<WorkerDirectorySummary?>(null)
+    val workerSummary: StateFlow<WorkerDirectorySummary?> = _workerSummary.asStateFlow()
+
     private val _selectedEntryDetail = MutableStateFlow<WorkerEntryDetail?>(null)
     val selectedEntryDetail: StateFlow<WorkerEntryDetail?> = _selectedEntryDetail.asStateFlow()
+
+    private val _proposeChangeTarget = MutableStateFlow<Pair<WorkerProfileEntity, WorkerEntryDetail?>?>(null)
+    val proposeChangeTarget: StateFlow<Pair<WorkerProfileEntity, WorkerEntryDetail?>?> = _proposeChangeTarget.asStateFlow()
+
+    private val _directEditTarget = MutableStateFlow<Pair<WorkerProfileEntity, WorkerEntryDetail>?>(null)
+    val directEditTarget: StateFlow<Pair<WorkerProfileEntity, WorkerEntryDetail>?> = _directEditTarget.asStateFlow()
+
+    private val _workerMutationBusy = MutableStateFlow(false)
+    val workerMutationBusy: StateFlow<Boolean> = _workerMutationBusy.asStateFlow()
+
+    private val _workerMutationError = MutableStateFlow<String?>(null)
+    val workerMutationError: StateFlow<String?> = _workerMutationError.asStateFlow()
+
+    private var workerFetchJob: Job? = null
+    private var lastSearchQuery: String = ""
+    private var lastFilterProjectId: String? = null
+    private var lastFilterRecruiterId: String? = null
+    private var lastFilterStatus: String? = null
 
     // Work Reports States (Backend authority only; zero seed data)
     val workReports: StateFlow<List<WorkReportObligationEntity>> = repository.workReportsFlow
@@ -188,6 +232,20 @@ class MiniBiViewModel(application: Application) : AndroidViewModel(application) 
 
     fun navigateTo(destination: MainDestination) {
         _currentDestination.value = destination
+        val actor = currentActor.value ?: return
+        when (destination) {
+            MainDestination.NEW_ENTRY -> {
+                loadCatalogIfNeeded()
+                if (actor.hasCapability("submission_read")) {
+                    refreshOwnSubmissionsForHistory()
+                }
+            }
+            MainDestination.WORKERS -> {
+                loadCatalogIfNeeded()
+                ensureInitialWorkerTabLoaded(actor)
+            }
+            else -> Unit
+        }
     }
 
     fun setTheme(themeId: String) {
@@ -242,9 +300,470 @@ class MiniBiViewModel(application: Application) : AndroidViewModel(application) 
             _catalog.value = null
             _workerRows.value = emptyList()
             _ownSubmissions.value = emptyList()
+            _workerSummary.value = null
+            _workerHasMore.value = false
+            _workerNextCursor.value = null
+            _submissionsHasMore.value = false
+            _submissionsNextCursor.value = null
             _selectedEntryDetail.value = null
+            _proposeChangeTarget.value = null
+            _directEditTarget.value = null
+            _workerMutationError.value = null
             _reviewQueue.value = emptyList()
             _analyticsSnapshot.value = null
+        }
+    }
+
+    // =========================================================================
+    // Direct Entry & Worker Operations Actions
+    // =========================================================================
+
+    fun loadCatalogIfNeeded(
+        effectiveDateIso: String = DirectEntryContract.todayIsoInHcm(),
+        force: Boolean = false
+    ) {
+        if (!force && (_catalogLoading.value || _catalog.value?.effectiveDate == effectiveDateIso)) {
+            return
+        }
+        _catalogLoading.value = true
+        _catalogError.value = null
+        viewModelScope.launch {
+            try {
+                val loaded = repository.directEntryService.fetchCatalog(effectiveDateIso)
+                _catalog.value = loaded
+            } catch (e: Exception) {
+                _catalogError.value = (e as? BackendApiException)?.message
+                    ?: e.message
+                    ?: "Không thể tải danh mục từ máy chủ."
+            } finally {
+                _catalogLoading.value = false
+            }
+        }
+    }
+
+    fun refreshOwnSubmissionsForHistory() {
+        viewModelScope.launch {
+            try {
+                val page = repository.directEntryService.listOwnSubmissions(pageSize = 20)
+                _ownSubmissions.value = page.items
+                _submissionsHasMore.value = page.hasMore
+                _submissionsNextCursor.value = page.nextCursor
+            } catch (_: Exception) {
+                // Non-blocking history preview
+            }
+        }
+    }
+
+    fun uploadStageDocument(
+        documentType: String,
+        uri: Uri,
+        onStaged: (StagedDocumentRef) -> Unit,
+        onError: (String) -> Unit
+    ) {
+        viewModelScope.launch {
+            try {
+                val staged = repository.directEntryService.uploadStageUri(documentType, uri)
+                onStaged(staged)
+            } catch (e: Exception) {
+                onError(
+                    (e as? BackendApiException)?.message
+                        ?: e.message
+                        ?: "Tải hồ sơ lên máy chủ thất bại."
+                )
+            }
+        }
+    }
+
+    fun deleteStageDocument(stageId: String) {
+        viewModelScope.launch {
+            try {
+                repository.directEntryService.deleteStage(stageId)
+            } catch (_: Exception) {
+                // Best-effort stage cleanup when user discards/replaces draft attachment
+            }
+        }
+    }
+
+    fun submitFullProfileDrafts(
+        validDrafts: List<NewWorkerEntryDraft>,
+        onSuccess: () -> Unit
+    ) {
+        if (_workerMutationBusy.value) return
+        _workerMutationBusy.value = true
+        _workerMutationError.value = null
+        viewModelScope.launch {
+            try {
+                val result = repository.directEntryService.submitFullProfileBatch(validDrafts)
+                val codesNote = if (result.employeeCodes.isNotEmpty()) {
+                    " Mã NLĐ: ${result.employeeCodes.joinToString(", ")}"
+                } else {
+                    ""
+                }
+                showBanner("Đã lưu ${result.entryIds.size} hồ sơ lên máy chủ.$codesNote")
+                refreshOwnSubmissionsForHistory()
+                onSuccess()
+            } catch (e: Exception) {
+                val msg = (e as? BackendApiException)?.message
+                    ?: e.message
+                    ?: "Không thể gửi hồ sơ lên máy chủ."
+                _workerMutationError.value = msg
+                showBanner(msg, isError = true)
+            } finally {
+                _workerMutationBusy.value = false
+            }
+        }
+    }
+
+    fun ensureInitialWorkerTabLoaded(actor: AppActor) {
+        val visibleTabs = resolveVisibleWorkerTabs(actor)
+        if (visibleTabs.isEmpty()) {
+            _workerRows.value = emptyList()
+            _ownSubmissions.value = emptyList()
+            _workerError.value = "Tài khoản chưa được cấp quyền xem danh sách người lao động."
+            return
+        }
+        val currentTab = _activeWorkerTabKey.value
+        val initialTab = if (visibleTabs.any { it.key == currentTab }) {
+            currentTab
+        } else {
+            visibleTabs.first().key
+        }
+        selectWorkerTab(
+            tabKey = initialTab,
+            search = lastSearchQuery,
+            projectId = lastFilterProjectId,
+            recruiterId = lastFilterRecruiterId,
+            employmentStatus = lastFilterStatus,
+            allowFallbackFromManaged = (initialTab == "managed")
+        )
+    }
+
+    fun selectWorkerTab(
+        tabKey: String,
+        search: String = lastSearchQuery,
+        projectId: String? = lastFilterProjectId,
+        recruiterId: String? = lastFilterRecruiterId,
+        employmentStatus: String? = lastFilterStatus,
+        allowFallbackFromManaged: Boolean = false
+    ) {
+        _activeWorkerTabKey.value = tabKey
+        lastSearchQuery = search
+        lastFilterProjectId = projectId
+        lastFilterRecruiterId = recruiterId
+        lastFilterStatus = employmentStatus
+
+        workerFetchJob?.cancel()
+        workerFetchJob = viewModelScope.launch {
+            _workerLoading.value = true
+            _workerError.value = null
+            if (tabKey == "uploader") {
+                try {
+                    val page = repository.directEntryService.listOwnSubmissions(pageSize = 20, cursor = null)
+                    _ownSubmissions.value = page.items
+                    _submissionsHasMore.value = page.hasMore
+                    _submissionsNextCursor.value = page.nextCursor
+                } catch (e: Exception) {
+                    _ownSubmissions.value = emptyList()
+                    _submissionsHasMore.value = false
+                    _submissionsNextCursor.value = null
+                    _workerError.value = (e as? BackendApiException)?.message
+                        ?: e.message
+                        ?: "Không thể tải lịch sử đợt nhập liệu."
+                } finally {
+                    _workerLoading.value = false
+                }
+            } else {
+                try {
+                    val page = repository.directEntryService.listWorkers(
+                        scope = tabKey,
+                        pageSize = 25,
+                        cursor = null,
+                        search = search,
+                        projectId = projectId,
+                        recruiterId = recruiterId,
+                        employmentStatus = employmentStatus
+                    )
+                    _workerRows.value = page.items
+                    _workerHasMore.value = page.hasMore
+                    _workerNextCursor.value = page.nextCursor
+                    _workerSummary.value = page.summary
+                } catch (e: BackendApiException) {
+                    if (allowFallbackFromManaged && tabKey == "managed" && e.kind == BackendFailureKind.FORBIDDEN) {
+                        val actor = currentActor.value
+                        val fallbackTab = actor?.let { resolveVisibleWorkerTabs(it) }
+                            ?.firstOrNull { it.key != "managed" }
+                        if (fallbackTab != null) {
+                            _workerLoading.value = false
+                            selectWorkerTab(
+                                tabKey = fallbackTab.key,
+                                search = search,
+                                projectId = projectId,
+                                recruiterId = recruiterId,
+                                employmentStatus = employmentStatus,
+                                allowFallbackFromManaged = false
+                            )
+                            return@launch
+                        }
+                    }
+                    if (e.kind == BackendFailureKind.NETWORK) {
+                        val cached = repository.getCachedWorkersByScope(tabKey)
+                        _workerRows.value = cached
+                    } else {
+                        _workerRows.value = emptyList()
+                    }
+                    _workerHasMore.value = false
+                    _workerNextCursor.value = null
+                    _workerError.value = e.message
+                } catch (e: Exception) {
+                    _workerRows.value = emptyList()
+                    _workerHasMore.value = false
+                    _workerNextCursor.value = null
+                    _workerError.value = e.message ?: "Không thể tải danh sách người lao động."
+                } finally {
+                    _workerLoading.value = false
+                }
+            }
+        }
+    }
+
+    fun loadMoreWorkersOrSubmissions() {
+        if (_workerLoading.value) return
+        val tabKey = _activeWorkerTabKey.value
+        if (tabKey == "uploader") {
+            val cursor = _submissionsNextCursor.value ?: return
+            if (!_submissionsHasMore.value) return
+            viewModelScope.launch {
+                _workerLoading.value = true
+                try {
+                    val page = repository.directEntryService.listOwnSubmissions(pageSize = 20, cursor = cursor)
+                    _ownSubmissions.value = _ownSubmissions.value + page.items
+                    _submissionsHasMore.value = page.hasMore
+                    _submissionsNextCursor.value = page.nextCursor
+                } catch (e: Exception) {
+                    showBanner(
+                        (e as? BackendApiException)?.message ?: "Không thể tải thêm lịch sử đợt nhập.",
+                        isError = true
+                    )
+                } finally {
+                    _workerLoading.value = false
+                }
+            }
+        } else {
+            val cursor = _workerNextCursor.value ?: return
+            if (!_workerHasMore.value) return
+            viewModelScope.launch {
+                _workerLoading.value = true
+                try {
+                    val page = repository.directEntryService.listWorkers(
+                        scope = tabKey,
+                        pageSize = 25,
+                        cursor = cursor,
+                        search = lastSearchQuery,
+                        projectId = lastFilterProjectId,
+                        recruiterId = lastFilterRecruiterId,
+                        employmentStatus = lastFilterStatus
+                    )
+                    _workerRows.value = _workerRows.value + page.items
+                    _workerHasMore.value = page.hasMore
+                    _workerNextCursor.value = page.nextCursor
+                    _workerSummary.value = page.summary
+                } catch (e: Exception) {
+                    showBanner(
+                        (e as? BackendApiException)?.message ?: "Không thể tải thêm danh sách NLĐ.",
+                        isError = true
+                    )
+                } finally {
+                    _workerLoading.value = false
+                }
+            }
+        }
+    }
+
+    fun openEntryDetail(entryId: String) {
+        viewModelScope.launch {
+            try {
+                val detail = repository.directEntryService.getEntryDetail(entryId)
+                _selectedEntryDetail.value = detail
+            } catch (e: Exception) {
+                showBanner(
+                    (e as? BackendApiException)?.message ?: "Không thể tải chi tiết hồ sơ từ máy chủ.",
+                    isError = true
+                )
+            }
+        }
+    }
+
+    fun closeEntryDetail() {
+        _selectedEntryDetail.value = null
+    }
+
+    fun openProposeChange(worker: WorkerProfileEntity) {
+        if (!worker.allowedActions.proposeChange) return
+        _workerMutationError.value = null
+        loadCatalogIfNeeded()
+        viewModelScope.launch {
+            val detail = if (worker.allowedActions.view) {
+                runCatching { repository.directEntryService.getEntryDetail(worker.entryId) }.getOrNull()
+            } else {
+                null
+            }
+            _proposeChangeTarget.value = worker to detail
+        }
+    }
+
+    fun closeProposeChange() {
+        _proposeChangeTarget.value = null
+        _workerMutationError.value = null
+    }
+
+    fun submitProposeChange(
+        entryId: String,
+        targetKind: String,
+        expectedVersion: Int,
+        proposal: JSONObject,
+        reason: String?
+    ) {
+        if (_workerMutationBusy.value) return
+        _workerMutationBusy.value = true
+        _workerMutationError.value = null
+        viewModelScope.launch {
+            try {
+                val created = repository.directEntryService.createChangeRequest(
+                    entryId = entryId,
+                    targetKind = targetKind,
+                    expectedVersion = expectedVersion,
+                    proposal = proposal,
+                    reason = reason
+                )
+                _proposeChangeTarget.value = null
+                showBanner("Đã gửi đề xuất thay đổi (#${created.requestId.take(8)}).")
+                selectWorkerTab(_activeWorkerTabKey.value)
+            } catch (e: BackendApiException) {
+                _workerMutationError.value = e.message
+                if (e.kind == BackendFailureKind.CONFLICT) {
+                    // Reload baseline from server on OCC conflict
+                    val currentWorker = _proposeChangeTarget.value?.first
+                    if (currentWorker != null) {
+                        val refreshed = runCatching { repository.directEntryService.getEntryDetail(entryId) }.getOrNull()
+                        if (refreshed != null) {
+                            _proposeChangeTarget.value = currentWorker.copy(entryVersion = refreshed.version) to refreshed
+                        }
+                    }
+                    selectWorkerTab(_activeWorkerTabKey.value)
+                }
+            } catch (e: Exception) {
+                _workerMutationError.value = e.message ?: "Không thể gửi đề xuất thay đổi."
+            } finally {
+                _workerMutationBusy.value = false
+            }
+        }
+    }
+
+    fun openDirectEdit(worker: WorkerProfileEntity) {
+        if (!worker.allowedActions.directEdit) return
+        _workerMutationError.value = null
+        loadCatalogIfNeeded()
+        viewModelScope.launch {
+            try {
+                val detail = repository.directEntryService.getEntryDetail(worker.entryId)
+                _directEditTarget.value = worker to detail
+            } catch (e: Exception) {
+                showBanner(
+                    (e as? BackendApiException)?.message ?: "Không thể tải hồ sơ gốc để sửa trực tiếp.",
+                    isError = true
+                )
+            }
+        }
+    }
+
+    fun closeDirectEdit() {
+        _directEditTarget.value = null
+        _workerMutationError.value = null
+    }
+
+    fun submitDirectEdit(
+        entryId: String,
+        expectedEntryVersion: Int,
+        patch: JSONObject,
+        reason: String?
+    ) {
+        if (_workerMutationBusy.value) return
+        _workerMutationBusy.value = true
+        _workerMutationError.value = null
+        viewModelScope.launch {
+            try {
+                val refreshedDetail = repository.directEntryService.privilegedEditEntry(
+                    entryId = entryId,
+                    expectedEntryVersion = expectedEntryVersion,
+                    patch = patch,
+                    reason = reason
+                )
+                _directEditTarget.value = null
+                if (_selectedEntryDetail.value?.entryId == entryId) {
+                    _selectedEntryDetail.value = refreshedDetail
+                }
+                showBanner("Đã cập nhật hồ sơ thành công (phiên bản v${refreshedDetail.version}).")
+                selectWorkerTab(_activeWorkerTabKey.value)
+            } catch (e: BackendApiException) {
+                _workerMutationError.value = e.message
+                if (e.kind == BackendFailureKind.CONFLICT) {
+                    // Version conflict: reload baseline from backend
+                    val currentWorker = _directEditTarget.value?.first
+                    val latest = runCatching { repository.directEntryService.getEntryDetail(entryId) }.getOrNull()
+                    if (currentWorker != null && latest != null) {
+                        _directEditTarget.value = currentWorker.copy(entryVersion = latest.version) to latest
+                    }
+                    selectWorkerTab(_activeWorkerTabKey.value)
+                }
+            } catch (e: Exception) {
+                _workerMutationError.value = e.message ?: "Không thể cập nhật hồ sơ."
+            } finally {
+                _workerMutationBusy.value = false
+            }
+        }
+    }
+
+    fun exportWorkersExcel(
+        scopeKey: String,
+        projectId: String?,
+        recruiterId: String?,
+        employmentStatus: String?,
+        onReadyFile: (File) -> Unit
+    ) {
+        viewModelScope.launch {
+            try {
+                val file = repository.directEntryService.exportWorkersExcel(
+                    scope = scopeKey,
+                    projectId = projectId,
+                    recruiterId = recruiterId,
+                    employmentStatus = employmentStatus
+                )
+                showBanner("Đã xuất tệp Excel: ${file.name}")
+                onReadyFile(file)
+            } catch (e: Exception) {
+                showBanner(
+                    (e as? BackendApiException)?.message ?: "Không thể xuất tệp Excel từ máy chủ.",
+                    isError = true
+                )
+            }
+        }
+    }
+
+    fun downloadEntryDocument(
+        downloadPath: String,
+        fallbackFileName: String,
+        onReadyFile: (File) -> Unit
+    ) {
+        viewModelScope.launch {
+            try {
+                val file = repository.directEntryService.downloadEntryDocument(downloadPath, fallbackFileName)
+                onReadyFile(file)
+            } catch (e: Exception) {
+                showBanner(
+                    (e as? BackendApiException)?.message ?: "Không thể tải tài liệu đính kèm.",
+                    isError = true
+                )
+            }
         }
     }
 

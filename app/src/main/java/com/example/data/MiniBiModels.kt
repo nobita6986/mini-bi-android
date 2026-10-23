@@ -147,8 +147,45 @@ data class WorkerAllowedActions(
     val viewPii: Boolean = false,
     val viewPayment: Boolean = false,
     val proposeChange: Boolean = false,
-    val proposeChangeCode: Boolean = false,
+    val proposeChangeCode: String? = null,
     val directEdit: Boolean = false
+)
+
+data class WorkerDirectorySummary(
+    val totalWorkers: Int = 0,
+    val projectCount: Int = 0,
+    val recruiterCount: Int = 0
+)
+
+data class WorkerDirectoryPageResult(
+    val scope: String,
+    val items: List<WorkerProfileEntity>,
+    val pageSize: Int,
+    val hasMore: Boolean,
+    val nextCursor: String?,
+    val authorizationDate: String,
+    val summary: WorkerDirectorySummary
+)
+
+data class OwnSubmissionsPageResult(
+    val items: List<OwnSubmissionItem>,
+    val pageSize: Int,
+    val hasMore: Boolean,
+    val nextCursor: String?
+)
+
+data class FullProfileBatchResult(
+    val submissionId: String,
+    val state: String,
+    val version: Int,
+    val entryIds: List<String>,
+    val employeeCodes: List<String>
+)
+
+data class ChangeRequestCreatedSummary(
+    val requestId: String,
+    val state: String,
+    val itemsCount: Int
 )
 
 data class StagedDocumentRef(
@@ -265,10 +302,13 @@ data class WorkerEntryDetail(
     val gender: String?, // "MALE" | "FEMALE" | "OTHER" | null
     val dateOfBirth: String?,
     val nationalId: String?,
+    val nationalIdIssuedAt: String? = null,
+    val nationalIdIssuedPlace: String? = null,
     val address: String?,
     val phone: String?,
     val generalNote: String?,
     val paymentState: String?,
+    val paymentVersion: Int? = null,
     val bankId: String?,
     val bankName: String?,
     val accountNumber: String?,
@@ -276,6 +316,7 @@ data class WorkerEntryDetail(
     val employmentStatus: String, // "ON" | "UNCONFIRMED" | "OFF"
     val employmentEffectiveDate: String,
     val employmentStatusVersion: Int,
+    val employmentLeaveReason: String? = null,
     val portraitPreviewPath: String?,
     val portraitDownloadPath: String?,
     val documents: List<EntryDocumentItem>
@@ -444,7 +485,7 @@ data class WorkerProfileEntity(
     val canViewPii: Boolean = false,
     val canViewPayment: Boolean = false,
     val canProposeChange: Boolean = false,
-    val canProposeChangeCode: Boolean = false,
+    val proposeChangeCode: String? = null,
     val canDirectEdit: Boolean = false
 ) {
     val allowedActions: WorkerAllowedActions
@@ -453,7 +494,7 @@ data class WorkerProfileEntity(
             viewPii = canViewPii,
             viewPayment = canViewPayment,
             proposeChange = canProposeChange,
-            proposeChangeCode = canProposeChangeCode,
+            proposeChangeCode = proposeChangeCode,
             directEdit = canDirectEdit
         )
 }
@@ -509,7 +550,7 @@ interface MiniBiDao {
         WorkReportObligationEntity::class,
         WorkerProfileEntity::class
     ],
-    version = 3,
+    version = 4,
     exportSchema = false
 )
 abstract class MiniBiDatabase : RoomDatabase() {

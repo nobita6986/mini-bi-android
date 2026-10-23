@@ -255,6 +255,12 @@ class MiniBiRepository(
         onUnauthorizedResponse = { clearLocalSessionAndCache() }
     )
 
+    val directEntryService = DirectEntryService(
+        context = context,
+        httpClient = httpClient,
+        dao = dao
+    )
+
     val imageLoader: ImageLoader by lazy {
         httpClient.createImageLoader(context)
     }
@@ -417,5 +423,9 @@ class MiniBiRepository(
         } finally {
             clearLocalSessionAndCache()
         }
+    }
+
+    suspend fun getCachedWorkersByScope(scope: String): List<WorkerProfileEntity> = withContext(Dispatchers.IO) {
+        dao.getCachedWorkersByScope(scope)
     }
 }
