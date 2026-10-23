@@ -1,0 +1,19 @@
+# Mini BI Android — Fixed 2-Shard Unit Test Manifest
+# Format: <shard_number>:<fully_qualified_test_class>
+#
+# Rules enforced by `java scripts/CiTestShards.java --verify`:
+# 1. Every class under `app/src/test` containing `@Test` MUST appear in exactly one shard (1 or 2).
+# 2. No test class may appear more than once (within a shard or across shards).
+# 3. No stale/non-existent or non-@Test class may remain in this manifest.
+# 4. Every shard (1..2) must contain at least one test class.
+
+# Shard 1: Contract, Security, Encrypted Session, Direct Entry, Work Reports & Server-Time Suites (4 classes, 25 @Test)
+1:com.example.AttendanceServerTimeAlignmentTest
+1:com.example.AuthSessionAndSecurityContractTest
+1:com.example.DirectEntryAndWorkerContractTest
+1:com.example.WorkReportsReportingAndAttendanceContractTest
+
+# Shard 2: Compose UI Authorization Robolectric & Smoke Suites (3 classes, 4 @Test)
+2:com.example.WorkerUiAuthorizationRobolectricTest
+2:com.example.ExampleRobolectricTest
+2:com.example.ExampleUnitTest
