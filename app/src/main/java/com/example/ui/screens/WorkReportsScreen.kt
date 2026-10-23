@@ -1,19 +1,17 @@
 package com.example.ui.screens
 
 import androidx.activity.compose.BackHandler
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -22,33 +20,35 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.AddCircleOutline
-import androidx.compose.material.icons.filled.Analytics
 import androidx.compose.material.icons.filled.AssignmentTurnedIn
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.EditNote
-import androidx.compose.material.icons.filled.History
-import androidx.compose.material.icons.filled.PendingActions
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Save
-import androidx.compose.material.icons.filled.Send
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.ScrollableTabRow
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -60,42 +60,78 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.AppActor
+import com.example.data.WorkReportAnalyticsSnapshot
 import com.example.data.WorkReportObligationEntity
+import com.example.data.WorkReportReviewItem
+import com.example.data.WorkReportSectionSpec
+import com.example.data.WorkReportsContract
+import com.example.ui.MiniBiViewModel
 import com.example.ui.theme.JetBrainsMono
 import com.example.ui.theme.SemanticColors
+import org.json.JSONArray
+import org.json.JSONObject
 
 @Composable
 fun WorkReportsScreen(
     actor: AppActor,
-    reports: List<WorkReportObligationEntity>,
-    onSaveReport: (WorkReportObligationEntity, Int, Int, Int, String, Boolean) -> Unit,
-    onCreateNewDailyReport: (Int, Int, Int, String, Boolean) -> Unit,
-    onReviewReport: (WorkReportObligationEntity, Boolean, String) -> Unit,
-    onBackToDashboard: () -> Unit
+    viewModel: MiniBiViewModel,
+    onBackToDashboard: () -> Unit,
+    onSaveDraftAction: ((WorkReportObligationEntity, JSONObject) -> Unit)? = null,
+    onSubmitFinalAction: ((WorkReportObligationEntity, JSONObject) -> Unit)? = null,
+    onReviewDecisionAction: ((WorkReportReviewItem, Boolean, String) -> Unit)? = null
 ) {
     BackHandler(onBack = onBackToDashboard)
 
+    val reports by viewModel.workReports.collectAsStateWithLifecycle()
+    val loading by viewModel.workReportsLoading.collectAsStateWithLifecycle()
+    val error by viewModel.workReportsError.collectAsStateWithLifecycle()
+    val reviewQueue by viewModel.reviewQueue.collectAsStateWithLifecycle()
+    val analyticsSnapshot by viewModel.analyticsSnapshot.collectAsStateWithLifecycle()
+    val editingObligation by viewModel.editingObligation.collectAsStateWithLifecycle()
+    val mutationBusy by viewModel.workReportMutationBusy.collectAsStateWithLifecycle()
+
+    LaunchedEffect(actor.appUserId) {
+        viewModel.refreshWorkReportsData(actor)
+    }
+
+    val hasTeamOrAllScope = actor.hasScopeKind("team") || actor.hasScopeKind("all")
+    val canReview = actor.hasCapability("report_review") && hasTeamOrAllScope
+    val canViewAnalytics = actor.hasCapability("report_analytics_view") && hasTeamOrAllScope
+
     var selectedTab by remember { mutableIntStateOf(0) }
-    var editingObligation by remember { mutableStateOf<WorkReportObligationEntity?>(null) }
-    var showCreateNewModal by remember { mutableStateOf(false) }
+    var customAnalyticsTemplateId by remember { mutableStateOf("") }
+
+    val knownTemplates = remember(reports, reviewQueue) {
+        buildMap {
+            reports.forEach { if (it.templateId.isNotBlank()) put(it.templateId, it.templateName) }
+            reviewQueue.forEach { if (it.templateId.isNotBlank()) putIfAbsent(it.templateId, it.templateName) }
+        }.entries.map { it.key to it.value }
+    }
 
     val activeObligations = remember(reports) {
-        reports.filter { it.obligationStatus == "ACTIVE" && it.submissionState in listOf("NOT_STARTED", "DRAFT", "REJECTED") }
+        reports.filter {
+            it.obligationStatus == "ACTIVE" &&
+                it.submissionState in listOf("NOT_STARTED", "DRAFT", "REJECTED")
+        }
     }
     val historyObligations = remember(reports) {
         reports.filter { it.submissionState != "NOT_STARTED" }
     }
-    val reviewQueue = remember(reports) {
-        reports.filter { it.submissionState == "PENDING_REVIEW" }
-    }
 
-    val subTabs = listOf(
-        "Cần báo cáo (${activeObligations.size})",
-        "Lịch sử báo cáo (${historyObligations.size})",
-        "Duyệt báo cáo (${reviewQueue.size})",
-        "Tổng hợp kết quả"
-    )
+    val tabDefs = buildList {
+        add("active" to "Cần báo cáo (${activeObligations.size})")
+        add("history" to "Lịch sử báo cáo (${historyObligations.size})")
+        if (canReview) {
+            add("review" to "Duyệt báo cáo (${reviewQueue.size})")
+        }
+        if (canViewAnalytics) {
+            add("analytics" to "Tổng hợp kết quả")
+        }
+    }
+    val safeTab = selectedTab.coerceIn(0, (tabDefs.size - 1).coerceAtLeast(0))
+    val currentTabKey = tabDefs.getOrNull(safeTab)?.first ?: "active"
 
     LazyColumn(
         modifier = Modifier
@@ -104,7 +140,6 @@ fun WorkReportsScreen(
         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
-        // Header + Quick Create Daily Report Button
         item {
             Card(
                 modifier = Modifier.fillMaxWidth(),
@@ -116,100 +151,68 @@ fun WorkReportsScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = "BÁO CÁO CÔNG VIỆC HÀNG NGÀY",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.primary
-                            )
-                            Text(
-                                text = "Quản lý & Xem Báo cáo Ngày",
-                                style = MaterialTheme.typography.headlineMedium
-                            )
-                            Text(
-                                text = "Mẫu chuẩn: Kết quả tuyển dụng trong ngày (Số cuộc gọi, Ứng viên quan tâm, NLĐ đi làm)",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
+                        Text(
+                            text = "BÁO CÁO CÔNG VIỆC",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        OutlinedButton(
+                            onClick = { viewModel.refreshWorkReportsData(actor) },
+                            enabled = !loading && !mutationBusy,
+                            shape = RoundedCornerShape(10.dp)
+                        ) {
+                            Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Làm mới", style = MaterialTheme.typography.labelMedium)
                         }
                     }
-
-                    Button(
-                        onClick = { showCreateNewModal = !showCreateNewModal },
-                        shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .testTag("create_daily_report_button")
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.AddCircleOutline,
-                            contentDescription = null,
-                            modifier = Modifier.size(18.dp)
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            text = if (showCreateNewModal) "Đóng biểu mẫu tạo báo cáo mới" else "Lập Báo cáo Công việc Hàng ngày Mới",
-                            style = MaterialTheme.typography.labelLarge
-                        )
-                    }
-
-                    AnimatedVisibility(visible = showCreateNewModal) {
-                        DailyWorkReportFormCard(
-                            title = "Lập Báo cáo Ngày Hôm nay (2026-10-23)",
-                            initialCalls = 45,
-                            initialInterested = 18,
-                            initialStarted = 8,
-                            initialNotes = "Gọi điện tư vấn ứng viên dự án Luxshare & Foxconn, hỗ trợ nhận việc ca sáng.",
-                            onCancel = { showCreateNewModal = false },
-                            onSaveDraft = { calls, interested, started, notes ->
-                                onCreateNewDailyReport(calls, interested, started, notes, false)
-                                showCreateNewModal = false
-                            },
-                            onSubmitFinal = { calls, interested, started, notes ->
-                                onCreateNewDailyReport(calls, interested, started, notes, true)
-                                showCreateNewModal = false
-                            }
-                        )
-                    }
+                    Text(
+                        text = "Nghĩa vụ & Phê duyệt Báo cáo",
+                        style = MaterialTheme.typography.headlineMedium
+                    )
+                    Text(
+                        text = "Biểu mẫu được kết xuất động theo cấu hình mẫu báo cáo từ máy chủ.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
             }
         }
 
-        // Sub-navigation Tabs matching `/work-reports` in `nobita6986/mini-bi`
         item {
             ScrollableTabRow(
-                selectedTabIndex = selectedTab,
+                selectedTabIndex = safeTab,
                 edgePadding = 0.dp,
                 containerColor = Color.Transparent,
                 divider = {}
             ) {
-                subTabs.forEachIndexed { index, title ->
+                tabDefs.forEachIndexed { index, (key, title) ->
                     Tab(
-                        selected = selectedTab == index,
+                        selected = safeTab == index,
                         onClick = { selectedTab = index },
                         modifier = Modifier
                             .padding(end = 6.dp)
                             .clip(RoundedCornerShape(12.dp))
                             .background(
-                                if (selectedTab == index)
+                                if (safeTab == index)
                                     MaterialTheme.colorScheme.primaryContainer
                                 else
                                     MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
                             )
-                            .testTag("work_reports_subtab_$index"),
+                            .testTag("work_reports_subtab_$key"),
                         text = {
                             Text(
                                 text = title,
                                 style = MaterialTheme.typography.labelLarge,
-                                fontWeight = if (selectedTab == index) FontWeight.Bold else FontWeight.Medium,
-                                color = if (selectedTab == index)
+                                fontWeight = if (safeTab == index) FontWeight.Bold else FontWeight.Medium,
+                                color = if (safeTab == index)
                                     MaterialTheme.colorScheme.onPrimaryContainer
                                 else
                                     MaterialTheme.colorScheme.onSurfaceVariant
@@ -220,105 +223,212 @@ fun WorkReportsScreen(
             }
         }
 
-        // Active Editor if user clicked "Mở báo cáo" on an item
+        if (loading) {
+            item {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(18.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+                ) {
+                    Row(
+                        modifier = Modifier.padding(20.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                        Text("Đang đồng bộ danh sách nghĩa vụ báo cáo…")
+                    }
+                }
+            }
+        }
+
+        error?.let { errMsg ->
+            item {
+                EmptyReportBanner(
+                    title = "Không thể tải dữ liệu báo cáo",
+                    subtitle = errMsg
+                )
+            }
+        }
+
         editingObligation?.let { target ->
             item {
-                DailyWorkReportFormCard(
-                    title = "${target.templateName} · Kỳ ${target.periodKey}",
-                    initialCalls = target.callsMade,
-                    initialInterested = target.interestedCandidates,
-                    initialStarted = target.workersStarted,
-                    initialNotes = target.notes,
-                    onCancel = { editingObligation = null },
-                    onSaveDraft = { calls, interested, started, notes ->
-                        onSaveReport(target, calls, interested, started, notes, false)
-                        editingObligation = null
+                val sections = remember(target.schemaJsonRaw) {
+                    parseDynamicSections(target.schemaJsonRaw)
+                }
+                val isEditableObligation = target.obligationStatus == "ACTIVE" &&
+                    target.submissionState in listOf("NOT_STARTED", "DRAFT", "REJECTED")
+                DynamicWorkReportFormCard(
+                    obligation = target,
+                    sections = sections,
+                    canSubmit = isEditableObligation && !mutationBusy,
+                    onCancel = { viewModel.closeObligationEditor() },
+                    onSaveDraft = { payload ->
+                        if (onSaveDraftAction != null) {
+                            onSaveDraftAction(target, payload)
+                            viewModel.closeObligationEditor()
+                        } else {
+                            viewModel.saveWorkReportDraft(target, payload)
+                        }
                     },
-                    onSubmitFinal = { calls, interested, started, notes ->
-                        onSaveReport(target, calls, interested, started, notes, true)
-                        editingObligation = null
+                    onSubmitFinal = { payload ->
+                        if (onSubmitFinalAction != null) {
+                            onSubmitFinalAction(target, payload)
+                            viewModel.closeObligationEditor()
+                        } else {
+                            viewModel.submitWorkReportFinal(target, payload)
+                        }
                     }
                 )
             }
         }
 
-        when (selectedTab) {
-            0 -> {
-                // Cần báo cáo (My Active Obligations)
-                if (activeObligations.isEmpty()) {
+        when (currentTabKey) {
+            "active" -> {
+                if (activeObligations.isEmpty() && !loading) {
                     item {
                         EmptyReportBanner(
-                            title = "Tất cả nghĩa vụ báo cáo trong ngày đã hoàn tất",
-                            subtitle = "Bạn có thể chuyển sang tab 'Lịch sử báo cáo' để xem lại hoặc bấm 'Lập Báo cáo Công việc Hàng ngày Mới'."
+                            title = "Chưa có nghĩa vụ báo cáo cần thực hiện",
+                            subtitle = "Các nghĩa vụ báo cáo do máy chủ phân công sẽ xuất hiện tại đây."
                         )
                     }
                 } else {
                     items(activeObligations, key = { it.obligationId }) { item ->
                         WorkReportObligationCard(
                             item = item,
-                            showEditAction = true,
-                            onOpenEdit = { editingObligation = item }
+                            showEditAction = item.obligationStatus == "ACTIVE",
+                            onOpenEdit = { viewModel.openObligationEditor(item) }
                         )
                     }
                 }
             }
 
-            1 -> {
-                // Lịch sử của tôi & Toàn đơn vị
-                items(historyObligations, key = { it.obligationId }) { item ->
-                    WorkReportObligationCard(
-                        item = item,
-                        showEditAction = item.submissionState in listOf("DRAFT", "REJECTED"),
-                        onOpenEdit = { editingObligation = item }
-                    )
+            "history" -> {
+                if (historyObligations.isEmpty() && !loading) {
+                    item {
+                        EmptyReportBanner(
+                            title = "Chưa có lịch sử báo cáo",
+                            subtitle = "Các bản nháp và báo cáo đã nộp lên máy chủ sẽ hiển thị tại đây."
+                        )
+                    }
+                } else {
+                    items(historyObligations, key = { it.obligationId }) { item ->
+                        WorkReportObligationCard(
+                            item = item,
+                            showEditAction = item.obligationStatus == "ACTIVE" &&
+                                item.submissionState in listOf("DRAFT", "REJECTED"),
+                            onOpenEdit = { viewModel.openObligationEditor(item) }
+                        )
+                    }
                 }
             }
 
-            2 -> {
-                // Hàng đợi Duyệt báo cáo (`/work-reports/reviews`)
-                if (reviewQueue.isEmpty()) {
+            "review" -> {
+                if (reviewQueue.isEmpty() && !loading) {
                     item {
                         EmptyReportBanner(
                             title = "Không có báo cáo nào đang chờ duyệt",
-                            subtitle = "Tất cả báo cáo gửi lên trong phạm vi quản lý đã được duyệt."
+                            subtitle = "Hàng đợi phê duyệt từ máy chủ hiện đang trống."
                         )
                     }
                 } else {
                     items(reviewQueue, key = { it.obligationId }) { item ->
                         ReviewInboxItemCard(
                             item = item,
-                            onApprove = { reason -> onReviewReport(item, true, reason) },
-                            onReject = { reason -> onReviewReport(item, false, reason) }
+                            onApprove = { reason ->
+                                if (onReviewDecisionAction != null) {
+                                    onReviewDecisionAction(item, true, reason)
+                                } else {
+                                    viewModel.decideWorkReportReview(item, true, reason)
+                                }
+                            },
+                            onReject = { reason ->
+                                if (onReviewDecisionAction != null) {
+                                    onReviewDecisionAction(item, false, reason)
+                                } else {
+                                    viewModel.decideWorkReportReview(item, false, reason)
+                                }
+                            }
                         )
                     }
                 }
             }
 
-            3 -> {
-                // Tổng hợp báo cáo (`/work-reports/analytics`)
+            "analytics" -> {
                 item {
-                    WorkReportAnalyticsSummaryCard(reports = reports)
+                    AnalyticsTemplateSelectorCard(
+                        knownTemplates = knownTemplates,
+                        selectedTemplateId = analyticsSnapshot?.templateId.orEmpty(),
+                        customTemplateId = customAnalyticsTemplateId,
+                        onCustomTemplateIdChange = { customAnalyticsTemplateId = it },
+                        onSelectTemplate = { tid, tname ->
+                            viewModel.loadWorkReportAnalytics(tid, tname)
+                        }
+                    )
+                }
+                item {
+                    val snap = analyticsSnapshot
+                    if (snap == null) {
+                        EmptyReportBanner(
+                            title = "Chưa có dữ liệu tổng hợp",
+                            subtitle = "Chọn mẫu báo cáo hoặc nhập Mã mẫu (UUID) hợp lệ để tải dữ liệu phân tích từ máy chủ."
+                        )
+                    } else {
+                        WorkReportAnalyticsSummaryCard(snapshot = snap)
+                    }
                 }
             }
         }
     }
 }
 
+internal fun parseDynamicSections(schemaJsonRaw: String): List<WorkReportSectionSpec> =
+    WorkReportsContract.parseDynamicSections(schemaJsonRaw)
+
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun DailyWorkReportFormCard(
-    title: String,
-    initialCalls: Int,
-    initialInterested: Int,
-    initialStarted: Int,
-    initialNotes: String,
+internal fun DynamicWorkReportFormCard(
+    obligation: WorkReportObligationEntity,
+    sections: List<WorkReportSectionSpec>,
+    canSubmit: Boolean,
     onCancel: () -> Unit,
-    onSaveDraft: (Int, Int, Int, String) -> Unit,
-    onSubmitFinal: (Int, Int, Int, String) -> Unit
+    onSaveDraft: (JSONObject) -> Unit,
+    onSubmitFinal: (JSONObject) -> Unit
 ) {
-    var callsText by remember(initialCalls) { mutableStateOf(initialCalls.toString()) }
-    var interestedText by remember(initialInterested) { mutableStateOf(initialInterested.toString()) }
-    var startedText by remember(initialStarted) { mutableStateOf(initialStarted.toString()) }
-    var notesText by remember(initialNotes) { mutableStateOf(initialNotes) }
+    val fieldValues = remember(obligation.obligationId, obligation.payloadJsonRaw) {
+        val map = mutableStateMapOf<String, String>()
+        val existing = runCatching { JSONObject(obligation.payloadJsonRaw) }.getOrNull()
+        sections.flatMap { it.fields }.forEach { field ->
+            val rawVal = existing?.opt(field.fieldKey)
+            map[field.fieldKey] = when (rawVal) {
+                null, JSONObject.NULL -> field.defaultValue.orEmpty()
+                is JSONArray -> buildList {
+                    for (i in 0 until rawVal.length()) add(rawVal.optString(i))
+                }.joinToString(",")
+                else -> rawVal.toString()
+            }
+        }
+        map
+    }
+
+    fun buildPayloadJson(): JSONObject {
+        val obj = JSONObject()
+        sections.flatMap { it.fields }.forEach { field ->
+            val raw = fieldValues[field.fieldKey].orEmpty().trim()
+            when (field.fieldType) {
+                "integer" -> if (raw.isNotEmpty()) obj.put(field.fieldKey, raw.toLongOrNull() ?: 0L)
+                "decimal" -> if (raw.isNotEmpty()) obj.put(field.fieldKey, raw.toDoubleOrNull() ?: 0.0)
+                "boolean" -> obj.put(field.fieldKey, raw.equals("true", ignoreCase = true))
+                "multi_select" -> {
+                    val arr = JSONArray()
+                    raw.split(",").map { it.trim() }.filter { it.isNotEmpty() }.forEach { arr.put(it) }
+                    obj.put(field.fieldKey, arr)
+                }
+                else -> if (raw.isNotEmpty() || field.required) obj.put(field.fieldKey, raw)
+            }
+        }
+        return obj
+    }
 
     Column(
         modifier = Modifier
@@ -334,62 +444,101 @@ private fun DailyWorkReportFormCard(
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         Text(
-            text = title,
+            text = "${obligation.templateName} · Kỳ ${obligation.periodKey}",
             style = MaterialTheme.typography.titleMedium,
             color = MaterialTheme.colorScheme.primary
         )
-        Text(
-            text = "Nhập số cuộc gọi, ứng viên quan tâm và số NLĐ đi làm thực tế",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
 
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            OutlinedTextField(
-                value = callsText,
-                onValueChange = { callsText = it.filter { ch -> ch.isDigit() } },
-                label = { Text("Số cuộc gọi") },
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                modifier = Modifier
-                    .weight(1f)
-                    .testTag("input_calls_made")
+        if (sections.isEmpty()) {
+            Text(
+                text = "Máy chủ chưa trả cấu trúc trường dữ liệu chi tiết cho nghĩa vụ này.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
             )
-            OutlinedTextField(
-                value = interestedText,
-                onValueChange = { interestedText = it.filter { ch -> ch.isDigit() } },
-                label = { Text("ƯV quan tâm") },
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                modifier = Modifier
-                    .weight(1f)
-                    .testTag("input_interested_candidates")
-            )
-            OutlinedTextField(
-                value = startedText,
-                onValueChange = { startedText = it.filter { ch -> ch.isDigit() } },
-                label = { Text("NLĐ đi làm") },
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                modifier = Modifier
-                    .weight(1f)
-                    .testTag("input_workers_started")
-            )
+        } else {
+            sections.forEach { section ->
+                Text(
+                    text = section.label,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold
+                )
+                section.fields.forEach { field ->
+                    val currentVal = fieldValues[field.fieldKey].orEmpty()
+                    val labelWithReq = if (field.required) "${field.label} *" else field.label
+                    when (field.fieldType) {
+                        "boolean" -> {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(labelWithReq, style = MaterialTheme.typography.bodyMedium)
+                                Switch(
+                                    checked = currentVal.equals("true", ignoreCase = true),
+                                    onCheckedChange = { checked ->
+                                        fieldValues[field.fieldKey] = checked.toString()
+                                    }
+                                )
+                            }
+                        }
+
+                        "single_select" -> {
+                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Text(labelWithReq, style = MaterialTheme.typography.labelMedium)
+                                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    field.options.forEach { opt ->
+                                        FilterChip(
+                                            selected = currentVal == opt.value,
+                                            onClick = { fieldValues[field.fieldKey] = opt.value },
+                                            label = { Text(opt.label) }
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        "multi_select" -> {
+                            val selectedSet = currentVal.split(",").map { it.trim() }.filter { it.isNotEmpty() }.toSet()
+                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Text(labelWithReq, style = MaterialTheme.typography.labelMedium)
+                                field.options.forEach { opt ->
+                                    val isChecked = opt.value in selectedSet
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Checkbox(
+                                            checked = isChecked,
+                                            onCheckedChange = { checked ->
+                                                val updated = if (checked) selectedSet + opt.value else selectedSet - opt.value
+                                                fieldValues[field.fieldKey] = updated.joinToString(",")
+                                            }
+                                        )
+                                        Text(opt.label, style = MaterialTheme.typography.bodySmall)
+                                    }
+                                }
+                            }
+                        }
+
+                        else -> {
+                            val kbType = when (field.fieldType) {
+                                "integer" -> KeyboardType.Number
+                                "decimal" -> KeyboardType.Decimal
+                                else -> KeyboardType.Text
+                            }
+                            OutlinedTextField(
+                                value = currentVal,
+                                onValueChange = { fieldValues[field.fieldKey] = it },
+                                label = { Text(labelWithReq) },
+                                singleLine = field.fieldType != "textarea",
+                                minLines = if (field.fieldType == "textarea") 2 else 1,
+                                keyboardOptions = KeyboardOptions(keyboardType = kbType),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("dynamic_field_${field.fieldKey}")
+                            )
+                        }
+                    }
+                }
+            }
         }
-
-        OutlinedTextField(
-            value = notesText,
-            onValueChange = { notesText = it },
-            label = { Text("Nội dung công việc chi tiết trong ngày") },
-            minLines = 2,
-            maxLines = 4,
-            modifier = Modifier
-                .fillMaxWidth()
-                .testTag("input_report_notes")
-        )
 
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -401,39 +550,27 @@ private fun DailyWorkReportFormCard(
             ) {
                 Text("Đóng")
             }
-            OutlinedButton(
-                onClick = {
-                    onSaveDraft(
-                        callsText.toIntOrNull() ?: 0,
-                        interestedText.toIntOrNull() ?: 0,
-                        startedText.toIntOrNull() ?: 0,
-                        notesText
-                    )
-                },
-                modifier = Modifier
-                    .weight(1f)
-                    .testTag("save_draft_report_button")
-            ) {
-                Icon(Icons.Default.Save, contentDescription = null, modifier = Modifier.size(16.dp))
-                Spacer(modifier = Modifier.width(4.dp))
-                Text("Lưu nháp")
-            }
-            Button(
-                onClick = {
-                    onSubmitFinal(
-                        callsText.toIntOrNull() ?: 0,
-                        interestedText.toIntOrNull() ?: 0,
-                        startedText.toIntOrNull() ?: 0,
-                        notesText
-                    )
-                },
-                modifier = Modifier
-                    .weight(1.2f)
-                    .testTag("submit_final_report_button")
-            ) {
-                Icon(Icons.Default.Send, contentDescription = null, modifier = Modifier.size(16.dp))
-                Spacer(modifier = Modifier.width(4.dp))
-                Text("Nộp báo cáo")
+            if (canSubmit) {
+                OutlinedButton(
+                    onClick = { onSaveDraft(buildPayloadJson()) },
+                    modifier = Modifier
+                        .weight(1f)
+                        .testTag("save_draft_report_button")
+                ) {
+                    Icon(Icons.Default.Save, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("Lưu nháp")
+                }
+                Button(
+                    onClick = { onSubmitFinal(buildPayloadJson()) },
+                    modifier = Modifier
+                        .weight(1.2f)
+                        .testTag("submit_final_report_button")
+                ) {
+                    Icon(Icons.AutoMirrored.Filled.Send, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("Nộp báo cáo")
+                }
             }
         }
     }
@@ -446,14 +583,15 @@ private fun WorkReportObligationCard(
     onOpenEdit: () -> Unit
 ) {
     val badgeColor = when (item.submissionState) {
-        "APPROVED" -> SemanticColors.SuccessLight
-        "PENDING_REVIEW" -> SemanticColors.RunningLight
+        "APPROVED", "COMPLETED" -> SemanticColors.SuccessLight
+        "PENDING_REVIEW", "SUBMITTED" -> SemanticColors.RunningLight
         "REJECTED" -> SemanticColors.ErrorLight
         else -> SemanticColors.WarningLight
     }
     val stateLabel = when (item.submissionState) {
         "APPROVED" -> "ĐÃ DUYỆT"
-        "PENDING_REVIEW" -> "CHỜ DUYỆT"
+        "COMPLETED" -> "HOÀN THÀNH"
+        "PENDING_REVIEW", "SUBMITTED" -> "CHỜ DUYỆT"
         "REJECTED" -> "YÊU CẦU SỬA"
         "DRAFT" -> "BẢN NHÁP"
         else -> "CHƯA BẮT ĐẦU"
@@ -482,7 +620,7 @@ private fun WorkReportObligationCard(
                         style = MaterialTheme.typography.titleSmall
                     )
                     Text(
-                        text = "Nhân sự: ${item.assigneeDisplayName} · ${item.teamDisplayName}",
+                        text = "Hạn nộp: ${item.dueAtIso.take(16).replace('T', ' ')}",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -500,31 +638,9 @@ private fun WorkReportObligationCard(
                 }
             }
 
-            // Metrics Strip
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
-                    .padding(12.dp),
-                horizontalArrangement = Arrangement.SpaceEvenly
-            ) {
-                MetricPill("Số cuộc gọi", "${item.callsMade}", "cuộc")
-                MetricPill("ƯV quan tâm", "${item.interestedCandidates}", "người")
-                MetricPill("NLĐ đi làm", "${item.workersStarted}", "người")
-            }
-
-            if (item.notes.isNotBlank()) {
+            if (!item.latestReviewReason.isNullOrBlank()) {
                 Text(
-                    text = "Nội dung công việc: ${item.notes}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
-            }
-
-            if (item.reviewerName != null) {
-                Text(
-                    text = "Phản hồi duyệt (${item.reviewerName}): ${item.reviewReason ?: "—"}",
+                    text = "Nhận xét duyệt: ${item.latestReviewReason}",
                     style = MaterialTheme.typography.labelSmall,
                     color = badgeColor
                 )
@@ -542,7 +658,7 @@ private fun WorkReportObligationCard(
                     ) {
                         Icon(Icons.Default.EditNote, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(modifier = Modifier.width(6.dp))
-                        Text("Cập nhật & Nộp báo cáo")
+                        Text("Mở biểu mẫu báo cáo")
                     }
                 }
             }
@@ -552,7 +668,7 @@ private fun WorkReportObligationCard(
 
 @Composable
 private fun ReviewInboxItemCard(
-    item: WorkReportObligationEntity,
+    item: WorkReportReviewItem,
     onApprove: (String) -> Unit,
     onReject: (String) -> Unit
 ) {
@@ -574,13 +690,13 @@ private fun ReviewInboxItemCard(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                Column {
+                Column(modifier = Modifier.weight(1f)) {
                     Text(
                         text = "${item.assigneeDisplayName} · Kỳ ${item.periodKey}",
                         style = MaterialTheme.typography.titleMedium
                     )
                     Text(
-                        text = "${item.teamDisplayName} · Nộp lúc: ${item.submittedAtIso?.take(16)?.replace('T', ' ') ?: "—"}",
+                        text = "${item.templateName} · Nộp lúc: ${item.submittedAt?.take(16)?.replace('T', ' ') ?: "—"}",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -590,7 +706,7 @@ private fun ReviewInboxItemCard(
                     color = SemanticColors.RunningLight.copy(alpha = 0.14f)
                 ) {
                     Text(
-                        text = "Chờ duyệt (Lần ${item.version})",
+                        text = "Phiên bản v${item.submissionVersion}",
                         style = MaterialTheme.typography.labelSmall,
                         color = SemanticColors.RunningLight,
                         modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
@@ -598,28 +714,28 @@ private fun ReviewInboxItemCard(
                 }
             }
 
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f))
-                    .padding(12.dp),
-                horizontalArrangement = Arrangement.SpaceEvenly
-            ) {
-                MetricPill("Cuộc gọi", "${item.callsMade}", "cuộc")
-                MetricPill("Quan tâm", "${item.interestedCandidates}", "người")
-                MetricPill("NLĐ đi làm", "${item.workersStarted}", "người")
+            if (item.payloadSummary.isNotEmpty()) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f))
+                        .padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    item.payloadSummary.forEach { (k, v) ->
+                        Text(
+                            text = "• $k: $v",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                }
             }
-
-            Text(
-                text = "Ghi chú công việc: ${item.notes}",
-                style = MaterialTheme.typography.bodySmall
-            )
 
             OutlinedTextField(
                 value = reviewNote,
                 onValueChange = { reviewNote = it },
-                label = { Text("Nhận xét phê duyệt / lý do trả lại") },
+                label = { Text("Nhận xét phê duyệt / lý do trả lại *") },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth()
             )
@@ -630,6 +746,7 @@ private fun ReviewInboxItemCard(
             ) {
                 OutlinedButton(
                     onClick = { onReject(reviewNote) },
+                    enabled = reviewNote.isNotBlank(),
                     modifier = Modifier.weight(1f)
                 ) {
                     Icon(Icons.Default.Close, contentDescription = null, modifier = Modifier.size(16.dp))
@@ -650,14 +767,67 @@ private fun ReviewInboxItemCard(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun WorkReportAnalyticsSummaryCard(reports: List<WorkReportObligationEntity>) {
-    val totalCalls = reports.sumOf { it.callsMade }
-    val totalInterested = reports.sumOf { it.interestedCandidates }
-    val totalStarted = reports.sumOf { it.workersStarted }
-    val completedCount = reports.count { it.submissionState in listOf("APPROVED", "PENDING_REVIEW") }
-    val compliancePct = if (reports.isNotEmpty()) (completedCount * 100 / reports.size) else 100
+private fun AnalyticsTemplateSelectorCard(
+    knownTemplates: List<Pair<String, String>>,
+    selectedTemplateId: String,
+    customTemplateId: String,
+    onCustomTemplateIdChange: (String) -> Unit,
+    onSelectTemplate: (String, String) -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Text(
+                text = "Chọn mẫu báo cáo phân tích",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold
+            )
+            if (knownTemplates.isNotEmpty()) {
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    knownTemplates.forEach { (tid, tname) ->
+                        FilterChip(
+                            selected = selectedTemplateId == tid,
+                            onClick = { onSelectTemplate(tid, tname) },
+                            label = { Text(tname.ifBlank { tid.take(8) }) }
+                        )
+                    }
+                }
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                OutlinedTextField(
+                    value = customTemplateId,
+                    onValueChange = onCustomTemplateIdChange,
+                    label = { Text("Mã mẫu báo cáo (template_id UUID)") },
+                    singleLine = true,
+                    modifier = Modifier.weight(1f)
+                )
+                Button(
+                    onClick = { onSelectTemplate(customTemplateId.trim(), "") },
+                    enabled = customTemplateId.isNotBlank()
+                ) {
+                    Text("Tải")
+                }
+            }
+        }
+    }
+}
 
+@Composable
+private fun WorkReportAnalyticsSummaryCard(snapshot: WorkReportAnalyticsSnapshot) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(20.dp),
@@ -670,15 +840,9 @@ private fun WorkReportAnalyticsSummaryCard(reports: List<WorkReportObligationEnt
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             Text(
-                text = "Tổng hợp Kết quả Báo cáo Công việc",
+                text = "Tổng hợp Kết quả: ${snapshot.templateName}",
                 style = MaterialTheme.typography.titleMedium
             )
-            Text(
-                text = "Tổng hợp số liệu báo cáo hàng ngày theo từng nhóm và tỷ lệ hoàn thành báo cáo đúng hạn.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -689,14 +853,14 @@ private fun WorkReportAnalyticsSummaryCard(reports: List<WorkReportObligationEnt
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Column {
-                    Text("Tỷ lệ hoàn thành nghĩa vụ báo cáo", style = MaterialTheme.typography.labelMedium)
+                    Text("Tỷ lệ hoàn thành nghĩa vụ", style = MaterialTheme.typography.labelMedium)
                     Text(
-                        "$completedCount / ${reports.size} báo cáo đã nộp",
+                        "${snapshot.submittedCount} / ${snapshot.totalObligations} nghĩa vụ đã hoàn thành (đúng hạn: ${snapshot.approvedCount})",
                         style = MaterialTheme.typography.bodySmall
                     )
                 }
                 Text(
-                    "$compliancePct%",
+                    snapshot.complianceRatePct?.let { "${it}%" } ?: "—",
                     style = MaterialTheme.typography.headlineMedium,
                     fontFamily = JetBrainsMono,
                     fontWeight = FontWeight.Bold,
@@ -704,60 +868,48 @@ private fun WorkReportAnalyticsSummaryCard(reports: List<WorkReportObligationEnt
                 )
             }
 
-            HorizontalDivider()
+            if (snapshot.metrics.isNotEmpty()) {
+                HorizontalDivider()
+                Text("Chỉ số tổng hợp", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+                snapshot.metrics.forEach { metric ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(metric.label, style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            metric.valueDisplay,
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontFamily = JetBrainsMono,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+            }
 
-            val byTeam = reports.groupBy { it.teamDisplayName }
-            byTeam.forEach { (teamName, list) ->
-                Column(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    Text(teamName, style = MaterialTheme.typography.titleSmall)
+            if (snapshot.breakdownRows.isNotEmpty()) {
+                HorizontalDivider()
+                Text("Phân rã theo nhóm", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+                snapshot.breakdownRows.forEach { row ->
+                    val pctText = row.complianceRatePct?.let { " ($it%)" } ?: ""
                     Text(
-                        "• Tổng cuộc gọi: ${list.sumOf { it.callsMade }} cuộc  |  ƯV quan tâm: ${list.sumOf { it.interestedCandidates }}  |  NLĐ đi làm: ${list.sumOf { it.workersStarted }} người",
+                        text = "• ${row.groupLabel}: ${row.submittedCount}/${row.obligationCount} báo cáo$pctText",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+            }
+
+            if (snapshot.contributions.isNotEmpty()) {
+                HorizontalDivider()
+                Text("Đóng góp báo cáo gần nhất", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+                snapshot.contributions.take(10).forEach { contrib ->
+                    Text(
+                        text = "• ${contrib.assigneeDisplayName} · Kỳ ${contrib.periodKey} · ${contrib.submissionState}",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
             }
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceEvenly
-            ) {
-                MetricPill("TỔNG CUỘC GỌI", "$totalCalls", "cuộc")
-                MetricPill("TỔNG QUAN TÂM", "$totalInterested", "ứng viên")
-                MetricPill("TỔNG ĐI LÀM", "$totalStarted", "NLĐ")
-            }
-        }
-    }
-}
-
-@Composable
-private fun MetricPill(label: String, value: String, unit: String) {
-    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Text(
-            text = label,
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        Row(
-            verticalAlignment = Alignment.Bottom,
-            horizontalArrangement = Arrangement.spacedBy(3.dp)
-        ) {
-            Text(
-                text = value,
-                style = MaterialTheme.typography.titleLarge,
-                fontFamily = JetBrainsMono,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.primary
-            )
-            Text(
-                text = unit,
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
         }
     }
 }

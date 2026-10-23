@@ -23,9 +23,10 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Assignment
 import androidx.compose.material.icons.automirrored.filled.Logout
+import androidx.compose.material.icons.automirrored.outlined.Assignment
 import androidx.compose.material.icons.filled.Analytics
-import androidx.compose.material.icons.filled.Assignment
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Groups
@@ -33,10 +34,10 @@ import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.PersonAdd
 import androidx.compose.material.icons.outlined.Analytics
-import androidx.compose.material.icons.outlined.Assignment
 import androidx.compose.material.icons.outlined.CameraAlt
 import androidx.compose.material.icons.outlined.Groups
 import androidx.compose.material.icons.outlined.PersonAdd
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -56,8 +57,10 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.rememberCoroutineScope
+import coil.Coil
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -89,6 +92,10 @@ class MainActivity : ComponentActivity() {
             val viewModel: MiniBiViewModel = viewModel()
             val themeId by viewModel.themeId.collectAsStateWithLifecycle()
 
+            LaunchedEffect(viewModel) {
+                Coil.setImageLoader(viewModel.imageLoader)
+            }
+
             MyApplicationTheme(themeId = themeId) {
                 MiniBiAppRoot(viewModel = viewModel)
             }
@@ -99,12 +106,42 @@ class MainActivity : ComponentActivity() {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MiniBiAppRoot(viewModel: MiniBiViewModel) {
+    val sessionBootstrapping by viewModel.sessionBootstrapping.collectAsStateWithLifecycle()
     val actor by viewModel.currentActor.collectAsStateWithLifecycle()
     val themeId by viewModel.themeId.collectAsStateWithLifecycle()
+    val serverUrl by viewModel.serverUrl.collectAsStateWithLifecycle()
     val loginBusy by viewModel.loginBusy.collectAsStateWithLifecycle()
     val loginError by viewModel.loginError.collectAsStateWithLifecycle()
     val currentDestination by viewModel.currentDestination.collectAsStateWithLifecycle()
     val bannerMessage by viewModel.statusBannerMessage.collectAsStateWithLifecycle()
+    val bannerIsError by viewModel.statusBannerIsError.collectAsStateWithLifecycle()
+
+    if (sessionBootstrapping) {
+        Scaffold(
+            modifier = Modifier.fillMaxSize(),
+            contentWindowInsets = WindowInsets.safeDrawing
+        ) { innerPadding ->
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(innerPadding),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    CircularProgressIndicator()
+                    Text(
+                        text = "Đang xác thực phiên làm việc với máy chủ…",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+        return
+    }
 
     val authenticatedActor = actor
     if (authenticatedActor == null) {
@@ -116,6 +153,9 @@ fun MiniBiAppRoot(viewModel: MiniBiViewModel) {
                 LoginScreen(
                     busy = loginBusy,
                     error = loginError,
+                    serverUrl = serverUrl,
+                    canConfigureServerUrl = BuildConfig.DEBUG,
+                    onUpdateServerUrl = { viewModel.updateServerUrl(it) },
                     onLoginSubmit = { identifier, password ->
                         viewModel.login(identifier, password)
                     }
@@ -128,17 +168,18 @@ fun MiniBiAppRoot(viewModel: MiniBiViewModel) {
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val scope = rememberCoroutineScope()
 
-    val dashboardState by viewModel.dashboardState.collectAsStateWithLifecycle()
-    val selectedProjectFilter by viewModel.selectedProjectFilter.collectAsStateWithLifecycle()
-    val selectedProviderFilter by viewModel.selectedProviderFilter.collectAsStateWithLifecycle()
-    val selectedTeamFilter by viewModel.selectedTeamFilter.collectAsStateWithLifecycle()
-    val highlightedKey by viewModel.highlightedDimensionKey.collectAsStateWithLifecycle()
-    val gpsSnapshot by viewModel.gpsSnapshot.collectAsStateWithLifecycle()
-    val gpsLoading by viewModel.gpsLoading.collectAsStateWithLifecycle()
-    val submittingAttendance by viewModel.submittingAttendance.collectAsStateWithLifecycle()
-    val attendanceRecords by viewModel.attendanceRecords.collectAsStateWithLifecycle()
-    val workReports by viewModel.workReports.collectAsStateWithLifecycle()
-    val workerProfiles by viewModel.workerProfiles.collectAsStateWithLifecycle()
+    val canCreateEntry = authenticatedActor.hasCapability("entry_create") &&
+        authenticatedActor.hasCapability("submission_create")
+
+    val navDestinations = buildList {
+        add(Triple(MainDestination.DASHBOARD, Icons.Default.Analytics, Icons.Outlined.Analytics))
+        add(Triple(MainDestination.WORK_REPORTS, Icons.AutoMirrored.Filled.Assignment, Icons.AutoMirrored.Outlined.Assignment))
+        add(Triple(MainDestination.ATTENDANCE, Icons.Default.CameraAlt, Icons.Outlined.CameraAlt))
+        add(Triple(MainDestination.WORKERS, Icons.Default.Groups, Icons.Outlined.Groups))
+        if (canCreateEntry) {
+            add(Triple(MainDestination.NEW_ENTRY, Icons.Default.PersonAdd, Icons.Outlined.PersonAdd))
+        }
+    }
 
     ModalNavigationDrawer(
         drawerState = drawerState,
@@ -163,21 +204,25 @@ fun MiniBiAppRoot(viewModel: MiniBiViewModel) {
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold
                     )
-                    Text(
-                        text = authenticatedActor.email,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Surface(
-                        shape = RoundedCornerShape(6.dp),
-                        color = MaterialTheme.colorScheme.primary
-                    ) {
+                    authenticatedActor.displayIdentifier?.let { identifierText ->
                         Text(
-                            text = authenticatedActor.roleLabel,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onPrimary,
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                            text = identifierText,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
+                    }
+                    if (authenticatedActor.scopes.isNotEmpty()) {
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = MaterialTheme.colorScheme.primary
+                        ) {
+                            Text(
+                                text = "Phạm vi: " + authenticatedActor.scopes.map { it.kind }.distinct().joinToString(", "),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onPrimary,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                            )
+                        }
                     }
                 }
 
@@ -190,17 +235,9 @@ fun MiniBiAppRoot(viewModel: MiniBiViewModel) {
                     modifier = Modifier.padding(horizontal = 20.dp, vertical = 6.dp)
                 )
 
-                val menuItems = listOf(
-                    Triple(MainDestination.DASHBOARD, "Tổng quan Báo cáo", Icons.Default.Analytics),
-                    Triple(MainDestination.WORK_REPORTS, "Báo cáo Công việc Hàng ngày", Icons.Default.Assignment),
-                    Triple(MainDestination.ATTENDANCE, "Chấm công & Hình ảnh", Icons.Default.CameraAlt),
-                    Triple(MainDestination.WORKERS, "Nhân sự (Người lao động)", Icons.Default.Groups),
-                    Triple(MainDestination.NEW_ENTRY, "Cấp mới (Nhập liệu NLĐ)", Icons.Default.PersonAdd)
-                )
-
-                menuItems.forEach { (dest, label, icon) ->
+                navDestinations.forEach { (dest, icon, _) ->
                     NavigationDrawerItem(
-                        label = { Text(label) },
+                        label = { Text(dest.label) },
                         selected = currentDestination == dest,
                         onClick = {
                             viewModel.navigateTo(dest)
@@ -280,7 +317,7 @@ fun MiniBiAppRoot(viewModel: MiniBiViewModel) {
                                 overflow = TextOverflow.Ellipsis
                             )
                             Text(
-                                text = "${authenticatedActor.displayName} · ${authenticatedActor.teamName}",
+                                text = authenticatedActor.displayName,
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 maxLines = 1,
@@ -329,14 +366,7 @@ fun MiniBiAppRoot(viewModel: MiniBiViewModel) {
             },
             bottomBar = {
                 NavigationBar {
-                    val navItems = listOf(
-                        Triple(MainDestination.DASHBOARD, Icons.Default.Analytics, Icons.Outlined.Analytics),
-                        Triple(MainDestination.WORK_REPORTS, Icons.Default.Assignment, Icons.Outlined.Assignment),
-                        Triple(MainDestination.ATTENDANCE, Icons.Default.CameraAlt, Icons.Outlined.CameraAlt),
-                        Triple(MainDestination.WORKERS, Icons.Default.Groups, Icons.Outlined.Groups),
-                        Triple(MainDestination.NEW_ENTRY, Icons.Default.PersonAdd, Icons.Outlined.PersonAdd)
-                    )
-                    navItems.forEach { (dest, filledIcon, outlinedIcon) ->
+                    navDestinations.forEach { (dest, filledIcon, outlinedIcon) ->
                         val selected = currentDestination == dest
                         NavigationBarItem(
                             selected = selected,
@@ -368,7 +398,7 @@ fun MiniBiAppRoot(viewModel: MiniBiViewModel) {
                 AnimatedVisibility(visible = bannerMessage != null) {
                     bannerMessage?.let { msg ->
                         Surface(
-                            color = SemanticColors.SuccessLight,
+                            color = if (bannerIsError) SemanticColors.ErrorLight else SemanticColors.SuccessLight,
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             Row(
@@ -405,16 +435,7 @@ fun MiniBiAppRoot(viewModel: MiniBiViewModel) {
                         MainDestination.DASHBOARD -> {
                             DashboardScreen(
                                 actor = authenticatedActor,
-                                state = dashboardState,
-                                selectedProjectFilter = selectedProjectFilter,
-                                selectedProviderFilter = selectedProviderFilter,
-                                selectedTeamFilter = selectedTeamFilter,
-                                highlightedKey = highlightedKey,
-                                onSelectProjectFilter = { viewModel.setProjectFilter(it) },
-                                onSelectProviderFilter = { viewModel.setProviderFilter(it) },
-                                onSelectTeamFilter = { viewModel.setTeamFilter(it) },
-                                onToggleHighlight = { viewModel.toggleHighlightKey(it) },
-                                onClearFilters = { viewModel.clearAllDashboardFilters() },
+                                viewModel = viewModel,
                                 onQuickCheckInClick = { viewModel.navigateTo(MainDestination.ATTENDANCE) },
                                 onQuickDailyReportClick = { viewModel.navigateTo(MainDestination.WORK_REPORTS) }
                             )
@@ -423,16 +444,7 @@ fun MiniBiAppRoot(viewModel: MiniBiViewModel) {
                         MainDestination.WORK_REPORTS -> {
                             WorkReportsScreen(
                                 actor = authenticatedActor,
-                                reports = workReports,
-                                onSaveReport = { ob, calls, interested, started, notes, submitFinal ->
-                                    viewModel.saveWorkReport(ob, calls, interested, started, notes, submitFinal)
-                                },
-                                onCreateNewDailyReport = { calls, interested, started, notes, submitFinal ->
-                                    viewModel.createNewDailyReport(calls, interested, started, notes, submitFinal)
-                                },
-                                onReviewReport = { ob, approved, reason ->
-                                    viewModel.reviewReport(ob, approved, reason)
-                                },
+                                viewModel = viewModel,
                                 onBackToDashboard = { viewModel.navigateTo(MainDestination.DASHBOARD) }
                             )
                         }
@@ -440,41 +452,34 @@ fun MiniBiAppRoot(viewModel: MiniBiViewModel) {
                         MainDestination.ATTENDANCE -> {
                             AttendanceScreen(
                                 actor = authenticatedActor,
-                                gpsSnapshot = gpsSnapshot,
-                                gpsLoading = gpsLoading,
-                                submitting = submittingAttendance,
-                                attendanceRecords = attendanceRecords,
-                                onRefreshGps = { viewModel.fetchCurrentGpsLocation() },
-                                onSubmitAttendance = { type, file, uri, note ->
-                                    viewModel.submitCheckInWithPhoto(type, file, uri, note) {}
+                                viewModel = viewModel,
+                                onBackToDashboard = { viewModel.navigateTo(MainDestination.DASHBOARD) },
+                                onSubmitAttendanceAction = { file, uriStr, noteText, capturedTime ->
+                                    viewModel.submitAttendanceCheckIn(file, uriStr, noteText, capturedTime)
                                 },
-                                onBackToDashboard = { viewModel.navigateTo(MainDestination.DASHBOARD) }
+                                onRetryOutboxAction = {
+                                    viewModel.retryAttendanceOutbox()
+                                }
                             )
                         }
 
                         MainDestination.WORKERS -> {
                             WorkersAndDirectEntryScreen(
-                                workers = workerProfiles,
-                                onOpenNewEntryScreen = { viewModel.navigateTo(MainDestination.NEW_ENTRY) },
-                                onProposeWorkerChange = { worker, targetLabel, proposedSummary, reason ->
-                                    viewModel.proposeWorkerChange(worker, targetLabel, proposedSummary, reason)
+                                actor = authenticatedActor,
+                                viewModel = viewModel,
+                                onOpenNewEntryScreen = {
+                                    if (canCreateEntry) {
+                                        viewModel.navigateTo(MainDestination.NEW_ENTRY)
+                                    }
                                 },
-                                onDirectEditWorker = { worker, fullName, gender, projectDisplay, employmentStatus, phoneFull, cccdFull, bankName, bankAccountNumber, bankAccountHolder, note ->
-                                    viewModel.directEditWorker(
-                                        worker, fullName, gender, projectDisplay, employmentStatus,
-                                        phoneFull, cccdFull, bankName, bankAccountNumber, bankAccountHolder, note
-                                    )
-                                },
-                                onShowMessage = { msg -> viewModel.showBanner(msg) },
                                 onBackToDashboard = { viewModel.navigateTo(MainDestination.DASHBOARD) }
                             )
                         }
 
                         MainDestination.NEW_ENTRY -> {
                             DirectEntryNewWorkersScreen(
-                                onSaveValidWorkers = { validDrafts ->
-                                    viewModel.saveNewWorkersBatch(validDrafts)
-                                },
+                                actor = authenticatedActor,
+                                viewModel = viewModel,
                                 onNavigateToWorkersList = {
                                     viewModel.navigateTo(MainDestination.WORKERS)
                                 },

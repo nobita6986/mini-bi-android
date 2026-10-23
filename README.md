@@ -1,22 +1,58 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://ai.google.dev/static/site-assets/images/share-ais-513315318.png" />
-</div>
+# Mini BI — Android App (HR Partner)
 
-# Run and deploy your AI Studio app
+Ứng dụng Android nội bộ kết nối trực tiếp Backend thật của hệ thống **Mini BI** (xác thực phiên mã hóa Android Keystore, cấp mới & danh bạ nhân sự, báo cáo công việc ngày, báo cáo điều hành và chấm công đối chiếu mốc giờ máy chủ).
 
-This contains everything you need to run your app locally.
+## Yêu cầu môi trường phát triển
 
-View your app in AI Studio: https://ai.studio/apps/485937cd-fc2e-4ee2-8e90-8f873630b4d2
+- **JDK**: `21` (tương thích Gradle `9.3.1` và Android Gradle Plugin `9.1.1`)
+- **Android SDK**: `platforms;android-36.1` và `build-tools;36.1.0`
+- **Debug Keystore cục bộ**: Nếu vừa clone mới và chưa có `debug.keystore` ở thư mục gốc (file này nằm trong `.gitignore`), tạo một lần bằng lệnh chuẩn Android Debug:
 
-## Run Locally
+```bash
+keytool -genkeypair -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+```
 
-**Prerequisites:**  [Android Studio](https://developer.android.com/studio)
+## Chạy kiểm tra tương đương GitHub Actions CI tại máy local
 
+### macOS / Linux (Bash)
 
-1. Open Android Studio
-2. Select **Open** and choose the directory containing this project
-3. Allow Android Studio to fix any incompatibilities as it imports the project.
-4. Create a file named `.env` in the project directory and set `GEMINI_API_KEY` in that file to your Gemini API key (see `.env.example` for an example)
-5. Remove this line from the app's `build.gradle.kts` file: `signingConfig = signingConfigs.getByName("debugConfig")`
-6. Run the app on an emulator or physical device
-7. If you have already published your app in AI Studio, please [request upload key reset](https://support.google.com/googleplay/android-developer/answer/9842756#zippy=%2Crequest-an-upload-key-reset) in Google Play Console.
+```bash
+# 1. Kiểm tra manifest phân shard (đảm bảo không bỏ sót / trùng lớp chứa @Test)
+java scripts/CiTestShards.java --verify
+
+# 2. Chạy từng shard unit test giống hệt trên CI (hoặc `./gradlew :app:testDebugUnitTest` để chạy gộp)
+java scripts/CiTestShards.java --run --shard 1
+java scripts/CiTestShards.java --run --shard 2
+
+# 3. Chạy Android Lint và build thử bản debug
+./gradlew :app:lintDebug :app:assembleDebug --console=plain
+```
+
+### Windows (PowerShell)
+
+```powershell
+# 1. Kiểm tra manifest phân shard
+java scripts/CiTestShards.java --verify
+
+# 2. Chạy từng shard unit test (hoặc `.\gradlew.bat :app:testDebugUnitTest` để chạy gộp)
+java scripts/CiTestShards.java --run --shard 1
+java scripts/CiTestShards.java --run --shard 2
+
+# 3. Chạy Android Lint và build thử bản debug
+.\gradlew.bat :app:lintDebug :app:assembleDebug --console=plain
+```
+
+> Khi thêm một lớp kiểm thử mới chứa `@Test` dưới `app/src/test`, hãy khai báo tên lớp đầy đủ vào `scripts/ci-test-shards.txt` (shard `1` hoặc `2`). Bước `Test manifest guard` sẽ báo lỗi ngay nếu phát hiện lớp `@Test` bị bỏ sót, trùng lặp hoặc đã xóa.
+
+## Cấu hình Required Status Checks trên GitHub (`main`)
+
+Nếu Owner muốn bật Branch Protection để khóa merge vào `main` khi CI chưa xanh, cấu hình tại **Settings $\rightarrow$ Branches $\rightarrow$ Branch protection rules (`main`) $\rightarrow$ Require status checks to pass before merging**:
+
+- **Check tổng hợp khuyến nghị** *(bắt buộc tất cả job con phải `success`, không cần sửa rule nếu sau này tăng/giảm số shard)*:
+  - `Quality (manifest · unit-tests · lint · assemble)`
+- **Hoặc chọn chi tiết từng check độc lập**:
+  - `Test manifest guard`
+  - `Unit tests (shard 1/2)`
+  - `Unit tests (shard 2/2)`
+  - `Android Lint (debug)`
+  - `Assemble APK (debug)`

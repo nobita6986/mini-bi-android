@@ -3,12 +3,6 @@ package com.example.ui.screens
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
-import android.graphics.Bitmap
-import android.graphics.Canvas as AndroidCanvas
-import android.graphics.Color as AndroidColor
-import android.graphics.LinearGradient
-import android.graphics.Paint
-import android.graphics.Shader
 import android.net.Uri
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -33,18 +27,20 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.AccessTime
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.CloudDone
+import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.CloudUpload
-import androidx.compose.material.icons.filled.Code
+import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.GpsFixed
 import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Verified
+import androidx.compose.material.icons.filled.WarningAmber
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -76,31 +72,41 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import com.example.data.AppActor
+import com.example.data.AttendanceContract
 import com.example.data.AttendanceEntity
-import com.example.ui.GpsSnapshot
+import com.example.data.AttendanceOutboxStatus
+import com.example.data.AttendanceTimeSource
+import com.example.data.CapturedAttendanceTime
+import com.example.ui.MiniBiViewModel
 import com.example.ui.theme.JetBrainsMono
 import com.example.ui.theme.SemanticColors
+import kotlinx.coroutines.delay
 import java.io.File
-import java.io.FileOutputStream
-import java.text.SimpleDateFormat
-import java.util.Date
 import java.util.Locale
-import java.util.TimeZone
 
 @Composable
 fun AttendanceScreen(
     actor: AppActor,
-    gpsSnapshot: GpsSnapshot?,
-    gpsLoading: Boolean,
-    submitting: Boolean,
-    attendanceRecords: List<AttendanceEntity>,
-    onRefreshGps: () -> Unit,
-    onSubmitAttendance: (checkInType: String, photoFile: File, photoUri: String, note: String) -> Unit,
-    onBackToDashboard: () -> Unit
+    viewModel: MiniBiViewModel,
+    onBackToDashboard: () -> Unit,
+    onSubmitAttendanceAction: ((photoFile: File, photoUri: String, note: String, capturedTime: CapturedAttendanceTime?) -> Unit)? = null,
+    onRetryOutboxAction: (() -> Unit)? = null
 ) {
     BackHandler(onBack = onBackToDashboard)
+
+    val gpsSnapshot by viewModel.gpsSnapshot.collectAsStateWithLifecycle()
+    val gpsLoading by viewModel.gpsLoading.collectAsStateWithLifecycle()
+    val gpsError by viewModel.gpsError.collectAsStateWithLifecycle()
+    val submitting by viewModel.submittingAttendance.collectAsStateWithLifecycle()
+    val timeAnchorState by viewModel.timeAnchorState.collectAsStateWithLifecycle()
+    val allRecords by viewModel.attendanceRecords.collectAsStateWithLifecycle()
+
+    val attendanceRecords = remember(allRecords, actor.appUserId) {
+        allRecords.filter { it.appUserId == actor.appUserId }
+    }
 
     val context = LocalContext.current
     var note by remember { mutableStateOf("") }
@@ -108,68 +114,66 @@ fun AttendanceScreen(
     var pendingCaptureUri by remember { mutableStateOf<Uri?>(null) }
     var capturedPhotoFile by remember { mutableStateOf<File?>(null) }
     var capturedPhotoUri by remember { mutableStateOf<String?>(null) }
+    var capturedPhotoTime by remember { mutableStateOf<CapturedAttendanceTime?>(null) }
+    var captureError by remember { mutableStateOf<String?>(null) }
     var selectedRecordDetail by remember { mutableStateOf<AttendanceEntity?>(null) }
 
-    // Count how many check-ins the user has recorded today (unbounded, no hardcoded limit)
-    val todayDateStr = remember {
-        SimpleDateFormat("yyyy-MM-dd", Locale.US).apply {
-            timeZone = TimeZone.getTimeZone("Asia/Ho_Chi_Minh")
-        }.format(Date())
+    val todayDateStr = remember(actor.appUserId, timeAnchorState.hasValidAnchor, timeAnchorState.serverTimeIso) {
+        viewModel.resolveReferenceTodayIsoHcm(actor.appUserId)
     }
     val todayRecords = remember(attendanceRecords, todayDateStr) {
-        attendanceRecords.filter { it.clientTimestampIso.startsWith(todayDateStr) }
+        attendanceRecords.filter { record ->
+            val effectiveDate = record.serverBusinessDate ?: record.clientCapturedAtIso.take(10)
+            effectiveDate == todayDateStr
+        }
     }
-    val nextSequenceNumber = todayRecords.size + 1
+    val syncedTodayRecords = remember(todayRecords) {
+        todayRecords.filter { it.syncStatus == AttendanceOutboxStatus.SYNCED }
+    }
 
-    // TakePicture Launcher (opens native Android Camera app)
     val takePictureLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.TakePicture()
     ) { success ->
         val file = pendingCaptureFile
         val uri = pendingCaptureUri
         if (success && file != null && file.exists() && file.length() > 0 && uri != null) {
+            // Freeze capture time immediately upon camera return using BI server anchor + elapsedRealtime (or unverified fallback)
+            capturedPhotoTime = viewModel.snapshotAttendanceCaptureTime(actor.appUserId)
             capturedPhotoFile = file
             capturedPhotoUri = uri.toString()
-        } else if (file != null) {
-            val fallbackFile = generateStampedVerificationPhoto(
-                context = context,
-                actor = actor,
-                gps = gpsSnapshot,
-                sequenceNumber = nextSequenceNumber
-            )
-            capturedPhotoFile = fallbackFile
-            capturedPhotoUri = Uri.fromFile(fallbackFile).toString()
+            captureError = null
+        } else {
+            file?.delete()
+            capturedPhotoTime = null
+            captureError = "Chưa chụp được ảnh xác thực từ camera thiết bị."
         }
     }
 
-    // Combined Location + Camera permissions launcher
     val permissionsLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions()
     ) { permissions ->
         val hasLocation = permissions[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
             permissions[Manifest.permission.ACCESS_COARSE_LOCATION] == true
         if (hasLocation) {
-            onRefreshGps()
+            viewModel.fetchCurrentGpsLocation()
+        } else {
+            captureError = "Vui lòng cấp quyền Vị trí GPS thực tế để thực hiện chấm công."
         }
         val hasCamera = permissions[Manifest.permission.CAMERA] == true
         if (hasCamera) {
-            val pair = createTempCaptureFileAndUri(context)
+            viewModel.syncAttendanceTimeAnchor(actor = actor, force = false)
+            val pair = createPersistentCaptureFileAndUri(context)
             pendingCaptureFile = pair.first
             pendingCaptureUri = pair.second
             takePictureLauncher.launch(pair.second)
         } else {
-            val fallbackFile = generateStampedVerificationPhoto(
-                context = context,
-                actor = actor,
-                gps = gpsSnapshot,
-                sequenceNumber = nextSequenceNumber
-            )
-            capturedPhotoFile = fallbackFile
-            capturedPhotoUri = Uri.fromFile(fallbackFile).toString()
+            captureError = "Vui lòng cấp quyền Camera để chụp ảnh chấm công thực tế."
         }
     }
 
-    LaunchedEffect(Unit) {
+    // 1. Refresh server time anchor whenever Attendance screen is opened, and fetch GPS if granted
+    LaunchedEffect(actor.appUserId) {
+        viewModel.syncAttendanceTimeAnchor(actor = actor, force = true)
         val hasFine = ContextCompat.checkSelfPermission(
             context,
             Manifest.permission.ACCESS_FINE_LOCATION
@@ -179,11 +183,25 @@ fun AttendanceScreen(
             Manifest.permission.ACCESS_COARSE_LOCATION
         ) == PackageManager.PERMISSION_GRANTED
         if (hasFine || hasCoarse) {
-            onRefreshGps()
+            viewModel.fetchCurrentGpsLocation()
+        }
+    }
+
+    // 2. Proactively refresh server time anchor when approaching expiration (`isExpiringSoon`)
+    LaunchedEffect(actor.appUserId, timeAnchorState.expiresAtIso, timeAnchorState.hasValidAnchor) {
+        if (timeAnchorState.hasValidAnchor) {
+            val waitMs = viewModel.millisUntilTimeAnchorRefresh(actor.appUserId)
+            if (waitMs != null) {
+                if (waitMs > 0L) {
+                    delay(waitMs)
+                }
+                viewModel.syncAttendanceTimeAnchor(actor = actor, force = false)
+            }
         }
     }
 
     fun startOneTapGpsAndCameraFlow() {
+        captureError = null
         val hasCamera = ContextCompat.checkSelfPermission(
             context,
             Manifest.permission.CAMERA
@@ -194,8 +212,9 @@ fun AttendanceScreen(
         ) == PackageManager.PERMISSION_GRANTED
 
         if (hasCamera && hasFine) {
-            onRefreshGps()
-            val pair = createTempCaptureFileAndUri(context)
+            viewModel.syncAttendanceTimeAnchor(actor = actor, force = false)
+            viewModel.fetchCurrentGpsLocation()
+            val pair = createPersistentCaptureFileAndUri(context)
             pendingCaptureFile = pair.first
             pendingCaptureUri = pair.second
             takePictureLauncher.launch(pair.second)
@@ -210,6 +229,13 @@ fun AttendanceScreen(
         }
     }
 
+    val retryableCount = remember(attendanceRecords) {
+        attendanceRecords.count {
+            it.syncStatus == AttendanceOutboxStatus.QUEUED ||
+                it.syncStatus == AttendanceOutboxStatus.RETRYABLE_ERROR
+        }
+    }
+
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
@@ -217,7 +243,6 @@ fun AttendanceScreen(
         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
-        // 1. Clean, Unbounded Event-Log Attendance Card
         item {
             Card(
                 modifier = Modifier.fillMaxWidth(),
@@ -239,30 +264,111 @@ fun AttendanceScreen(
                         .padding(18.dp),
                     verticalArrangement = Arrangement.spacedBy(14.dp)
                 ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
+                    Column {
+                        Text(
+                            text = "CHẤM CÔNG ĐỊNH VỊ & HÌNH ẢNH",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Text(
+                            text = "Ghi nhận Chấm công",
+                            style = MaterialTheme.typography.headlineMedium
+                        )
+                        Text(
+                            text = actor.displayName,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+
+                    // Server-time anchor verification status banner
+                    val anchorTint = when {
+                        timeAnchorState.hasValidAnchor -> SemanticColors.SuccessLight
+                        timeAnchorState.syncing -> MaterialTheme.colorScheme.primary
+                        else -> SemanticColors.WarningLight
+                    }
+                    Surface(
+                        shape = RoundedCornerShape(14.dp),
+                        color = anchorTint.copy(alpha = 0.12f),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("attendance_time_anchor_banner")
                     ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = "CHẤM CÔNG ĐỊNH VỊ & HÌNH ẢNH",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.primary
-                            )
-                            Text(
-                                text = "Ghi nhận Chấm công",
-                                style = MaterialTheme.typography.headlineMedium
-                            )
-                            Text(
-                                text = "${actor.displayName} · ${actor.teamName}",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 14.dp, vertical = 10.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Icon(
+                                    imageVector = when {
+                                        timeAnchorState.hasValidAnchor -> Icons.Default.Verified
+                                        timeAnchorState.syncing -> Icons.Default.AccessTime
+                                        else -> Icons.Default.WarningAmber
+                                    },
+                                    contentDescription = null,
+                                    tint = anchorTint,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                                Column {
+                                    Text(
+                                        text = when {
+                                            timeAnchorState.hasValidAnchor ->
+                                                "Giờ chuẩn máy chủ BI đã xác thực"
+                                            timeAnchorState.syncing ->
+                                                "Đang đồng bộ mốc giờ chuẩn từ máy chủ..."
+                                            else ->
+                                                AttendanceContract.MSG_DEVICE_TIME_UNVERIFIED
+                                        },
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = anchorTint
+                                    )
+                                    Text(
+                                        text = when {
+                                            timeAnchorState.hasValidAnchor ->
+                                                "Đối chiếu thời gian đơn điệu từ máy chủ (hiệu lực đến ${timeAnchorState.expiresAtIso?.take(16)?.replace('T', ' ') ?: "--"})"
+                                            timeAnchorState.syncing ->
+                                                "Đang lấy mốc thời gian tham chiếu từ máy chủ BI"
+                                            else ->
+                                                timeAnchorState.lastSyncError
+                                                    ?: "Chưa có mốc giờ máy chủ hợp lệ; lượt chấm công vẫn được lưu vào hàng đợi bền vững."
+                                        },
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 2,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
+                            IconButton(
+                                onClick = {
+                                    viewModel.syncAttendanceTimeAnchor(actor = actor, force = true)
+                                },
+                                enabled = !timeAnchorState.syncing,
+                                modifier = Modifier.testTag("refresh_time_anchor_button")
+                            ) {
+                                if (timeAnchorState.syncing) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(16.dp),
+                                        strokeWidth = 2.dp
+                                    )
+                                } else {
+                                    Icon(
+                                        imageVector = Icons.Default.Refresh,
+                                        contentDescription = "Làm mới mốc giờ máy chủ"
+                                    )
+                                }
+                            }
                         }
                     }
 
-                    // Today's dynamic counter strip (Backend/App counts automatically without fixed slot limits)
                     Surface(
                         shape = RoundedCornerShape(14.dp),
                         color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f),
@@ -277,7 +383,8 @@ fun AttendanceScreen(
                         ) {
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                modifier = Modifier.weight(1f)
                             ) {
                                 Icon(
                                     imageVector = Icons.Default.AccessTime,
@@ -286,15 +393,22 @@ fun AttendanceScreen(
                                 )
                                 Column {
                                     Text(
-                                        text = "Số lần đã chấm công hôm nay ($todayDateStr)",
+                                        text = "Đã chấm công trên máy chủ hôm nay ($todayDateStr)",
                                         style = MaterialTheme.typography.labelMedium,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
                                     Text(
-                                        text = if (todayRecords.isEmpty())
-                                            "Chưa có lượt chấm công nào hôm nay"
-                                        else
-                                            "Lần gần nhất lúc ${todayRecords.first().clientTimestampIso.drop(11).take(8)}",
+                                        text = when {
+                                            syncedTodayRecords.isNotEmpty() -> {
+                                                val latest = syncedTodayRecords.first()
+                                                val displayIso = latest.serverCapturedAtIso ?: latest.clientCapturedAtIso
+                                                "Xác nhận gần nhất lúc ${displayIso.drop(11).take(8)}"
+                                            }
+                                            todayRecords.isNotEmpty() ->
+                                                "Chưa có lượt nào được máy chủ xác nhận (${todayRecords.size} bản ghi tại máy)"
+                                            else ->
+                                                "Chưa có lượt chấm công nào hôm nay"
+                                        },
                                         style = MaterialTheme.typography.bodySmall
                                     )
                                 }
@@ -304,7 +418,7 @@ fun AttendanceScreen(
                                 color = MaterialTheme.colorScheme.primary
                             ) {
                                 Text(
-                                    text = "${todayRecords.size} lần",
+                                    text = "${syncedTodayRecords.size} lần",
                                     style = MaterialTheme.typography.titleMedium,
                                     fontFamily = JetBrainsMono,
                                     fontWeight = FontWeight.Bold,
@@ -315,7 +429,6 @@ fun AttendanceScreen(
                         }
                     }
 
-                    // Live GPS Location Telemetry Box
                     Surface(
                         shape = RoundedCornerShape(16.dp),
                         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.65f),
@@ -348,23 +461,28 @@ fun AttendanceScreen(
                                 }
                                 Column {
                                     Text(
-                                        text = if (gpsLoading) "Đang lấy tọa độ GPS..."
-                                        else if (gpsSnapshot != null)
-                                            "GPS: %.6f, %.6f (±%.1fm)".format(
+                                        text = when {
+                                            gpsLoading -> "Đang lấy tọa độ GPS thực tế..."
+                                            gpsSnapshot != null -> "GPS: %.6f, %.6f (±%.1fm)".format(
                                                 Locale.US,
-                                                gpsSnapshot.latitude,
-                                                gpsSnapshot.longitude,
-                                                gpsSnapshot.accuracyMeters
+                                                gpsSnapshot!!.latitude,
+                                                gpsSnapshot!!.longitude,
+                                                gpsSnapshot!!.accuracyMeters
                                             )
-                                        else "Tự động lấy GPS khi bấm nút Chấm công",
+                                            else -> "Chưa có tọa độ GPS thực tế"
+                                        },
                                         style = MaterialTheme.typography.labelLarge,
                                         fontFamily = JetBrainsMono
                                     )
                                     Text(
                                         text = gpsSnapshot?.addressHint
-                                            ?: "Vị trí thực tế, ảnh chụp và thời gian sẽ được ghi nhận tự động",
+                                            ?: gpsError
+                                            ?: "Yêu cầu bật GPS thiết bị và chụp ảnh thật từ camera",
                                         style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        color = if (gpsError != null && gpsSnapshot == null)
+                                            MaterialTheme.colorScheme.error
+                                        else
+                                            MaterialTheme.colorScheme.onSurfaceVariant,
                                         maxLines = 2,
                                         overflow = TextOverflow.Ellipsis
                                     )
@@ -377,7 +495,7 @@ fun AttendanceScreen(
                                         Manifest.permission.ACCESS_FINE_LOCATION
                                     ) == PackageManager.PERMISSION_GRANTED
                                     if (hasPermission) {
-                                        onRefreshGps()
+                                        viewModel.fetchCurrentGpsLocation()
                                     } else {
                                         permissionsLauncher.launch(
                                             arrayOf(
@@ -404,7 +522,21 @@ fun AttendanceScreen(
                         }
                     }
 
-                    // Single Universal "Nút Chấm Công" (GPS + Open Camera App & Capture)
+                    captureError?.let { err ->
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = MaterialTheme.colorScheme.errorContainer,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                text = err,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onErrorContainer,
+                                modifier = Modifier.padding(12.dp)
+                            )
+                        }
+                    }
+
                     Button(
                         onClick = { startOneTapGpsAndCameraFlow() },
                         shape = RoundedCornerShape(16.dp),
@@ -432,15 +564,21 @@ fun AttendanceScreen(
                         )
                     }
 
-                    // Captured Photo Preview + Note + Send to Backend Button
                     AnimatedVisibility(visible = capturedPhotoFile != null && capturedPhotoUri != null) {
+                        val isServerAnchoredPreview =
+                            capturedPhotoTime?.timeSource == AttendanceTimeSource.SERVER_ANCHORED
+                        val previewAccent = if (isServerAnchoredPreview) {
+                            SemanticColors.SuccessLight
+                        } else {
+                            SemanticColors.WarningLight
+                        }
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clip(RoundedCornerShape(16.dp))
                                 .border(
                                     width = 1.5.dp,
-                                    color = SemanticColors.SuccessLight.copy(alpha = 0.5f),
+                                    color = previewAccent.copy(alpha = 0.55f),
                                     shape = RoundedCornerShape(16.dp)
                                 )
                                 .background(MaterialTheme.colorScheme.surface)
@@ -452,15 +590,33 @@ fun AttendanceScreen(
                                 horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
                                 Icon(
-                                    imageVector = Icons.Default.Verified,
+                                    imageVector = if (isServerAnchoredPreview) {
+                                        Icons.Default.Verified
+                                    } else {
+                                        Icons.Default.WarningAmber
+                                    },
                                     contentDescription = null,
-                                    tint = SemanticColors.SuccessLight
+                                    tint = previewAccent
                                 )
-                                Text(
-                                    text = "Ảnh & GPS lượt #$nextSequenceNumber hôm nay đã sẵn sàng",
-                                    style = MaterialTheme.typography.titleSmall,
-                                    color = SemanticColors.SuccessLight
-                                )
+                                Column {
+                                    Text(
+                                        text = if (isServerAnchoredPreview) {
+                                            "Đã khóa thời điểm chụp theo giờ chuẩn máy chủ"
+                                        } else {
+                                            AttendanceContract.MSG_DEVICE_TIME_UNVERIFIED
+                                        },
+                                        style = MaterialTheme.typography.titleSmall,
+                                        color = previewAccent
+                                    )
+                                    capturedPhotoTime?.let { frozen ->
+                                        Text(
+                                            text = "Thời điểm chụp đã cố định: ${frozen.clientCapturedAtIso.take(19).replace('T', ' ')}",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            fontFamily = JetBrainsMono,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
                             }
 
                             AsyncImage(
@@ -487,34 +643,45 @@ fun AttendanceScreen(
                                 onClick = {
                                     val file = capturedPhotoFile ?: return@Button
                                     val uriStr = capturedPhotoUri ?: return@Button
-                                    onSubmitAttendance("CHECK_IN", file, uriStr, note)
+                                    val frozenTime = capturedPhotoTime
+                                    if (gpsSnapshot == null) {
+                                        captureError = "Chưa có tọa độ GPS thực tế. Vui lòng bấm làm mới GPS."
+                                        return@Button
+                                    }
+                                    if (onSubmitAttendanceAction != null) {
+                                        onSubmitAttendanceAction.invoke(file, uriStr, note, frozenTime)
+                                    } else {
+                                        viewModel.submitAttendanceCheckIn(file, uriStr, note, frozenTime)
+                                    }
                                     capturedPhotoFile = null
                                     capturedPhotoUri = null
+                                    capturedPhotoTime = null
                                     note = ""
                                 },
-                                enabled = !submitting,
+                                enabled = !submitting && gpsSnapshot != null,
                                 shape = RoundedCornerShape(14.dp),
                                 colors = ButtonDefaults.buttonColors(
-                                    containerColor = SemanticColors.SuccessLight
+                                    containerColor = previewAccent
                                 ),
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .height(52.dp)
                                     .testTag("send_attendance_to_backend_button")
                             ) {
-                                    if (submitting) {
+                                if (submitting) {
                                     CircularProgressIndicator(
                                         modifier = Modifier.size(20.dp),
                                         strokeWidth = 2.dp,
                                         color = Color.White
                                     )
                                     Spacer(modifier = Modifier.width(8.dp))
-                                    Text("Đang lưu chấm công...")
+                                    Text("Đang gửi chấm công lên máy chủ...")
                                 } else {
                                     Icon(
-                                        imageVector = Icons.Default.Send,
+                                        imageVector = Icons.AutoMirrored.Filled.Send,
                                         contentDescription = null,
-                                        modifier = Modifier.size(18.dp)
+                                        modifier = Modifier.size(18.dp),
+                                        tint = Color.White
                                     )
                                     Spacer(modifier = Modifier.width(8.dp))
                                     Text(
@@ -530,18 +697,38 @@ fun AttendanceScreen(
             }
         }
 
-        // 2. Attendance History Header
         item {
-            Column {
-                Text(
-                    text = "Nhật ký các lần chấm công (${attendanceRecords.size})",
-                    style = MaterialTheme.typography.titleMedium
-                )
-                Text(
-                    text = "Hệ thống tự động ghi nhận số lần, thời điểm và địa điểm chấm công trong ngày",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Nhật ký & Hàng đợi đồng bộ (${attendanceRecords.size})",
+                        style = MaterialTheme.typography.titleMedium
+                    )
+                    Text(
+                        text = "Hiển thị trạng thái xác nhận thực tế từ máy chủ hoặc hàng đợi ngoại tuyến",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                if (retryableCount > 0) {
+                    OutlinedButton(
+                        onClick = {
+                            if (onRetryOutboxAction != null) {
+                                onRetryOutboxAction.invoke()
+                            } else {
+                                viewModel.retryAttendanceOutbox()
+                            }
+                        },
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier.testTag("retry_attendance_outbox_button")
+                    ) {
+                        Text("Đồng bộ ($retryableCount)")
+                    }
+                }
             }
         }
 
@@ -572,7 +759,7 @@ fun AttendanceScreen(
                             style = MaterialTheme.typography.titleSmall
                         )
                         Text(
-                            text = "Bất cứ khi nào cần chấm công, chỉ cần bấm nút \"BẤM CHẤM CÔNG\" phía trên để chụp ảnh và gửi vị trí GPS kèm thời gian thực về hệ thống.",
+                            text = "Bấm nút chụp ảnh & định vị GPS phía trên để gửi yêu cầu chấm công về máy chủ.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -580,20 +767,10 @@ fun AttendanceScreen(
                 }
             }
         } else {
-            // Compute per-day sequence number for each record
-            val groupedByDayCounts = attendanceRecords
-                .groupBy { it.clientTimestampIso.take(10) }
-                .mapValues { (_, list) ->
-                    // list is sorted DESC by epochMillis, so reverse index is sequence number in day
-                    list.mapIndexed { idx, rec -> rec.id to (list.size - idx) }.toMap()
-                }
-
             itemsIndexed(attendanceRecords, key = { _, item -> item.id }) { _, item ->
-                val dayKey = item.clientTimestampIso.take(10)
-                val seqInDay = groupedByDayCounts[dayKey]?.get(item.id) ?: 1
                 AttendanceHistoryCard(
                     record = item,
-                    sequenceInDay = seqInDay,
+                    serverSequenceInDay = item.serverSequenceInDay,
                     expanded = selectedRecordDetail?.id == item.id,
                     onClick = {
                         selectedRecordDetail = if (selectedRecordDetail?.id == item.id) null else item
@@ -607,10 +784,49 @@ fun AttendanceScreen(
 @Composable
 private fun AttendanceHistoryCard(
     record: AttendanceEntity,
-    sequenceInDay: Int,
+    serverSequenceInDay: Int?,
     expanded: Boolean,
     onClick: () -> Unit
 ) {
+    val effectiveTimeSource = record.serverTimeSource ?: record.timeSource
+    val isDeviceClockUnverified = effectiveTimeSource == AttendanceTimeSource.DEVICE_CLOCK_UNVERIFIED
+
+    val statusColor = when (record.syncStatus) {
+        AttendanceOutboxStatus.SYNCED -> SemanticColors.SuccessLight
+        AttendanceOutboxStatus.QUEUED,
+        AttendanceOutboxStatus.SYNCING,
+        AttendanceOutboxStatus.RETRYABLE_ERROR -> SemanticColors.WarningLight
+        else -> SemanticColors.ErrorLight
+    }
+    val statusIcon = when (record.syncStatus) {
+        AttendanceOutboxStatus.SYNCED -> Icons.Default.CloudDone
+        AttendanceOutboxStatus.QUEUED,
+        AttendanceOutboxStatus.SYNCING,
+        AttendanceOutboxStatus.RETRYABLE_ERROR -> Icons.Default.CloudUpload
+        AttendanceOutboxStatus.BACKEND_NOT_AVAILABLE -> Icons.Default.CloudOff
+        else -> Icons.Default.ErrorOutline
+    }
+    val badgeLabel = when {
+        record.syncStatus == AttendanceOutboxStatus.SYNCED && serverSequenceInDay != null ->
+            "Lần #$serverSequenceInDay trong ngày"
+        record.syncStatus == AttendanceOutboxStatus.SYNCED ->
+            "Đã chấm công"
+        record.syncStatus == AttendanceOutboxStatus.QUEUED ->
+            "Đang chờ đồng bộ"
+        record.syncStatus == AttendanceOutboxStatus.SYNCING ->
+            "Đang gửi..."
+        record.syncStatus == AttendanceOutboxStatus.RETRYABLE_ERROR ->
+            "Chờ tự động thử lại"
+        record.syncStatus == AttendanceOutboxStatus.BACKEND_NOT_AVAILABLE ->
+            "Chưa bật trên máy chủ"
+        record.syncStatus == AttendanceOutboxStatus.AUTH_REQUIRED ->
+            "Cần đăng nhập lại"
+        record.syncStatus == AttendanceOutboxStatus.DENIED ->
+            "Từ chối quyền"
+        else ->
+            "Bị từ chối"
+    }
+
     Card(
         modifier = Modifier
             .fillMaxWidth()
@@ -651,17 +867,17 @@ private fun AttendanceHistoryCard(
                     ) {
                         Surface(
                             shape = RoundedCornerShape(6.dp),
-                            color = MaterialTheme.colorScheme.primaryContainer
+                            color = statusColor.copy(alpha = 0.14f)
                         ) {
                             Text(
-                                text = "Lần #$sequenceInDay trong ngày",
+                                text = badgeLabel,
                                 style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                color = statusColor,
                                 modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                             )
                         }
                         Text(
-                            text = record.clientTimestampIso.take(19).replace('T', ' '),
+                            text = record.clientCapturedAtIso.take(19).replace('T', ' '),
                             style = MaterialTheme.typography.labelSmall,
                             fontFamily = JetBrainsMono,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -669,7 +885,7 @@ private fun AttendanceHistoryCard(
                     }
 
                     Text(
-                        text = "${record.userDisplayName} · ${record.teamName}",
+                        text = record.userDisplayName,
                         style = MaterialTheme.typography.titleSmall
                     )
 
@@ -684,12 +900,11 @@ private fun AttendanceHistoryCard(
                             modifier = Modifier.size(14.dp)
                         )
                         Text(
-                            text = "%.5f, %.5f (±%.1fm) · %s".format(
+                            text = "%.5f, %.5f (±%.1fm)".format(
                                 Locale.US,
                                 record.latitude,
                                 record.longitude,
-                                record.accuracyMeters,
-                                record.addressHint
+                                record.accuracyMeters
                             ),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -703,16 +918,52 @@ private fun AttendanceHistoryCard(
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         Icon(
-                            imageVector = if (record.syncStatus == "SYNCED_API") Icons.Default.CloudDone else Icons.Default.CloudUpload,
+                            imageVector = statusIcon,
                             contentDescription = null,
-                            tint = SemanticColors.SuccessLight,
+                            tint = statusColor,
                             modifier = Modifier.size(14.dp)
                         )
                         Text(
-                            text = record.backendResponseCode,
+                            text = record.statusMessage,
                             style = MaterialTheme.typography.labelSmall,
-                            color = SemanticColors.SuccessLight,
-                            maxLines = 1,
+                            color = statusColor,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+
+                    // Honest time-source display: never display DEVICE_CLOCK_UNVERIFIED as server-verified time
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Icon(
+                            imageVector = if (isDeviceClockUnverified) {
+                                Icons.Default.WarningAmber
+                            } else {
+                                Icons.Default.Verified
+                            },
+                            contentDescription = null,
+                            tint = if (isDeviceClockUnverified) {
+                                SemanticColors.WarningLight
+                            } else {
+                                SemanticColors.SuccessLight
+                            },
+                            modifier = Modifier.size(14.dp)
+                        )
+                        Text(
+                            text = if (isDeviceClockUnverified) {
+                                AttendanceContract.MSG_DEVICE_TIME_UNVERIFIED
+                            } else {
+                                "Giờ đối chiếu máy chủ"
+                            },
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (isDeviceClockUnverified) {
+                                SemanticColors.WarningLight
+                            } else {
+                                SemanticColors.SuccessLight
+                            },
+                            maxLines = 2,
                             overflow = TextOverflow.Ellipsis
                         )
                     }
@@ -729,26 +980,45 @@ private fun AttendanceHistoryCard(
                     verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
                     Text(
-                        text = "Chi tiết lượt chấm công:",
+                        text = "Chi tiết lượt chấm công (${record.syncStatus}):",
                         style = MaterialTheme.typography.labelMedium,
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.primary
                     )
                     Text(
-                        text = "• Thời gian: ${record.clientTimestampIso.take(19).replace('T', ' ')}",
+                        text = if (isDeviceClockUnverified) {
+                            "• Nguồn thời gian: ${AttendanceContract.MSG_DEVICE_TIME_UNVERIFIED}"
+                        } else {
+                            "• Nguồn thời gian: Giờ chuẩn máy chủ xác thực (SERVER_ANCHORED)"
+                        },
                         style = MaterialTheme.typography.bodySmall
                     )
                     Text(
-                        text = "• Địa điểm: ${record.addressHint}",
+                        text = "• Thời gian chụp khai báo: ${record.clientCapturedAtIso}",
                         style = MaterialTheme.typography.bodySmall
                     )
+                    if (record.serverCheckinId != null) {
+                        Text(
+                            text = "• Ngày nghiệp vụ máy chủ: ${record.serverBusinessDate ?: "--"} (Lượt #${record.serverSequenceInDay ?: "-"} / Tổng ${record.serverDailyCount ?: "-"})",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                        Text(
+                            text = "• Giờ máy chủ ghi nhận: ${record.serverCapturedAtIso ?: "--"}",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                        Text(
+                            text = "• Giờ máy chủ tiếp nhận: ${record.serverReceivedAtIso ?: "--"}",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                        if (record.serverReplayed == true) {
+                            Text(
+                                text = "• Chống trùng: Phản hồi phát lại an toàn (replayed)",
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                        }
+                    }
                     Text(
-                        text = "• Tọa độ định vị: %.6f, %.6f (sai số ±%.1fm)".format(
-                            Locale.US,
-                            record.latitude,
-                            record.longitude,
-                            record.accuracyMeters
-                        ),
+                        text = "• Địa điểm gợi ý: ${record.addressHint}",
                         style = MaterialTheme.typography.bodySmall
                     )
                     if (record.note.isNotBlank()) {
@@ -763,8 +1033,8 @@ private fun AttendanceHistoryCard(
     }
 }
 
-private fun createTempCaptureFileAndUri(context: Context): Pair<File, Uri> {
-    val dir = File(context.cacheDir, "attendance_captures").apply { mkdirs() }
+private fun createPersistentCaptureFileAndUri(context: Context): Pair<File, Uri> {
+    val dir = File(context.filesDir, "attendance_photos").apply { mkdirs() }
     val file = File(dir, "checkin_${System.currentTimeMillis()}.jpg")
     val uri = FileProvider.getUriForFile(
         context,
@@ -772,84 +1042,4 @@ private fun createTempCaptureFileAndUri(context: Context): Pair<File, Uri> {
         file
     )
     return file to uri
-}
-
-private fun generateStampedVerificationPhoto(
-    context: Context,
-    actor: AppActor,
-    gps: GpsSnapshot?,
-    sequenceNumber: Int
-): File {
-    val dir = File(context.filesDir, "attendance_photos").apply { mkdirs() }
-    val file = File(dir, "verified_checkin_${System.currentTimeMillis()}.jpg")
-
-    val width = 960
-    val height = 640
-    val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-    val canvas = AndroidCanvas(bitmap)
-
-    // Background gradient
-    val bgPaint = Paint().apply {
-        shader = LinearGradient(
-            0f, 0f, width.toFloat(), height.toFloat(),
-            AndroidColor.parseColor("#0F172A"),
-            AndroidColor.parseColor("#1E3A8A"),
-            Shader.TileMode.CLAMP
-        )
-    }
-    canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), bgPaint)
-
-    // Accent frame
-    val borderPaint = Paint().apply {
-        color = AndroidColor.parseColor("#38BDF8")
-        style = Paint.Style.STROKE
-        strokeWidth = 6f
-        isAntiAlias = true
-    }
-    canvas.drawRoundRect(28f, 28f, width - 28f, height - 28f, 24f, 24f, borderPaint)
-
-    // Badge header
-    val titlePaint = Paint().apply {
-        color = AndroidColor.parseColor("#34D399")
-        textSize = 34f
-        isFakeBoldText = true
-        isAntiAlias = true
-    }
-    canvas.drawText("HR PARTNER · XÁC THỰC CHẤM CÔNG GPS", 64f, 100f, titlePaint)
-
-    val whitePaint = Paint().apply {
-        color = AndroidColor.WHITE
-        textSize = 42f
-        isFakeBoldText = true
-        isAntiAlias = true
-    }
-    canvas.drawText("Nhân sự: ${actor.displayName}", 64f, 175f, whitePaint)
-
-    val infoPaint = Paint().apply {
-        color = AndroidColor.parseColor("#E2E8F0")
-        textSize = 30f
-        isAntiAlias = true
-    }
-    val nowStr = SimpleDateFormat("yyyy-MM-dd HH:mm:ss 'GMT+7'", Locale.US).format(Date())
-    val lat = gps?.latitude ?: 21.028511
-    val lng = gps?.longitude ?: 105.804817
-    val acc = gps?.accuracyMeters ?: 8.4f
-
-    canvas.drawText("Đơn vị: ${actor.teamName}", 64f, 235f, infoPaint)
-    canvas.drawText("Lượt chấm công trong ngày: #$sequenceNumber", 64f, 290f, infoPaint)
-    canvas.drawText("Tọa độ GPS: %.6f, %.6f (±%.1fm)".format(Locale.US, lat, lng, acc), 64f, 355f, infoPaint)
-    canvas.drawText("Vị trí: ${(gps?.addressHint ?: "Văn phòng điều hành HR Partner").take(45)}", 64f, 415f, infoPaint)
-    canvas.drawText("Thời gian: $nowStr", 64f, 475f, infoPaint)
-
-    val footerPaint = Paint().apply {
-        color = AndroidColor.parseColor("#FBBF24")
-        textSize = 24f
-        isAntiAlias = true
-    }
-    canvas.drawText("HR PARTNER · ĐÃ XÁC NHẬN VỊ TRÍ & THỜI GIAN", 64f, 560f, footerPaint)
-
-    FileOutputStream(file).use { out ->
-        bitmap.compress(Bitmap.CompressFormat.JPEG, 90, out)
-    }
-    return file
 }

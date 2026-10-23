@@ -1,0 +1,273 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  # RFC 2606 reserved non-routable domain — guarantees CI never contacts real Production/Test APIs
+  MINI_BI_SERVER_URL: https://ci.invalid
+
+jobs:
+  manifest:
+    name: Test manifest guard
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+      - name: Verify zero-orphan and zero-duplicate @Test shard manifest
+        run: java scripts/CiTestShards.java --verify
+
+  unit-tests:
+    name: Unit tests (shard ${{ matrix.shard }}/2)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+      - name: Configure Android SDK path
+        run: |
+          SDK_DIR="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          mkdir -p "$SDK_DIR"
+          if [ ! -w "$SDK_DIR" ]; then
+            sudo chown -R "$USER" "$SDK_DIR"
+          fi
+          echo "ANDROID_HOME=$SDK_DIR" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK_DIR" >> "$GITHUB_ENV"
+      - name: Cache Android SDK 36.1 & Robolectric runtime
+        uses: actions/cache@v5
+        with:
+          path: |
+            ${{ env.ANDROID_HOME }}/licenses
+            ${{ env.ANDROID_HOME }}/platforms/android-36.1
+            ${{ env.ANDROID_HOME }}/build-tools/36.0.0
+            ${{ env.ANDROID_HOME }}/build-tools/36.1.0
+            ~/.m2/repository/org/robolectric
+          key: android-sdk-36.1-robolectric-${{ runner.os }}-${{ hashFiles('gradle/libs.versions.toml', 'app/build.gradle.kts') }}
+          restore-keys: |
+            android-sdk-36.1-robolectric-${{ runner.os }}-
+      - name: Install required Android SDK components
+        run: |
+          mkdir -p "$ANDROID_HOME/licenses"
+          printf "\n8933bad161af4178b1185d1a37fbf41ea5269c55\nd56f5187479451eabf01fb78af6dfcb131a6481e\n24333f8a63b6825ea9c5514f83c2829b004d1fee\n859f317696f67ef3d7f30a50a5560e7834b43903\n" > "$ANDROID_HOME/licenses/android-sdk-license"
+          printf "\n84831b9409646a918e30573bab4c9c91346d8abd\n504667f4c0de7af1a06de9f4b1727b84351f2910\n" > "$ANDROID_HOME/licenses/android-sdk-preview-license"
+          MISSING_PKGS=()
+          [ -d "$ANDROID_HOME/platforms/android-36.1" ] || MISSING_PKGS+=("platforms;android-36.1")
+          [ -d "$ANDROID_HOME/build-tools/36.0.0" ]    || MISSING_PKGS+=("build-tools;36.0.0")
+          [ -d "$ANDROID_HOME/build-tools/36.1.0" ]    || MISSING_PKGS+=("build-tools;36.1.0")
+          if [ "${#MISSING_PKGS[@]}" -gt 0 ]; then
+            SDKMANAGER_BIN="$( (find "$ANDROID_HOME/cmdline-tools" -name sdkmanager -type f 2>/dev/null || true) | sort -V | tail -n 1 )"
+            if [ -z "$SDKMANAGER_BIN" ]; then
+              SDKMANAGER_BIN="$(command -v sdkmanager || true)"
+            fi
+            if [ -z "$SDKMANAGER_BIN" ]; then
+              curl -fsSL https://dl.google.com/android/repository/commandlinetools-linux-13114758_latest.zip -o /tmp/cmdtools.zip
+              mkdir -p "$ANDROID_HOME/cmdline-tools" /tmp/cmdtools-extract
+              unzip -q -o /tmp/cmdtools.zip -d /tmp/cmdtools-extract
+              mv /tmp/cmdtools-extract/cmdline-tools "$ANDROID_HOME/cmdline-tools/latest"
+              rm -rf /tmp/cmdtools.zip /tmp/cmdtools-extract
+              SDKMANAGER_BIN="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+            fi
+            yes | "$SDKMANAGER_BIN" --sdk_root="$ANDROID_HOME" --licenses > /dev/null || true
+            "$SDKMANAGER_BIN" --sdk_root="$ANDROID_HOME" "${MISSING_PKGS[@]}"
+          fi
+      - name: Ensure ephemeral local debug keystore exists
+        run: |
+          if [ ! -f debug.keystore ]; then
+            keytool -genkeypair -v \
+              -keystore debug.keystore \
+              -storepass android \
+              -alias androiddebugkey \
+              -keypass android \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -dname "CN=Android Debug,O=Android,C=US"
+          fi
+      - uses: gradle/actions/setup-gradle@v5
+      - name: Run unit test shard ${{ matrix.shard }}/2
+        run: java scripts/CiTestShards.java --run --shard ${{ matrix.shard }}
+
+  lint:
+    name: Android Lint (debug)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+      - name: Configure Android SDK path
+        run: |
+          SDK_DIR="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          mkdir -p "$SDK_DIR"
+          if [ ! -w "$SDK_DIR" ]; then
+            sudo chown -R "$USER" "$SDK_DIR"
+          fi
+          echo "ANDROID_HOME=$SDK_DIR" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK_DIR" >> "$GITHUB_ENV"
+      - name: Cache Android SDK 36.1
+        uses: actions/cache@v5
+        with:
+          path: |
+            ${{ env.ANDROID_HOME }}/licenses
+            ${{ env.ANDROID_HOME }}/platforms/android-36.1
+            ${{ env.ANDROID_HOME }}/build-tools/36.0.0
+            ${{ env.ANDROID_HOME }}/build-tools/36.1.0
+          key: android-sdk-36.1-${{ runner.os }}-${{ hashFiles('app/build.gradle.kts') }}
+          restore-keys: |
+            android-sdk-36.1-${{ runner.os }}-
+      - name: Install required Android SDK components
+        run: |
+          mkdir -p "$ANDROID_HOME/licenses"
+          printf "\n8933bad161af4178b1185d1a37fbf41ea5269c55\nd56f5187479451eabf01fb78af6dfcb131a6481e\n24333f8a63b6825ea9c5514f83c2829b004d1fee\n859f317696f67ef3d7f30a50a5560e7834b43903\n" > "$ANDROID_HOME/licenses/android-sdk-license"
+          printf "\n84831b9409646a918e30573bab4c9c91346d8abd\n504667f4c0de7af1a06de9f4b1727b84351f2910\n" > "$ANDROID_HOME/licenses/android-sdk-preview-license"
+          MISSING_PKGS=()
+          [ -d "$ANDROID_HOME/platforms/android-36.1" ] || MISSING_PKGS+=("platforms;android-36.1")
+          [ -d "$ANDROID_HOME/build-tools/36.0.0" ]    || MISSING_PKGS+=("build-tools;36.0.0")
+          [ -d "$ANDROID_HOME/build-tools/36.1.0" ]    || MISSING_PKGS+=("build-tools;36.1.0")
+          if [ "${#MISSING_PKGS[@]}" -gt 0 ]; then
+            SDKMANAGER_BIN="$( (find "$ANDROID_HOME/cmdline-tools" -name sdkmanager -type f 2>/dev/null || true) | sort -V | tail -n 1 )"
+            if [ -z "$SDKMANAGER_BIN" ]; then
+              SDKMANAGER_BIN="$(command -v sdkmanager || true)"
+            fi
+            if [ -z "$SDKMANAGER_BIN" ]; then
+              curl -fsSL https://dl.google.com/android/repository/commandlinetools-linux-13114758_latest.zip -o /tmp/cmdtools.zip
+              mkdir -p "$ANDROID_HOME/cmdline-tools" /tmp/cmdtools-extract
+              unzip -q -o /tmp/cmdtools.zip -d /tmp/cmdtools-extract
+              mv /tmp/cmdtools-extract/cmdline-tools "$ANDROID_HOME/cmdline-tools/latest"
+              rm -rf /tmp/cmdtools.zip /tmp/cmdtools-extract
+              SDKMANAGER_BIN="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+            fi
+            yes | "$SDKMANAGER_BIN" --sdk_root="$ANDROID_HOME" --licenses > /dev/null || true
+            "$SDKMANAGER_BIN" --sdk_root="$ANDROID_HOME" "${MISSING_PKGS[@]}"
+          fi
+      - name: Ensure ephemeral local debug keystore exists
+        run: |
+          if [ ! -f debug.keystore ]; then
+            keytool -genkeypair -v \
+              -keystore debug.keystore \
+              -storepass android \
+              -alias androiddebugkey \
+              -keypass android \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -dname "CN=Android Debug,O=Android,C=US"
+          fi
+      - uses: gradle/actions/setup-gradle@v5
+      - name: Run Android Lint (debug)
+        run: ./gradlew :app:lintDebug --console=plain
+
+  assemble:
+    name: Assemble APK (debug)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+      - name: Configure Android SDK path
+        run: |
+          SDK_DIR="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          mkdir -p "$SDK_DIR"
+          if [ ! -w "$SDK_DIR" ]; then
+            sudo chown -R "$USER" "$SDK_DIR"
+          fi
+          echo "ANDROID_HOME=$SDK_DIR" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK_DIR" >> "$GITHUB_ENV"
+      - name: Cache Android SDK 36.1
+        uses: actions/cache@v5
+        with:
+          path: |
+            ${{ env.ANDROID_HOME }}/licenses
+            ${{ env.ANDROID_HOME }}/platforms/android-36.1
+            ${{ env.ANDROID_HOME }}/build-tools/36.0.0
+            ${{ env.ANDROID_HOME }}/build-tools/36.1.0
+          key: android-sdk-36.1-${{ runner.os }}-${{ hashFiles('app/build.gradle.kts') }}
+          restore-keys: |
+            android-sdk-36.1-${{ runner.os }}-
+      - name: Install required Android SDK components
+        run: |
+          mkdir -p "$ANDROID_HOME/licenses"
+          printf "\n8933bad161af4178b1185d1a37fbf41ea5269c55\nd56f5187479451eabf01fb78af6dfcb131a6481e\n24333f8a63b6825ea9c5514f83c2829b004d1fee\n859f317696f67ef3d7f30a50a5560e7834b43903\n" > "$ANDROID_HOME/licenses/android-sdk-license"
+          printf "\n84831b9409646a918e30573bab4c9c91346d8abd\n504667f4c0de7af1a06de9f4b1727b84351f2910\n" > "$ANDROID_HOME/licenses/android-sdk-preview-license"
+          MISSING_PKGS=()
+          [ -d "$ANDROID_HOME/platforms/android-36.1" ] || MISSING_PKGS+=("platforms;android-36.1")
+          [ -d "$ANDROID_HOME/build-tools/36.0.0" ]    || MISSING_PKGS+=("build-tools;36.0.0")
+          [ -d "$ANDROID_HOME/build-tools/36.1.0" ]    || MISSING_PKGS+=("build-tools;36.1.0")
+          if [ "${#MISSING_PKGS[@]}" -gt 0 ]; then
+            SDKMANAGER_BIN="$( (find "$ANDROID_HOME/cmdline-tools" -name sdkmanager -type f 2>/dev/null || true) | sort -V | tail -n 1 )"
+            if [ -z "$SDKMANAGER_BIN" ]; then
+              SDKMANAGER_BIN="$(command -v sdkmanager || true)"
+            fi
+            if [ -z "$SDKMANAGER_BIN" ]; then
+              curl -fsSL https://dl.google.com/android/repository/commandlinetools-linux-13114758_latest.zip -o /tmp/cmdtools.zip
+              mkdir -p "$ANDROID_HOME/cmdline-tools" /tmp/cmdtools-extract
+              unzip -q -o /tmp/cmdtools.zip -d /tmp/cmdtools-extract
+              mv /tmp/cmdtools-extract/cmdline-tools "$ANDROID_HOME/cmdline-tools/latest"
+              rm -rf /tmp/cmdtools.zip /tmp/cmdtools-extract
+              SDKMANAGER_BIN="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+            fi
+            yes | "$SDKMANAGER_BIN" --sdk_root="$ANDROID_HOME" --licenses > /dev/null || true
+            "$SDKMANAGER_BIN" --sdk_root="$ANDROID_HOME" "${MISSING_PKGS[@]}"
+          fi
+      - name: Ensure ephemeral local debug keystore exists
+        run: |
+          if [ ! -f debug.keystore ]; then
+            keytool -genkeypair -v \
+              -keystore debug.keystore \
+              -storepass android \
+              -alias androiddebugkey \
+              -keypass android \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -dname "CN=Android Debug,O=Android,C=US"
+          fi
+      - uses: gradle/actions/setup-gradle@v5
+      - name: Assemble debug APK (without artifact upload or release signing)
+        run: ./gradlew :app:assembleDebug --console=plain
+
+  quality:
+    name: Quality (manifest · unit-tests · lint · assemble)
+    if: always()
+    needs: [manifest, unit-tests, lint, assemble]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require every CI job to pass
+        env:
+          MANIFEST_RESULT: ${{ needs.manifest.result }}
+          TESTS_RESULT: ${{ needs.unit-tests.result }}
+          LINT_RESULT: ${{ needs.lint.result }}
+          ASSEMBLE_RESULT: ${{ needs.assemble.result }}
+        run: |
+          test "$MANIFEST_RESULT" = "success"
+          test "$TESTS_RESULT" = "success"
+          test "$LINT_RESULT" = "success"
+          test "$ASSEMBLE_RESULT" = "success"

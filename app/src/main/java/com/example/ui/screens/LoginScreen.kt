@@ -1,5 +1,6 @@
 package com.example.ui.screens
 
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -21,6 +22,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Analytics
+import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Visibility
@@ -33,18 +35,20 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
@@ -60,11 +64,20 @@ import androidx.compose.ui.unit.dp
 fun LoginScreen(
     busy: Boolean,
     error: String?,
+    serverUrl: String,
+    canConfigureServerUrl: Boolean,
+    onUpdateServerUrl: (String) -> Unit,
     onLoginSubmit: (String, String) -> Unit
 ) {
     var identifier by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var showPassword by remember { mutableStateOf(false) }
+    var showServerConfig by remember { mutableStateOf(false) }
+    var draftServerUrl by remember(serverUrl) { mutableStateOf(serverUrl) }
+
+    LaunchedEffect(serverUrl) {
+        draftServerUrl = serverUrl
+    }
 
     Box(
         modifier = Modifier
@@ -88,7 +101,6 @@ fun LoginScreen(
                 .padding(horizontal = 24.dp, vertical = 32.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            // Bright, Friendly Brand Icon & Welcome Header
             Surface(
                 shape = CircleShape,
                 color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
@@ -124,7 +136,7 @@ fun LoginScreen(
             Spacer(modifier = Modifier.height(6.dp))
 
             Text(
-                text = "Báo cáo kinh doanh & Chấm công nhân sự",
+                text = "Hệ thống Quản trị Tuyển dụng & Nhân sự HR Partner",
                 style = MaterialTheme.typography.bodyMedium,
                 color = Color(0xFF64748B),
                 textAlign = TextAlign.Center
@@ -132,7 +144,6 @@ fun LoginScreen(
 
             Spacer(modifier = Modifier.height(28.dp))
 
-            // Clean, Simple White Login Card
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(24.dp),
@@ -236,7 +247,9 @@ fun LoginScreen(
                         Surface(
                             shape = RoundedCornerShape(12.dp),
                             color = Color(0xFFFFF1F2),
-                            modifier = Modifier.fillMaxWidth()
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("login_error_banner")
                         ) {
                             Text(
                                 text = error,
@@ -276,6 +289,60 @@ fun LoginScreen(
                                 style = MaterialTheme.typography.titleMedium,
                                 fontWeight = FontWeight.SemiBold
                             )
+                        }
+                    }
+
+                    if (canConfigureServerUrl) {
+                        TextButton(
+                            onClick = { showServerConfig = !showServerConfig },
+                            modifier = Modifier
+                                .align(Alignment.CenterHorizontally)
+                                .testTag("toggle_debug_server_url_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Dns,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = if (showServerConfig) "Ẩn cấu hình máy chủ (Debug)" else "Cấu hình URL máy chủ (Debug)",
+                                style = MaterialTheme.typography.labelMedium
+                            )
+                        }
+
+                        AnimatedVisibility(visible = showServerConfig) {
+                            Column(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                OutlinedTextField(
+                                    value = draftServerUrl,
+                                    onValueChange = { draftServerUrl = it },
+                                    label = { Text("Server Base URL (Debug)") },
+                                    placeholder = { Text("https://bi.hrpartner.vn") },
+                                    singleLine = true,
+                                    shape = RoundedCornerShape(12.dp),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .testTag("debug_server_url_input")
+                                )
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.End
+                                ) {
+                                    OutlinedButton(
+                                        onClick = {
+                                            onUpdateServerUrl(draftServerUrl)
+                                            showServerConfig = false
+                                        },
+                                        shape = RoundedCornerShape(10.dp),
+                                        modifier = Modifier.testTag("save_debug_server_url_button")
+                                    ) {
+                                        Text("Lưu URL")
+                                    }
+                                }
+                            }
                         }
                     }
                 }

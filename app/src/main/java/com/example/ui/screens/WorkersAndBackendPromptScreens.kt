@@ -1,5 +1,6 @@
 package com.example.ui.screens
 
+import android.content.Intent
 import android.net.Uri
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -33,7 +34,6 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDropDown
-import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Download
@@ -52,6 +52,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilterChip
@@ -66,8 +67,8 @@ import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -76,94 +77,149 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.core.content.FileProvider
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import coil.compose.AsyncImage
+import com.example.data.AppActor
+import com.example.data.DirectEntryCatalog
+import com.example.data.DirectEntryContract
 import com.example.data.NewWorkerEntryDraft
+import com.example.data.OwnSubmissionItem
+import com.example.data.StagedDocumentRef
+import com.example.data.WorkerEntryDetail
 import com.example.data.WorkerProfileEntity
+import com.example.ui.MiniBiViewModel
 import com.example.ui.theme.JetBrainsMono
 import com.example.ui.theme.SemanticColors
+import org.json.JSONObject
+import java.io.File
 import java.util.UUID
 
-private val PROJECT_OPTIONS = listOf(
-    "Luxshare Bắc Ninh",
-    "Foxconn Bắc Giang",
-    "Goertek Quế Võ",
-    "Samsung Thái Nguyên",
-    "Canon Tiên Sơn",
-    "Compal Vĩnh Phúc",
-    "Pegatron Hải Phòng"
-)
-
-private val HRP_RECRUITER_OPTIONS = listOf(
-    "Phạm Văn Hùng",
-    "Lê Thu Hà",
-    "Nguyễn Thị Minh",
-    "Vũ Thùy Linh",
-    "Đặng Anh Tuấn"
-)
-
-private val VENDOR_OPTIONS = listOf(
-    "Vendor Nhân Lực Bắc Việt",
-    "Vendor Cung Ứng Kinh Bắc",
-    "Vendor Đại Phát HR",
-    "Vendor Thái Nguyên Pro"
-)
-
-private val LABOR_TYPE_OPTIONS = listOf("Thời vụ", "Chính thức")
-private val WORK_STATUS_OPTIONS = listOf("Đang làm", "Đang chờ việc", "Đã nghỉ")
 private val ENTRY_STATUS_OPTIONS = listOf("Đang làm", "Đang chờ việc")
-private val GENDER_OPTIONS = listOf("Nam", "Nữ")
+private val GENDER_OPTIONS = listOf("Nam", "Nữ", "Khác")
+private val WORK_STATUS_FILTER_OPTIONS = listOf(
+    "ON" to "Đang làm",
+    "UNCONFIRMED" to "Đang chờ việc",
+    "OFF" to "Đã nghỉ"
+)
+
+data class DropdownOptionItem(
+    val id: String,
+    val label: String
+)
 
 // ============================================================================
-// 1. MÀN HÌNH "CẤP MỚI" (`/direct-entry` - Nhập liệu trực tiếp kiểu Biểu mẫu)
+// 1. MÀN HÌNH "CẤP MỚI" (`/direct-entry` - Full-profile v1.1)
 // ============================================================================
 @Composable
 fun DirectEntryNewWorkersScreen(
-    onSaveValidWorkers: (List<NewWorkerEntryDraft>) -> Unit,
+    actor: AppActor,
+    viewModel: MiniBiViewModel,
     onNavigateToWorkersList: () -> Unit,
-    onBackToDashboard: () -> Unit
+    onBackToDashboard: () -> Unit,
+    onUploadStageFile: ((rowId: String, documentType: String, uri: Uri, onStaged: (StagedDocumentRef) -> Unit, onError: (String) -> Unit) -> Unit)? = null,
+    onDeleteStageId: ((stageId: String) -> Unit)? = null,
+    onSubmitValidDrafts: ((validRows: List<NewWorkerEntryDraft>, onSuccess: () -> Unit) -> Unit)? = null
 ) {
     BackHandler(onBack = onBackToDashboard)
+
+    val catalog by viewModel.catalog.collectAsStateWithLifecycle()
+    val catalogLoading by viewModel.catalogLoading.collectAsStateWithLifecycle()
+    val catalogError by viewModel.catalogError.collectAsStateWithLifecycle()
+    val ownSubmissions by viewModel.ownSubmissions.collectAsStateWithLifecycle()
+    val mutationBusy by viewModel.workerMutationBusy.collectAsStateWithLifecycle()
+
+    val effectiveUploadStageFile: (String, String, Uri, (StagedDocumentRef) -> Unit, (String) -> Unit) -> Unit =
+        onUploadStageFile ?: { _, documentType, uri, onStaged, onError ->
+            viewModel.uploadStageDocument(documentType, uri, onStaged, onError)
+        }
+    val effectiveDeleteStageId: (String) -> Unit =
+        onDeleteStageId ?: { stageId -> viewModel.deleteStageDocument(stageId) }
+    val effectiveSubmitValidDrafts: (List<NewWorkerEntryDraft>, () -> Unit) -> Unit =
+        onSubmitValidDrafts ?: { validRows, onSuccess ->
+            viewModel.submitFullProfileDrafts(validRows, onSuccess)
+        }
+
+    LaunchedEffect(actor.appUserId) {
+        viewModel.loadCatalogIfNeeded()
+        if (actor.hasCapability("submission_read")) {
+            viewModel.refreshOwnSubmissionsForHistory()
+        }
+    }
 
     var showBatchHistoryDialog by remember { mutableStateOf(false) }
 
     val draftRows = remember {
         mutableStateListOf(
-            NewWorkerEntryDraft(localId = UUID.randomUUID().toString())
+            NewWorkerEntryDraft(
+                localId = UUID.randomUUID().toString(),
+                firstWorkDateUi = DirectEntryContract.todayUiInHcm()
+            )
         )
     }
 
-    // Track which row & slot is currently picking a file
     var pendingFileTarget by remember { mutableStateOf<Pair<String, String>?>(null) }
 
     val filePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
     ) { uri: Uri? ->
         val target = pendingFileTarget
+        pendingFileTarget = null
         if (uri != null && target != null) {
-            val (rowId, slotKey) = target
+            val (rowId, documentType) = target
             val index = draftRows.indexOfFirst { it.localId == rowId }
             if (index >= 0) {
-                val current = draftRows[index]
-                val fileLabel = uri.lastPathSegment?.substringAfterLast('/') ?: "tep_ho_so_${System.currentTimeMillis()}.jpg"
-                draftRows[index] = when (slotKey) {
-                    "portrait" -> current.copy(portraitFileName = fileLabel, portraitUri = uri.toString())
-                    "cccd_front" -> current.copy(cccdFrontFileName = fileLabel, cccdFrontUri = uri.toString())
-                    "cccd_back" -> current.copy(cccdBackFileName = fileLabel, cccdBackUri = uri.toString())
-                    "contract" -> current.copy(contractFileName = fileLabel, contractUri = uri.toString())
-                    else -> current
+                val existingStageId = when (documentType) {
+                    "WORKER_PORTRAIT" -> draftRows[index].portraitStage?.stageId
+                    "CCCD_FRONT" -> draftRows[index].cccdFrontStage?.stageId
+                    "CCCD_BACK" -> draftRows[index].cccdBackStage?.stageId
+                    "EMPLOYMENT_CONTRACT" -> draftRows[index].contractStage?.stageId
+                    else -> null
                 }
+                draftRows[index] = draftRows[index].copy(uploadingSlot = documentType, slotError = null)
+                effectiveUploadStageFile(
+                    rowId,
+                    documentType,
+                    uri,
+                    { staged ->
+                        val currentIdx = draftRows.indexOfFirst { it.localId == rowId }
+                        if (currentIdx >= 0) {
+                            existingStageId?.let { oldId -> effectiveDeleteStageId(oldId) }
+                            val cur = draftRows[currentIdx]
+                            draftRows[currentIdx] = when (documentType) {
+                                "WORKER_PORTRAIT" -> cur.copy(portraitStage = staged, uploadingSlot = null, slotError = null)
+                                "CCCD_FRONT" -> cur.copy(cccdFrontStage = staged, uploadingSlot = null, slotError = null)
+                                "CCCD_BACK" -> cur.copy(cccdBackStage = staged, uploadingSlot = null, slotError = null)
+                                "EMPLOYMENT_CONTRACT" -> cur.copy(contractStage = staged, uploadingSlot = null, slotError = null)
+                                else -> cur.copy(uploadingSlot = null)
+                            }
+                        }
+                    },
+                    { errMsg ->
+                        val currentIdx = draftRows.indexOfFirst { it.localId == rowId }
+                        if (currentIdx >= 0) {
+                            draftRows[currentIdx] = draftRows[currentIdx].copy(
+                                uploadingSlot = null,
+                                slotError = errMsg
+                            )
+                        }
+                    }
+                )
             }
         }
-        pendingFileTarget = null
     }
 
-    fun pickDocumentForRow(rowId: String, slotKey: String) {
-        pendingFileTarget = rowId to slotKey
-        filePickerLauncher.launch("*/*")
+    fun pickDocumentForRow(rowId: String, documentType: String) {
+        pendingFileTarget = rowId to documentType
+        val mimeFilter = if (documentType == "WORKER_PORTRAIT") "image/*" else "*/*"
+        filePickerLauncher.launch(mimeFilter)
     }
 
     val validCount = draftRows.count { it.isValid }
@@ -175,7 +231,6 @@ fun DirectEntryNewWorkersScreen(
         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        // 1. Top Header Card matching `/direct-entry` screenshot
         item {
             Card(
                 modifier = Modifier.fillMaxWidth(),
@@ -217,14 +272,31 @@ fun DirectEntryNewWorkersScreen(
                             }
                             Spacer(modifier = Modifier.height(2.dp))
                             Text(
-                                text = "Dữ liệu chỉ được lưu sau khi máy chủ xác nhận.",
+                                text = "Dữ liệu chỉ được lưu sau khi máy chủ xác nhận (worker-profile/1.1).",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
                     }
 
-                    // Batch bar ("Đợt nhập liệu | 1 đã tải | 1 đang gửi | Mở")
+                    if (catalogLoading) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                            Text("Đang tải danh mục dự án & người tuyển từ máy chủ…", style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+
+                    catalogError?.let { err ->
+                        Text(
+                            text = err,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    }
+
                     Surface(
                         shape = RoundedCornerShape(14.dp),
                         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
@@ -258,19 +330,8 @@ fun DirectEntryNewWorkersScreen(
                                     color = MaterialTheme.colorScheme.surface
                                 ) {
                                     Text(
-                                        text = "1 đã tải",
+                                        text = "${ownSubmissions.size} đã gửi",
                                         style = MaterialTheme.typography.labelSmall,
-                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
-                                    )
-                                }
-                                Surface(
-                                    shape = RoundedCornerShape(50),
-                                    color = SemanticColors.WarningLight.copy(alpha = 0.16f)
-                                ) {
-                                    Text(
-                                        text = "${draftRows.size} đang nhập",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = SemanticColors.WarningLight,
                                         modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
                                     )
                                 }
@@ -289,7 +350,6 @@ fun DirectEntryNewWorkersScreen(
             }
         }
 
-        // 2. Multi-Entry Form Container Card ("Nhập nhiều NLĐ")
         item {
             Card(
                 modifier = Modifier.fillMaxWidth(),
@@ -312,7 +372,7 @@ fun DirectEntryNewWorkersScreen(
                         )
                         Spacer(modifier = Modifier.height(4.dp))
                         Text(
-                            text = "Hồ sơ hợp lệ được lưu trước; dòng còn lỗi và tệp đã chọn vẫn được giữ lại để xử lý tiếp.",
+                            text = "Mã NLĐ được máy chủ tự động cấp phát khi lưu hồ sơ thành công.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -320,7 +380,12 @@ fun DirectEntryNewWorkersScreen(
                     Spacer(modifier = Modifier.width(10.dp))
                     OutlinedButton(
                         onClick = {
-                            draftRows.add(NewWorkerEntryDraft(localId = UUID.randomUUID().toString()))
+                            draftRows.add(
+                                NewWorkerEntryDraft(
+                                    localId = UUID.randomUUID().toString(),
+                                    firstWorkDateUi = DirectEntryContract.todayUiInHcm()
+                                )
+                            )
                         },
                         shape = RoundedCornerShape(12.dp),
                         modifier = Modifier.testTag("top_add_worker_row_button")
@@ -333,25 +398,45 @@ fun DirectEntryNewWorkersScreen(
             }
         }
 
-        // 3. Individual Worker Entry Cards (Collapsible)
         itemsIndexed(draftRows, key = { _, item -> item.localId }) { index, row ->
             WorkerMultiEntryCard(
                 rowNumber = index + 1,
                 draft = row,
+                catalog = catalog,
+                selfRecruiterId = actor.selfRecruiterSuggestion,
                 canRemove = draftRows.size > 1,
-                onUpdate = { updated -> draftRows[index] = updated },
+                onUpdate = { updated ->
+                    draftRows[index] = updated
+                    runCatching { DirectEntryContract.uiDateToIsoDate(updated.firstWorkDateUi) }
+                        .getOrNull()
+                        ?.let { iso -> viewModel.loadCatalogIfNeeded(iso) }
+                },
                 onRemove = {
+                    row.allStageIds().forEach { stageId -> effectiveDeleteStageId(stageId) }
                     if (draftRows.size > 1) {
                         draftRows.removeAt(index)
                     } else {
-                        draftRows[0] = NewWorkerEntryDraft(localId = UUID.randomUUID().toString())
+                        draftRows[0] = NewWorkerEntryDraft(
+                            localId = UUID.randomUUID().toString(),
+                            firstWorkDateUi = DirectEntryContract.todayUiInHcm()
+                        )
                     }
                 },
-                onPickFile = { slotKey -> pickDocumentForRow(row.localId, slotKey) }
+                onPickFile = { docType -> pickDocumentForRow(row.localId, docType) },
+                onClearStage = { docType, stageId ->
+                    effectiveDeleteStageId(stageId)
+                    val cur = draftRows[index]
+                    draftRows[index] = when (docType) {
+                        "WORKER_PORTRAIT" -> cur.copy(portraitStage = null)
+                        "CCCD_FRONT" -> cur.copy(cccdFrontStage = null)
+                        "CCCD_BACK" -> cur.copy(cccdBackStage = null)
+                        "EMPLOYMENT_CONTRACT" -> cur.copy(contractStage = null)
+                        else -> cur
+                    }
+                }
             )
         }
 
-        // 4. Bottom Action Bar ("+ Thêm NLĐ nữa" & "Lưu các NLĐ hợp lệ")
         item {
             Card(
                 modifier = Modifier.fillMaxWidth(),
@@ -371,7 +456,12 @@ fun DirectEntryNewWorkersScreen(
                     ) {
                         OutlinedButton(
                             onClick = {
-                                draftRows.add(NewWorkerEntryDraft(localId = UUID.randomUUID().toString()))
+                                draftRows.add(
+                                    NewWorkerEntryDraft(
+                                        localId = UUID.randomUUID().toString(),
+                                        firstWorkDateUi = DirectEntryContract.todayUiInHcm()
+                                    )
+                                )
                             },
                             shape = RoundedCornerShape(12.dp),
                             modifier = Modifier
@@ -387,26 +477,40 @@ fun DirectEntryNewWorkersScreen(
                         Button(
                             onClick = {
                                 val validRows = draftRows.filter { it.isValid }
-                                if (validRows.isNotEmpty()) {
-                                    onSaveValidWorkers(validRows)
-                                    val remaining = draftRows.filter { !it.isValid && it.isStarted }
-                                    draftRows.clear()
-                                    if (remaining.isNotEmpty()) {
-                                        draftRows.addAll(remaining)
-                                    } else {
-                                        draftRows.add(NewWorkerEntryDraft(localId = UUID.randomUUID().toString()))
+                                if (validRows.isNotEmpty() && !mutationBusy) {
+                                    effectiveSubmitValidDrafts(validRows) {
+                                        val remaining = draftRows.filter { !it.isValid && it.isStarted }
+                                        draftRows.clear()
+                                        if (remaining.isNotEmpty()) {
+                                            draftRows.addAll(remaining)
+                                        } else {
+                                            draftRows.add(
+                                                NewWorkerEntryDraft(
+                                                    localId = UUID.randomUUID().toString(),
+                                                    firstWorkDateUi = DirectEntryContract.todayUiInHcm()
+                                                )
+                                            )
+                                        }
+                                        onNavigateToWorkersList()
                                     }
-                                    onNavigateToWorkersList()
                                 }
                             },
-                            enabled = validCount > 0,
+                            enabled = validCount > 0 && !mutationBusy,
                             shape = RoundedCornerShape(12.dp),
                             modifier = Modifier
                                 .weight(1.2f)
                                 .height(48.dp)
                                 .testTag("save_valid_workers_button")
                         ) {
-                            Icon(Icons.Default.Save, contentDescription = null, modifier = Modifier.size(18.dp))
+                            if (mutationBusy) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(18.dp),
+                                    strokeWidth = 2.dp,
+                                    color = MaterialTheme.colorScheme.onPrimary
+                                )
+                            } else {
+                                Icon(Icons.Default.Save, contentDescription = null, modifier = Modifier.size(18.dp))
+                            }
                             Spacer(modifier = Modifier.width(6.dp))
                             Text(
                                 text = if (validCount > 0) "Lưu các NLĐ hợp lệ ($validCount)" else "Lưu các NLĐ hợp lệ",
@@ -418,7 +522,7 @@ fun DirectEntryNewWorkersScreen(
 
                     if (validCount == 0) {
                         Text(
-                            text = "Điền các trường có dấu * (Dự án, HRP/Vendor, Người tuyển, Loại hình LĐ, Ngày bắt đầu, Họ và tên) để bật nút Lưu.",
+                            text = "Điền các trường có dấu * từ danh mục máy chủ (Dự án, HRP/Vendor, Người tuyển, Loại hình LĐ, Ngày bắt đầu DD/MM/YYYY, Họ và tên) để bật nút Lưu.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -431,17 +535,22 @@ fun DirectEntryNewWorkersScreen(
     if (showBatchHistoryDialog) {
         AlertDialog(
             onDismissRequest = { showBatchHistoryDialog = false },
-            title = { Text("Đợt nhập liệu gần đây") },
+            title = { Text("Lịch sử đợt nhập liệu từ máy chủ") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(
-                        text = "• Đợt #2026-10-23-A: Đã tải lên 4 hồ sơ NLĐ (Luxshare Bắc Ninh, Foxconn Bắc Giang) — Hoàn tất.",
-                        style = MaterialTheme.typography.bodySmall
-                    )
-                    Text(
-                        text = "• Đợt hiện tại: Đang soạn ${draftRows.size} dòng trên biểu mẫu di động.",
-                        style = MaterialTheme.typography.bodySmall
-                    )
+                    if (ownSubmissions.isEmpty()) {
+                        Text(
+                            text = "Chưa có đợt nhập liệu nào được ghi nhận trên máy chủ.",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    } else {
+                        ownSubmissions.take(10).forEach { sub ->
+                            Text(
+                                text = "• Đợt ${sub.submissionId.take(8)}…: ${sub.entryCount} hồ sơ (${sub.state})",
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                        }
+                    }
                 }
             },
             confirmButton = {
@@ -457,12 +566,16 @@ fun DirectEntryNewWorkersScreen(
 private fun WorkerMultiEntryCard(
     rowNumber: Int,
     draft: NewWorkerEntryDraft,
+    catalog: DirectEntryCatalog?,
+    selfRecruiterId: String?,
     canRemove: Boolean,
     onUpdate: (NewWorkerEntryDraft) -> Unit,
     onRemove: () -> Unit,
-    onPickFile: (slotKey: String) -> Unit
+    onPickFile: (documentType: String) -> Unit,
+    onClearStage: (documentType: String, stageId: String) -> Unit
 ) {
     val statusText = when {
+        draft.uploadingSlot != null -> "Đang tải tệp lên máy chủ…"
         !draft.isStarted -> "Chưa nhập"
         draft.isValid -> "Hợp lệ"
         else -> "Đang nhập (thiếu trường *)"
@@ -474,12 +587,24 @@ private fun WorkerMultiEntryCard(
     }
     val headerName = draft.fullName.trim().ifBlank { "Chưa nhập họ tên" }
 
-    val recruiterChoices = remember(draft.providerType) {
-        when (draft.providerType) {
-            "HRP" -> HRP_RECRUITER_OPTIONS
-            "Vendor" -> VENDOR_OPTIONS
-            else -> emptyList()
-        }
+    val projectOptions = remember(catalog) {
+        catalog?.projects?.map { DropdownOptionItem(it.projectId, it.displayName) }.orEmpty()
+    }
+    val providerOptions = listOf(
+        DropdownOptionItem("hrp", "HRP"),
+        DropdownOptionItem("vendor", "Vendor")
+    )
+    val recruiterOptions = remember(catalog, draft.providerType) {
+        catalog?.recruiters
+            ?.filter { it.providerType == draft.providerType }
+            ?.map { DropdownOptionItem(it.recruiterId, it.label) }
+            .orEmpty()
+    }
+    val laborTypeOptions = remember(catalog) {
+        catalog?.laborTypes
+            ?.sortedBy { it.sortOrder }
+            ?.map { DropdownOptionItem(it.laborTypeKey, it.displayName) }
+            .orEmpty()
     }
 
     Card(
@@ -496,7 +621,6 @@ private fun WorkerMultiEntryCard(
         elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
     ) {
         Column(modifier = Modifier.fillMaxWidth()) {
-            // Collapsible Row Header ("▼ NLĐ 1: Chưa nhập họ tên · Chưa nhập")
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -546,58 +670,69 @@ private fun WorkerMultiEntryCard(
                 ) {
                     HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))
 
-                    // =========================================================================
-                    // 10 Ô NHẬP CHÍNH (9 ô gốc của Biểu mẫu + Ô chọn Giới tính đưa lên chính)
-                    // =========================================================================
-
-                    // 1. Dự án *
-                    FormSelectDropdownField(
+                    KeyedSelectDropdownField(
                         label = "Dự án *",
-                        selectedValue = draft.projectDisplay,
-                        placeholder = "Chọn dự án",
-                        options = PROJECT_OPTIONS,
-                        onSelect = { onUpdate(draft.copy(projectDisplay = it)) },
+                        selectedLabel = draft.projectDisplay,
+                        placeholder = if (projectOptions.isEmpty()) "Đang chờ danh mục dự án" else "Chọn dự án",
+                        options = projectOptions,
+                        enabled = projectOptions.isNotEmpty(),
+                        onSelect = { opt ->
+                            onUpdate(draft.copy(projectId = opt.id, projectDisplay = opt.label))
+                        },
                         testTag = "row_${rowNumber}_project"
                     )
 
-                    // 2. HRP/Vendor *
-                    FormSelectDropdownField(
+                    KeyedSelectDropdownField(
                         label = "HRP/Vendor *",
-                        selectedValue = draft.providerType,
-                        placeholder = "Chọn",
-                        options = listOf("HRP", "Vendor"),
-                        onSelect = { newProvider ->
-                            val defaultRecruiter = if (newProvider == "HRP") HRP_RECRUITER_OPTIONS.first() else VENDOR_OPTIONS.first()
-                            onUpdate(draft.copy(providerType = newProvider, recruiterOrVendor = defaultRecruiter))
+                        selectedLabel = when (draft.providerType) {
+                            "hrp" -> "HRP"
+                            "vendor" -> "Vendor"
+                            else -> ""
+                        },
+                        placeholder = "Chọn nguồn tuyển",
+                        options = providerOptions,
+                        onSelect = { opt ->
+                            val matchingRecruiters = catalog?.recruiters?.filter { it.providerType == opt.id }.orEmpty()
+                            val suggested = matchingRecruiters.firstOrNull { it.recruiterId == selfRecruiterId }
+                                ?: matchingRecruiters.firstOrNull()
+                            onUpdate(
+                                draft.copy(
+                                    providerType = opt.id,
+                                    recruiterId = suggested?.recruiterId.orEmpty(),
+                                    recruiterDisplay = suggested?.label.orEmpty()
+                                )
+                            )
                         },
                         testTag = "row_${rowNumber}_provider"
                     )
 
-                    // 3. Người tuyển / Vendor *
-                    FormSelectDropdownField(
+                    KeyedSelectDropdownField(
                         label = "Người tuyển / Vendor *",
-                        selectedValue = draft.recruiterOrVendor,
+                        selectedLabel = draft.recruiterDisplay,
                         placeholder = if (draft.providerType.isBlank()) "Chọn HRP/Vendor trước" else "Chọn người tuyển / đối tác",
-                        options = recruiterChoices,
-                        enabled = draft.providerType.isNotBlank(),
-                        onSelect = { onUpdate(draft.copy(recruiterOrVendor = it)) },
+                        options = recruiterOptions,
+                        enabled = draft.providerType.isNotBlank() && recruiterOptions.isNotEmpty(),
+                        onSelect = { opt ->
+                            onUpdate(draft.copy(recruiterId = opt.id, recruiterDisplay = opt.label))
+                        },
                         testTag = "row_${rowNumber}_recruiter"
                     )
 
-                    // 4. Loại hình LĐ *
-                    FormSelectDropdownField(
+                    KeyedSelectDropdownField(
                         label = "Loại hình LĐ *",
-                        selectedValue = draft.laborType,
-                        placeholder = "Chọn",
-                        options = LABOR_TYPE_OPTIONS,
-                        onSelect = { onUpdate(draft.copy(laborType = it)) },
+                        selectedLabel = draft.laborTypeDisplay,
+                        placeholder = if (laborTypeOptions.isEmpty()) "Đang chờ danh mục loại hình" else "Chọn loại hình LĐ",
+                        options = laborTypeOptions,
+                        enabled = laborTypeOptions.isNotEmpty(),
+                        onSelect = { opt ->
+                            onUpdate(draft.copy(laborTypeKey = opt.id, laborTypeDisplay = opt.label))
+                        },
                         testTag = "row_${rowNumber}_labor_type"
                     )
 
-                    // 5. Ngày bắt đầu làm việc *
                     OutlinedTextField(
-                        value = draft.firstWorkDate,
-                        onValueChange = { onUpdate(draft.copy(firstWorkDate = it)) },
+                        value = draft.firstWorkDateUi,
+                        onValueChange = { onUpdate(draft.copy(firstWorkDateUi = it)) },
                         label = { Text("Ngày bắt đầu làm việc *") },
                         placeholder = { Text("DD/MM/YYYY") },
                         singleLine = true,
@@ -607,17 +742,15 @@ private fun WorkerMultiEntryCard(
                             .testTag("row_${rowNumber}_start_date")
                     )
 
-                    // 6. Trạng thái làm việc
-                    FormSelectDropdownField(
+                    KeyedSelectDropdownField(
                         label = "Trạng thái làm việc",
-                        selectedValue = draft.employmentStatus,
+                        selectedLabel = draft.employmentStatusUi,
                         placeholder = "Đang làm",
-                        options = ENTRY_STATUS_OPTIONS,
-                        onSelect = { onUpdate(draft.copy(employmentStatus = it)) },
+                        options = ENTRY_STATUS_OPTIONS.map { DropdownOptionItem(it, it) },
+                        onSelect = { opt -> onUpdate(draft.copy(employmentStatusUi = opt.id)) },
                         testTag = "row_${rowNumber}_status"
                     )
 
-                    // 7. Họ và tên *
                     OutlinedTextField(
                         value = draft.fullName,
                         onValueChange = { onUpdate(draft.copy(fullName = it)) },
@@ -630,20 +763,18 @@ private fun WorkerMultiEntryCard(
                             .testTag("row_${rowNumber}_full_name")
                     )
 
-                    // 8. Giới tính (Được đưa lên khu vực ô nhập chính theo đúng yêu cầu)
-                    FormSelectDropdownField(
+                    KeyedSelectDropdownField(
                         label = "Giới tính",
-                        selectedValue = draft.gender,
-                        placeholder = "Chọn Nam / Nữ",
-                        options = GENDER_OPTIONS,
-                        onSelect = { onUpdate(draft.copy(gender = it)) },
+                        selectedLabel = draft.genderUi,
+                        placeholder = "Bỏ trống hoặc chọn Nam / Nữ / Khác",
+                        options = listOf(DropdownOptionItem("", "Bỏ trống")) + GENDER_OPTIONS.map { DropdownOptionItem(it, it) },
+                        onSelect = { opt -> onUpdate(draft.copy(genderUi = opt.id)) },
                         testTag = "row_${rowNumber}_gender"
                     )
 
-                    // 9. Số điện thoại
                     OutlinedTextField(
                         value = draft.phone,
-                        onValueChange = { onUpdate(draft.copy(phone = it.filter { ch -> ch.isDigit() }.take(11))) },
+                        onValueChange = { onUpdate(draft.copy(phone = it.filter { ch -> ch.isDigit() }.take(12))) },
                         label = { Text("Số điện thoại") },
                         placeholder = { Text("09xxxxxxxx") },
                         singleLine = true,
@@ -654,12 +785,11 @@ private fun WorkerMultiEntryCard(
                             .testTag("row_${rowNumber}_phone")
                     )
 
-                    // 10. Số CCCD
                     OutlinedTextField(
                         value = draft.cccd,
                         onValueChange = { onUpdate(draft.copy(cccd = it.filter { ch -> ch.isDigit() }.take(12))) },
                         label = { Text("Số CCCD") },
-                        placeholder = { Text("Nhập 12 chữ số CCCD") },
+                        placeholder = { Text("Nhập 9 hoặc 12 chữ số CCCD") },
                         singleLine = true,
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                         shape = RoundedCornerShape(12.dp),
@@ -668,9 +798,6 @@ private fun WorkerMultiEntryCard(
                             .testTag("row_${rowNumber}_cccd")
                     )
 
-                    // =========================================================================
-                    // KHU VỰC TẢI HỒ SƠ LÊN (Giữ nguyên 4 ô upload ảnh & hồ sơ như bản Web)
-                    // =========================================================================
                     Surface(
                         shape = RoundedCornerShape(16.dp),
                         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
@@ -689,58 +816,65 @@ private fun WorkerMultiEntryCard(
                             verticalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
                             Text(
-                                text = "Tải hồ sơ lên",
+                                text = "Tải hồ sơ lên máy chủ (Stage)",
                                 style = MaterialTheme.typography.titleSmall,
                                 fontWeight = FontWeight.Bold
                             )
 
+                            draft.slotError?.let { err ->
+                                Text(
+                                    text = err,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.error
+                                )
+                            }
+
                             DocumentUploadSlotCard(
                                 title = "Ảnh NLĐ",
-                                subtitle = "Ảnh NLĐ (JPEG/PNG, tối đa 10 MiB)",
-                                emptyHint = "Chưa chọn ảnh cho dòng này.",
-                                selectedFileName = draft.portraitFileName,
-                                onPickClick = { onPickFile("portrait") },
-                                onClearClick = { onUpdate(draft.copy(portraitFileName = "", portraitUri = "")) }
+                                subtitle = "WORKER_PORTRAIT (JPEG/PNG, tối đa 10 MiB)",
+                                staged = draft.portraitStage,
+                                uploading = draft.uploadingSlot == "WORKER_PORTRAIT",
+                                onPickClick = { onPickFile("WORKER_PORTRAIT") },
+                                onClearClick = {
+                                    draft.portraitStage?.let { onClearStage("WORKER_PORTRAIT", it.stageId) }
+                                }
                             )
 
                             DocumentUploadSlotCard(
                                 title = "CCCD mặt trước",
-                                subtitle = "CCCD mặt trước (ảnh hoặc PDF, tối đa 10 MiB)",
-                                emptyHint = "Chưa chọn tệp cho dòng này.",
-                                selectedFileName = draft.cccdFrontFileName,
-                                onPickClick = { onPickFile("cccd_front") },
-                                onClearClick = { onUpdate(draft.copy(cccdFrontFileName = "", cccdFrontUri = "")) }
+                                subtitle = "CCCD_FRONT (ảnh hoặc PDF, tối đa 10 MiB)",
+                                staged = draft.cccdFrontStage,
+                                uploading = draft.uploadingSlot == "CCCD_FRONT",
+                                onPickClick = { onPickFile("CCCD_FRONT") },
+                                onClearClick = {
+                                    draft.cccdFrontStage?.let { onClearStage("CCCD_FRONT", it.stageId) }
+                                }
                             )
 
                             DocumentUploadSlotCard(
                                 title = "CCCD mặt sau",
-                                subtitle = "CCCD mặt sau (ảnh hoặc PDF, tối đa 10 MiB)",
-                                emptyHint = "Chưa chọn tệp cho dòng này.",
-                                selectedFileName = draft.cccdBackFileName,
-                                onPickClick = { onPickFile("cccd_back") },
-                                onClearClick = { onUpdate(draft.copy(cccdBackFileName = "", cccdBackUri = "")) }
+                                subtitle = "CCCD_BACK (ảnh hoặc PDF, tối đa 10 MiB)",
+                                staged = draft.cccdBackStage,
+                                uploading = draft.uploadingSlot == "CCCD_BACK",
+                                onPickClick = { onPickFile("CCCD_BACK") },
+                                onClearClick = {
+                                    draft.cccdBackStage?.let { onClearStage("CCCD_BACK", it.stageId) }
+                                }
                             )
 
                             DocumentUploadSlotCard(
                                 title = "Hợp đồng",
-                                subtitle = "Hợp đồng (ảnh hoặc PDF, tối đa 10 MiB)",
-                                emptyHint = "Chưa chọn tệp cho dòng này.",
-                                selectedFileName = draft.contractFileName,
-                                onPickClick = { onPickFile("contract") },
-                                onClearClick = { onUpdate(draft.copy(contractFileName = "", contractUri = "")) }
-                            )
-
-                            Text(
-                                text = "Tệp đang ở bản nháp; máy chủ sẽ gắn vào hồ sơ khi lưu thành công.",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                subtitle = "EMPLOYMENT_CONTRACT (ảnh hoặc PDF, tối đa 10 MiB)",
+                                staged = draft.contractStage,
+                                uploading = draft.uploadingSlot == "EMPLOYMENT_CONTRACT",
+                                onPickClick = { onPickFile("EMPLOYMENT_CONTRACT") },
+                                onClearClick = {
+                                    draft.contractStage?.let { onClearStage("EMPLOYMENT_CONTRACT", it.stageId) }
+                                }
                             )
                         }
                     }
 
-                    // =========================================================================
-                    // THÔNG TIN THÊM (Tài khoản ngân hàng, ghi chú và thông tin cá nhân)
-                    // =========================================================================
                     Surface(
                         shape = RoundedCornerShape(14.dp),
                         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f),
@@ -806,7 +940,6 @@ private fun WorkerMultiEntryCard(
                                         value = draft.bankName,
                                         onValueChange = { onUpdate(draft.copy(bankName = it)) },
                                         label = { Text("Ngân hàng") },
-                                        placeholder = { Text("Vietcombank, Techcombank, MB Bank...") },
                                         singleLine = true,
                                         shape = RoundedCornerShape(12.dp),
                                         modifier = Modifier.fillMaxWidth()
@@ -821,8 +954,8 @@ private fun WorkerMultiEntryCard(
                                     )
                                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                         OutlinedTextField(
-                                            value = draft.birthDate,
-                                            onValueChange = { onUpdate(draft.copy(birthDate = it)) },
+                                            value = draft.birthDateUi,
+                                            onValueChange = { onUpdate(draft.copy(birthDateUi = it)) },
                                             label = { Text("Ngày sinh") },
                                             placeholder = { Text("DD/MM/YYYY") },
                                             singleLine = true,
@@ -830,8 +963,8 @@ private fun WorkerMultiEntryCard(
                                             modifier = Modifier.weight(1f)
                                         )
                                         OutlinedTextField(
-                                            value = draft.cccdIssueDate,
-                                            onValueChange = { onUpdate(draft.copy(cccdIssueDate = it)) },
+                                            value = draft.cccdIssueDateUi,
+                                            onValueChange = { onUpdate(draft.copy(cccdIssueDateUi = it)) },
                                             label = { Text("Ngày cấp CCCD") },
                                             placeholder = { Text("DD/MM/YYYY") },
                                             singleLine = true,
@@ -839,6 +972,14 @@ private fun WorkerMultiEntryCard(
                                             modifier = Modifier.weight(1f)
                                         )
                                     }
+                                    OutlinedTextField(
+                                        value = draft.cccdIssuePlace,
+                                        onValueChange = { onUpdate(draft.copy(cccdIssuePlace = it)) },
+                                        label = { Text("Nơi cấp CCCD") },
+                                        singleLine = true,
+                                        shape = RoundedCornerShape(12.dp),
+                                        modifier = Modifier.fillMaxWidth()
+                                    )
                                     OutlinedTextField(
                                         value = draft.address,
                                         onValueChange = { onUpdate(draft.copy(address = it)) },
@@ -852,7 +993,6 @@ private fun WorkerMultiEntryCard(
                         }
                     }
 
-                    // Row Delete Action ("Xóa dòng này")
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.Start
@@ -880,13 +1020,13 @@ private fun WorkerMultiEntryCard(
 }
 
 @Composable
-private fun FormSelectDropdownField(
+internal fun KeyedSelectDropdownField(
     label: String,
-    selectedValue: String,
+    selectedLabel: String,
     placeholder: String,
-    options: List<String>,
+    options: List<DropdownOptionItem>,
     enabled: Boolean = true,
-    onSelect: (String) -> Unit,
+    onSelect: (DropdownOptionItem) -> Unit,
     testTag: String
 ) {
     var expanded by remember { mutableStateOf(false) }
@@ -919,9 +1059,9 @@ private fun FormSelectDropdownField(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = selectedValue.ifBlank { placeholder },
+                        text = selectedLabel.ifBlank { placeholder },
                         style = MaterialTheme.typography.bodyMedium,
-                        color = if (selectedValue.isNotBlank()) MaterialTheme.colorScheme.onSurface
+                        color = if (selectedLabel.isNotBlank()) MaterialTheme.colorScheme.onSurface
                         else MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     Icon(
@@ -938,7 +1078,7 @@ private fun FormSelectDropdownField(
             ) {
                 options.forEach { option ->
                     DropdownMenuItem(
-                        text = { Text(option) },
+                        text = { Text(option.label) },
                         onClick = {
                             onSelect(option)
                             expanded = false
@@ -954,12 +1094,12 @@ private fun FormSelectDropdownField(
 private fun DocumentUploadSlotCard(
     title: String,
     subtitle: String,
-    emptyHint: String,
-    selectedFileName: String,
+    staged: StagedDocumentRef?,
+    uploading: Boolean,
     onPickClick: () -> Unit,
     onClearClick: () -> Unit
 ) {
-    val hasFile = selectedFileName.isNotBlank()
+    val hasStage = staged != null
 
     Surface(
         shape = RoundedCornerShape(12.dp),
@@ -968,7 +1108,7 @@ private fun DocumentUploadSlotCard(
             .fillMaxWidth()
             .border(
                 width = 1.dp,
-                color = if (hasFile) SemanticColors.SuccessLight.copy(alpha = 0.5f)
+                color = if (hasStage) SemanticColors.SuccessLight.copy(alpha = 0.5f)
                 else MaterialTheme.colorScheme.outline.copy(alpha = 0.35f),
                 shape = RoundedCornerShape(12.dp)
             )
@@ -989,37 +1129,50 @@ private fun DocumentUploadSlotCard(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
-            if (hasFile) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.CheckCircle,
-                        contentDescription = null,
-                        tint = SemanticColors.SuccessLight,
-                        modifier = Modifier.size(16.dp)
-                    )
+            when {
+                uploading -> {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                        Text("Đang tải tệp lên stage máy chủ…", style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+                hasStage -> {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.CheckCircle,
+                            contentDescription = null,
+                            tint = SemanticColors.SuccessLight,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Text(
+                            text = "Đã stage: ${staged!!.fileName} (${staged.stageId.take(8)}…)",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = SemanticColors.SuccessLight,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                }
+                else -> {
                     Text(
-                        text = "Đã chọn: $selectedFileName",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = SemanticColors.SuccessLight,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f)
+                        text = "Chưa tải tệp lên máy chủ.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-            } else {
-                Text(
-                    text = emptyHint,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
             }
 
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(
                     onClick = onPickClick,
+                    enabled = !uploading,
                     shape = RoundedCornerShape(10.dp),
                     contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
                     modifier = Modifier.height(36.dp)
@@ -1030,15 +1183,15 @@ private fun DocumentUploadSlotCard(
                         modifier = Modifier.size(16.dp)
                     )
                     Spacer(modifier = Modifier.width(6.dp))
-                    Text(if (hasFile) "Đổi tệp" else "Chọn tệp", style = MaterialTheme.typography.labelMedium)
+                    Text(if (hasStage) "Đổi tệp" else "Chọn & Tải lên", style = MaterialTheme.typography.labelMedium)
                 }
 
-                if (hasFile) {
+                if (hasStage && !uploading) {
                     TextButton(
                         onClick = onClearClick,
                         modifier = Modifier.height(36.dp)
                     ) {
-                        Text("Bỏ chọn", color = MaterialTheme.colorScheme.error)
+                        Text("Xóa stage", color = MaterialTheme.colorScheme.error)
                     }
                 }
             }
@@ -1047,89 +1200,137 @@ private fun DocumentUploadSlotCard(
 }
 
 // ============================================================================
-// 2. MÀN HÌNH "NHÂN SỰ" (`/direct-entry/workers` - Quản lý Người Lao Động)
+// 2. MÀN HÌNH "NHÂN SỰ" (`/direct-entry/workers` + `submissions`)
 // ============================================================================
-private data class WorkerRelationScopeTab(
+data class WorkerScopeTabSpec(
     val key: String,
     val label: String
 )
 
-private val WORKER_SCOPE_TABS = listOf(
-    WorkerRelationScopeTab("managed", "Dự án tôi quản lý"),
-    WorkerRelationScopeTab("recruited", "Người tôi tuyển"),
-    WorkerRelationScopeTab("team", "Team tôi quản lý"),
-    WorkerRelationScopeTab("uploader", "Tôi đã nhập"),
-    WorkerRelationScopeTab("all", "Toàn bộ NLĐ")
-)
+fun resolveVisibleWorkerTabs(actor: AppActor): List<WorkerScopeTabSpec> {
+    return buildList {
+        if (actor.hasCapability("entry_read")) {
+            add(WorkerScopeTabSpec("managed", "Dự án tôi quản lý"))
+            add(WorkerScopeTabSpec("recruited", "Người tôi tuyển"))
+            if (actor.hasScopeKind("team")) {
+                add(WorkerScopeTabSpec("team", "Team tôi quản lý"))
+            }
+        }
+        if (actor.hasCapability("submission_read")) {
+            add(WorkerScopeTabSpec("uploader", "Tôi đã nhập"))
+        }
+        if (
+            actor.hasCapability("entry_read") &&
+            actor.hasScopeKind("all") &&
+            (actor.hasCapability("entry_admin") || actor.hasCapability("change_review"))
+        ) {
+            add(WorkerScopeTabSpec("all", "Toàn bộ NLĐ"))
+        }
+    }
+}
 
-@OptIn(ExperimentalLayoutApi::class)
+private fun shareOrViewCachedFile(context: android.content.Context, file: File, mimeType: String) {
+    runCatching {
+        val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+        val intent = Intent(Intent.ACTION_SEND).apply {
+            type = mimeType
+            putExtra(Intent.EXTRA_STREAM, uri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        context.startActivity(Intent.createChooser(intent, file.name))
+    }
+}
+
 @Composable
 fun WorkersAndDirectEntryScreen(
-    workers: List<WorkerProfileEntity>,
+    actor: AppActor,
+    viewModel: MiniBiViewModel,
     onOpenNewEntryScreen: () -> Unit,
-    onProposeWorkerChange: (WorkerProfileEntity, String, String, String) -> Unit,
-    onDirectEditWorker: (
-        worker: WorkerProfileEntity,
-        fullName: String,
-        gender: String,
-        projectDisplay: String,
-        employmentStatus: String,
-        phoneFull: String,
-        cccdFull: String,
-        bankName: String,
-        bankAccountNumber: String,
-        bankAccountHolder: String,
-        note: String
-    ) -> Unit,
-    onShowMessage: (String) -> Unit,
-    onBackToDashboard: () -> Unit
+    onBackToDashboard: () -> Unit,
+    onSelectScopeTab: ((scopeKey: String) -> Unit)? = null,
+    onSearchAndFilterChange: ((search: String, projectId: String?, status: String?) -> Unit)? = null,
+    onExportWorkersExcel: ((scopeKey: String, projectId: String?, status: String?) -> Unit)? = null,
+    onOpenEntryDetail: ((entryId: String) -> Unit)? = null,
+    onCloseEntryDetail: (() -> Unit)? = null,
+    onOpenProposeChange: ((WorkerProfileEntity) -> Unit)? = null,
+    onOpenDirectEdit: ((WorkerProfileEntity) -> Unit)? = null
 ) {
     BackHandler(onBack = onBackToDashboard)
 
-    // Prioritize "Dự án tôi quản lý" (`managed`, index 0) by default per user instructions
-    var selectedScopeTabIndex by remember { mutableIntStateOf(0) }
-    val activeScopeKey = WORKER_SCOPE_TABS[selectedScopeTabIndex].key
+    val context = LocalContext.current
+    val serverUrl by viewModel.serverUrl.collectAsStateWithLifecycle()
+    val workers by viewModel.workerRows.collectAsStateWithLifecycle()
+    val workerLoading by viewModel.workerLoading.collectAsStateWithLifecycle()
+    val workerError by viewModel.workerError.collectAsStateWithLifecycle()
+    val ownSubmissions by viewModel.ownSubmissions.collectAsStateWithLifecycle()
+    val catalog by viewModel.catalog.collectAsStateWithLifecycle()
+    val selectedDetail by viewModel.selectedEntryDetail.collectAsStateWithLifecycle()
+    val activeTabKeyFromVm by viewModel.activeWorkerTabKey.collectAsStateWithLifecycle()
+    val workerHasMore by viewModel.workerHasMore.collectAsStateWithLifecycle()
+    val submissionsHasMore by viewModel.submissionsHasMore.collectAsStateWithLifecycle()
+    val workerSummary by viewModel.workerSummary.collectAsStateWithLifecycle()
+    val proposeTarget by viewModel.proposeChangeTarget.collectAsStateWithLifecycle()
+    val directEditTarget by viewModel.directEditTarget.collectAsStateWithLifecycle()
+    val mutationBusy by viewModel.workerMutationBusy.collectAsStateWithLifecycle()
+    val mutationError by viewModel.workerMutationError.collectAsStateWithLifecycle()
+
+    val visibleTabs = remember(actor) { resolveVisibleWorkerTabs(actor) }
+    val safeTabIdx = visibleTabs.indexOfFirst { it.key == activeTabKeyFromVm }.takeIf { it >= 0 } ?: 0
+    val activeScopeKey = visibleTabs.getOrNull(safeTabIdx)?.key ?: "managed"
 
     var searchQuery by remember { mutableStateOf("") }
-    var selectedProjectFilter by remember { mutableStateOf<String?>(null) }
-    var selectedStatusFilter by remember { mutableStateOf<String?>(null) }
+    var selectedProjectId by remember { mutableStateOf<String?>(null) }
+    var selectedRecruiterId by remember { mutableStateOf<String?>(null) }
+    var selectedStatusCode by remember { mutableStateOf<String?>(null) }
 
-    // Dialog states for the 3 Web actions: "Xem chi tiết", "Đề xuất thay đổi", "Sửa trực tiếp"
-    var detailWorker by remember { mutableStateOf<WorkerProfileEntity?>(null) }
-    var proposeWorker by remember { mutableStateOf<WorkerProfileEntity?>(null) }
-    var directEditTarget by remember { mutableStateOf<WorkerProfileEntity?>(null) }
-
-    val availableProjects = remember(workers) {
-        workers.map { it.projectDisplay }.distinct().sorted()
+    LaunchedEffect(actor.appUserId) {
+        viewModel.loadCatalogIfNeeded()
+        viewModel.ensureInitialWorkerTabLoaded(actor)
     }
 
-    val filteredWorkers = remember(workers, activeScopeKey, searchQuery, selectedProjectFilter, selectedStatusFilter) {
-        workers.filter { w ->
-            val matchScope = when (activeScopeKey) {
-                "managed" -> w.scopeRelation == "managed"
-                "recruited" -> w.scopeRelation == "recruited" || w.recruiterDisplay.contains("Hùng") || w.recruiterDisplay.contains("Hà")
-                "team" -> w.scopeRelation in listOf("managed", "team", "recruited")
-                "uploader" -> w.scopeRelation == "uploader" || w.lastDecisionSummary.contains("Vừa cấp mới")
-                else -> true
-            }
-            val matchQuery = searchQuery.isBlank() ||
-                w.fullName.contains(searchQuery, ignoreCase = true) ||
-                w.workerCode.contains(searchQuery, ignoreCase = true) ||
-                w.projectDisplay.contains(searchQuery, ignoreCase = true) ||
-                w.recruiterDisplay.contains(searchQuery, ignoreCase = true) ||
-                w.bankName.contains(searchQuery, ignoreCase = true)
-            val matchProject = selectedProjectFilter == null || w.projectDisplay == selectedProjectFilter
-            val matchStatus = selectedStatusFilter == null || w.employmentStatus == selectedStatusFilter
-            matchScope && matchQuery && matchProject && matchStatus
+    val effectiveSelectTab: (String) -> Unit = onSelectScopeTab ?: { scopeKey ->
+        viewModel.selectWorkerTab(
+            tabKey = scopeKey,
+            search = searchQuery,
+            projectId = selectedProjectId,
+            recruiterId = selectedRecruiterId,
+            employmentStatus = selectedStatusCode
+        )
+    }
+    val effectiveFilterChange: (String, String?, String?, String?) -> Unit = { q, proj, rec, status ->
+        if (onSearchAndFilterChange != null) {
+            onSearchAndFilterChange(q, proj, status)
+        } else {
+            viewModel.selectWorkerTab(
+                tabKey = activeScopeKey,
+                search = q,
+                projectId = proj,
+                recruiterId = rec,
+                employmentStatus = status
+            )
         }
     }
+    val effectiveExportExcel: (String, String?, String?) -> Unit = onExportWorkersExcel ?: { scopeKey, proj, status ->
+        viewModel.exportWorkersExcel(
+            scopeKey = scopeKey,
+            projectId = proj,
+            recruiterId = selectedRecruiterId,
+            employmentStatus = status
+        ) { file ->
+            shareOrViewCachedFile(
+                context = context,
+                file = file,
+                mimeType = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+        }
+    }
+    val effectiveOpenDetail: (String) -> Unit = onOpenEntryDetail ?: { viewModel.openEntryDetail(it) }
+    val effectiveCloseDetail: () -> Unit = onCloseEntryDetail ?: { viewModel.closeEntryDetail() }
+    val effectiveOpenPropose: (WorkerProfileEntity) -> Unit = onOpenProposeChange ?: { viewModel.openProposeChange(it) }
+    val effectiveOpenDirectEdit: (WorkerProfileEntity) -> Unit = onOpenDirectEdit ?: { viewModel.openDirectEdit(it) }
 
-    val distinctProjectCount = remember(filteredWorkers) {
-        filteredWorkers.map { it.projectDisplay }.distinct().size
-    }
-    val distinctRecruiterCount = remember(filteredWorkers) {
-        filteredWorkers.map { it.recruiterDisplay }.distinct().size
-    }
+    val canCreateEntry = actor.hasCapability("entry_create") && actor.hasCapability("submission_create")
+    val isSubmissionTab = activeScopeKey == "uploader"
 
     LazyColumn(
         modifier = Modifier
@@ -1138,7 +1339,6 @@ fun WorkersAndDirectEntryScreen(
         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        // 1. Header Card + Scope Tabs ("Dự án tôi quản lý" prioritized first)
         item {
             Card(
                 modifier = Modifier.fillMaxWidth(),
@@ -1152,568 +1352,403 @@ fun WorkersAndDirectEntryScreen(
                         .padding(16.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = "Người lao động",
-                                style = MaterialTheme.typography.headlineMedium,
-                                fontWeight = FontWeight.Bold
-                            )
-                            Text(
-                                text = "Quản lý danh sách NLĐ theo dự án, theo dõi trạng thái làm việc và tài khoản ngân hàng.",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
+                    Column {
+                        Text(
+                            text = "Người lao động",
+                            style = MaterialTheme.typography.headlineMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = if (!isSubmissionTab && workerSummary != null) {
+                                "Tổng: ${workerSummary!!.totalWorkers} NLĐ · ${workerSummary!!.projectCount} dự án · ${workerSummary!!.recruiterCount} người tuyển"
+                            } else {
+                                "Dữ liệu và quyền thao tác trên từng hồ sơ do máy chủ quyết định."
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     }
 
-                    // Action buttons: Cấp mới NLĐ + Xuất Excel
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Button(
-                            onClick = onOpenNewEntryScreen,
-                            shape = RoundedCornerShape(12.dp),
-                            modifier = Modifier
-                                .weight(1f)
-                                .testTag("go_to_new_entry_from_workers")
-                        ) {
-                            Icon(Icons.Default.PersonAdd, contentDescription = null, modifier = Modifier.size(18.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("Cấp mới NLĐ")
+                        if (canCreateEntry) {
+                            Button(
+                                onClick = onOpenNewEntryScreen,
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .testTag("go_to_new_entry_from_workers")
+                            ) {
+                                Icon(Icons.Default.PersonAdd, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Cấp mới NLĐ")
+                            }
                         }
-                        OutlinedButton(
-                            onClick = {
-                                onShowMessage("Đã xuất danh sách ${filteredWorkers.size} người lao động ra tệp Excel (.xlsx).")
-                            },
-                            shape = RoundedCornerShape(12.dp),
-                            modifier = Modifier.testTag("export_workers_excel_button")
-                        ) {
-                            Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(18.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("Xuất Excel")
+                        if (!isSubmissionTab && visibleTabs.isNotEmpty()) {
+                            OutlinedButton(
+                                onClick = {
+                                    effectiveExportExcel(activeScopeKey, selectedProjectId, selectedStatusCode)
+                                },
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier.testTag("export_workers_excel_button")
+                            ) {
+                                Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Xuất Excel")
+                            }
                         }
                     }
 
-                    // Relation Scope Tabs (`Dự án tôi quản lý` default selected)
-                    ScrollableTabRow(
-                        selectedTabIndex = selectedScopeTabIndex,
-                        edgePadding = 0.dp,
-                        containerColor = Color.Transparent,
-                        divider = {}
+                    if (visibleTabs.isNotEmpty()) {
+                        ScrollableTabRow(
+                            selectedTabIndex = safeTabIdx,
+                            edgePadding = 0.dp,
+                            containerColor = Color.Transparent,
+                            divider = {}
+                        ) {
+                            visibleTabs.forEachIndexed { idx, tab ->
+                                val selected = safeTabIdx == idx
+                                Tab(
+                                    selected = selected,
+                                    onClick = {
+                                        effectiveSelectTab(tab.key)
+                                    },
+                                    modifier = Modifier
+                                        .padding(end = 6.dp)
+                                        .clip(RoundedCornerShape(12.dp))
+                                        .background(
+                                            if (selected) MaterialTheme.colorScheme.primary
+                                            else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
+                                        )
+                                        .testTag("worker_scope_tab_${tab.key}"),
+                                    text = {
+                                        Text(
+                                            text = tab.label,
+                                            style = MaterialTheme.typography.labelLarge,
+                                            fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                                            color = if (selected) MaterialTheme.colorScheme.onPrimary
+                                            else MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if (!isSubmissionTab && visibleTabs.isNotEmpty()) {
+            item {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = searchQuery,
+                        onValueChange = { q ->
+                            searchQuery = q
+                            effectiveFilterChange(q, selectedProjectId, selectedRecruiterId, selectedStatusCode)
+                        },
+                        leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+                        label = { Text("Tìm theo họ tên, mã NLĐ…") },
+                        singleLine = true,
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("worker_search_input")
+                    )
+
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        WORKER_SCOPE_TABS.forEachIndexed { idx, tab ->
-                            val selected = selectedScopeTabIndex == idx
-                            Tab(
-                                selected = selected,
-                                onClick = { selectedScopeTabIndex = idx },
-                                modifier = Modifier
-                                    .padding(end = 6.dp)
-                                    .clip(RoundedCornerShape(12.dp))
-                                    .background(
-                                        if (selected) MaterialTheme.colorScheme.primary
-                                        else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
-                                    )
-                                    .testTag("worker_scope_tab_${tab.key}"),
-                                text = {
-                                    Text(
-                                        text = tab.label,
-                                        style = MaterialTheme.typography.labelLarge,
-                                        fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
-                                        color = if (selected) MaterialTheme.colorScheme.onPrimary
-                                        else MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
+                        FilterChip(
+                            selected = selectedStatusCode == null,
+                            onClick = {
+                                selectedStatusCode = null
+                                effectiveFilterChange(searchQuery, selectedProjectId, selectedRecruiterId, null)
+                            },
+                            label = { Text("Mọi trạng thái") }
+                        )
+                        WORK_STATUS_FILTER_OPTIONS.forEach { (code, label) ->
+                            FilterChip(
+                                selected = selectedStatusCode == code,
+                                onClick = {
+                                    val next = if (selectedStatusCode == code) null else code
+                                    selectedStatusCode = next
+                                    effectiveFilterChange(searchQuery, selectedProjectId, selectedRecruiterId, next)
+                                },
+                                label = { Text(label) }
                             )
                         }
-                    }
-                }
-            }
-        }
-
-        // 2. Summary Strip matching `/direct-entry/workers` (Tổng số NLĐ | Số dự án | Số người tuyển)
-        item {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                SummaryStatBox(
-                    modifier = Modifier.weight(1f),
-                    label = "TỔNG SỐ NLĐ",
-                    value = "${filteredWorkers.size}"
-                )
-                SummaryStatBox(
-                    modifier = Modifier.weight(1f),
-                    label = "SỐ DỰ ÁN",
-                    value = "$distinctProjectCount"
-                )
-                SummaryStatBox(
-                    modifier = Modifier.weight(1f),
-                    label = "NGƯỜI TUYỂN",
-                    value = "$distinctRecruiterCount"
-                )
-            }
-        }
-
-        // 3. Search & Filter Bar
-        item {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedTextField(
-                    value = searchQuery,
-                    onValueChange = { searchQuery = it },
-                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
-                    label = { Text("Tìm theo họ tên, mã NLĐ, dự án, người tuyển...") },
-                    singleLine = true,
-                    shape = RoundedCornerShape(14.dp),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .testTag("worker_search_input")
-                )
-
-                // Status Filter Chips + Project Filter Chips
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    FilterChip(
-                        selected = selectedStatusFilter == null,
-                        onClick = { selectedStatusFilter = null },
-                        label = { Text("Mọi trạng thái") }
-                    )
-                    WORK_STATUS_OPTIONS.forEach { st ->
-                        FilterChip(
-                            selected = selectedStatusFilter == st,
-                            onClick = {
-                                selectedStatusFilter = if (selectedStatusFilter == st) null else st
-                            },
-                            label = { Text(st) }
-                        )
-                    }
-                    availableProjects.forEach { proj ->
-                        FilterChip(
-                            selected = selectedProjectFilter == proj,
-                            onClick = {
-                                selectedProjectFilter = if (selectedProjectFilter == proj) null else proj
-                            },
-                            label = { Text(proj) }
-                        )
-                    }
-                    if (selectedStatusFilter != null || selectedProjectFilter != null || searchQuery.isNotBlank()) {
-                        TextButton(
-                            onClick = {
-                                selectedStatusFilter = null
-                                selectedProjectFilter = null
-                                searchQuery = ""
+                        catalog?.projects?.forEach { proj ->
+                            FilterChip(
+                                selected = selectedProjectId == proj.projectId,
+                                onClick = {
+                                    val next = if (selectedProjectId == proj.projectId) null else proj.projectId
+                                    selectedProjectId = next
+                                    effectiveFilterChange(searchQuery, next, selectedRecruiterId, selectedStatusCode)
+                                },
+                                label = { Text(proj.displayName) }
+                            )
+                        }
+                        catalog?.recruiters?.take(12)?.forEach { rec ->
+                            FilterChip(
+                                selected = selectedRecruiterId == rec.recruiterId,
+                                onClick = {
+                                    val next = if (selectedRecruiterId == rec.recruiterId) null else rec.recruiterId
+                                    selectedRecruiterId = next
+                                    effectiveFilterChange(searchQuery, selectedProjectId, next, selectedStatusCode)
+                                },
+                                label = { Text("NT: ${rec.displayName}") }
+                            )
+                        }
+                        if (selectedStatusCode != null || selectedProjectId != null || selectedRecruiterId != null || searchQuery.isNotBlank()) {
+                            TextButton(
+                                onClick = {
+                                    selectedStatusCode = null
+                                    selectedProjectId = null
+                                    selectedRecruiterId = null
+                                    searchQuery = ""
+                                    effectiveFilterChange("", null, null, null)
+                                }
+                            ) {
+                                Icon(Icons.Default.FilterAltOff, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Xóa lọc")
                             }
-                        ) {
-                            Icon(Icons.Default.FilterAltOff, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text("Xóa lọc")
                         }
                     }
                 }
             }
         }
 
-        // 4. Worker List matching `/direct-entry/workers` table rows & actions
-        if (filteredWorkers.isEmpty()) {
+        if (workerLoading) {
             item {
                 Card(
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(18.dp),
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
                 ) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(24.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    Row(
+                        modifier = Modifier.padding(20.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
-                        Text(
-                            text = "Không có người lao động phù hợp bộ lọc",
-                            style = MaterialTheme.typography.titleSmall
-                        )
-                        Text(
-                            text = "Thử chuyển tab phạm vi hoặc bấm 'Cấp mới NLĐ' để thêm hồ sơ người lao động mới.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+                        CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                        Text("Đang tải dữ liệu từ máy chủ…")
+                    }
+                }
+            }
+        }
+
+        workerError?.let { err ->
+            item {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(18.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+                ) {
+                    Text(
+                        text = err,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.padding(20.dp)
+                    )
+                }
+            }
+        }
+
+        if (isSubmissionTab) {
+            if (ownSubmissions.isEmpty() && !workerLoading) {
+                item {
+                    EmptyWorkersCard(
+                        title = "Chưa có lịch sử đợt nhập liệu",
+                        subtitle = "Các đợt hồ sơ do bạn tải lên máy chủ sẽ hiển thị tại đây."
+                    )
+                }
+            } else {
+                items(ownSubmissions, key = { it.submissionId }) { sub ->
+                    OwnSubmissionRowCard(item = sub)
+                }
+                if (submissionsHasMore) {
+                    item {
+                        OutlinedButton(
+                            onClick = { viewModel.loadMoreWorkersOrSubmissions() },
+                            enabled = !workerLoading,
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("load_more_submissions_button")
+                        ) {
+                            Text("Tải thêm đợt nhập liệu")
+                        }
                     }
                 }
             }
         } else {
-            items(filteredWorkers, key = { it.workerCode }) { worker ->
-                WorkerOperationsRowCard(
-                    worker = worker,
-                    onViewDetail = { detailWorker = worker },
-                    onProposeChange = { proposeWorker = worker },
-                    onDirectEdit = { directEditTarget = worker }
+            if (workers.isEmpty() && !workerLoading) {
+                item {
+                    EmptyWorkersCard(
+                        title = "Không có hồ sơ người lao động",
+                        subtitle = "Chưa có hồ sơ phù hợp trong phạm vi đang chọn từ máy chủ."
+                    )
+                }
+            } else {
+                items(workers, key = { it.cacheKey }) { worker ->
+                    WorkerOperationsRowCard(
+                        worker = worker,
+                        onViewDetail = { effectiveOpenDetail(worker.entryId) },
+                        onProposeChange = { effectiveOpenPropose(worker) },
+                        onDirectEdit = { effectiveOpenDirectEdit(worker) }
+                    )
+                }
+                if (workerHasMore) {
+                    item {
+                        OutlinedButton(
+                            onClick = { viewModel.loadMoreWorkersOrSubmissions() },
+                            enabled = !workerLoading,
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("load_more_workers_button")
+                        ) {
+                            Text("Tải thêm hồ sơ (keyset)")
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    selectedDetail?.let { detail ->
+        WorkerEntryDetailDialog(
+            detail = detail,
+            serverBaseUrl = serverUrl,
+            onDismiss = effectiveCloseDetail,
+            onDownloadDocument = { downloadPath ->
+                viewModel.downloadEntryDocument(
+                    downloadPath = downloadPath,
+                    fallbackFileName = "${detail.employeeCode}_attachment"
+                ) { file ->
+                    shareOrViewCachedFile(context, file, "*/*")
+                }
+            }
+        )
+    }
+
+    proposeTarget?.let { (worker, detailBaseline) ->
+        WorkerProposeChangeDialog(
+            worker = worker,
+            baselineDetail = detailBaseline,
+            catalog = catalog,
+            busy = mutationBusy,
+            error = mutationError,
+            onDismiss = { viewModel.closeProposeChange() },
+            onSubmit = { targetKind, expectedVer, proposal, reason ->
+                viewModel.submitProposeChange(
+                    entryId = worker.entryId,
+                    targetKind = targetKind,
+                    expectedVersion = expectedVer,
+                    proposal = proposal,
+                    reason = reason
                 )
             }
-        }
-    }
-
-    // =========================================================================
-    // DIALOG 1: XEM CHI TIẾT (`WorkerDetailDialog` trên Web)
-    // =========================================================================
-    detailWorker?.let { w ->
-        AlertDialog(
-            onDismissRequest = { detailWorker = null },
-            title = {
-                Column {
-                    Text(
-                        text = w.fullName,
-                        style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Text(
-                        text = "Mã NLĐ: ${w.workerCode} · Giới tính: ${w.gender}",
-                        style = MaterialTheme.typography.bodySmall,
-                        fontFamily = JetBrainsMono,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                }
-            },
-            text = {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .verticalScroll(rememberScrollState()),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    DetailItemRow("Dự án quản lý", w.projectDisplay)
-                    DetailItemRow("Nguồn & Loại hình", "${w.providerType} · ${w.laborType}")
-                    DetailItemRow("Người tuyển", "${w.recruiterDisplay} (${w.teamDisplay})")
-                    DetailItemRow("Ngày đầu đi làm", w.firstWorkDate)
-                    DetailItemRow("Trạng thái làm việc", w.employmentStatus)
-                    HorizontalDivider()
-                    DetailItemRow("Số điện thoại", w.phoneFull.ifBlank { w.phoneMasked })
-                    DetailItemRow("Số CCCD", w.cccdFull.ifBlank { w.cccdMasked })
-                    DetailItemRow("Ngày sinh / Ngày cấp", "${w.birthDate.ifBlank { "—" }} · Cấp: ${w.cccdIssueDate.ifBlank { "—" }}")
-                    DetailItemRow("Địa chỉ", w.address.ifBlank { "—" })
-                    HorizontalDivider()
-                    DetailItemRow("Ngân hàng", w.bankName)
-                    DetailItemRow("Số tài khoản (STK)", w.bankAccountNumber.ifBlank { w.bankAccountMasked })
-                    DetailItemRow("Chủ tài khoản", w.bankAccountHolder.ifBlank { w.fullName.uppercase() })
-                    HorizontalDivider()
-                    Text(
-                        text = "Hồ sơ đính kèm:",
-                        style = MaterialTheme.typography.labelLarge,
-                        fontWeight = FontWeight.Bold
-                    )
-                    DetailItemRow("Ảnh NLĐ", w.portraitUri.ifBlank { "Chưa tải lên" })
-                    DetailItemRow("CCCD mặt trước", w.cccdFrontUri.ifBlank { "Chưa tải lên" })
-                    DetailItemRow("CCCD mặt sau", w.cccdBackUri.ifBlank { "Chưa tải lên" })
-                    DetailItemRow("Hợp đồng lao động", w.contractUri.ifBlank { "Chưa tải lên" })
-                    if (w.note.isNotBlank()) {
-                        HorizontalDivider()
-                        DetailItemRow("Ghi chú", w.note)
-                    }
-                }
-            },
-            confirmButton = {
-                Button(onClick = { detailWorker = null }) {
-                    Text("Đóng")
-                }
-            }
         )
     }
 
-    // =========================================================================
-    // DIALOG 2: ĐỀ XUẤT THAY ĐỔI (`ProposeDrawer` trên Web: Hồ sơ / Ngân hàng / Trạng thái)
-    // =========================================================================
-    proposeWorker?.let { w ->
-        var selectedTargetTab by remember { mutableIntStateOf(0) }
-        val targetLabels = listOf(
-            "Thông tin người lao động",
-            "Thông tin tài khoản ngân hàng",
-            "Trạng thái làm việc"
-        )
-        var proposedValue by remember(selectedTargetTab, w) {
-            mutableStateOf(
-                when (selectedTargetTab) {
-                    0 -> "${w.fullName} - SĐT: ${w.phoneFull.ifBlank { w.phoneMasked }}"
-                    1 -> "${w.bankAccountNumber.ifBlank { w.bankAccountMasked }} - ${w.bankName} (${w.bankAccountHolder.ifBlank { w.fullName.uppercase() }})"
-                    else -> w.employmentStatus
-                }
-            )
-        }
-        var selectedNewStatus by remember { mutableStateOf(w.employmentStatus) }
-        var reason by remember { mutableStateOf("") }
-
-        AlertDialog(
-            onDismissRequest = { proposeWorker = null },
-            title = {
-                Column {
-                    Text(
-                        text = "Đề xuất thay đổi",
-                        style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Text(
-                        text = "${w.fullName} (${w.workerCode})",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            },
-            text = {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .verticalScroll(rememberScrollState()),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    Text(
-                        text = "Chọn nhóm thông tin cần gửi yêu cầu phê duyệt:",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    targetLabels.forEachIndexed { idx, label ->
-                        FilterChip(
-                            selected = selectedTargetTab == idx,
-                            onClick = { selectedTargetTab = idx },
-                            label = { Text(label) },
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                    }
-
-                    if (selectedTargetTab == 2) {
-                        FormSelectDropdownField(
-                            label = "Trạng thái làm việc đề xuất",
-                            selectedValue = selectedNewStatus,
-                            placeholder = "Chọn trạng thái",
-                            options = WORK_STATUS_OPTIONS,
-                            onSelect = {
-                                selectedNewStatus = it
-                                proposedValue = "Đổi trạng thái sang: $it"
-                            },
-                            testTag = "propose_status_dropdown"
-                        )
-                    } else {
-                        OutlinedTextField(
-                            value = proposedValue,
-                            onValueChange = { proposedValue = it },
-                            label = { Text("Nội dung đề xuất mới") },
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                    }
-
-                    OutlinedTextField(
-                        value = reason,
-                        onValueChange = { reason = it },
-                        label = { Text("Lý do đề xuất thay đổi *") },
-                        placeholder = { Text("Nhập lý do cụ thể để bộ phận duyệt kiểm tra...") },
-                        minLines = 2,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
-            },
-            dismissButton = {
-                OutlinedButton(onClick = { proposeWorker = null }) {
-                    Text("Hủy")
-                }
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        onProposeWorkerChange(
-                            w,
-                            targetLabels[selectedTargetTab],
-                            proposedValue,
-                            reason.ifBlank { "Cập nhật thông tin thực tế tại dự án" }
-                        )
-                        proposeWorker = null
-                    }
-                ) {
-                    Text("Gửi đề xuất")
-                }
-            }
-        )
-    }
-
-    // =========================================================================
-    // DIALOG 3: SỬA TRỰC TIẾP (`Sửa trực tiếp` trên Web)
-    // =========================================================================
-    directEditTarget?.let { w ->
-        var fullName by remember(w) { mutableStateOf(w.fullName) }
-        var gender by remember(w) { mutableStateOf(w.gender) }
-        var projectDisplay by remember(w) { mutableStateOf(w.projectDisplay) }
-        var employmentStatus by remember(w) { mutableStateOf(w.employmentStatus) }
-        var phoneFull by remember(w) { mutableStateOf(w.phoneFull.ifBlank { w.phoneMasked }) }
-        var cccdFull by remember(w) { mutableStateOf(w.cccdFull.ifBlank { w.cccdMasked }) }
-        var bankName by remember(w) { mutableStateOf(w.bankName) }
-        var bankAccountNumber by remember(w) { mutableStateOf(w.bankAccountNumber.ifBlank { w.bankAccountMasked }) }
-        var bankAccountHolder by remember(w) { mutableStateOf(w.bankAccountHolder.ifBlank { w.fullName.uppercase() }) }
-        var note by remember(w) { mutableStateOf(w.note) }
-
-        AlertDialog(
-            onDismissRequest = { directEditTarget = null },
-            title = {
-                Column {
-                    Text(
-                        text = "Sửa trực tiếp hồ sơ NLĐ",
-                        style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Text(
-                        text = "Mã NLĐ: ${w.workerCode}",
-                        style = MaterialTheme.typography.bodySmall,
-                        fontFamily = JetBrainsMono,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                }
-            },
-            text = {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .verticalScroll(rememberScrollState()),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    OutlinedTextField(
-                        value = fullName,
-                        onValueChange = { fullName = it },
-                        label = { Text("Họ và tên") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    FormSelectDropdownField(
-                        label = "Giới tính",
-                        selectedValue = gender,
-                        placeholder = "Chọn giới tính",
-                        options = GENDER_OPTIONS,
-                        onSelect = { gender = it },
-                        testTag = "direct_edit_gender"
-                    )
-                    FormSelectDropdownField(
-                        label = "Dự án",
-                        selectedValue = projectDisplay,
-                        placeholder = "Chọn dự án",
-                        options = PROJECT_OPTIONS,
-                        onSelect = { projectDisplay = it },
-                        testTag = "direct_edit_project"
-                    )
-                    FormSelectDropdownField(
-                        label = "Trạng thái làm việc",
-                        selectedValue = employmentStatus,
-                        placeholder = "Chọn trạng thái",
-                        options = WORK_STATUS_OPTIONS,
-                        onSelect = { employmentStatus = it },
-                        testTag = "direct_edit_status"
-                    )
-                    OutlinedTextField(
-                        value = phoneFull,
-                        onValueChange = { phoneFull = it },
-                        label = { Text("Số điện thoại") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    OutlinedTextField(
-                        value = cccdFull,
-                        onValueChange = { cccdFull = it },
-                        label = { Text("Số CCCD") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    OutlinedTextField(
-                        value = bankName,
-                        onValueChange = { bankName = it },
-                        label = { Text("Ngân hàng") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    OutlinedTextField(
-                        value = bankAccountNumber,
-                        onValueChange = { bankAccountNumber = it },
-                        label = { Text("Số tài khoản (STK)") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    OutlinedTextField(
-                        value = bankAccountHolder,
-                        onValueChange = { bankAccountHolder = it },
-                        label = { Text("Chủ tài khoản") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    OutlinedTextField(
-                        value = note,
-                        onValueChange = { note = it },
-                        label = { Text("Ghi chú") },
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
-            },
-            dismissButton = {
-                OutlinedButton(onClick = { directEditTarget = null }) {
-                    Text("Hủy")
-                }
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        onDirectEditWorker(
-                            w,
-                            fullName,
-                            gender,
-                            projectDisplay,
-                            employmentStatus,
-                            phoneFull,
-                            cccdFull,
-                            bankName,
-                            bankAccountNumber,
-                            bankAccountHolder,
-                            note
-                        )
-                        directEditTarget = null
-                    }
-                ) {
-                    Text("Lưu thay đổi")
-                }
+    directEditTarget?.let { (worker, detailBaseline) ->
+        WorkerPrivilegedEditDialog(
+            worker = worker,
+            baselineDetail = detailBaseline,
+            catalog = catalog,
+            busy = mutationBusy,
+            error = mutationError,
+            onDismiss = { viewModel.closeDirectEdit() },
+            onSubmit = { expectedEntryVersion, patch, reason ->
+                viewModel.submitDirectEdit(
+                    entryId = worker.entryId,
+                    expectedEntryVersion = expectedEntryVersion,
+                    patch = patch,
+                    reason = reason
+                )
             }
         )
     }
 }
 
 @Composable
-private fun SummaryStatBox(
-    modifier: Modifier = Modifier,
-    label: String,
-    value: String
-) {
+private fun EmptyWorkersCard(title: String, subtitle: String) {
     Card(
-        modifier = modifier,
-        shape = RoundedCornerShape(14.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 10.dp),
-            verticalArrangement = Arrangement.spacedBy(2.dp)
+                .padding(24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
+            Text(text = title, style = MaterialTheme.typography.titleSmall)
             Text(
-                text = label,
-                style = MaterialTheme.typography.labelSmall,
+                text = subtitle,
+                style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
+        }
+    }
+}
+
+@Composable
+private fun OwnSubmissionRowCard(item: OwnSubmissionItem) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.5.dp)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Đợt #${item.submissionId.take(8)}",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontFamily = JetBrainsMono,
+                    fontWeight = FontWeight.Bold
+                )
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = MaterialTheme.colorScheme.primaryContainer
+                ) {
+                    Text(
+                        text = item.state,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                    )
+                }
+            }
             Text(
-                text = value,
-                style = MaterialTheme.typography.titleLarge,
-                fontFamily = JetBrainsMono,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.primary
+                text = "Số lượng NLĐ: ${item.entryCount} · Phiên bản: v${item.version}",
+                style = MaterialTheme.typography.bodySmall
+            )
+            Text(
+                text = "Cập nhật: ${item.updatedAt.take(19).replace('T', ' ')}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
     }
@@ -1721,15 +1756,22 @@ private fun SummaryStatBox(
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun WorkerOperationsRowCard(
+internal fun WorkerOperationsRowCard(
     worker: WorkerProfileEntity,
     onViewDetail: () -> Unit,
     onProposeChange: () -> Unit,
     onDirectEdit: () -> Unit
 ) {
+    val actions = worker.allowedActions
+    val statusLabel = when (worker.employmentStatus) {
+        "ON" -> "Đang làm"
+        "UNCONFIRMED" -> "Đang chờ việc"
+        "OFF" -> "Đã nghỉ"
+        else -> worker.employmentStatus
+    }
     val statusColor = when (worker.employmentStatus) {
-        "Đang làm" -> SemanticColors.SuccessLight
-        "Đang chờ việc" -> SemanticColors.WarningLight
+        "ON" -> SemanticColors.SuccessLight
+        "UNCONFIRMED" -> SemanticColors.WarningLight
         else -> MaterialTheme.colorScheme.error
     }
 
@@ -1745,35 +1787,19 @@ private fun WorkerOperationsRowCard(
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            // Top Row: Name + Employee Code + Employment Status Pill
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.Top
             ) {
                 Column(modifier = Modifier.weight(1f)) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        Text(
-                            text = worker.fullName,
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold
-                        )
-                        Surface(
-                            shape = RoundedCornerShape(6.dp),
-                            color = MaterialTheme.colorScheme.surfaceVariant
-                        ) {
-                            Text(
-                                text = worker.gender,
-                                style = MaterialTheme.typography.labelSmall,
-                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                            )
-                        }
-                    }
                     Text(
-                        text = "Mã NLĐ: ${worker.workerCode}",
+                        text = worker.displayName,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = "Mã NLĐ: ${worker.employeeCode}",
                         style = MaterialTheme.typography.labelSmall,
                         fontFamily = JetBrainsMono,
                         color = MaterialTheme.colorScheme.primary
@@ -1785,7 +1811,7 @@ private fun WorkerOperationsRowCard(
                     color = statusColor.copy(alpha = 0.14f)
                 ) {
                     Text(
-                        text = worker.employmentStatus,
+                        text = statusLabel,
                         style = MaterialTheme.typography.labelSmall,
                         fontWeight = FontWeight.Bold,
                         color = statusColor,
@@ -1794,7 +1820,6 @@ private fun WorkerOperationsRowCard(
                 }
             }
 
-            // Info Grid matching Web columns: Dự án | Ngày đầu tiên | Người tuyển | Trạng thái & Ngân hàng
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -1828,20 +1853,20 @@ private fun WorkerOperationsRowCard(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     Text(
-                        text = "${worker.providerType} · ${worker.laborType}",
+                        text = worker.laborTypeDisplay,
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.primary
                     )
                 }
-                Text(
-                    text = "Ngân hàng: ${worker.bankAccountMasked} · ${worker.bankName}" +
-                        if (worker.bankAccountHolder.isNotBlank()) " · ${worker.bankAccountHolder}" else "",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+                if (worker.paymentSummary.isNotBlank()) {
+                    Text(
+                        text = "Thanh toán: ${worker.paymentSummary}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
 
-            // Request / Approval status row (`Yêu cầu` column on Web)
             if (worker.pendingRequestSummary.isNotBlank() || worker.lastDecisionSummary.isNotBlank()) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
@@ -1870,51 +1895,58 @@ private fun WorkerOperationsRowCard(
                 }
             }
 
-            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))
+            if (actions.view || actions.proposeChange || actions.directEdit) {
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))
 
-            // 3 Web Action Buttons (`RowActionCluster`: Xem chi tiết | Đề xuất thay đổi | Sửa trực tiếp)
-            FlowRow(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                OutlinedButton(
-                    onClick = onViewDetail,
-                    shape = RoundedCornerShape(10.dp),
-                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
-                    modifier = Modifier
-                        .height(36.dp)
-                        .testTag("worker_detail_${worker.workerCode}")
+                FlowRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Icon(Icons.Default.Visibility, contentDescription = null, modifier = Modifier.size(15.dp))
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text("Xem chi tiết", style = MaterialTheme.typography.labelMedium)
-                }
+                    if (actions.view) {
+                        OutlinedButton(
+                            onClick = onViewDetail,
+                            shape = RoundedCornerShape(10.dp),
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                            modifier = Modifier
+                                .height(36.dp)
+                                .testTag("worker_detail_${worker.entryId}")
+                        ) {
+                            Icon(Icons.Default.Visibility, contentDescription = null, modifier = Modifier.size(15.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Xem chi tiết", style = MaterialTheme.typography.labelMedium)
+                        }
+                    }
 
-                OutlinedButton(
-                    onClick = onProposeChange,
-                    shape = RoundedCornerShape(10.dp),
-                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
-                    modifier = Modifier
-                        .height(36.dp)
-                        .testTag("worker_propose_${worker.workerCode}")
-                ) {
-                    Icon(Icons.Default.RateReview, contentDescription = null, modifier = Modifier.size(15.dp))
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text("Đề xuất thay đổi", style = MaterialTheme.typography.labelMedium)
-                }
+                    if (actions.proposeChange) {
+                        OutlinedButton(
+                            onClick = onProposeChange,
+                            shape = RoundedCornerShape(10.dp),
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                            modifier = Modifier
+                                .height(36.dp)
+                                .testTag("worker_propose_${worker.entryId}")
+                        ) {
+                            Icon(Icons.Default.RateReview, contentDescription = null, modifier = Modifier.size(15.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Đề xuất thay đổi", style = MaterialTheme.typography.labelMedium)
+                        }
+                    }
 
-                Button(
-                    onClick = onDirectEdit,
-                    shape = RoundedCornerShape(10.dp),
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-                    modifier = Modifier
-                        .height(36.dp)
-                        .testTag("worker_direct_edit_${worker.workerCode}")
-                ) {
-                    Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(15.dp))
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text("Sửa trực tiếp", style = MaterialTheme.typography.labelMedium)
+                    if (actions.directEdit) {
+                        Button(
+                            onClick = onDirectEdit,
+                            shape = RoundedCornerShape(10.dp),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                            modifier = Modifier
+                                .height(36.dp)
+                                .testTag("worker_direct_edit_${worker.entryId}")
+                        ) {
+                            Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(15.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Sửa trực tiếp", style = MaterialTheme.typography.labelMedium)
+                        }
+                    }
                 }
             }
         }
@@ -1922,7 +1954,582 @@ private fun WorkerOperationsRowCard(
 }
 
 @Composable
-private fun DetailItemRow(label: String, value: String) {
+internal fun WorkerEntryDetailDialog(
+    detail: WorkerEntryDetail,
+    serverBaseUrl: String = "",
+    onDismiss: () -> Unit,
+    onDownloadDocument: ((downloadPath: String) -> Unit)? = null
+) {
+    val cleanBase = serverBaseUrl.trim().trimEnd('/')
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Column {
+                Text(
+                    text = detail.displayName,
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = "Mã NLĐ: ${detail.employeeCode} · Phiên bản v${detail.version}",
+                    style = MaterialTheme.typography.bodySmall,
+                    fontFamily = JetBrainsMono,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                if (!detail.portraitPreviewPath.isNullOrBlank() && cleanBase.isNotEmpty()) {
+                    AsyncImage(
+                        model = "$cleanBase${detail.portraitPreviewPath}",
+                        contentDescription = "Ảnh chân dung ${detail.displayName}",
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier
+                            .size(96.dp)
+                            .clip(RoundedCornerShape(14.dp))
+                            .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.35f), RoundedCornerShape(14.dp))
+                    )
+                }
+                DetailItemRow("Ngày đầu đi làm", detail.firstWorkDate)
+                DetailItemRow("Loại hình LĐ", detail.laborTypeDisplay)
+                DetailItemRow("Trạng thái", "${detail.employmentStatus} (${detail.employmentEffectiveDate})")
+                if (!detail.employmentLeaveReason.isNullOrBlank()) {
+                    DetailItemRow("Lý do nghỉ", detail.employmentLeaveReason)
+                }
+                HorizontalDivider()
+                DetailItemRow("Giới tính", detail.gender ?: "—")
+                DetailItemRow("Ngày sinh", detail.dateOfBirth ?: "—")
+                DetailItemRow("Số điện thoại", detail.phone ?: "—")
+                DetailItemRow("Số CCCD", detail.nationalId ?: "—")
+                DetailItemRow("Ngày cấp CCCD", detail.nationalIdIssuedAt ?: "—")
+                DetailItemRow("Nơi cấp CCCD", detail.nationalIdIssuedPlace ?: "—")
+                DetailItemRow("Địa chỉ", detail.address ?: "—")
+                HorizontalDivider()
+                DetailItemRow("Ngân hàng", detail.bankName ?: "—")
+                DetailItemRow("Số tài khoản", detail.accountNumber ?: "—")
+                DetailItemRow("Chủ tài khoản", detail.accountHolderName ?: "—")
+                if (!detail.generalNote.isNullOrBlank()) {
+                    HorizontalDivider()
+                    DetailItemRow("Ghi chú", detail.generalNote)
+                }
+                if (detail.documents.isNotEmpty()) {
+                    HorizontalDivider()
+                    Text(
+                        text = "Tài liệu đính kèm trên máy chủ:",
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.Bold
+                    )
+                    detail.documents.forEach { doc ->
+                        Column(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "${doc.documentType} (${doc.uploadStatus})",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                val dl = doc.downloadPath
+                                if (!dl.isNullOrBlank() && onDownloadDocument != null) {
+                                    TextButton(onClick = { onDownloadDocument(dl) }) {
+                                        Text("Tải về")
+                                    }
+                                }
+                            }
+                            if (!doc.previewPath.isNullOrBlank() && cleanBase.isNotEmpty()) {
+                                AsyncImage(
+                                    model = "$cleanBase${doc.previewPath}",
+                                    contentDescription = doc.documentType,
+                                    contentScale = ContentScale.Fit,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(140.dp)
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f))
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(onClick = onDismiss) {
+                Text("Đóng")
+            }
+        }
+    )
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+internal fun WorkerProposeChangeDialog(
+    worker: WorkerProfileEntity,
+    baselineDetail: WorkerEntryDetail?,
+    catalog: DirectEntryCatalog?,
+    busy: Boolean,
+    error: String?,
+    onDismiss: () -> Unit,
+    onSubmit: (targetKind: String, expectedVersion: Int, proposal: JSONObject, reason: String?) -> Unit
+) {
+    val expectedVersion = baselineDetail?.version ?: worker.entryVersion
+    var selectedTargetKind by remember { mutableStateOf("ENTRY_FIELD") }
+
+    // ENTRY_FIELD fields
+    var projectId by remember(baselineDetail, worker) {
+        mutableStateOf(baselineDetail?.projectId ?: worker.projectId)
+    }
+    var firstWorkDateUi by remember(baselineDetail, worker) {
+        mutableStateOf(DirectEntryContract.isoDateToUiDate(baselineDetail?.firstWorkDate ?: worker.firstWorkDate))
+    }
+    var laborTypeKey by remember(baselineDetail, worker) {
+        mutableStateOf(baselineDetail?.laborType ?: worker.laborType)
+    }
+    var displayName by remember(baselineDetail, worker) {
+        mutableStateOf(baselineDetail?.displayName ?: worker.displayName)
+    }
+    var phone by remember(baselineDetail) {
+        mutableStateOf(baselineDetail?.phone.orEmpty())
+    }
+
+    // PAYMENT fields
+    var bankId by remember(baselineDetail, catalog) {
+        mutableStateOf(baselineDetail?.bankId ?: catalog?.banks?.firstOrNull()?.bankId.orEmpty())
+    }
+    var accountNumber by remember(baselineDetail) {
+        mutableStateOf(baselineDetail?.accountNumber.orEmpty())
+    }
+    var accountHolderName by remember(baselineDetail, worker) {
+        mutableStateOf(baselineDetail?.accountHolderName ?: worker.displayName)
+    }
+
+    // WORK_STATUS fields
+    var targetStatus by remember(baselineDetail, worker) {
+        mutableStateOf(if ((baselineDetail?.employmentStatus ?: worker.employmentStatus) == "ON") "OFF" else "ON")
+    }
+    var effectiveDateUi by remember { mutableStateOf(DirectEntryContract.todayUiInHcm()) }
+    var leaveReason by remember { mutableStateOf("") }
+
+    var actionReason by remember { mutableStateOf("") }
+    var localError by remember { mutableStateOf<String?>(null) }
+
+    val targetOptions = listOf(
+        "ENTRY_FIELD" to "Thông tin hồ sơ",
+        "PAYMENT" to "Tài khoản NH",
+        "WORK_STATUS" to "Trạng thái LĐ"
+    )
+
+    AlertDialog(
+        onDismissRequest = { if (!busy) onDismiss() },
+        title = {
+            Column {
+                Text("Đề xuất thay đổi", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                Text(
+                    text = "${worker.displayName} (${worker.employeeCode}) · v$expectedVersion",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    targetOptions.forEach { (kind, label) ->
+                        FilterChip(
+                            selected = selectedTargetKind == kind,
+                            onClick = {
+                                selectedTargetKind = kind
+                                localError = null
+                            },
+                            label = { Text(label) },
+                            modifier = Modifier.testTag("propose_target_$kind")
+                        )
+                    }
+                }
+
+                when (selectedTargetKind) {
+                    "ENTRY_FIELD" -> {
+                        if (catalog != null && catalog.projects.isNotEmpty()) {
+                            KeyedSelectDropdownField(
+                                label = "Dự án",
+                                selectedLabel = catalog.projects.firstOrNull { it.projectId == projectId }?.displayName ?: projectId,
+                                placeholder = "Chọn dự án",
+                                options = catalog.projects.map { DropdownOptionItem(it.projectId, it.displayName) },
+                                onSelect = { projectId = it.id },
+                                testTag = "propose_project_dropdown"
+                            )
+                        }
+                        if (catalog != null && catalog.laborTypes.isNotEmpty()) {
+                            KeyedSelectDropdownField(
+                                label = "Loại hình lao động",
+                                selectedLabel = catalog.laborTypes.firstOrNull { it.laborTypeKey == laborTypeKey }?.displayName ?: laborTypeKey,
+                                placeholder = "Chọn loại hình LĐ",
+                                options = catalog.laborTypes.map { DropdownOptionItem(it.laborTypeKey, it.displayName) },
+                                onSelect = { laborTypeKey = it.id },
+                                testTag = "propose_labor_type_dropdown"
+                            )
+                        }
+                        OutlinedTextField(
+                            value = firstWorkDateUi,
+                            onValueChange = { firstWorkDateUi = it },
+                            label = { Text("Ngày bắt đầu (DD/MM/YYYY)") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        OutlinedTextField(
+                            value = displayName,
+                            onValueChange = { displayName = it },
+                            label = { Text("Họ và tên") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        if (baselineDetail != null) {
+                            OutlinedTextField(
+                                value = phone,
+                                onValueChange = { phone = it },
+                                label = { Text("Số điện thoại") },
+                                singleLine = true,
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        }
+                    }
+
+                    "PAYMENT" -> {
+                        if (catalog != null && catalog.banks.isNotEmpty()) {
+                            KeyedSelectDropdownField(
+                                label = "Ngân hàng *",
+                                selectedLabel = catalog.banks.firstOrNull { it.bankId == bankId }?.displayName.orEmpty(),
+                                placeholder = "Chọn ngân hàng",
+                                options = catalog.banks.map { DropdownOptionItem(it.bankId, it.displayName) },
+                                onSelect = { bankId = it.id },
+                                testTag = "propose_bank_dropdown"
+                            )
+                        } else {
+                            OutlinedTextField(
+                                value = bankId,
+                                onValueChange = { bankId = it },
+                                label = { Text("Mã ngân hàng *") },
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        }
+                        OutlinedTextField(
+                            value = accountNumber,
+                            onValueChange = { accountNumber = it },
+                            label = { Text("Số tài khoản (chỉ chữ số) *") },
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        OutlinedTextField(
+                            value = accountHolderName,
+                            onValueChange = { accountHolderName = it },
+                            label = { Text("Tên chủ tài khoản *") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+
+                    "WORK_STATUS" -> {
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            WORK_STATUS_FILTER_OPTIONS.forEach { (code, label) ->
+                                FilterChip(
+                                    selected = targetStatus == code,
+                                    onClick = { targetStatus = code },
+                                    label = { Text(label) }
+                                )
+                            }
+                        }
+                        OutlinedTextField(
+                            value = effectiveDateUi,
+                            onValueChange = { effectiveDateUi = it },
+                            label = { Text("Ngày hiệu lực (DD/MM/YYYY) *") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        if (targetStatus == "OFF") {
+                            OutlinedTextField(
+                                value = leaveReason,
+                                onValueChange = { leaveReason = it },
+                                label = { Text("Lý do nghỉ *") },
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        }
+                    }
+                }
+
+                OutlinedTextField(
+                    value = actionReason,
+                    onValueChange = { actionReason = it },
+                    label = { Text("Lý do đề xuất") },
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                (localError ?: error)?.let { errMsg ->
+                    Text(
+                        text = errMsg,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss, enabled = !busy) {
+                Text("Hủy")
+            }
+        },
+        confirmButton = {
+            Button(
+                enabled = !busy,
+                onClick = {
+                    localError = null
+                    try {
+                        val proposal = when (selectedTargetKind) {
+                            "ENTRY_FIELD" -> {
+                                JSONObject().apply {
+                                    val baseProj = baselineDetail?.projectId ?: worker.projectId
+                                    if (projectId.isNotBlank() && projectId != baseProj) {
+                                        put("project_id", projectId.trim())
+                                    }
+                                    val isoFirst = DirectEntryContract.uiDateToIsoDate(firstWorkDateUi)
+                                    val baseFirst = baselineDetail?.firstWorkDate ?: worker.firstWorkDate
+                                    if (isoFirst != baseFirst) {
+                                        put("first_work_date", isoFirst)
+                                    }
+                                    val baseLabor = baselineDetail?.laborType ?: worker.laborType
+                                    if (laborTypeKey.isNotBlank() && laborTypeKey != baseLabor) {
+                                        put("labor_type", laborTypeKey.trim())
+                                    }
+                                    if (baselineDetail != null &&
+                                        (displayName.trim() != baselineDetail.displayName || phone.trim() != baselineDetail.phone.orEmpty())
+                                    ) {
+                                        put(
+                                            "worker_details",
+                                            JSONObject().apply {
+                                                put("display_name", displayName.trim())
+                                                put("date_of_birth", DirectEntryContract.optionalTextField(baselineDetail.dateOfBirth.orEmpty()))
+                                                put("national_id", DirectEntryContract.optionalTextField(baselineDetail.nationalId.orEmpty()))
+                                                put("address", DirectEntryContract.optionalTextField(baselineDetail.address.orEmpty()))
+                                                put("phone", DirectEntryContract.optionalTextField(phone))
+                                            }
+                                        )
+                                    }
+                                }
+                            }
+                            "PAYMENT" -> DirectEntryContract.buildPaymentChangeProposal(
+                                state = "provided",
+                                accountNumber = accountNumber,
+                                bankId = bankId,
+                                accountHolderName = accountHolderName
+                            )
+                            "WORK_STATUS" -> DirectEntryContract.buildWorkStatusChangeProposal(
+                                status = targetStatus,
+                                effectiveDateUiOrIso = effectiveDateUi,
+                                leaveReason = leaveReason
+                            )
+                            else -> JSONObject()
+                        }
+                        if (proposal.length() == 0) {
+                            localError = "Chưa có trường nào thay đổi so với dữ liệu gốc."
+                            return@Button
+                        }
+                        onSubmit(selectedTargetKind, expectedVersion, proposal, actionReason)
+                    } catch (e: Exception) {
+                        localError = e.message ?: "Dữ liệu đề xuất chưa hợp lệ."
+                    }
+                }
+            ) {
+                Text(if (busy) "Đang gửi…" else "Gửi đề xuất")
+            }
+        }
+    )
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+internal fun WorkerPrivilegedEditDialog(
+    worker: WorkerProfileEntity,
+    baselineDetail: WorkerEntryDetail,
+    catalog: DirectEntryCatalog?,
+    busy: Boolean,
+    error: String?,
+    onDismiss: () -> Unit,
+    onSubmit: (expectedEntryVersion: Int, patch: JSONObject, reason: String?) -> Unit
+) {
+    var projectId by remember(baselineDetail) { mutableStateOf(baselineDetail.projectId) }
+    var firstWorkDateUi by remember(baselineDetail) {
+        mutableStateOf(DirectEntryContract.isoDateToUiDate(baselineDetail.firstWorkDate))
+    }
+    var laborTypeKey by remember(baselineDetail) { mutableStateOf(baselineDetail.laborType) }
+    var statusCode by remember(baselineDetail) { mutableStateOf(baselineDetail.employmentStatus) }
+    var statusEffectiveDateUi by remember(baselineDetail) {
+        mutableStateOf(DirectEntryContract.isoDateToUiDate(baselineDetail.employmentEffectiveDate))
+    }
+    var leaveReason by remember(baselineDetail) { mutableStateOf(baselineDetail.employmentLeaveReason.orEmpty()) }
+    var actionReason by remember { mutableStateOf("") }
+    var localError by remember { mutableStateOf<String?>(null) }
+
+    AlertDialog(
+        onDismissRequest = { if (!busy) onDismiss() },
+        title = {
+            Column {
+                Text("Sửa trực tiếp hồ sơ", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                Text(
+                    text = "${baselineDetail.displayName} (${baselineDetail.employeeCode}) · v${baselineDetail.version}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                if (catalog != null && catalog.projects.isNotEmpty()) {
+                    KeyedSelectDropdownField(
+                        label = "Dự án",
+                        selectedLabel = catalog.projects.firstOrNull { it.projectId == projectId }?.displayName ?: projectId,
+                        placeholder = "Chọn dự án",
+                        options = catalog.projects.map { DropdownOptionItem(it.projectId, it.displayName) },
+                        onSelect = { projectId = it.id },
+                        testTag = "edit_project_dropdown"
+                    )
+                }
+                if (catalog != null && catalog.laborTypes.isNotEmpty()) {
+                    KeyedSelectDropdownField(
+                        label = "Loại hình lao động",
+                        selectedLabel = catalog.laborTypes.firstOrNull { it.laborTypeKey == laborTypeKey }?.displayName ?: laborTypeKey,
+                        placeholder = "Chọn loại hình LĐ",
+                        options = catalog.laborTypes.map { DropdownOptionItem(it.laborTypeKey, it.displayName) },
+                        onSelect = { laborTypeKey = it.id },
+                        testTag = "edit_labor_type_dropdown"
+                    )
+                }
+                OutlinedTextField(
+                    value = firstWorkDateUi,
+                    onValueChange = { firstWorkDateUi = it },
+                    label = { Text("Ngày bắt đầu (DD/MM/YYYY)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Text("Trạng thái làm việc", style = MaterialTheme.typography.labelLarge)
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    WORK_STATUS_FILTER_OPTIONS.forEach { (code, label) ->
+                        FilterChip(
+                            selected = statusCode == code,
+                            onClick = { statusCode = code },
+                            label = { Text(label) }
+                        )
+                    }
+                }
+                OutlinedTextField(
+                    value = statusEffectiveDateUi,
+                    onValueChange = { statusEffectiveDateUi = it },
+                    label = { Text("Ngày hiệu lực trạng thái (DD/MM/YYYY)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                if (statusCode == "OFF") {
+                    OutlinedTextField(
+                        value = leaveReason,
+                        onValueChange = { leaveReason = it },
+                        label = { Text("Lý do nghỉ *") },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+                OutlinedTextField(
+                    value = actionReason,
+                    onValueChange = { actionReason = it },
+                    label = { Text("Lý do chỉnh sửa") },
+                    modifier = Modifier.fillMaxWidth()
+                )
+                (localError ?: error)?.let { errMsg ->
+                    Text(
+                        text = errMsg,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss, enabled = !busy) {
+                Text("Hủy")
+            }
+        },
+        confirmButton = {
+            Button(
+                enabled = !busy,
+                onClick = {
+                    localError = null
+                    try {
+                        val patch = JSONObject()
+                        if (projectId.isNotBlank() && projectId != baselineDetail.projectId) {
+                            patch.put("project_id", projectId.trim())
+                        }
+                        val isoFirst = DirectEntryContract.uiDateToIsoDate(firstWorkDateUi)
+                        if (isoFirst != baselineDetail.firstWorkDate) {
+                            patch.put("first_work_date", isoFirst)
+                        }
+                        if (laborTypeKey.isNotBlank() && laborTypeKey != baselineDetail.laborType) {
+                            patch.put("labor_type", laborTypeKey.trim())
+                        }
+                        val isoEff = DirectEntryContract.uiDateToIsoDate(statusEffectiveDateUi)
+                        if (statusCode != baselineDetail.employmentStatus ||
+                            isoEff != baselineDetail.employmentEffectiveDate ||
+                            (statusCode == "OFF" && leaveReason.trim() != baselineDetail.employmentLeaveReason.orEmpty())
+                        ) {
+                            patch.put(
+                                "employment_status",
+                                DirectEntryContract.buildPrivilegedEditEmploymentStatus(
+                                    status = statusCode,
+                                    effectiveDateUiOrIso = isoEff,
+                                    leaveReason = leaveReason
+                                )
+                            )
+                        }
+                        if (patch.length() == 0) {
+                            localError = "Chưa có trường nào thay đổi so với dữ liệu gốc."
+                            return@Button
+                        }
+                        onSubmit(baselineDetail.version, patch, actionReason)
+                    } catch (e: Exception) {
+                        localError = e.message ?: "Dữ liệu chỉnh sửa chưa hợp lệ."
+                    }
+                }
+            ) {
+                Text(if (busy) "Đang lưu…" else "Lưu thay đổi")
+            }
+        }
+    )
+}
+
+@Composable
+internal fun DetailItemRow(label: String, value: String) {
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceBetween,
