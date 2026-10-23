@@ -8,8 +8,10 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -59,10 +61,12 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.AppActor
 import com.example.data.BiBucketItem
+import com.example.data.DashboardDatePreset
 import com.example.data.DirectEntryContract
 import com.example.data.DuplicateCccdGroupItem
 import com.example.data.GeneralOverviewSnapshot
 import com.example.data.TeamReportSnapshot
+import com.example.data.WorkReportsContract
 import com.example.data.WorkforceDeepMetrics
 import com.example.ui.MiniBiViewModel
 import com.example.ui.theme.JetBrainsMono
@@ -99,6 +103,7 @@ fun DashboardScreen(
     val duplicatePage by viewModel.duplicatePage.collectAsStateWithLifecycle()
     val duplicateHasMore by viewModel.duplicateHasMore.collectAsStateWithLifecycle()
     val duplicateManagedOnly by viewModel.duplicateManagedOnly.collectAsStateWithLifecycle()
+    val selectedDatePreset by viewModel.dashboardDatePreset.collectAsStateWithLifecycle()
 
     LaunchedEffect(actor.appUserId) {
         if ((generalOverview == null && !generalOverviewLoading && generalOverviewError == null) ||
@@ -112,7 +117,7 @@ fun DashboardScreen(
     val tabs = buildList {
         add("Báo cáo tổng quát")
         if (actor.hasScopeKind("all")) {
-            add("Báo cáo chuyên sâu")
+            add("BC chuyên sâu")
         }
         if (actor.hasScopeKind("all") || actor.hasScopeKind("team")) {
             add("Báo cáo theo nhóm")
@@ -133,24 +138,25 @@ fun DashboardScreen(
             }
             .testTag("dashboard_lazy_column"),
         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp)
+        verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         item {
-            Row(
+            Column(
                 modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.Top,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 Column(
                     modifier = Modifier
-                        .weight(1f)
+                        .fillMaxWidth()
                         .testTag("dashboard_tab_grid"),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     val indexedTabs = tabs.mapIndexed { index, label -> index to label }
                     indexedTabs.chunked(2).forEach { rowItems ->
                         Row(
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(IntrinsicSize.Min),
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
@@ -164,6 +170,7 @@ fun DashboardScreen(
                                     },
                                     modifier = Modifier
                                         .weight(1f)
+                                        .fillMaxHeight()
                                         .heightIn(min = 40.dp)
                                         .testTag("dashboard_tab_$index"),
                                     shape = RoundedCornerShape(12.dp),
@@ -181,7 +188,8 @@ fun DashboardScreen(
                                     Box(
                                         modifier = Modifier
                                             .fillMaxWidth()
-                                            .padding(horizontal = 10.dp, vertical = 8.dp),
+                                            .fillMaxHeight()
+                                            .padding(horizontal = 8.dp, vertical = 8.dp),
                                         contentAlignment = Alignment.Center
                                     ) {
                                         Text(
@@ -204,29 +212,17 @@ fun DashboardScreen(
                     }
                 }
 
-                Surface(
-                    shape = RoundedCornerShape(12.dp),
-                    color = MaterialTheme.colorScheme.surface,
-                    shadowElevation = 1.dp,
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.22f))
-                ) {
-                    IconButton(
-                        onClick = {
-                            focusManager.clearFocus()
-                            viewModel.refreshDashboardData(actor)
-                        },
-                        modifier = Modifier
-                            .size(40.dp)
-                            .testTag("dashboard_refresh_button")
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Refresh,
-                            contentDescription = "Làm mới báo cáo",
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(20.dp)
-                        )
+                DashboardTimeFilterAndRefreshBar(
+                    selectedPreset = selectedDatePreset,
+                    onSelectPreset = { preset ->
+                        focusManager.clearFocus()
+                        viewModel.selectDashboardDatePreset(preset, actor)
+                    },
+                    onRefreshClick = {
+                        focusManager.clearFocus()
+                        viewModel.refreshDashboardData(actor)
                     }
-                }
+                )
             }
         }
 
@@ -245,14 +241,14 @@ fun DashboardScreen(
                         generalOverview == null ->
                             DashboardStatusCard(
                                 title = "Chưa có dữ liệu báo cáo tổng quát",
-                                subtitle = "Bấm nút Làm mới ở góc trên bên phải để tải số liệu từ máy chủ."
+                                subtitle = "Bấm nút Làm mới ở thanh bộ lọc phía trên để tải số liệu từ máy chủ."
                             )
                         else -> GeneralOverviewSection(snapshot = generalOverview!!)
                     }
                 }
             }
 
-            currentTabLabel.startsWith("Báo cáo chuyên sâu") -> {
+            currentTabLabel.startsWith("BC chuyên sâu") -> {
                 item {
                     when {
                         workforceLoading && workforceDeep == null ->
@@ -298,7 +294,7 @@ fun DashboardScreen(
                             subtitle = if (teamScopeOptions.size > 1) {
                                 "Chọn một nhóm trong danh sách phía trên để xem số liệu tuyển dụng chi tiết."
                             } else {
-                                "Bấm nút Làm mới ở góc trên bên phải để tải báo cáo nhóm bạn quản lý."
+                                "Bấm nút Làm mới ở thanh bộ lọc phía trên để tải báo cáo nhóm bạn quản lý."
                             }
                         )
                         else -> TeamReportDetailCard(
@@ -364,6 +360,161 @@ fun DashboardScreen(
                             )
                         }
                     }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DashboardTimeFilterAndRefreshBar(
+    selectedPreset: DashboardDatePreset,
+    onSelectPreset: (DashboardDatePreset) -> Unit,
+    onRefreshClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("dashboard_filter_bar"),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        Row(
+            modifier = Modifier.weight(1f),
+            horizontalArrangement = Arrangement.spacedBy(5.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            DashboardDatePreset.entries.forEach { preset ->
+                val isSelected = selectedPreset == preset
+                val chipWeight = when (preset) {
+                    DashboardDatePreset.ALL_TIME -> 0.82f
+                    DashboardDatePreset.THIS_WEEK -> 0.98f
+                    DashboardDatePreset.THIS_MONTH -> 1.05f
+                    DashboardDatePreset.LAST_MONTH -> 1.15f
+                }
+                Surface(
+                    selected = isSelected,
+                    onClick = { onSelectPreset(preset) },
+                    modifier = Modifier
+                        .weight(chipWeight)
+                        .height(38.dp)
+                        .testTag("dashboard_date_preset_${preset.key}"),
+                    shape = RoundedCornerShape(10.dp),
+                    color = if (isSelected) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        MaterialTheme.colorScheme.surface
+                    },
+                    border = if (isSelected) {
+                        null
+                    } else {
+                        BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.22f))
+                    }
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(horizontal = 4.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = preset.label,
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                            color = if (isSelected) {
+                                MaterialTheme.colorScheme.onPrimary
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                            textAlign = TextAlign.Center,
+                            maxLines = 1,
+                            softWrap = false,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+            }
+        }
+
+        Surface(
+            shape = RoundedCornerShape(10.dp),
+            color = MaterialTheme.colorScheme.surface,
+            shadowElevation = 1.dp,
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.24f))
+        ) {
+            IconButton(
+                onClick = onRefreshClick,
+                modifier = Modifier
+                    .size(38.dp)
+                    .testTag("dashboard_refresh_button")
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Refresh,
+                    contentDescription = "Làm mới báo cáo",
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(19.dp)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun PeriodBalanceSummaryBanner(
+    fromDate: String?,
+    toDate: String?,
+    newEpisodes: Int?,
+    onInflow: Int?,
+    offInflow: Int?,
+    netOnChange: Int?
+) {
+    if (fromDate.isNullOrBlank() || toDate.isNullOrBlank() || newEpisodes == null) return
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("period_balance_summary"),
+        shape = RoundedCornerShape(14.dp),
+        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.2f))
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Text(
+                text = "Biến động trong kỳ (${DirectEntryContract.isoDateToUiDate(fromDate)} – ${DirectEntryContract.isoDateToUiDate(toDate)})",
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.primary
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                MiniStatColumn(
+                    modifier = Modifier.weight(1f),
+                    label = "Tuyển mới",
+                    value = "$newEpisodes NLĐ"
+                )
+                MiniStatColumn(
+                    modifier = Modifier.weight(1f),
+                    label = "Vào làm",
+                    value = "${onInflow ?: 0} NLĐ"
+                )
+                MiniStatColumn(
+                    modifier = Modifier.weight(1f),
+                    label = "Nghỉ việc",
+                    value = "${offInflow ?: 0} NLĐ"
+                )
+                if (netOnChange != null) {
+                    MiniStatColumn(
+                        modifier = Modifier.weight(1f),
+                        label = "Tăng/giảm",
+                        value = if (netOnChange > 0) "+$netOnChange" else "$netOnChange"
+                    )
                 }
             }
         }
@@ -550,6 +701,15 @@ internal fun GeneralOverviewSection(snapshot: GeneralOverviewSnapshot) {
                         accentColor = SemanticColors.WarningLight
                     )
                 }
+
+                PeriodBalanceSummaryBanner(
+                    fromDate = snapshot.periodFromDate,
+                    toDate = snapshot.periodToDate,
+                    newEpisodes = snapshot.periodNewEpisodes,
+                    onInflow = snapshot.periodOnInflow,
+                    offInflow = snapshot.periodOffInflow,
+                    netOnChange = snapshot.periodNetOnChange
+                )
 
                 if (snapshot.activeHiringDays > 0) {
                     Surface(
@@ -943,6 +1103,14 @@ internal fun WorkforceDeepReportSection(
                         accentColor = SemanticColors.WarningLight
                     )
                 }
+                PeriodBalanceSummaryBanner(
+                    fromDate = metrics.periodFromDate,
+                    toDate = metrics.periodToDate,
+                    newEpisodes = metrics.periodNewEpisodes,
+                    onInflow = metrics.periodOnInflow,
+                    offInflow = metrics.periodOffInflow,
+                    netOnChange = metrics.periodNetOnChange
+                )
             }
         }
 
@@ -1075,10 +1243,14 @@ internal fun TeamBucketPickerCard(
                 verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
                 teamBuckets.forEach { bucket ->
-                    val selected = bucket.key == selectedBucketKey || bucket.display == selectedBucketDisplay
+                    val selected = bucket.key == selectedBucketKey ||
+                        bucket.display == selectedBucketDisplay ||
+                        runCatching { WorkReportsContract.encodeTeamBucketKey(bucket.key) == selectedBucketKey }
+                            .getOrDefault(false)
                     FilterChip(
                         selected = selected,
                         onClick = { onSelectBucket(bucket.key) },
+                        modifier = Modifier.testTag("team_bucket_chip_${bucket.key}"),
                         label = {
                             Text(
                                 text = if (bucket.count > 0) {

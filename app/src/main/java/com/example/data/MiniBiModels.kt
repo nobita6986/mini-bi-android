@@ -36,11 +36,21 @@ data class AppActor(
 }
 
 // 2. Reporting & Duplicate CCCD Projection Models (Backend authority only)
+enum class DashboardDatePreset(val key: String, val label: String) {
+    ALL_TIME("all-time", "Tất cả"),
+    THIS_WEEK("this-week", "Tuần này"),
+    THIS_MONTH("this-month", "Tháng này"),
+    LAST_MONTH("last-month", "Tháng trước")
+}
+
 data class BiBucketItem(
     val key: String,
     val display: String,
     val count: Int,
-    val sharePct: Float
+    val sharePct: Float,
+    val onCount: Int? = null,
+    val unconfirmedCount: Int? = null,
+    val offCount: Int? = null
 )
 
 data class WorkforceDeepMetrics(
@@ -63,7 +73,14 @@ data class WorkforceDeepMetrics(
     val byProvider: List<BiBucketItem>,
     val leaveReasons: List<BiBucketItem>,
     val projectHasMore: Boolean = false,
-    val projectNextCursor: String? = null
+    val projectNextCursor: String? = null,
+    val totalProjectCount: Int = 0,
+    val periodFromDate: String? = null,
+    val periodToDate: String? = null,
+    val periodNewEpisodes: Int? = null,
+    val periodOnInflow: Int? = null,
+    val periodOffInflow: Int? = null,
+    val periodNetOnChange: Int? = null
 )
 
 data class GeneralOverviewSnapshot(
@@ -91,7 +108,13 @@ data class GeneralOverviewSnapshot(
     val byProject: List<BiBucketItem> = emptyList(),
     val bySecondaryGroup: List<BiBucketItem> = emptyList(),
     val secondaryGroupTitle: String = "",
-    val byProvider: List<BiBucketItem> = emptyList()
+    val byProvider: List<BiBucketItem> = emptyList(),
+    val periodFromDate: String? = null,
+    val periodToDate: String? = null,
+    val periodNewEpisodes: Int? = null,
+    val periodOnInflow: Int? = null,
+    val periodOffInflow: Int? = null,
+    val periodNetOnChange: Int? = null
 )
 
 data class TeamDrillDownItem(

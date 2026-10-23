@@ -17,6 +17,7 @@ import com.example.data.BackendApiException
 import com.example.data.BackendFailureKind
 import com.example.data.BiBucketItem
 import com.example.data.CapturedAttendanceTime
+import com.example.data.DashboardDatePreset
 import com.example.data.DirectEntryCatalog
 import com.example.data.DirectEntryContract
 import com.example.data.DuplicateCccdGroupItem
@@ -64,6 +65,7 @@ import java.io.File
 import java.util.Locale
 import java.util.UUID
 import kotlin.coroutines.resume
+import kotlin.math.roundToInt
 
 enum class MainDestination(val route: String, val label: String) {
     DASHBOARD("dashboard", "Tổng quan"),
@@ -156,6 +158,10 @@ class MiniBiViewModel internal constructor(
     private val _teamScopeOptions = MutableStateFlow<List<BiBucketItem>>(emptyList())
     val teamScopeOptions: StateFlow<List<BiBucketItem>> = _teamScopeOptions.asStateFlow()
 
+    private val _dashboardDatePreset = MutableStateFlow(DashboardDatePreset.ALL_TIME)
+    val dashboardDatePreset: StateFlow<DashboardDatePreset> = _dashboardDatePreset.asStateFlow()
+
+    private var cachedAdminTeamCodeMap: Map<String, String>? = null
     private var cachedTeamScopeWorkers: List<WorkerProfileEntity> = emptyList()
     private var cachedTeamTotalSummary: Int = 0
 
@@ -444,6 +450,8 @@ class MiniBiViewModel internal constructor(
             _teamReport.value = null
             _teamReportError.value = null
             _teamScopeOptions.value = emptyList()
+            _dashboardDatePreset.value = DashboardDatePreset.ALL_TIME
+            cachedAdminTeamCodeMap = null
             cachedTeamScopeWorkers = emptyList()
             cachedTeamTotalSummary = 0
             _duplicateGroups.value = emptyList()
@@ -491,9 +499,25 @@ class MiniBiViewModel internal constructor(
         val authorizationDate: String
     )
 
+    private fun filterWorkersByDateRange(
+        items: List<WorkerProfileEntity>,
+        fromDate: String?,
+        toDate: String?
+    ): List<WorkerProfileEntity> {
+        if (fromDate.isNullOrBlank() && toDate.isNullOrBlank()) return items
+        return items.filter { row ->
+            val d = row.firstWorkDate.trim()
+            d.isNotBlank() &&
+                (fromDate.isNullOrBlank() || d >= fromDate) &&
+                (toDate.isNullOrBlank() || d <= toDate)
+        }
+    }
+
     private fun buildGrantedTeamSnapshotFromCache(
         actor: AppActor,
-        teamRef: String
+        teamRef: String,
+        fromDate: String? = null,
+        toDate: String? = null
     ): TeamReportSnapshot {
         val recruiterMap = _catalog.value?.recruiters.orEmpty().associateBy { it.recruiterId }
         val teamGrants = actor.scopes
@@ -509,14 +533,16 @@ class MiniBiViewModel internal constructor(
 
         val canFilterByCatalogTeam = teamGrants.size > 1 &&
             recruiterMap.values.any { it.teamId == teamRef }
-        val scopedRows = if (canFilterByCatalogTeam) {
+        val baseRows = if (canFilterByCatalogTeam) {
             cachedTeamScopeWorkers.filter { row ->
                 recruiterMap[row.recruiterId]?.teamId == teamRef
             }
         } else {
             cachedTeamScopeWorkers
         }
-        val totalOverride = if (teamGrants.size <= 1) cachedTeamTotalSummary else null
+        val scopedRows = filterWorkersByDateRange(baseRows, fromDate, toDate)
+        val hasDateFilter = !fromDate.isNullOrBlank() || !toDate.isNullOrBlank()
+        val totalOverride = if (!hasDateFilter && teamGrants.size <= 1) cachedTeamTotalSummary else null
         return WorkReportsContract.buildTeamReportFromWorkerRows(
             bucketKey = "grant:$teamRef",
             bucketDisplay = bucketDisplay,
@@ -524,6 +550,20 @@ class MiniBiViewModel internal constructor(
             recruiterCatalogById = recruiterMap,
             totalWorkersOverride = totalOverride
         )
+    }
+
+    fun selectDashboardDatePreset(
+        preset: DashboardDatePreset,
+        actor: AppActor? = currentActor.value
+    ) {
+        if (_dashboardDatePreset.value == preset &&
+            _generalOverview.value != null &&
+            _generalOverviewError.value == null
+        ) {
+            return
+        }
+        _dashboardDatePreset.value = preset
+        refreshDashboardData(actor)
     }
 
     fun refreshDashboardData(actor: AppActor? = currentActor.value) {
@@ -544,17 +584,48 @@ class MiniBiViewModel internal constructor(
             refreshScopedGeneralOverview(actor)
             return
         }
+        val (effectiveFrom, effectiveTo) = if (fromDate != null || toDate != null) {
+            fromDate to toDate
+        } else {
+            WorkReportsContract.resolveDatePresetRange(_dashboardDatePreset.value)
+        }
         _workforceLoading.value = true
         _workforceError.value = null
         _generalOverviewLoading.value = true
         _generalOverviewError.value = null
         viewModelScope.launch {
             try {
-                val metrics = repository.workReportsAndReportingService.fetchWorkforceDeep(fromDate, toDate)
+                if (cachedAdminTeamCodeMap == null && actor.hasCapability("catalog_master_manage")) {
+                    cachedAdminTeamCodeMap = repository.workReportsAndReportingService.fetchAdminTeamCodeMap()
+                }
+                val codeMap = cachedAdminTeamCodeMap.orEmpty()
+                val rawMetrics = repository.workReportsAndReportingService.fetchWorkforceDeep(
+                    fromDate = effectiveFrom,
+                    toDate = effectiveTo
+                )
+                val normalizedTeams = rawMetrics.byTeam.map { b ->
+                    val canonicalCode = codeMap[b.key.lowercase(Locale.ROOT)]
+                        ?: codeMap["display:${b.display.trim().lowercase(Locale.ROOT)}"]
+                        ?: b.key
+                    if (canonicalCode != b.key) b.copy(key = canonicalCode) else b
+                }
+                val metrics = rawMetrics.copy(byTeam = normalizedTeams)
                 _workforceDeep.value = metrics
-                _teamScopeOptions.value = metrics.byTeam
+                _teamScopeOptions.value = normalizedTeams
+
                 val leadingProject = metrics.byProject.firstOrNull { it.key != "unknown" }
                     ?: metrics.byProject.firstOrNull()
+                val effectivePlacementRate = when {
+                    metrics.placementRatePct != null && metrics.placementRatePct > 0f ->
+                        metrics.placementRatePct
+                    metrics.eligibleEpisodeTotal > 0 ->
+                        (((metrics.onCount + metrics.offCount).toDouble() / metrics.eligibleEpisodeTotal.toDouble()) * 1000.0)
+                            .roundToInt() / 10f
+                    else -> metrics.placementRatePct
+                }
+                val resolvedProjectCount = metrics.totalProjectCount.takeIf { it > 0 }
+                    ?: metrics.byProject.count { it.key != "unknown" }.coerceAtLeast(metrics.byProject.size)
+
                 _generalOverview.value = GeneralOverviewSnapshot(
                     asOfDate = metrics.asOfDate,
                     scopeDescription = "Toàn hệ thống",
@@ -563,26 +634,43 @@ class MiniBiViewModel internal constructor(
                     waitingCount = metrics.unconfirmedCount,
                     leftCount = metrics.offCount,
                     audienceKind = "all",
-                    placementRatePct = metrics.placementRatePct,
+                    placementRatePct = effectivePlacementRate,
                     retention7dPct = metrics.retention7dPct,
                     retention30dPct = metrics.retention30dPct,
-                    projectCount = metrics.byProject.count { it.key != "unknown" }.coerceAtLeast(metrics.byProject.size),
+                    projectCount = resolvedProjectCount,
                     recruiterCount = metrics.byRecruiter.count { it.key != "unknown" }.coerceAtLeast(metrics.byRecruiter.size),
                     leadingProject = leadingProject,
                     byRecruiter = metrics.byRecruiter.take(10),
                     byProject = metrics.byProject.take(10),
-                    bySecondaryGroup = metrics.byTeam.take(10),
+                    bySecondaryGroup = normalizedTeams.take(10),
                     secondaryGroupTitle = "Cơ cấu theo nhóm tuyển dụng",
-                    byProvider = metrics.byProvider.take(6)
+                    byProvider = metrics.byProvider.take(6),
+                    periodFromDate = metrics.periodFromDate,
+                    periodToDate = metrics.periodToDate,
+                    periodNewEpisodes = metrics.periodNewEpisodes,
+                    periodOnInflow = metrics.periodOnInflow,
+                    periodOffInflow = metrics.periodOffInflow,
+                    periodNetOnChange = metrics.periodNetOnChange
                 )
                 _generalOverviewLoading.value = false
-                val candidateBucket = metrics.byTeam.firstOrNull { it.key != "unknown" }
-                    ?: metrics.byTeam.firstOrNull()
-                if (candidateBucket != null &&
-                    (_teamReport.value == null ||
-                        metrics.byTeam.none { it.display == _teamReport.value?.bucketDisplay })
-                ) {
-                    loadTeamReport(candidateBucket.key, fromDate, toDate)
+
+                val prevReport = _teamReport.value
+                val matchedExistingBucket = if (prevReport != null) {
+                    normalizedTeams.firstOrNull { b ->
+                        b.key == prevReport.bucketKey ||
+                            b.display == prevReport.bucketDisplay ||
+                            runCatching { WorkReportsContract.encodeTeamBucketKey(b.key) == prevReport.bucketKey }
+                                .getOrDefault(false)
+                    }
+                } else {
+                    null
+                }
+                val targetBucket = matchedExistingBucket
+                    ?: normalizedTeams.firstOrNull { it.key != "unknown" && it.key != "__system_vendor__" }
+                    ?: normalizedTeams.firstOrNull { it.key != "unknown" }
+                    ?: normalizedTeams.firstOrNull()
+                if (targetBucket != null) {
+                    loadTeamReport(targetBucket.key, effectiveFrom, effectiveTo)
                 }
             } catch (e: BackendApiException) {
                 if (e.kind == BackendFailureKind.FORBIDDEN) {
@@ -685,22 +773,29 @@ class MiniBiViewModel internal constructor(
                     throw firstError!!
                 }
 
+                val (presetFrom, presetTo) = WorkReportsContract.resolveDatePresetRange(_dashboardDatePreset.value)
+                val hasPresetFilter = !presetFrom.isNullOrBlank() || !presetTo.isNullOrBlank()
+
                 val mergedByEntry = linkedMapOf<String, WorkerProfileEntity>()
                 teamPage?.items?.forEach { mergedByEntry.putIfAbsent(it.entryId, it) }
                 managedPage?.items?.forEach { mergedByEntry.putIfAbsent(it.entryId, it) }
                 recruitedPage?.items?.forEach { mergedByEntry.putIfAbsent(it.entryId, it) }
-                val rows = mergedByEntry.values.toList()
+                val rows = filterWorkersByDateRange(mergedByEntry.values.toList(), presetFrom, presetTo)
 
                 val workingCount = rows.count { it.employmentStatus.equals("ON", ignoreCase = true) }
                 val waitingCount = rows.count { it.employmentStatus.equals("UNCONFIRMED", ignoreCase = true) }
                 val leftCount = rows.count { it.employmentStatus.equals("OFF", ignoreCase = true) }
 
-                val totalProfiles = maxOf(
-                    rows.size,
-                    teamPage?.summary?.totalWorkers ?: 0,
-                    managedPage?.summary?.totalWorkers ?: 0,
-                    recruitedPage?.summary?.totalWorkers ?: 0
-                )
+                val totalProfiles = if (hasPresetFilter) {
+                    rows.size
+                } else {
+                    maxOf(
+                        rows.size,
+                        teamPage?.summary?.totalWorkers ?: 0,
+                        managedPage?.summary?.totalWorkers ?: 0,
+                        recruitedPage?.summary?.totalWorkers ?: 0
+                    )
+                }
 
                 val placementRatePct = if (rows.isNotEmpty()) {
                     ((workingCount + leftCount).toFloat() * 100f) / rows.size.toFloat()
@@ -765,18 +860,28 @@ class MiniBiViewModel internal constructor(
                     .eachCount()
                 val hiringSummary = WorkReportsContract.computeHiringDaySummary(byDateCounts, rows.size)
 
-                val projectCount = maxOf(
-                    rows.map { it.projectId }.filter { it.isNotBlank() }.distinct().size,
-                    teamPage?.summary?.projectCount ?: 0,
-                    managedPage?.summary?.projectCount ?: 0,
-                    recruitedPage?.summary?.projectCount ?: 0
-                )
-                val recruiterCount = maxOf(
-                    rows.map { it.recruiterId }.filter { it.isNotBlank() }.distinct().size,
-                    teamPage?.summary?.recruiterCount ?: 0,
-                    managedPage?.summary?.recruiterCount ?: 0,
-                    recruitedPage?.summary?.recruiterCount ?: 0
-                )
+                val distinctProjectsInRows = rows.map { it.projectId }.filter { it.isNotBlank() }.distinct().size
+                val projectCount = if (hasPresetFilter) {
+                    distinctProjectsInRows
+                } else {
+                    maxOf(
+                        distinctProjectsInRows,
+                        teamPage?.summary?.projectCount ?: 0,
+                        managedPage?.summary?.projectCount ?: 0,
+                        recruitedPage?.summary?.projectCount ?: 0
+                    )
+                }
+                val distinctRecruitersInRows = rows.map { it.recruiterId }.filter { it.isNotBlank() }.distinct().size
+                val recruiterCount = if (hasPresetFilter) {
+                    distinctRecruitersInRows
+                } else {
+                    maxOf(
+                        distinctRecruitersInRows,
+                        teamPage?.summary?.recruiterCount ?: 0,
+                        managedPage?.summary?.recruiterCount ?: 0,
+                        recruitedPage?.summary?.recruiterCount ?: 0
+                    )
+                }
                 val asOfDate = teamPage?.authorizationDate?.ifBlank { null }
                     ?: managedPage?.authorizationDate?.ifBlank { null }
                     ?: recruitedPage?.authorizationDate?.ifBlank { null }
@@ -805,6 +910,16 @@ class MiniBiViewModel internal constructor(
                     "Cá nhân & dự án phụ trách"
                 }
 
+                val filteredManagedTotal = managedPage?.let {
+                    if (hasPresetFilter) filterWorkersByDateRange(it.items, presetFrom, presetTo).size else it.summary.totalWorkers
+                }
+                val filteredRecruitedTotal = recruitedPage?.let {
+                    if (hasPresetFilter) filterWorkersByDateRange(it.items, presetFrom, presetTo).size else it.summary.totalWorkers
+                }
+                val filteredTeamTotal = teamPage?.let {
+                    if (hasPresetFilter) filterWorkersByDateRange(it.items, presetFrom, presetTo).size else it.summary.totalWorkers
+                }
+
                 _generalOverview.value = GeneralOverviewSnapshot(
                     asOfDate = asOfDate,
                     scopeDescription = scopeDescription,
@@ -816,9 +931,9 @@ class MiniBiViewModel internal constructor(
                     placementRatePct = placementRatePct,
                     projectCount = projectCount,
                     recruiterCount = recruiterCount,
-                    managedTotal = managedPage?.summary?.totalWorkers,
-                    recruitedTotal = recruitedPage?.summary?.totalWorkers,
-                    teamTotal = teamPage?.summary?.totalWorkers,
+                    managedTotal = filteredManagedTotal,
+                    recruitedTotal = filteredRecruitedTotal,
+                    teamTotal = filteredTeamTotal,
                     activeHiringDays = hiringSummary.activeHiringDays,
                     avgPerActiveDay = hiringSummary.avgPerActiveDay,
                     peakDailyCount = hiringSummary.peakDailyCount,
@@ -828,7 +943,12 @@ class MiniBiViewModel internal constructor(
                     byProject = byProject,
                     bySecondaryGroup = byLaborType,
                     secondaryGroupTitle = "Cơ cấu theo loại hình lao động",
-                    byProvider = byProvider
+                    byProvider = byProvider,
+                    periodFromDate = if (hasPresetFilter) presetFrom else null,
+                    periodToDate = if (hasPresetFilter) presetTo else null,
+                    periodNewEpisodes = if (hasPresetFilter) rows.size else null,
+                    periodOnInflow = if (hasPresetFilter) workingCount else null,
+                    periodOffInflow = if (hasPresetFilter) leftCount else null
                 )
 
                 if (isTeamActor) {
@@ -838,18 +958,19 @@ class MiniBiViewModel internal constructor(
                     when {
                         teamGrants.isEmpty() -> {
                             _teamScopeOptions.value = emptyList()
+                            val filteredTeamRows = filterWorkersByDateRange(cachedTeamScopeWorkers, presetFrom, presetTo)
                             _teamReport.value = WorkReportsContract.buildTeamReportFromWorkerRows(
                                 bucketKey = "grant:team",
                                 bucketDisplay = "Nhóm của tôi",
-                                rows = cachedTeamScopeWorkers,
+                                rows = filteredTeamRows,
                                 recruiterCatalogById = recruiterMap,
-                                totalWorkersOverride = cachedTeamTotalSummary
+                                totalWorkersOverride = if (hasPresetFilter) null else cachedTeamTotalSummary
                             )
                         }
 
                         teamGrants.all { teamGrantUuidRegex.matches(it) } -> {
                             val grantSnapshots = teamGrants.map { ref ->
-                                buildGrantedTeamSnapshotFromCache(actor, ref)
+                                buildGrantedTeamSnapshotFromCache(actor, ref, presetFrom, presetTo)
                             }
                             _teamScopeOptions.value = if (grantSnapshots.size > 1) {
                                 grantSnapshots.map { snap ->
@@ -884,12 +1005,19 @@ class MiniBiViewModel internal constructor(
                             }
                             try {
                                 _teamReport.value = repository.workReportsAndReportingService.fetchTeamReport(
-                                    bucketKeyOrTeamCode = selectedGrant
+                                    bucketKeyOrTeamCode = selectedGrant,
+                                    fromDate = presetFrom,
+                                    toDate = presetTo
                                 )
                             } catch (teamErr: Exception) {
                                 teamErr.rethrowIfCancelled()
                                 if (teamPage != null) {
-                                    _teamReport.value = buildGrantedTeamSnapshotFromCache(actor, selectedGrant)
+                                    _teamReport.value = buildGrantedTeamSnapshotFromCache(
+                                        actor = actor,
+                                        teamRef = selectedGrant,
+                                        fromDate = presetFrom,
+                                        toDate = presetTo
+                                    )
                                 } else {
                                     _teamReport.value = null
                                     _teamReportError.value = (teamErr as? BackendApiException)?.message
@@ -922,13 +1050,16 @@ class MiniBiViewModel internal constructor(
         val current = _workforceDeep.value ?: return
         val cursor = current.projectNextCursor ?: return
         if (!current.projectHasMore || _workforceLoading.value) return
+        val (presetFrom, presetTo) = WorkReportsContract.resolveDatePresetRange(_dashboardDatePreset.value)
         viewModelScope.launch {
             _workforceLoading.value = true
             try {
                 val (moreRows, hasMore, nextCursor) = repository.workReportsAndReportingService
                     .fetchWorkforceProjectPage(
                         cursor = cursor,
-                        eligibleTotal = current.eligibleEpisodeTotal
+                        eligibleTotal = current.eligibleEpisodeTotal,
+                        fromDate = presetFrom,
+                        toDate = presetTo
                     )
                 _workforceDeep.value = current.copy(
                     byProject = current.byProject + moreRows,
@@ -957,6 +1088,13 @@ class MiniBiViewModel internal constructor(
         val trimmedKey = bucketKeyOrTeamCode.trim()
         if (trimmedKey.isEmpty()) return
 
+        val (effectiveFrom, effectiveTo) = if (fromDate != null || toDate != null) {
+            fromDate to toDate
+        } else {
+            WorkReportsContract.resolveDatePresetRange(_dashboardDatePreset.value)
+        }
+        val hasPresetFilter = !effectiveFrom.isNullOrBlank() || !effectiveTo.isNullOrBlank()
+
         if (trimmedKey.startsWith("grant:")) {
             val teamRef = trimmedKey.removePrefix("grant:").trim()
             val allowed = actor.scopes.any { scope ->
@@ -972,15 +1110,16 @@ class MiniBiViewModel internal constructor(
             _teamReportError.value = null
             _teamReport.value = if (teamRef == "team") {
                 val recruiterMap = _catalog.value?.recruiters.orEmpty().associateBy { it.recruiterId }
+                val filteredRows = filterWorkersByDateRange(cachedTeamScopeWorkers, effectiveFrom, effectiveTo)
                 WorkReportsContract.buildTeamReportFromWorkerRows(
                     bucketKey = "grant:team",
                     bucketDisplay = "Nhóm của tôi",
-                    rows = cachedTeamScopeWorkers,
+                    rows = filteredRows,
                     recruiterCatalogById = recruiterMap,
-                    totalWorkersOverride = cachedTeamTotalSummary
+                    totalWorkersOverride = if (hasPresetFilter) null else cachedTeamTotalSummary
                 )
             } else {
-                buildGrantedTeamSnapshotFromCache(actor, teamRef)
+                buildGrantedTeamSnapshotFromCache(actor, teamRef, effectiveFrom, effectiveTo)
             }
             return
         }
@@ -997,7 +1136,7 @@ class MiniBiViewModel internal constructor(
             }
             if (matchedUuidGrant != null) {
                 _teamReportError.value = null
-                _teamReport.value = buildGrantedTeamSnapshotFromCache(actor, matchedUuidGrant)
+                _teamReport.value = buildGrantedTeamSnapshotFromCache(actor, matchedUuidGrant, effectiveFrom, effectiveTo)
                 return
             }
             val matchesGrantedCode = grantedRefs.isEmpty() || grantedRefs.any { ref ->
@@ -1011,15 +1150,36 @@ class MiniBiViewModel internal constructor(
             }
         }
 
+        val decodedRequested = WorkReportsContract.decodeTeamBucketCode(trimmedKey)
+        val matchedBucketHint = _teamScopeOptions.value.firstOrNull { b ->
+            b.key == trimmedKey ||
+                WorkReportsContract.decodeTeamBucketCode(b.key).equals(decodedRequested, ignoreCase = true) ||
+                runCatching { WorkReportsContract.encodeTeamBucketKey(b.key) == trimmedKey }.getOrDefault(false)
+        }
+
         _teamReportLoading.value = true
         _teamReportError.value = null
         viewModelScope.launch {
             try {
+                if (cachedAdminTeamCodeMap == null &&
+                    actor.hasScopeKind("all") &&
+                    actor.hasCapability("catalog_master_manage")
+                ) {
+                    cachedAdminTeamCodeMap = repository.workReportsAndReportingService.fetchAdminTeamCodeMap()
+                }
                 val snap = repository.workReportsAndReportingService.fetchTeamReport(
                     bucketKeyOrTeamCode = trimmedKey,
-                    fromDate = fromDate,
-                    toDate = toDate
+                    fromDate = effectiveFrom,
+                    toDate = effectiveTo,
+                    knownTeamCodeMap = cachedAdminTeamCodeMap.orEmpty(),
+                    knownBucketHint = matchedBucketHint
                 )
+                val resolvedCanonicalCode = WorkReportsContract.decodeTeamBucketCode(snap.bucketKey)
+                if (resolvedCanonicalCode.isNotBlank() && resolvedCanonicalCode != "unknown") {
+                    val updatedMap = LinkedHashMap(cachedAdminTeamCodeMap.orEmpty())
+                    updatedMap[resolvedCanonicalCode.lowercase(Locale.ROOT)] = resolvedCanonicalCode
+                    cachedAdminTeamCodeMap = updatedMap
+                }
                 _teamReport.value = snap
             } catch (e: Exception) {
                 e.rethrowIfCancelled()
@@ -1037,12 +1197,15 @@ class MiniBiViewModel internal constructor(
         val current = _teamReport.value ?: return
         val cursor = current.nextCursor ?: return
         if (_teamReportLoading.value) return
+        val (presetFrom, presetTo) = WorkReportsContract.resolveDatePresetRange(_dashboardDatePreset.value)
         _teamReportLoading.value = true
         viewModelScope.launch {
             try {
                 val next = repository.workReportsAndReportingService.fetchTeamDrillDownPage(
                     bucketKeyOrTeamCode = current.bucketKey,
-                    cursor = cursor
+                    cursor = cursor,
+                    fromDate = presetFrom,
+                    toDate = presetTo
                 )
                 _teamReport.value = current.copy(
                     rows = current.rows + next.rows,
