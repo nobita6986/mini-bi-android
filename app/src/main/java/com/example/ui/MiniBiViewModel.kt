@@ -1969,7 +1969,9 @@ class MiniBiViewModel internal constructor(
                         return@launch
                     }
                     if (e.kind == BackendFailureKind.NETWORK) {
-                        val cached = repository.getCachedWorkersByScope(tabKey)
+                        val cached = runCatching { repository.getCachedWorkersByScope(tabKey) }
+                            .onFailure { it.rethrowIfCancelled() }
+                            .getOrDefault(emptyList())
                         if (workerFetchToken != fetchToken) return@launch
                         _workerRows.value = cached
                     } else {

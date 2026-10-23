@@ -16,6 +16,7 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performTextInput
+import androidx.lifecycle.viewModelScope
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import com.example.data.ActorScope
@@ -35,6 +36,9 @@ import com.example.ui.screens.WorkerProposeChangeDialog
 import com.example.ui.screens.WorkersAndDirectEntryScreen
 import com.example.ui.screens.resolveVisibleWorkerTabs
 import com.example.ui.theme.MyApplicationTheme
+import kotlinx.coroutines.CoroutineExceptionHandler
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import okhttp3.Cookie
 import okhttp3.mockwebserver.Dispatcher
 import okhttp3.mockwebserver.MockResponse
@@ -47,7 +51,11 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.ExternalResource
+import org.junit.rules.RuleChain
+import org.junit.rules.TestRule
 import org.junit.runner.RunWith
+import org.junit.runners.model.Statement
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import java.io.File
@@ -57,8 +65,82 @@ import java.util.concurrent.TimeUnit
 @Config(sdk = [36], qualifiers = "w480dp-h1400dp")
 class WorkerUiAuthorizationRobolectricTest {
 
+    private val pendingCleanups = mutableListOf<() -> Unit>()
+
+    private fun registerCleanup(block: () -> Unit) {
+        pendingCleanups.add(block)
+    }
+
+    private fun registerTestResourcesCleanup(
+        vm: MiniBiViewModel,
+        db: MiniBiDatabase,
+        server: MockWebServer? = null,
+        vararg tempFiles: File
+    ) {
+        registerCleanup {
+            vm.cancelScopeForTest()
+            runCatching { server?.shutdown() }
+            val vmJob = vm.viewModelScope.coroutineContext[Job]
+            var attempts = 0
+            while (vmJob?.children?.any { !it.isCompleted } == true && attempts < 50) {
+                org.robolectric.shadows.ShadowLooper.idleMainLooper()
+                Thread.sleep(10)
+                attempts++
+            }
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            runCatching { db.close() }
+            for (file in tempFiles) {
+                runCatching { file.delete() }
+            }
+        }
+    }
+
+    private fun buildTestDb(app: Application): MiniBiDatabase =
+        Room.inMemoryDatabaseBuilder(app, MiniBiDatabase::class.java)
+            .allowMainThreadQueries()
+            .setQueryCoroutineContext(Dispatchers.IO + CoroutineExceptionHandler { _, _ -> })
+            .build()
+
+    private val outerCleanupRule = object : ExternalResource() {
+        override fun after() {
+            val actions = pendingCleanups.toList()
+            pendingCleanups.clear()
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            for (action in actions) {
+                runCatching { action() }
+            }
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+        }
+    }
+
+    private val innerComposeRule = createComposeRule()
+
     @get:Rule
-    val composeTestRule = createComposeRule()
+    val ruleChain: RuleChain = RuleChain
+        .outerRule(outerCleanupRule)
+        .around(
+            TestRule { base, _ ->
+                object : Statement() {
+                    override fun evaluate() {
+                        try {
+                            base.evaluate()
+                        } catch (t: Throwable) {
+                            if (t.suppressedExceptions.isNotEmpty()) {
+                                val details = t.suppressedExceptions.joinToString("\n---\n") {
+                                    it.stackTraceToString()
+                                }
+                                throw AssertionError("${t.message}\nSuppressed details:\n$details", t)
+                            }
+                            throw t
+                        }
+                    }
+                }
+            }
+        )
+        .around(innerComposeRule)
+
+    private val composeTestRule
+        get() = innerComposeRule
 
     private fun sampleWorker(
         entryId: String,
@@ -207,9 +289,7 @@ class WorkerUiAuthorizationRobolectricTest {
     @Test
     fun `ui overhaul - personnel screen removes top worker card and cap moi button while showing recruited and managed tabs`() {
         val app = ApplicationProvider.getApplicationContext<Application>()
-        val db = Room.inMemoryDatabaseBuilder(app, MiniBiDatabase::class.java)
-            .allowMainThreadQueries()
-            .build()
+        val db = buildTestDb(app)
         val cookieFile = File(app.cacheDir, "ui_auth_test_${System.nanoTime()}.enc")
         val prefsFile = File(app.cacheDir, "ui_auth_prefs_${System.nanoTime()}.preferences_pb")
         val repo = MiniBiRepository(
@@ -222,6 +302,7 @@ class WorkerUiAuthorizationRobolectricTest {
             cookieCipher = JvmAes256GcmCookieCipher()
         )
         val vm = MiniBiViewModel(app, repo)
+        registerTestResourcesCleanup(vm, db, null, cookieFile, prefsFile)
         val actor = AppActor(
             appUserId = "77777777-2222-4333-8444-555555555555",
             displayName = "Nguyễn Tuyển Dụng",
@@ -230,30 +311,23 @@ class WorkerUiAuthorizationRobolectricTest {
             selfRecruiterSuggestion = null
         )
 
-        try {
-            composeTestRule.setContent {
-                MyApplicationTheme {
-                    WorkersAndDirectEntryScreen(
-                        actor = actor,
-                        viewModel = vm,
-                        onBackToDashboard = {},
-                        onSelectScopeTab = {}
-                    )
-                }
+        composeTestRule.setContent {
+            MyApplicationTheme {
+                WorkersAndDirectEntryScreen(
+                    actor = actor,
+                    viewModel = vm,
+                    onBackToDashboard = {},
+                    onSelectScopeTab = {}
+                )
             }
-
-            composeTestRule.onNodeWithText("Người lao động").assertDoesNotExist()
-            composeTestRule.onNodeWithTag("go_to_new_entry_from_workers").assertDoesNotExist()
-            composeTestRule.onNodeWithTag("export_workers_excel_button").assertDoesNotExist()
-            composeTestRule.onNodeWithText("Xuất Excel").assertDoesNotExist()
-            composeTestRule.onNodeWithTag("worker_scope_tab_managed").assertIsDisplayed()
-            composeTestRule.onNodeWithTag("worker_scope_tab_recruited").assertIsDisplayed()
-        } finally {
-            vm.cancelScopeForTest()
-            db.close()
-            cookieFile.delete()
-            prefsFile.delete()
         }
+
+        composeTestRule.onNodeWithText("Người lao động").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("go_to_new_entry_from_workers").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("export_workers_excel_button").assertDoesNotExist()
+        composeTestRule.onNodeWithText("Xuất Excel").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("worker_scope_tab_managed").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("worker_scope_tab_recruited").assertIsDisplayed()
     }
 
     @Test
@@ -313,9 +387,7 @@ class WorkerUiAuthorizationRobolectricTest {
     @Test
     fun `ui overhaul - direct entry new workers screen removes top multi-entry card and keeps bottom add worker button`() {
         val app = ApplicationProvider.getApplicationContext<Application>()
-        val db = Room.inMemoryDatabaseBuilder(app, MiniBiDatabase::class.java)
-            .allowMainThreadQueries()
-            .build()
+        val db = buildTestDb(app)
         val cookieFile = File(app.cacheDir, "ui_new_entry_${System.nanoTime()}.enc")
         val prefsFile = File(app.cacheDir, "ui_new_entry_prefs_${System.nanoTime()}.preferences_pb")
         val repo = MiniBiRepository(
@@ -328,6 +400,7 @@ class WorkerUiAuthorizationRobolectricTest {
             cookieCipher = JvmAes256GcmCookieCipher()
         )
         val vm = MiniBiViewModel(app, repo)
+        registerTestResourcesCleanup(vm, db, null, cookieFile, prefsFile)
         val actor = AppActor(
             appUserId = "88888888-2222-4333-8444-555555555555",
             displayName = "Nguyễn Nhập Liệu",
@@ -336,29 +409,22 @@ class WorkerUiAuthorizationRobolectricTest {
             selfRecruiterSuggestion = null
         )
 
-        try {
-            composeTestRule.setContent {
-                MyApplicationTheme {
-                    DirectEntryNewWorkersScreen(
-                        actor = actor,
-                        viewModel = vm,
-                        onNavigateToWorkersList = {},
-                        onBackToDashboard = {}
-                    )
-                }
+        composeTestRule.setContent {
+            MyApplicationTheme {
+                DirectEntryNewWorkersScreen(
+                    actor = actor,
+                    viewModel = vm,
+                    onNavigateToWorkersList = {},
+                    onBackToDashboard = {}
+                )
             }
-
-            composeTestRule.onNodeWithText("Nhập nhiều NLĐ").assertDoesNotExist()
-            composeTestRule.onNodeWithTag("top_add_worker_row_button").assertDoesNotExist()
-            composeTestRule.onNodeWithTag("direct_entry_new_workers_lazy_column")
-                .performScrollToNode(hasTestTag("bottom_add_worker_row_button"))
-            composeTestRule.onNodeWithTag("bottom_add_worker_row_button").assertIsDisplayed()
-        } finally {
-            vm.cancelScopeForTest()
-            db.close()
-            cookieFile.delete()
-            prefsFile.delete()
         }
+
+        composeTestRule.onNodeWithText("Nhập nhiều NLĐ").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("top_add_worker_row_button").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("direct_entry_new_workers_lazy_column")
+            .performScrollToNode(hasTestTag("bottom_add_worker_row_button"))
+        composeTestRule.onNodeWithTag("bottom_add_worker_row_button").assertIsDisplayed()
     }
 
     @Test
@@ -399,9 +465,7 @@ class WorkerUiAuthorizationRobolectricTest {
         server.start()
 
         val app = ApplicationProvider.getApplicationContext<Application>()
-        val db = Room.inMemoryDatabaseBuilder(app, MiniBiDatabase::class.java)
-            .allowMainThreadQueries()
-            .build()
+        val db = buildTestDb(app)
         val cookieFile = File(app.cacheDir, "ui_defaults_${System.nanoTime()}.enc")
         val prefsFile = File(app.cacheDir, "ui_defaults_prefs_${System.nanoTime()}.preferences_pb")
         val repo = MiniBiRepository(
@@ -414,6 +478,7 @@ class WorkerUiAuthorizationRobolectricTest {
             cookieCipher = JvmAes256GcmCookieCipher()
         )
         val vm = MiniBiViewModel(app, repo)
+        registerTestResourcesCleanup(vm, db, server, cookieFile, prefsFile)
         val actor = AppActor(
             appUserId = "88888888-3333-4333-8444-555555555555",
             displayName = "Nguyễn Nhập Liệu",
@@ -422,57 +487,49 @@ class WorkerUiAuthorizationRobolectricTest {
             selfRecruiterSuggestion = null
         )
 
-        try {
-            composeTestRule.setContent {
-                MyApplicationTheme {
-                    DirectEntryNewWorkersScreen(
-                        actor = actor,
-                        viewModel = vm,
-                        onNavigateToWorkersList = {},
-                        onBackToDashboard = {}
-                    )
-                }
+        composeTestRule.setContent {
+            MyApplicationTheme {
+                DirectEntryNewWorkersScreen(
+                    actor = actor,
+                    viewModel = vm,
+                    onNavigateToWorkersList = {},
+                    onBackToDashboard = {}
+                )
             }
-
-            // Wait for catalog to load and default "Thời vụ" to populate
-            composeTestRule.waitUntil(timeoutMillis = 5_000) {
-                vm.catalog.value != null
-            }
-            composeTestRule.waitForIdle()
-
-            composeTestRule.onNodeWithText("Thời vụ").assertIsDisplayed()
-            composeTestRule.onNodeWithText("Nam").assertIsDisplayed()
-
-            // Open gender dropdown -> only "Nam" and "Nữ", no "Bỏ trống"
-            composeTestRule.onNodeWithTag("row_1_gender").performClick()
-            composeTestRule.onNodeWithText("Nữ").assertIsDisplayed()
-            composeTestRule.onNodeWithText("Bỏ trống").assertDoesNotExist()
-            composeTestRule.onNodeWithText("Nữ").performClick()
-
-            // Type worker name
-            composeTestRule.onNodeWithTag("row_1_full_name").performTextInput("Lê Văn Thử Nghiệm")
-            composeTestRule.onNodeWithText("Lê Văn Thử Nghiệm").assertIsDisplayed()
-
-            // Click "Làm mới dòng này" -> confirmation dialog must appear first, preserving data if cancelled
-            composeTestRule.onNodeWithTag("row_1_reset_or_remove_button").performClick()
-            composeTestRule.onNodeWithTag("confirm_reset_worker_row_dialog").assertIsDisplayed()
-            composeTestRule.onNodeWithTag("cancel_reset_worker_row_button").performClick()
-            composeTestRule.onNodeWithTag("confirm_reset_worker_row_dialog").assertDoesNotExist()
-            composeTestRule.onNodeWithText("Lê Văn Thử Nghiệm").assertIsDisplayed()
-
-            // Click "Làm mới dòng này" -> confirm "Đồng ý" -> clears row and restores defaults ("Nam", "Thời vụ")
-            composeTestRule.onNodeWithTag("row_1_reset_or_remove_button").performClick()
-            composeTestRule.onNodeWithTag("confirm_reset_worker_row_button").performClick()
-            composeTestRule.onNodeWithText("Lê Văn Thử Nghiệm").assertDoesNotExist()
-            composeTestRule.onNodeWithText("Nam").assertIsDisplayed()
-            composeTestRule.onNodeWithText("Thời vụ").assertIsDisplayed()
-        } finally {
-            vm.cancelScopeForTest()
-            server.shutdown()
-            db.close()
-            cookieFile.delete()
-            prefsFile.delete()
         }
+
+        // Wait for catalog to load and default "Thời vụ" to populate
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            vm.catalog.value != null
+        }
+        composeTestRule.waitForIdle()
+
+        composeTestRule.onNodeWithText("Thời vụ").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Nam").assertIsDisplayed()
+
+        // Open gender dropdown -> only "Nam" and "Nữ", no "Bỏ trống"
+        composeTestRule.onNodeWithTag("row_1_gender").performClick()
+        composeTestRule.onNodeWithText("Nữ").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Bỏ trống").assertDoesNotExist()
+        composeTestRule.onNodeWithText("Nữ").performClick()
+
+        // Type worker name
+        composeTestRule.onNodeWithTag("row_1_full_name").performTextInput("Lê Văn Thử Nghiệm")
+        composeTestRule.onNodeWithText("Lê Văn Thử Nghiệm").assertIsDisplayed()
+
+        // Click "Làm mới dòng này" -> confirmation dialog must appear first, preserving data if cancelled
+        composeTestRule.onNodeWithTag("row_1_reset_or_remove_button").performClick()
+        composeTestRule.onNodeWithTag("confirm_reset_worker_row_dialog").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("cancel_reset_worker_row_button").performClick()
+        composeTestRule.onNodeWithTag("confirm_reset_worker_row_dialog").assertDoesNotExist()
+        composeTestRule.onNodeWithText("Lê Văn Thử Nghiệm").assertIsDisplayed()
+
+        // Click "Làm mới dòng này" -> confirm "Đồng ý" -> clears row and restores defaults ("Nam", "Thời vụ")
+        composeTestRule.onNodeWithTag("row_1_reset_or_remove_button").performClick()
+        composeTestRule.onNodeWithTag("confirm_reset_worker_row_button").performClick()
+        composeTestRule.onNodeWithText("Lê Văn Thử Nghiệm").assertDoesNotExist()
+        composeTestRule.onNodeWithText("Nam").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Thời vụ").assertIsDisplayed()
     }
 
     @Test
@@ -628,9 +685,7 @@ class WorkerUiAuthorizationRobolectricTest {
         server.start()
 
         val app = ApplicationProvider.getApplicationContext<Application>()
-        val db = Room.inMemoryDatabaseBuilder(app, MiniBiDatabase::class.java)
-            .allowMainThreadQueries()
-            .build()
+        val db = buildTestDb(app)
         val cookieFile = File(app.cacheDir, "cancel_tab_${System.nanoTime()}.enc")
         val prefsFile = File(app.cacheDir, "cancel_tab_prefs_${System.nanoTime()}.preferences_pb")
         val repo = MiniBiRepository(
@@ -643,42 +698,35 @@ class WorkerUiAuthorizationRobolectricTest {
             cookieCipher = JvmAes256GcmCookieCipher()
         )
         val vm = MiniBiViewModel(app, repo)
+        registerTestResourcesCleanup(vm, db, server, cookieFile, prefsFile)
 
-        try {
-            composeTestRule.setContent {
-                val loading = vm.workerLoading.collectAsState().value
-                val err = vm.workerError.collectAsState().value
-                androidx.compose.material3.Text("loading=$loading err=$err")
-            }
-
-            composeTestRule.runOnIdle {
-                vm.selectWorkerTab("managed")
-            }
-            composeTestRule.waitUntil(timeoutMillis = 5_000) {
-                org.robolectric.shadows.ShadowLooper.idleMainLooper()
-                managedStarted.count == 0L
-            }
-
-            // Immediately switch tab while first coroutine is in-flight -> cancels job #1
-            composeTestRule.runOnIdle {
-                vm.selectWorkerTab("recruited")
-            }
-            composeTestRule.waitUntil(timeoutMillis = 5_000) {
-                org.robolectric.shadows.ShadowLooper.idleMainLooper()
-                recruitedServed.count == 0L && !vm.workerLoading.value
-            }
-            Thread.sleep(450)
-            org.robolectric.shadows.ShadowLooper.idleMainLooper()
-            composeTestRule.waitForIdle()
-
-            assertNull(vm.workerError.value)
-        } finally {
-            vm.cancelScopeForTest()
-            server.shutdown()
-            db.close()
-            cookieFile.delete()
-            prefsFile.delete()
+        composeTestRule.setContent {
+            val loading = vm.workerLoading.collectAsState().value
+            val err = vm.workerError.collectAsState().value
+            androidx.compose.material3.Text("loading=$loading err=$err")
         }
+
+        composeTestRule.runOnIdle {
+            vm.selectWorkerTab("managed")
+        }
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            managedStarted.count == 0L
+        }
+
+        // Immediately switch tab while first coroutine is in-flight -> cancels job #1
+        composeTestRule.runOnIdle {
+            vm.selectWorkerTab("recruited")
+        }
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            recruitedServed.count == 0L && !vm.workerLoading.value
+        }
+        Thread.sleep(450)
+        org.robolectric.shadows.ShadowLooper.idleMainLooper()
+        composeTestRule.waitForIdle()
+
+        assertNull(vm.workerError.value)
     }
 
     @Test
@@ -735,9 +783,7 @@ class WorkerUiAuthorizationRobolectricTest {
         server.start()
 
         val app = ApplicationProvider.getApplicationContext<Application>()
-        val db = Room.inMemoryDatabaseBuilder(app, MiniBiDatabase::class.java)
-            .allowMainThreadQueries()
-            .build()
+        val db = buildTestDb(app)
         val cookieFile = File(app.cacheDir, "ui_search_focus_${System.nanoTime()}.enc")
         val savedCredsFile = File(app.cacheDir, "ui_saved_${System.nanoTime()}.enc")
         val prefsFile = File(app.cacheDir, "ui_search_prefs_${System.nanoTime()}.preferences_pb")
@@ -752,6 +798,7 @@ class WorkerUiAuthorizationRobolectricTest {
             cookieCipher = JvmAes256GcmCookieCipher()
         )
         val vm = MiniBiViewModel(app, repo)
+        registerTestResourcesCleanup(vm, db, server, cookieFile, savedCredsFile, prefsFile)
         val actor = AppActor(
             appUserId = "88888888-4444-4333-8444-555555555555",
             displayName = "Nguyễn Nhập Liệu",
@@ -760,82 +807,75 @@ class WorkerUiAuthorizationRobolectricTest {
             selfRecruiterSuggestion = null
         )
 
-        try {
-            composeTestRule.setContent {
-                MyApplicationTheme {
-                    DirectEntryNewWorkersScreen(
-                        actor = actor,
-                        viewModel = vm,
-                        onNavigateToWorkersList = {},
-                        onBackToDashboard = {}
-                    )
-                }
+        composeTestRule.setContent {
+            MyApplicationTheme {
+                DirectEntryNewWorkersScreen(
+                    actor = actor,
+                    viewModel = vm,
+                    onNavigateToWorkersList = {},
+                    onBackToDashboard = {}
+                )
             }
-
-            composeTestRule.waitUntil(timeoutMillis = 5_000) {
-                org.robolectric.shadows.ShadowLooper.idleMainLooper()
-                !vm.sessionBootstrapping.value && vm.catalog.value != null
-            }
-            composeTestRule.waitForIdle()
-
-            // 1. Vietnamese localization check: zero English "Stage" / "worker-profile/1.1" / "MiB"
-            composeTestRule.onNodeWithText("Stage", substring = true, ignoreCase = true).assertDoesNotExist()
-            composeTestRule.onNodeWithText("worker-profile/1.1", substring = true).assertDoesNotExist()
-            composeTestRule.onNodeWithText("MiB", substring = true).assertDoesNotExist()
-
-            // 2. Focus clearing when tapping outside text input
-            composeTestRule.onNodeWithTag("row_1_full_name").performClick()
-            composeTestRule.onNodeWithTag("row_1_full_name").performTextInput("Hồ Văn Nam")
-            composeTestRule.onNodeWithTag("row_1_full_name").assertIsFocused()
-
-            // Tap non-input header area -> highlight/focus on row_1_full_name must clear immediately
-            composeTestRule.onNodeWithText("Nhập liệu trực tiếp").performClick()
-            composeTestRule.onNodeWithTag("row_1_full_name").assertIsNotFocused()
-
-            // 3. Searchable Recruiter Picker with Vietnamese diacritic-insensitive quick filtering
-            composeTestRule.onNodeWithTag("row_1_provider").performClick()
-            composeTestRule.onNodeWithText("HRP").performClick()
-
-            composeTestRule.onNodeWithTag("row_1_recruiter").performClick()
-            composeTestRule.onNodeWithTag("row_1_recruiter_dialog").assertIsDisplayed()
-            composeTestRule.onNodeWithTag("row_1_recruiter_search_input").performTextInput("nguyen hoa")
-
-            composeTestRule.onNodeWithTag("row_1_recruiter_option_aaaaaaaa-bbbb-4ccc-8ddd-222222222222").assertIsDisplayed()
-            composeTestRule.onNodeWithTag("row_1_recruiter_option_aaaaaaaa-bbbb-4ccc-8ddd-111111111111").assertDoesNotExist()
-
-            composeTestRule.onNodeWithTag("row_1_recruiter_option_aaaaaaaa-bbbb-4ccc-8ddd-222222222222").performClick()
-            composeTestRule.onNodeWithTag("row_1_recruiter_dialog").assertDoesNotExist()
-            composeTestRule.onNodeWithText("Nguyễn Thị Hoa (HRP012)").assertIsDisplayed()
-
-            // 4. Reset confirmation dialog: Cancel ("Hủy") button is larger in both width & height than Confirm ("Đồng ý")
-            composeTestRule.onNodeWithTag("row_1_reset_or_remove_button").performClick()
-            composeTestRule.onNodeWithTag("confirm_reset_worker_row_dialog").assertIsDisplayed()
-
-            val cancelBounds = composeTestRule.onNodeWithTag("cancel_reset_worker_row_button")
-                .assertIsDisplayed()
-                .fetchSemanticsNode()
-                .boundsInRoot
-            val confirmBounds = composeTestRule.onNodeWithTag("confirm_reset_worker_row_button")
-                .assertIsDisplayed()
-                .fetchSemanticsNode()
-                .boundsInRoot
-
-            assertTrue(
-                "Expected Hủy button width (${cancelBounds.width}) > Đồng ý button width (${confirmBounds.width})",
-                cancelBounds.width > confirmBounds.width
-            )
-            assertTrue(
-                "Expected Hủy button height (${cancelBounds.height}) > Đồng ý button height (${confirmBounds.height})",
-                cancelBounds.height > confirmBounds.height
-            )
-        } finally {
-            vm.cancelScopeForTest()
-            server.shutdown()
-            db.close()
-            cookieFile.delete()
-            savedCredsFile.delete()
-            prefsFile.delete()
         }
+
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            !vm.sessionBootstrapping.value && vm.catalog.value != null
+        }
+        composeTestRule.waitForIdle()
+
+        // 1. Vietnamese localization check: zero English "Stage" / "worker-profile/1.1" / "MiB"
+        composeTestRule.onNodeWithText("Stage", substring = true, ignoreCase = true).assertDoesNotExist()
+        composeTestRule.onNodeWithText("worker-profile/1.1", substring = true).assertDoesNotExist()
+        composeTestRule.onNodeWithText("MiB", substring = true).assertDoesNotExist()
+
+        // 2. Focus clearing when tapping outside text input
+        composeTestRule.onNodeWithTag("row_1_full_name").performClick()
+        composeTestRule.onNodeWithTag("row_1_full_name").performTextInput("Hồ Văn Nam")
+        composeTestRule.onNodeWithTag("row_1_full_name").assertIsFocused()
+
+        // Tap non-input header area -> highlight/focus on row_1_full_name must clear immediately
+        composeTestRule.onNodeWithText("Nhập liệu trực tiếp").performClick()
+        composeTestRule.onNodeWithTag("row_1_full_name").assertIsNotFocused()
+
+        // 3. Searchable Recruiter Picker with Vietnamese diacritic-insensitive quick filtering
+        composeTestRule.onNodeWithTag("row_1_provider").performClick()
+        composeTestRule.onNodeWithText("HRP").performClick()
+
+        composeTestRule.onNodeWithTag("row_1_recruiter").performClick()
+        composeTestRule.onNodeWithTag("row_1_recruiter_dialog").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("row_1_recruiter_search_input").performTextInput("nguyen hoa")
+
+        composeTestRule.onNodeWithTag("row_1_recruiter_option_aaaaaaaa-bbbb-4ccc-8ddd-222222222222").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("row_1_recruiter_option_aaaaaaaa-bbbb-4ccc-8ddd-111111111111").assertDoesNotExist()
+
+        composeTestRule.onNodeWithTag("row_1_recruiter_option_aaaaaaaa-bbbb-4ccc-8ddd-222222222222").performClick()
+        composeTestRule.onNodeWithTag("row_1_recruiter_dialog").assertDoesNotExist()
+        composeTestRule.onNodeWithText("Nguyễn Thị Hoa (HRP012)").assertIsDisplayed()
+
+        // 4. Reset confirmation dialog: Cancel ("Hủy") button is larger in both width & height than Confirm ("Đồng ý")
+        composeTestRule.onNodeWithTag("row_1_reset_or_remove_button").performClick()
+        composeTestRule.onNodeWithTag("confirm_reset_worker_row_dialog").assertIsDisplayed()
+
+        val cancelBounds = composeTestRule.onNodeWithTag("cancel_reset_worker_row_button")
+            .assertIsDisplayed()
+            .fetchSemanticsNode()
+            .boundsInRoot
+        val confirmBounds = composeTestRule.onNodeWithTag("confirm_reset_worker_row_button")
+            .assertIsDisplayed()
+            .fetchSemanticsNode()
+            .boundsInRoot
+
+        assertTrue(
+            "Expected Hủy button width (${cancelBounds.width}) > Đồng ý button width (${confirmBounds.width})",
+            cancelBounds.width > confirmBounds.width
+        )
+        assertTrue(
+            "Expected Hủy button height (${cancelBounds.height}) > Đồng ý button height (${confirmBounds.height})",
+            cancelBounds.height > confirmBounds.height
+        )
+        composeTestRule.onNodeWithTag("cancel_reset_worker_row_button").performClick()
+        composeTestRule.waitForIdle()
     }
 
     @Test
@@ -931,9 +971,7 @@ class WorkerUiAuthorizationRobolectricTest {
         server.start()
 
         val app = ApplicationProvider.getApplicationContext<Application>()
-        val db = Room.inMemoryDatabaseBuilder(app, MiniBiDatabase::class.java)
-            .allowMainThreadQueries()
-            .build()
+        val db = buildTestDb(app)
         val cookieFile = File(app.cacheDir, "ui_dash_overlay_${System.nanoTime()}.enc")
         val savedCredsFile = File(app.cacheDir, "ui_dash_saved_${System.nanoTime()}.enc")
         val prefsFile = File(app.cacheDir, "ui_dash_prefs_${System.nanoTime()}.preferences_pb")
@@ -962,63 +1000,55 @@ class WorkerUiAuthorizationRobolectricTest {
             )
         )
         val vm = MiniBiViewModel(app, repo)
+        registerTestResourcesCleanup(vm, db, server, cookieFile, savedCredsFile, prefsFile)
 
-        try {
-            composeTestRule.setContent {
-                MyApplicationTheme {
-                    MiniBiAppRoot(viewModel = vm)
-                }
+        composeTestRule.setContent {
+            MyApplicationTheme {
+                MiniBiAppRoot(viewModel = vm)
             }
-
-            composeTestRule.waitUntil(timeoutMillis = 5_000) {
-                org.robolectric.shadows.ShadowLooper.idleMainLooper()
-                !vm.sessionBootstrapping.value && vm.generalOverview.value != null
-            }
-            composeTestRule.waitForIdle()
-
-            // 1. Executive card removed & General Overview rendered
-            composeTestRule.onNodeWithText("Trung tâm Điều hành Tuyển dụng").assertDoesNotExist()
-            composeTestRule.onNodeWithText("Chưa hỗ trợ trên ứng dụng").assertDoesNotExist()
-            composeTestRule.onNodeWithTag("general_overview_section").assertIsDisplayed()
-            composeTestRule.onNodeWithText("Báo cáo Tổng quát Tuyển dụng").assertIsDisplayed()
-
-            // 2. Measure content Y position WITHOUT banner
-            composeTestRule.runOnIdle { vm.clearBanner() }
-            composeTestRule.waitForIdle()
-            val layerTopWithoutBanner = composeTestRule.onNodeWithTag("main_screen_content_layer")
-                .fetchSemanticsNode().boundsInRoot.top
-            val overviewTopWithoutBanner = composeTestRule.onNodeWithTag("general_overview_section")
-                .fetchSemanticsNode().boundsInRoot.top
-
-            // 3. Show "Xin chào..." banner -> appears in floating overlay layer with ZERO layout shift underneath
-            composeTestRule.runOnIdle { vm.showBanner("Xin chào Trần Quản Lý!") }
-            composeTestRule.waitForIdle()
-
-            composeTestRule.onNodeWithTag("floating_status_banner_overlay").assertIsDisplayed()
-            composeTestRule.onNodeWithText("Xin chào Trần Quản Lý!").assertIsDisplayed()
-
-            val layerTopWithBanner = composeTestRule.onNodeWithTag("main_screen_content_layer")
-                .fetchSemanticsNode().boundsInRoot.top
-            val overviewTopWithBanner = composeTestRule.onNodeWithTag("general_overview_section")
-                .fetchSemanticsNode().boundsInRoot.top
-
-            assertEquals(layerTopWithoutBanner, layerTopWithBanner, 0.5f)
-            assertEquals(overviewTopWithoutBanner, overviewTopWithBanner, 0.5f)
-
-            // 4. Dismiss banner -> still zero Y shift
-            composeTestRule.onNodeWithTag("dismiss_status_banner_button").performClick()
-            composeTestRule.waitForIdle()
-            val overviewTopAfterDismiss = composeTestRule.onNodeWithTag("general_overview_section")
-                .fetchSemanticsNode().boundsInRoot.top
-            assertEquals(overviewTopWithoutBanner, overviewTopAfterDismiss, 0.5f)
-        } finally {
-            vm.cancelScopeForTest()
-            server.shutdown()
-            db.close()
-            cookieFile.delete()
-            savedCredsFile.delete()
-            prefsFile.delete()
         }
+
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            !vm.sessionBootstrapping.value && vm.generalOverview.value != null
+        }
+        composeTestRule.waitForIdle()
+
+        // 1. Executive card removed & General Overview rendered
+        composeTestRule.onNodeWithText("Trung tâm Điều hành Tuyển dụng").assertDoesNotExist()
+        composeTestRule.onNodeWithText("Chưa hỗ trợ trên ứng dụng").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("general_overview_section").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Báo cáo Tổng quát Tuyển dụng").assertIsDisplayed()
+
+        // 2. Measure content Y position WITHOUT banner
+        composeTestRule.runOnIdle { vm.clearBanner() }
+        composeTestRule.waitForIdle()
+        val layerTopWithoutBanner = composeTestRule.onNodeWithTag("main_screen_content_layer")
+            .fetchSemanticsNode().boundsInRoot.top
+        val overviewTopWithoutBanner = composeTestRule.onNodeWithTag("general_overview_section")
+            .fetchSemanticsNode().boundsInRoot.top
+
+        // 3. Show "Xin chào..." banner -> appears in floating overlay layer with ZERO layout shift underneath
+        composeTestRule.runOnIdle { vm.showBanner("Xin chào Trần Quản Lý!") }
+        composeTestRule.waitForIdle()
+
+        composeTestRule.onNodeWithTag("floating_status_banner_overlay").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Xin chào Trần Quản Lý!").assertIsDisplayed()
+
+        val layerTopWithBanner = composeTestRule.onNodeWithTag("main_screen_content_layer")
+            .fetchSemanticsNode().boundsInRoot.top
+        val overviewTopWithBanner = composeTestRule.onNodeWithTag("general_overview_section")
+            .fetchSemanticsNode().boundsInRoot.top
+
+        assertEquals(layerTopWithoutBanner, layerTopWithBanner, 0.5f)
+        assertEquals(overviewTopWithoutBanner, overviewTopWithBanner, 0.5f)
+
+        // 4. Dismiss banner -> still zero Y shift
+        composeTestRule.onNodeWithTag("dismiss_status_banner_button").performClick()
+        composeTestRule.waitForIdle()
+        val overviewTopAfterDismiss = composeTestRule.onNodeWithTag("general_overview_section")
+            .fetchSemanticsNode().boundsInRoot.top
+        assertEquals(overviewTopWithoutBanner, overviewTopAfterDismiss, 0.5f)
     }
 
     @Test
@@ -1114,9 +1144,7 @@ class WorkerUiAuthorizationRobolectricTest {
         server.start()
 
         val app = ApplicationProvider.getApplicationContext<Application>()
-        val db = Room.inMemoryDatabaseBuilder(app, MiniBiDatabase::class.java)
-            .allowMainThreadQueries()
-            .build()
+        val db = buildTestDb(app)
         val cookieFile = File(app.cacheDir, "ui_wscope_${System.nanoTime()}.enc")
         val savedCredsFile = File(app.cacheDir, "ui_wscope_saved_${System.nanoTime()}.enc")
         val prefsFile = File(app.cacheDir, "ui_wscope_prefs_${System.nanoTime()}.preferences_pb")
@@ -1131,6 +1159,7 @@ class WorkerUiAuthorizationRobolectricTest {
             cookieCipher = JvmAes256GcmCookieCipher()
         )
         val vm = MiniBiViewModel(app, repo)
+        registerTestResourcesCleanup(vm, db, server, cookieFile, savedCredsFile, prefsFile)
 
         // Real backend Team Leader capabilities (no phantom "entry_read")
         val teamLeaderActor = AppActor(
@@ -1157,45 +1186,40 @@ class WorkerUiAuthorizationRobolectricTest {
             displayIdentifier = "vinhnt.td"
         )
 
-        try {
-            composeTestRule.setContent {
-                MyApplicationTheme {
-                    WorkersAndDirectEntryScreen(
-                        actor = teamLeaderActor,
-                        viewModel = vm,
-                        onBackToDashboard = {}
-                    )
-                }
-            }
-            composeTestRule.waitForIdle()
-
-            val rootWidth = composeTestRule.onNodeWithTag("workers_lazy_column")
-                .fetchSemanticsNode().boundsInRoot.right
-
-            // All 4 scope buttons MUST be visible simultaneously inside the 360dp viewport with zero horizontal scroll
-            val expectedTags = listOf(
-                "worker_scope_tab_managed",
-                "worker_scope_tab_recruited",
-                "worker_scope_tab_team",
-                "worker_scope_tab_uploader"
-            )
-            for (tag in expectedTags) {
-                val node = composeTestRule.onNodeWithTag(tag)
-                node.assertIsDisplayed()
-                val bounds = node.fetchSemanticsNode().boundsInRoot
-                assertTrue("Button $tag left (${bounds.left}) must be >= 0", bounds.left >= 0f)
-                assertTrue(
-                    "Button $tag right (${bounds.right}) must fit within screen ($rootWidth) without scroll",
-                    bounds.right <= rootWidth + 1f
+        composeTestRule.setContent {
+            MyApplicationTheme {
+                WorkersAndDirectEntryScreen(
+                    actor = teamLeaderActor,
+                    viewModel = vm,
+                    onBackToDashboard = {}
                 )
             }
-        } finally {
-            vm.cancelScopeForTest()
-            server.shutdown()
-            db.close()
-            cookieFile.delete()
-            savedCredsFile.delete()
-            prefsFile.delete()
+        }
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            !vm.workerLoading.value && !vm.catalogLoading.value
+        }
+        composeTestRule.waitForIdle()
+
+        val rootWidth = composeTestRule.onNodeWithTag("workers_lazy_column")
+            .fetchSemanticsNode().boundsInRoot.right
+
+        // All 4 scope buttons MUST be visible simultaneously inside the 360dp viewport with zero horizontal scroll
+        val expectedTags = listOf(
+            "worker_scope_tab_managed",
+            "worker_scope_tab_recruited",
+            "worker_scope_tab_team",
+            "worker_scope_tab_uploader"
+        )
+        for (tag in expectedTags) {
+            val node = composeTestRule.onNodeWithTag(tag)
+            node.assertIsDisplayed()
+            val bounds = node.fetchSemanticsNode().boundsInRoot
+            assertTrue("Button $tag left (${bounds.left}) must be >= 0", bounds.left >= 0f)
+            assertTrue(
+                "Button $tag right (${bounds.right}) must fit within screen ($rootWidth) without scroll",
+                bounds.right <= rootWidth + 1f
+            )
         }
     }
 
@@ -1433,9 +1457,7 @@ class WorkerUiAuthorizationRobolectricTest {
         server.start()
 
         val app = ApplicationProvider.getApplicationContext<Application>()
-        val db = Room.inMemoryDatabaseBuilder(app, MiniBiDatabase::class.java)
-            .allowMainThreadQueries()
-            .build()
+        val db = buildTestDb(app)
         val cookieFile = File(app.cacheDir, "ui_tl_dash_${System.nanoTime()}.enc")
         val savedCredsFile = File(app.cacheDir, "ui_tl_saved_${System.nanoTime()}.enc")
         val anchorFile = File(app.cacheDir, "ui_tl_anchor_${System.nanoTime()}.enc")
@@ -1464,91 +1486,82 @@ class WorkerUiAuthorizationRobolectricTest {
             )
         )
         val vm = MiniBiViewModel(app, repo)
+        registerTestResourcesCleanup(vm, db, server, cookieFile, savedCredsFile, anchorFile, prefsFile)
 
-        try {
-            composeTestRule.setContent {
-                MyApplicationTheme {
-                    MiniBiAppRoot(viewModel = vm)
-                }
+        composeTestRule.setContent {
+            MyApplicationTheme {
+                MiniBiAppRoot(viewModel = vm)
             }
-
-            composeTestRule.waitUntil(timeoutMillis = 5_000) {
-                org.robolectric.shadows.ShadowLooper.idleMainLooper()
-                !vm.sessionBootstrapping.value &&
-                    vm.generalOverview.value != null &&
-                    vm.teamReport.value != null &&
-                    vm.duplicateGroups.value.isNotEmpty()
-            }
-            composeTestRule.waitForIdle()
-
-            // 1. All 3 Dashboard tabs fit on 360dp screen simultaneously without horizontal scroll
-            val dashWidth = composeTestRule.onNodeWithTag("dashboard_lazy_column")
-                .fetchSemanticsNode().boundsInRoot.right
-            for (idx in 0..2) {
-                val tabNode = composeTestRule.onNodeWithTag("dashboard_tab_$idx")
-                tabNode.assertIsDisplayed()
-                assertTrue(tabNode.fetchSemanticsNode().boundsInRoot.right <= dashWidth + 1f)
-            }
-
-            // 2. General Overview has real paginated counts (3 total, 2 ON, 1 UNCONFIRMED), NOT 0 NLĐ!
-            val overview = vm.generalOverview.value!!
-            assertEquals(3, overview.totalProfiles)
-            assertEquals(2, overview.workingCount)
-            assertEquals(1, overview.waitingCount)
-            assertEquals(0, overview.leftCount)
-            assertEquals(2, overview.activeHiringDays)
-            assertEquals("Nhóm Vinh Tuyển Dụng", overview.scopeDescription)
-            composeTestRule.onNodeWithTag("general_overview_section").assertIsDisplayed()
-
-            // 3. Switch to "Báo cáo theo nhóm" -> auto-displays Team Leader's own team report with ZERO manual code input!
-            composeTestRule.onNodeWithTag("dashboard_tab_1").performClick()
-            composeTestRule.waitForIdle()
-
-            composeTestRule.onNodeWithText("Mã nhóm tuyển dụng").assertDoesNotExist()
-            composeTestRule.onNodeWithTag("team_bucket_picker_card").assertDoesNotExist()
-            composeTestRule.onNodeWithTag("team_report_detail_card").assertIsDisplayed()
-            composeTestRule.onNodeWithText("Nhóm Vinh Tuyển Dụng").assertIsDisplayed()
-            assertEquals(3, vm.teamReport.value!!.totalRecruited)
-            assertEquals(2, vm.teamReport.value!!.activeRecruiterCount)
-
-            // Attempting to load another team code fails closed for non-admin Team Leader
-            val ownSnapshotBefore = vm.teamReport.value
-            composeTestRule.runOnIdle { vm.loadTeamReport("OTHER_TEAM_CODE") }
-            composeTestRule.waitForIdle()
-            assertEquals("Bạn chỉ được xem báo cáo của nhóm mình quản lý.", vm.teamReportError.value)
-            composeTestRule.runOnIdle { vm.loadTeamReport(ownSnapshotBefore!!.bucketKey) }
-            composeTestRule.waitForIdle()
-            assertNull(vm.teamReportError.value)
-            assertEquals("Nhóm Vinh Tuyển Dụng", vm.teamReport.value?.bucketDisplay)
-
-            // 4. Switch to "Cảnh báo CCCD trùng" -> compact toolbar, zero vertical button stretching / blank gap!
-            composeTestRule.onNodeWithTag("dashboard_tab_2").performClick()
-            composeTestRule.waitForIdle()
-
-            val toolbarBounds = composeTestRule.onNodeWithTag("duplicate_cccd_toolbar")
-                .fetchSemanticsNode().boundsInRoot
-            val density = composeTestRule.density.density
-            val toolbarHeightDp = (toolbarBounds.bottom - toolbarBounds.top) / density
-            assertTrue(
-                "Duplicate CCCD toolbar height ($toolbarHeightDp dp) must be compact (< 130dp), not vertically stretched",
-                toolbarHeightDp < 130f
-            )
-
-            val firstGroupTop = composeTestRule.onNodeWithText("CCCD đuôi ***6147 (2 hồ sơ)")
-                .fetchSemanticsNode().boundsInRoot.top
-            val gapBetweenToolbarAndGroupTextDp = (firstGroupTop - toolbarBounds.bottom) / density
-            assertTrue(
-                "Gap between toolbar and first duplicate card title ($gapBetweenToolbarAndGroupTextDp dp) must be compact (< 40dp)",
-                gapBetweenToolbarAndGroupTextDp < 40f
-            )
-        } finally {
-            vm.cancelScopeForTest()
-            server.shutdown()
-            db.close()
-            cookieFile.delete()
-            savedCredsFile.delete()
-            anchorFile.delete()
-            prefsFile.delete()
         }
+
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            !vm.sessionBootstrapping.value &&
+                vm.generalOverview.value != null &&
+                vm.teamReport.value != null &&
+                vm.duplicateGroups.value.isNotEmpty()
+        }
+        composeTestRule.waitForIdle()
+
+        // 1. All 3 Dashboard tabs fit on 360dp screen simultaneously without horizontal scroll
+        val dashWidth = composeTestRule.onNodeWithTag("dashboard_lazy_column")
+            .fetchSemanticsNode().boundsInRoot.right
+        for (idx in 0..2) {
+            val tabNode = composeTestRule.onNodeWithTag("dashboard_tab_$idx")
+            tabNode.assertIsDisplayed()
+            assertTrue(tabNode.fetchSemanticsNode().boundsInRoot.right <= dashWidth + 1f)
+        }
+
+        // 2. General Overview has real paginated counts (3 total, 2 ON, 1 UNCONFIRMED), NOT 0 NLĐ!
+        val overview = vm.generalOverview.value!!
+        assertEquals(3, overview.totalProfiles)
+        assertEquals(2, overview.workingCount)
+        assertEquals(1, overview.waitingCount)
+        assertEquals(0, overview.leftCount)
+        assertEquals(2, overview.activeHiringDays)
+        assertEquals("Nhóm Vinh Tuyển Dụng", overview.scopeDescription)
+        composeTestRule.onNodeWithTag("general_overview_section").assertIsDisplayed()
+
+        // 3. Switch to "Báo cáo theo nhóm" -> auto-displays Team Leader's own team report with ZERO manual code input!
+        composeTestRule.onNodeWithTag("dashboard_tab_1").performClick()
+        composeTestRule.waitForIdle()
+
+        composeTestRule.onNodeWithText("Mã nhóm tuyển dụng").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("team_bucket_picker_card").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("team_report_detail_card").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Nhóm Vinh Tuyển Dụng").assertIsDisplayed()
+        assertEquals(3, vm.teamReport.value!!.totalRecruited)
+        assertEquals(2, vm.teamReport.value!!.activeRecruiterCount)
+
+        // Attempting to load another team code fails closed for non-admin Team Leader
+        val ownSnapshotBefore = vm.teamReport.value
+        composeTestRule.runOnIdle { vm.loadTeamReport("OTHER_TEAM_CODE") }
+        composeTestRule.waitForIdle()
+        assertEquals("Bạn chỉ được xem báo cáo của nhóm mình quản lý.", vm.teamReportError.value)
+        composeTestRule.runOnIdle { vm.loadTeamReport(ownSnapshotBefore!!.bucketKey) }
+        composeTestRule.waitForIdle()
+        assertNull(vm.teamReportError.value)
+        assertEquals("Nhóm Vinh Tuyển Dụng", vm.teamReport.value?.bucketDisplay)
+
+        // 4. Switch to "Cảnh báo CCCD trùng" -> compact toolbar, zero vertical button stretching / blank gap!
+        composeTestRule.onNodeWithTag("dashboard_tab_2").performClick()
+        composeTestRule.waitForIdle()
+
+        val toolbarBounds = composeTestRule.onNodeWithTag("duplicate_cccd_toolbar")
+            .fetchSemanticsNode().boundsInRoot
+        val density = composeTestRule.density.density
+        val toolbarHeightDp = (toolbarBounds.bottom - toolbarBounds.top) / density
+        assertTrue(
+            "Duplicate CCCD toolbar height ($toolbarHeightDp dp) must be compact (< 130dp), not vertically stretched",
+            toolbarHeightDp < 130f
+        )
+
+        val firstGroupTop = composeTestRule.onNodeWithText("CCCD đuôi ***6147 (2 hồ sơ)")
+            .fetchSemanticsNode().boundsInRoot.top
+        val gapBetweenToolbarAndGroupTextDp = (firstGroupTop - toolbarBounds.bottom) / density
+        assertTrue(
+            "Gap between toolbar and first duplicate card title ($gapBetweenToolbarAndGroupTextDp dp) must be compact (< 40dp)",
+            gapBetweenToolbarAndGroupTextDp < 40f
+        )
     }
 }
