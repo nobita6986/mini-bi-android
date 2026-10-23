@@ -1263,4 +1263,86 @@ class MiniBiViewModel(application: Application) : AndroidViewModel(application) 
             "Tọa độ GPS: %.5f, %.5f".format(Locale.US, lat, lng)
         }
     }
+
+    // =========================================================================
+    // Attendance Check-In & Durable Outbox Actions (Zero fake success)
+    // =========================================================================
+
+    fun submitAttendanceCheckIn(
+        photoFile: File,
+        photoUri: String?,
+        note: String
+    ) {
+        val actor = currentActor.value ?: run {
+            showBanner("Phiên đăng nhập không hợp lệ. Vui lòng đăng nhập lại.", isError = true)
+            return
+        }
+        val gps = _gpsSnapshot.value ?: run {
+            showBanner("Chưa có tọa độ GPS thực tế. Vui lòng bấm làm mới GPS.", isError = true)
+            return
+        }
+        if (_submittingAttendance.value) return
+        _submittingAttendance.value = true
+        viewModelScope.launch {
+            try {
+                val outcome = repository.attendanceOutboxService.submitCheckIn(
+                    actor = actor,
+                    latitude = gps.latitude,
+                    longitude = gps.longitude,
+                    accuracyMeters = gps.accuracyMeters,
+                    addressHint = gps.addressHint,
+                    sourcePhotoFile = photoFile,
+                    sourcePhotoUri = photoUri,
+                    note = note
+                )
+                // Only `SYNCED` has isError = false with "Đã chấm công"; offline QUEUED has "Đã lưu trên thiết bị, đang chờ đồng bộ"
+                showBanner(outcome.userMessage, isError = !outcome.isSynced)
+            } catch (e: Exception) {
+                showBanner(
+                    (e as? BackendApiException)?.message
+                        ?: e.message
+                        ?: "Không thể thực hiện chấm công.",
+                    isError = true
+                )
+            } finally {
+                _submittingAttendance.value = false
+            }
+        }
+    }
+
+    fun retryAttendanceOutbox() {
+        val actor = currentActor.value ?: return
+        if (_submittingAttendance.value) return
+        _submittingAttendance.value = true
+        viewModelScope.launch {
+            try {
+                val summary = repository.attendanceOutboxService.flushRetryableOutbox(
+                    appUserId = actor.appUserId,
+                    scheduleWorkOnFailure = true
+                )
+                when {
+                    summary.processedCount == 0 && summary.remainingRetryableCount > 0 ->
+                        showBanner("Đã lưu trên thiết bị, đang chờ đồng bộ khi có mạng.", isError = true)
+                    summary.syncedCount > 0 && summary.remainingRetryableCount == 0 && summary.terminalFailureCount == 0 ->
+                        showBanner("Đã chấm công (${summary.syncedCount} lượt đồng bộ thành công).", isError = false)
+                    summary.syncedCount > 0 ->
+                        showBanner("Đã đồng bộ ${summary.syncedCount}/${summary.processedCount} lượt chấm công.", isError = true)
+                    else -> {
+                        val latestRecord = attendanceRecords.value.firstOrNull { it.appUserId == actor.appUserId }
+                        showBanner(
+                            latestRecord?.statusMessage ?: "Chưa thể đồng bộ hàng đợi chấm công lên máy chủ.",
+                            isError = true
+                        )
+                    }
+                }
+            } catch (e: Exception) {
+                showBanner(
+                    (e as? BackendApiException)?.message ?: "Không thể đồng bộ hàng đợi chấm công.",
+                    isError = true
+                )
+            } finally {
+                _submittingAttendance.value = false
+            }
+        }
+    }
 }

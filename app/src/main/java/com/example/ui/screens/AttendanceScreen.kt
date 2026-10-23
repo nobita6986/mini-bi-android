@@ -122,7 +122,9 @@ fun AttendanceScreen(
     val todayRecords = remember(attendanceRecords, todayDateStr) {
         attendanceRecords.filter { it.clientCapturedAtIso.startsWith(todayDateStr) }
     }
-    val nextSequenceNumber = todayRecords.size + 1
+    val syncedTodayRecords = remember(todayRecords) {
+        todayRecords.filter { it.syncStatus == AttendanceOutboxStatus.SYNCED }
+    }
 
     val takePictureLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.TakePicture()
@@ -277,15 +279,19 @@ fun AttendanceScreen(
                                 )
                                 Column {
                                     Text(
-                                        text = "Số lượt ghi nhận hôm nay ($todayDateStr)",
+                                        text = "Đã chấm công trên máy chủ hôm nay ($todayDateStr)",
                                         style = MaterialTheme.typography.labelMedium,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
                                     Text(
-                                        text = if (todayRecords.isEmpty())
-                                            "Chưa có lượt chấm công nào hôm nay"
-                                        else
-                                            "Lần gần nhất lúc ${todayRecords.first().clientCapturedAtIso.drop(11).take(8)}",
+                                        text = when {
+                                            syncedTodayRecords.isNotEmpty() ->
+                                                "Xác nhận gần nhất lúc ${syncedTodayRecords.first().clientCapturedAtIso.drop(11).take(8)}"
+                                            todayRecords.isNotEmpty() ->
+                                                "Chưa có lượt nào được máy chủ xác nhận (${todayRecords.size} bản ghi tại máy)"
+                                            else ->
+                                                "Chưa có lượt chấm công nào hôm nay"
+                                        },
                                         style = MaterialTheme.typography.bodySmall
                                     )
                                 }
@@ -295,7 +301,7 @@ fun AttendanceScreen(
                                 color = MaterialTheme.colorScheme.primary
                             ) {
                                 Text(
-                                    text = "${todayRecords.size} lần",
+                                    text = "${syncedTodayRecords.size} lần",
                                     style = MaterialTheme.typography.titleMedium,
                                     fontFamily = JetBrainsMono,
                                     fontWeight = FontWeight.Bold,
@@ -465,7 +471,7 @@ fun AttendanceScreen(
                                     tint = SemanticColors.SuccessLight
                                 )
                                 Text(
-                                    text = "Ảnh chụp lượt #$nextSequenceNumber đã sẵn sàng",
+                                    text = "Ảnh xác thực đã sẵn sàng (thứ tự lượt do máy chủ cấp)",
                                     style = MaterialTheme.typography.titleSmall,
                                     color = SemanticColors.SuccessLight
                                 )
@@ -499,7 +505,11 @@ fun AttendanceScreen(
                                         captureError = "Chưa có tọa độ GPS thực tế. Vui lòng bấm làm mới GPS."
                                         return@Button
                                     }
-                                    onSubmitAttendanceAction?.invoke(file, uriStr, note)
+                                    if (onSubmitAttendanceAction != null) {
+                                        onSubmitAttendanceAction.invoke(file, uriStr, note)
+                                    } else {
+                                        viewModel.submitAttendanceCheckIn(file, uriStr, note)
+                                    }
                                     capturedPhotoFile = null
                                     capturedPhotoUri = null
                                     note = ""
@@ -559,9 +569,15 @@ fun AttendanceScreen(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-                if (retryableCount > 0 && onRetryOutboxAction != null) {
+                if (retryableCount > 0) {
                     OutlinedButton(
-                        onClick = onRetryOutboxAction,
+                        onClick = {
+                            if (onRetryOutboxAction != null) {
+                                onRetryOutboxAction.invoke()
+                            } else {
+                                viewModel.retryAttendanceOutbox()
+                            }
+                        },
                         shape = RoundedCornerShape(10.dp),
                         modifier = Modifier.testTag("retry_attendance_outbox_button")
                     ) {
@@ -606,18 +622,10 @@ fun AttendanceScreen(
                 }
             }
         } else {
-            val groupedByDayCounts = attendanceRecords
-                .groupBy { it.clientCapturedAtIso.take(10) }
-                .mapValues { (_, list) ->
-                    list.mapIndexed { idx, rec -> rec.id to (list.size - idx) }.toMap()
-                }
-
             itemsIndexed(attendanceRecords, key = { _, item -> item.id }) { _, item ->
-                val dayKey = item.clientCapturedAtIso.take(10)
-                val seqInDay = item.serverSequenceInDay ?: groupedByDayCounts[dayKey]?.get(item.id) ?: 1
                 AttendanceHistoryCard(
                     record = item,
-                    sequenceInDay = seqInDay,
+                    serverSequenceInDay = item.serverSequenceInDay,
                     expanded = selectedRecordDetail?.id == item.id,
                     onClick = {
                         selectedRecordDetail = if (selectedRecordDetail?.id == item.id) null else item
@@ -631,7 +639,7 @@ fun AttendanceScreen(
 @Composable
 private fun AttendanceHistoryCard(
     record: AttendanceEntity,
-    sequenceInDay: Int,
+    serverSequenceInDay: Int?,
     expanded: Boolean,
     onClick: () -> Unit
 ) {
@@ -649,6 +657,26 @@ private fun AttendanceHistoryCard(
         AttendanceOutboxStatus.RETRYABLE_ERROR -> Icons.Default.CloudUpload
         AttendanceOutboxStatus.BACKEND_NOT_AVAILABLE -> Icons.Default.CloudOff
         else -> Icons.Default.ErrorOutline
+    }
+    val badgeLabel = when {
+        record.syncStatus == AttendanceOutboxStatus.SYNCED && serverSequenceInDay != null ->
+            "Lần #$serverSequenceInDay trong ngày"
+        record.syncStatus == AttendanceOutboxStatus.SYNCED ->
+            "Đã chấm công"
+        record.syncStatus == AttendanceOutboxStatus.QUEUED ->
+            "Đang chờ đồng bộ"
+        record.syncStatus == AttendanceOutboxStatus.SYNCING ->
+            "Đang gửi..."
+        record.syncStatus == AttendanceOutboxStatus.RETRYABLE_ERROR ->
+            "Chờ tự động thử lại"
+        record.syncStatus == AttendanceOutboxStatus.BACKEND_NOT_AVAILABLE ->
+            "Chưa bật trên máy chủ"
+        record.syncStatus == AttendanceOutboxStatus.AUTH_REQUIRED ->
+            "Cần đăng nhập lại"
+        record.syncStatus == AttendanceOutboxStatus.DENIED ->
+            "Từ chối quyền"
+        else ->
+            "Bị từ chối"
     }
 
     Card(
@@ -691,12 +719,12 @@ private fun AttendanceHistoryCard(
                     ) {
                         Surface(
                             shape = RoundedCornerShape(6.dp),
-                            color = MaterialTheme.colorScheme.primaryContainer
+                            color = statusColor.copy(alpha = 0.14f)
                         ) {
                             Text(
-                                text = "Lần #$sequenceInDay trong ngày",
+                                text = badgeLabel,
                                 style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                color = statusColor,
                                 modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                             )
                         }

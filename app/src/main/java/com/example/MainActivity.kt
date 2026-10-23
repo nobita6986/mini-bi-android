@@ -453,7 +453,13 @@ fun MiniBiAppRoot(viewModel: MiniBiViewModel) {
                             AttendanceScreen(
                                 actor = authenticatedActor,
                                 viewModel = viewModel,
-                                onBackToDashboard = { viewModel.navigateTo(MainDestination.DASHBOARD) }
+                                onBackToDashboard = { viewModel.navigateTo(MainDestination.DASHBOARD) },
+                                onSubmitAttendanceAction = { file, uriStr, noteText ->
+                                    viewModel.submitAttendanceCheckIn(file, uriStr, noteText)
+                                },
+                                onRetryOutboxAction = {
+                                    viewModel.retryAttendanceOutbox()
+                                }
                             )
                         }
 

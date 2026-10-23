@@ -266,6 +266,13 @@ class MiniBiRepository(
         dao = dao
     )
 
+    val attendanceOutboxService = AttendanceOutboxService(
+        context = context,
+        httpClient = httpClient,
+        dao = dao,
+        nowMillis = nowMillis
+    )
+
     val imageLoader: ImageLoader by lazy {
         httpClient.createImageLoader(context)
     }
@@ -341,6 +348,9 @@ class MiniBiRepository(
             )
             val actor = ActorContractParser.parseEnvelopeActor(json, displayHint)
             _activeActor.value = actor
+            if (dao.getRetryableAttendanceOutboxForUser(actor.appUserId).isNotEmpty()) {
+                AttendanceOutboxService.enqueueDurableOutboxWork(context)
+            }
             Result.success(actor)
         } catch (e: BackendApiException) {
             if (e.kind == BackendFailureKind.UNAUTHENTICATED || e.kind == BackendFailureKind.FORBIDDEN) {
@@ -394,6 +404,9 @@ class MiniBiRepository(
                 prefs[KEY_DISPLAY_IDENTIFIER] = displayId
             }
             _activeActor.value = actor
+            if (dao.getRetryableAttendanceOutboxForUser(actor.appUserId).isNotEmpty()) {
+                AttendanceOutboxService.enqueueDurableOutboxWork(context)
+            }
             Result.success(actor)
         } catch (e: BackendApiException) {
             Result.failure(e)
