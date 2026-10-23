@@ -39,6 +39,7 @@ class WorkReportsReportingAndAttendanceContractTest {
     private lateinit var database: MiniBiDatabase
     private lateinit var server: MockWebServer
     private lateinit var cookieFile: File
+    private lateinit var timeAnchorFile: File
 
     private val testActor = AppActor(
         appUserId = "11111111-2222-4333-8444-555555555555",
@@ -57,6 +58,7 @@ class WorkReportsReportingAndAttendanceContractTest {
         server = MockWebServer()
         server.start()
         cookieFile = File(context.cacheDir, "wr_att_cookies_${System.nanoTime()}.enc")
+        timeAnchorFile = File(context.cacheDir, "wr_att_anchor_${System.nanoTime()}.enc")
     }
 
     @After
@@ -64,6 +66,7 @@ class WorkReportsReportingAndAttendanceContractTest {
         database.close()
         runCatching { server.shutdown() }
         runCatching { cookieFile.delete() }
+        runCatching { timeAnchorFile.delete() }
     }
 
     private fun createRepository(): MiniBiRepository {
@@ -73,6 +76,7 @@ class WorkReportsReportingAndAttendanceContractTest {
             defaultServerUrl = server.url("/").toString().trimEnd('/'),
             allowDebugUrlOverride = true,
             cookieStorageFile = cookieFile,
+            timeAnchorStorageFile = timeAnchorFile,
             cookieCipher = JvmAes256GcmCookieCipher()
         )
     }
@@ -270,6 +274,7 @@ class WorkReportsReportingAndAttendanceContractTest {
             context = context,
             httpClient = repo.httpClient,
             dao = database.miniBiDao(),
+            timeAnchorManager = repo.attendanceTimeAnchorManager,
             isNetworkAvailable = { true },
             outboxWorkScheduler = { scheduleCounter.incrementAndGet() }
         )
@@ -306,8 +311,13 @@ class WorkReportsReportingAndAttendanceContractTest {
                   "ok": true,
                   "checkin": {
                     "checkin_id": "dddd9999-eeee-4888-8777-ffff66665555",
+                    "business_date": "2026-10-23",
                     "sequence_in_day": 3,
-                    "daily_count": 3
+                    "daily_count": 3,
+                    "captured_at": "2026-10-23T01:20:12.000Z",
+                    "received_at": "2026-10-23T01:25:00.000Z",
+                    "time_source": "DEVICE_CLOCK_UNVERIFIED",
+                    "replayed": false
                   }
                 }
                 """.trimIndent()
@@ -376,6 +386,7 @@ class WorkReportsReportingAndAttendanceContractTest {
             context = context,
             httpClient = repo.httpClient,
             dao = database.miniBiDao(),
+            timeAnchorManager = repo.attendanceTimeAnchorManager,
             isNetworkAvailable = { true },
             outboxWorkScheduler = { scheduleCounter.incrementAndGet() }
         )
@@ -415,6 +426,7 @@ class WorkReportsReportingAndAttendanceContractTest {
             context = context,
             httpClient = repo.httpClient,
             dao = database.miniBiDao(),
+            timeAnchorManager = repo.attendanceTimeAnchorManager,
             isNetworkAvailable = { online },
             outboxWorkScheduler = { scheduleCounter.incrementAndGet() }
         )
