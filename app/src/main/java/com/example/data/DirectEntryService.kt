@@ -13,11 +13,12 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.io.File
-import java.time.LocalDate
-import java.time.ZoneId
-import java.time.format.DateTimeFormatter
-import java.time.format.ResolverStyle
+import java.text.SimpleDateFormat
+import java.util.Calendar
+import java.util.Date
+import java.util.GregorianCalendar
 import java.util.Locale
+import java.util.TimeZone
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
@@ -75,18 +76,33 @@ object DirectEntryContract {
         RegexOption.IGNORE_CASE
     )
 
-    private val UI_DATE_FORMATTER = DateTimeFormatter.ofPattern("dd/MM/uuuu")
-        .withResolverStyle(ResolverStyle.STRICT)
-
-    private val ISO_DATE_FORMATTER = DateTimeFormatter.ofPattern("uuuu-MM-dd")
-        .withResolverStyle(ResolverStyle.STRICT)
+    private val ISO_DATE_REGEX = Regex("^(\\d{4})-(\\d{2})-(\\d{2})$")
 
     fun todayIsoInHcm(): String {
-        return LocalDate.now(ZoneId.of("Asia/Ho_Chi_Minh")).format(ISO_DATE_FORMATTER)
+        return SimpleDateFormat("yyyy-MM-dd", Locale.US).apply {
+            timeZone = TimeZone.getTimeZone("Asia/Ho_Chi_Minh")
+        }.format(Date())
     }
 
     fun todayUiInHcm(): String {
-        return LocalDate.now(ZoneId.of("Asia/Ho_Chi_Minh")).format(UI_DATE_FORMATTER)
+        return SimpleDateFormat("dd/MM/yyyy", Locale.US).apply {
+            timeZone = TimeZone.getTimeZone("Asia/Ho_Chi_Minh")
+        }.format(Date())
+    }
+
+    private fun validateStrictCalendarDate(year: Int, month: Int, day: Int) {
+        if (year < 1900 || year > 2100) {
+            throw IllegalArgumentException("Year out of bounds: $year")
+        }
+        val cal = GregorianCalendar(TimeZone.getTimeZone("UTC"), Locale.US).apply {
+            isLenient = false
+            clear()
+            set(Calendar.YEAR, year)
+            set(Calendar.MONTH, month - 1)
+            set(Calendar.DAY_OF_MONTH, day)
+        }
+        // Trigger strict validation (rejects e.g. 2026-02-29 or month 13)
+        cal.timeInMillis
     }
 
     fun uiDateToIsoDate(rawDate: String): String {
@@ -94,30 +110,38 @@ object DirectEntryContract {
         if (cleaned.isEmpty()) {
             throw invalid("PROFILE_DATE_INVALID", "Ngày tháng không được để trống.")
         }
-        val parsed = try {
-            if (cleaned.contains("/")) {
+        return try {
+            val (year, month, day) = if (cleaned.contains("/")) {
                 val parts = cleaned.split("/")
-                if (parts.size != 3) throw IllegalArgumentException("Expected DD/MM/YYYY")
-                val normalized = "%02d/%02d/%04d".format(
-                    Locale.US,
-                    parts[0].toInt(),
-                    parts[1].toInt(),
-                    parts[2].toInt()
-                )
-                LocalDate.parse(normalized, UI_DATE_FORMATTER)
+                if (parts.size != 3 || parts[2].length != 4) {
+                    throw IllegalArgumentException("Expected DD/MM/YYYY")
+                }
+                Triple(parts[2].toInt(), parts[1].toInt(), parts[0].toInt())
             } else {
-                LocalDate.parse(cleaned, ISO_DATE_FORMATTER)
+                val match = ISO_DATE_REGEX.matchEntire(cleaned)
+                    ?: throw IllegalArgumentException("Expected YYYY-MM-DD")
+                Triple(
+                    match.groupValues[1].toInt(),
+                    match.groupValues[2].toInt(),
+                    match.groupValues[3].toInt()
+                )
             }
+            validateStrictCalendarDate(year, month, day)
+            "%04d-%02d-%02d".format(Locale.US, year, month, day)
         } catch (e: Exception) {
             throw invalid("PROFILE_DATE_INVALID", "Ngày '$cleaned' không đúng định dạng DD/MM/YYYY hợp lệ.", e)
         }
-        return parsed.format(ISO_DATE_FORMATTER)
     }
 
     fun isoDateToUiDate(isoDate: String): String {
         val cleaned = isoDate.trim()
         return try {
-            LocalDate.parse(cleaned, ISO_DATE_FORMATTER).format(UI_DATE_FORMATTER)
+            val match = ISO_DATE_REGEX.matchEntire(cleaned) ?: return cleaned
+            val year = match.groupValues[1].toInt()
+            val month = match.groupValues[2].toInt()
+            val day = match.groupValues[3].toInt()
+            validateStrictCalendarDate(year, month, day)
+            "%02d/%02d/%04d".format(Locale.US, day, month, year)
         } catch (_: Exception) {
             cleaned
         }

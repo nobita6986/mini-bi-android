@@ -1,11 +1,11 @@
 package com.example.data
 
+import android.util.Base64
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.URLEncoder
-import java.util.Base64
 import java.util.Locale
 import kotlin.math.roundToInt
 
@@ -63,9 +63,10 @@ object WorkReportsContract {
         if (trimmed == "unknown" || CANONICAL_TEAM_BUCKET_REGEX.matches(trimmed)) {
             return trimmed
         }
-        val encoded = Base64.getUrlEncoder()
-            .withoutPadding()
-            .encodeToString(trimmed.toByteArray(Charsets.UTF_8))
+        val encoded = Base64.encodeToString(
+            trimmed.toByteArray(Charsets.UTF_8),
+            Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING
+        )
         return "team.$encoded"
     }
 
