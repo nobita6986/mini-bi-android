@@ -4,26 +4,22 @@ import android.content.Context
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import coil.ImageLoader
+import com.example.BuildConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
-import okhttp3.Cookie
-import okhttp3.CookieJar
-import okhttp3.HttpUrl
-import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
-import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.OkHttpClient
-import okhttp3.Request
-import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.io.IOException
 import java.security.MessageDigest
 import java.util.Locale
-import java.util.concurrent.TimeUnit
 
 private val Context.dataStore by preferencesDataStore(name = "mini_bi_prefs")
 
@@ -49,21 +45,13 @@ class BackendApiException(
 ) : Exception(message, cause)
 
 object ActorContractParser {
-    private val UUID_REGEX = Regex("^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$", RegexOption.IGNORE_CASE)
+    private val UUID_REGEX = Regex(
+        "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+        RegexOption.IGNORE_CASE
+    )
     private val VALID_SCOPE_KINDS = setOf("own", "team", "all")
 
-    fun parseEnvelopeActor(bodyStr: String, displayIdentifier: String? = null): AppActor {
-        val json = try {
-            JSONObject(bodyStr)
-        } catch (e: Exception) {
-            throw BackendApiException(
-                kind = BackendFailureKind.CONTRACT_INVALID,
-                statusCode = 200,
-                backendCode = "CONTRACT_INVALID",
-                message = "Phản hồi máy chủ không đúng định dạng JSON.",
-                cause = e
-            )
-        }
+    fun parseEnvelopeActor(json: JSONObject, displayIdentifier: String? = null): AppActor {
         if (!json.optBoolean("ok", false)) {
             throw BackendApiException(
                 kind = BackendFailureKind.CONTRACT_INVALID,
@@ -79,6 +67,21 @@ object ActorContractParser {
             message = "Thiếu thông tin phiên người dùng từ máy chủ."
         )
         return parseActorObject(actorObj, displayIdentifier)
+    }
+
+    fun parseEnvelopeActor(bodyStr: String, displayIdentifier: String? = null): AppActor {
+        val json = try {
+            JSONObject(bodyStr)
+        } catch (e: Exception) {
+            throw BackendApiException(
+                kind = BackendFailureKind.CONTRACT_INVALID,
+                statusCode = 200,
+                backendCode = "CONTRACT_INVALID",
+                message = "Phản hồi máy chủ không đúng định dạng JSON.",
+                cause = e
+            )
+        }
+        return parseEnvelopeActor(json, displayIdentifier)
     }
 
     fun parseActorObject(actorObj: JSONObject, displayIdentifier: String? = null): AppActor {
@@ -138,7 +141,11 @@ object ActorContractParser {
             val kind = sObj.optString("kind", "").trim()
             val reference = sObj.optString("reference", "").trim()
             val validFrom = sObj.optString("valid_from", "").trim()
-            val validTo = if (sObj.isNull("valid_to")) null else sObj.optString("valid_to", "").trim().ifBlank { null }
+            val validTo = if (sObj.isNull("valid_to")) {
+                null
+            } else {
+                sObj.optString("valid_to", "").trim().ifBlank { null }
+            }
             if (kind !in VALID_SCOPE_KINDS || validFrom.isBlank()) {
                 throw BackendApiException(
                     kind = BackendFailureKind.CONTRACT_INVALID,
@@ -200,31 +207,24 @@ object ActorContractParser {
         }
         return obj.toString()
     }
-
-    fun deserializeCachedActor(serialized: String): AppActor? {
-        return try {
-            val obj = JSONObject(serialized)
-            val displayIdentifier = obj.optString("display_identifier", "").trim().ifBlank { null }
-            parseActorObject(obj, displayIdentifier)
-        } catch (_: Exception) {
-            null
-        }
-    }
 }
 
 class MiniBiRepository(
     private val context: Context,
-    database: MiniBiDatabase = MiniBiDatabase.getInstance(context)
+    database: MiniBiDatabase = MiniBiDatabase.getInstance(context),
+    private val defaultServerUrl: String = BuildConfig.DEFAULT_SERVER_URL,
+    private val allowDebugUrlOverride: Boolean = BuildConfig.DEBUG,
+    cookieStorageFile: File = File(context.noBackupFilesDir, "session_cookies.enc"),
+    cookieCipher: CookieCipher = AndroidKeystoreAesGcmCipher(),
+    nowMillis: () -> Long = { System.currentTimeMillis() }
 ) {
 
     internal val dao = database.miniBiDao()
 
     companion object {
-        private val KEY_ACTOR_JSON = stringPreferencesKey("actor_projection_json")
-        private val KEY_SERVER_URL = stringPreferencesKey("server_url")
+        private val KEY_DISPLAY_IDENTIFIER = stringPreferencesKey("display_identifier_hint")
+        private val KEY_DEBUG_SERVER_URL = stringPreferencesKey("debug_server_url")
         private val KEY_THEME_ID = stringPreferencesKey("theme_id")
-
-        const val DEFAULT_SERVER_URL = "https://bi.hrpartner.vn"
 
         fun computeSha256HexStrict(file: File): String {
             if (!file.exists() || !file.isFile || file.length() <= 0L) {
@@ -242,47 +242,71 @@ class MiniBiRepository(
         }
     }
 
-    private val cookieStore = mutableMapOf<String, MutableList<Cookie>>()
+    val cookieJar = EncryptedPersistentCookieJar(
+        storageFile = cookieStorageFile,
+        cipher = cookieCipher,
+        nowMillis = nowMillis
+    )
 
-    private val okHttpClient = OkHttpClient.Builder()
-        .connectTimeout(12, TimeUnit.SECONDS)
-        .readTimeout(15, TimeUnit.SECONDS)
-        .writeTimeout(20, TimeUnit.SECONDS)
-        .cookieJar(object : CookieJar {
-            override fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>) {
-                cookieStore[url.host] = cookies.toMutableList()
-            }
+    internal val httpClient = BackendHttpClient(
+        cookieJar = cookieJar,
+        baseUrlProvider = { resolveEffectiveServerUrl() },
+        allowCleartextHttp = allowDebugUrlOverride,
+        onUnauthorizedResponse = { clearLocalSessionAndCache() }
+    )
 
-            override fun loadForRequest(url: HttpUrl): List<Cookie> {
-                return cookieStore[url.host] ?: emptyList()
-            }
-        })
-        .build()
+    val imageLoader: ImageLoader by lazy {
+        httpClient.createImageLoader(context)
+    }
+
+    private val _activeActor = MutableStateFlow<AppActor?>(null)
+    val currentActorFlow: StateFlow<AppActor?> = _activeActor.asStateFlow()
 
     val themeIdFlow: Flow<String> = context.dataStore.data.map { prefs ->
         prefs[KEY_THEME_ID] ?: "hr-partner"
     }
 
     val serverUrlFlow: Flow<String> = context.dataStore.data.map { prefs ->
-        prefs[KEY_SERVER_URL] ?: DEFAULT_SERVER_URL
-    }
-
-    val currentActorFlow: Flow<AppActor?> = context.dataStore.data.map { prefs ->
-        val raw = prefs[KEY_ACTOR_JSON]
-        if (raw.isNullOrBlank()) null else ActorContractParser.deserializeCachedActor(raw)
+        if (allowDebugUrlOverride) {
+            prefs[KEY_DEBUG_SERVER_URL]?.takeIf { it.isNotBlank() }
+                ?: defaultServerUrl.trim().trimEnd('/')
+        } else {
+            defaultServerUrl.trim().trimEnd('/')
+        }
     }
 
     val attendanceFlow: Flow<List<AttendanceEntity>> = dao.observeAllAttendance()
     val workReportsFlow: Flow<List<WorkReportObligationEntity>> = dao.observeAllWorkReports()
 
+    suspend fun resolveEffectiveServerUrl(): String {
+        val raw = if (allowDebugUrlOverride) {
+            val prefs = context.dataStore.data.first()
+            prefs[KEY_DEBUG_SERVER_URL]?.takeIf { it.isNotBlank() } ?: defaultServerUrl
+        } else {
+            defaultServerUrl
+        }
+        return BackendHttpClient.normalizeBaseUrl(raw, allowCleartextHttp = allowDebugUrlOverride)
+    }
+
     suspend fun setThemeId(themeId: String) {
         context.dataStore.edit { it[KEY_THEME_ID] = themeId }
     }
 
-    suspend fun setServerUrl(url: String) {
-        val cleaned = url.trim().trimEnd('/')
-        if (cleaned.isNotBlank()) {
-            context.dataStore.edit { it[KEY_SERVER_URL] = cleaned }
+    suspend fun setServerUrl(url: String): Result<String> = withContext(Dispatchers.IO) {
+        try {
+            if (!allowDebugUrlOverride) {
+                throw BackendApiException(
+                    kind = BackendFailureKind.FORBIDDEN,
+                    statusCode = null,
+                    backendCode = "SERVER_URL_LOCKED",
+                    message = "Bản phát hành chính thức không cho phép đổi địa chỉ máy chủ."
+                )
+            }
+            val normalized = BackendHttpClient.normalizeBaseUrl(url, allowCleartextHttp = true)
+            context.dataStore.edit { it[KEY_DEBUG_SERVER_URL] = normalized }
+            Result.success(normalized)
+        } catch (e: BackendApiException) {
+            Result.failure(e)
         }
     }
 
@@ -296,18 +320,36 @@ class MiniBiRepository(
         }
     }
 
-    private fun extractOrigin(baseUrl: String): String {
-        val httpUrl = baseUrl.toHttpUrlOrNull() ?: throw BackendApiException(
-            kind = BackendFailureKind.INVALID_REQUEST,
-            statusCode = null,
-            backendCode = "SERVER_URL_INVALID",
-            message = "Địa chỉ máy chủ không hợp lệ."
-        )
-        val defaultPort = HttpUrl.defaultPort(httpUrl.scheme)
-        return if (httpUrl.port == defaultPort) {
-            "${httpUrl.scheme}://${httpUrl.host}"
-        } else {
-            "${httpUrl.scheme}://${httpUrl.host}:${httpUrl.port}"
+    suspend fun bootstrapSession(): Result<AppActor> = withContext(Dispatchers.IO) {
+        try {
+            val displayHint = context.dataStore.data.first()[KEY_DISPLAY_IDENTIFIER]
+            val json = httpClient.getJson(
+                pathWithQuery = "/api/auth/session",
+                requireOkTrue = true,
+                clearSessionOn401 = false
+            )
+            val actor = ActorContractParser.parseEnvelopeActor(json, displayHint)
+            _activeActor.value = actor
+            Result.success(actor)
+        } catch (e: BackendApiException) {
+            if (e.kind == BackendFailureKind.UNAUTHENTICATED || e.kind == BackendFailureKind.FORBIDDEN) {
+                clearLocalSessionAndCache()
+            } else {
+                // Never expose stale cached actor if backend session could not be verified
+                _activeActor.value = null
+            }
+            Result.failure(e)
+        } catch (e: Exception) {
+            _activeActor.value = null
+            Result.failure(
+                BackendApiException(
+                    kind = BackendFailureKind.CONTRACT_INVALID,
+                    statusCode = null,
+                    backendCode = "SESSION_BOOTSTRAP_ERROR",
+                    message = "Không thể xác thực phiên làm việc.",
+                    cause = e
+                )
+            )
         }
     }
 
@@ -324,44 +366,26 @@ class MiniBiRepository(
             )
         }
 
-        val serverUrl = serverUrlFlow.first().trim().trimEnd('/')
         try {
-            val origin = extractOrigin(serverUrl)
             val payloadJson = JSONObject().apply {
                 put("email", trimmedIdentifier)
                 put("password", password)
-            }.toString()
-
-            val request = Request.Builder()
-                .url("$serverUrl/api/auth/login")
-                .header("Content-Type", "application/json")
-                .header("Origin", origin)
-                .post(payloadJson.toRequestBody("application/json".toMediaType()))
-                .build()
-
-            okHttpClient.newCall(request).execute().use { response ->
-                val bodyStr = response.body?.string().orEmpty()
-                if (!response.isSuccessful) {
-                    val code = runCatching { JSONObject(bodyStr).optString("code").ifBlank { null } }.getOrNull()
-                    return@withContext Result.failure(mapHttpError(response.code, code))
-                }
-                val displayId = formatDisplayIdentifier(trimmedIdentifier)
-                val actor = ActorContractParser.parseEnvelopeActor(bodyStr, displayId)
-                saveSession(actor)
-                return@withContext Result.success(actor)
             }
+            val json = httpClient.postJson(
+                path = "/api/auth/login",
+                bodyJson = payloadJson,
+                requireOkTrue = true,
+                clearSessionOn401 = false
+            )
+            val displayId = formatDisplayIdentifier(trimmedIdentifier)
+            val actor = ActorContractParser.parseEnvelopeActor(json, displayId)
+            context.dataStore.edit { prefs ->
+                prefs[KEY_DISPLAY_IDENTIFIER] = displayId
+            }
+            _activeActor.value = actor
+            Result.success(actor)
         } catch (e: BackendApiException) {
             Result.failure(e)
-        } catch (e: IOException) {
-            Result.failure(
-                BackendApiException(
-                    kind = BackendFailureKind.NETWORK,
-                    statusCode = null,
-                    backendCode = "NETWORK_ERROR",
-                    message = "Không có kết nối mạng tới máy chủ.",
-                    cause = e
-                )
-            )
         } catch (e: Exception) {
             Result.failure(
                 BackendApiException(
@@ -375,85 +399,23 @@ class MiniBiRepository(
         }
     }
 
-    internal fun mapHttpError(statusCode: Int, backendCode: String?): BackendApiException {
-        return when {
-            statusCode == 401 -> BackendApiException(
-                kind = BackendFailureKind.UNAUTHENTICATED,
-                statusCode = 401,
-                backendCode = backendCode ?: "AUTH_INVALID_CREDENTIALS",
-                message = "Sai thông tin đăng nhập hoặc phiên đã hết hạn."
-            )
-            statusCode == 403 -> BackendApiException(
-                kind = BackendFailureKind.FORBIDDEN,
-                statusCode = 403,
-                backendCode = backendCode ?: "ACCOUNT_NOT_AVAILABLE",
-                message = "Tài khoản không khả dụng hoặc không có quyền thực hiện thao tác này."
-            )
-            statusCode == 404 -> BackendApiException(
-                kind = BackendFailureKind.NOT_FOUND,
-                statusCode = 404,
-                backendCode = backendCode ?: "NOT_FOUND",
-                message = "Chức năng hoặc dữ liệu không tồn tại trên máy chủ."
-            )
-            statusCode == 409 -> BackendApiException(
-                kind = BackendFailureKind.CONFLICT,
-                statusCode = 409,
-                backendCode = backendCode ?: "VERSION_CONFLICT",
-                message = "Dữ liệu đã thay đổi trên máy chủ. Vui lòng tải lại."
-            )
-            statusCode == 422 -> BackendApiException(
-                kind = BackendFailureKind.VALIDATION,
-                statusCode = 422,
-                backendCode = backendCode ?: "VALIDATION_FAILED",
-                message = "Dữ liệu gửi lên không thỏa điều kiện nghiệp vụ."
-            )
-            statusCode == 429 -> BackendApiException(
-                kind = BackendFailureKind.RATE_LIMITED,
-                statusCode = 429,
-                backendCode = backendCode ?: "RATE_LIMITED",
-                message = "Thao tác quá nhanh. Vui lòng thử lại sau ít giây."
-            )
-            statusCode in 500..599 -> BackendApiException(
-                kind = BackendFailureKind.SERVER_UNAVAILABLE,
-                statusCode = statusCode,
-                backendCode = backendCode ?: "SERVER_UNAVAILABLE",
-                message = "Máy chủ tạm thời không khả dụng. Vui lòng thử lại sau."
-            )
-            else -> BackendApiException(
-                kind = BackendFailureKind.INVALID_REQUEST,
-                statusCode = statusCode,
-                backendCode = backendCode ?: "REQUEST_INVALID",
-                message = "Yêu cầu không hợp lệ (${backendCode ?: statusCode})."
-            )
-        }
-    }
-
-    internal suspend fun saveSession(actor: AppActor) {
-        context.dataStore.edit { prefs ->
-            prefs[KEY_ACTOR_JSON] = ActorContractParser.serializeActor(actor)
-        }
-    }
-
     suspend fun clearLocalSessionAndCache() {
-        cookieStore.clear()
+        _activeActor.value = null
+        cookieJar.clearAll()
         dao.clearWorkReportsCache()
         dao.clearAllCachedWorkers()
         context.dataStore.edit { prefs ->
-            prefs.remove(KEY_ACTOR_JSON)
+            prefs.remove(KEY_DISPLAY_IDENTIFIER)
         }
     }
 
     suspend fun logout() = withContext(Dispatchers.IO) {
-        val serverUrl = serverUrlFlow.first().trim().trimEnd('/')
-        runCatching {
-            val origin = extractOrigin(serverUrl)
-            val request = Request.Builder()
-                .url("$serverUrl/api/auth/logout")
-                .header("Origin", origin)
-                .post(ByteArray(0).toRequestBody(null))
-                .build()
-            okHttpClient.newCall(request).execute().close()
+        try {
+            httpClient.postNoContent("/api/auth/logout")
+        } catch (_: Exception) {
+            // Even if server logout call fails due to network, always clear local sensitive state afterwards
+        } finally {
+            clearLocalSessionAndCache()
         }
-        clearLocalSessionAndCache()
     }
 }

@@ -7,6 +7,8 @@ import android.location.Geocoder
 import android.location.LocationManager
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import coil.ImageLoader
+import com.example.BuildConfig
 import com.example.data.AppActor
 import com.example.data.AttendanceEntity
 import com.example.data.BackendApiException
@@ -56,16 +58,18 @@ class MiniBiViewModel(application: Application) : AndroidViewModel(application) 
 
     internal val repository = MiniBiRepository(application)
 
+    val imageLoader: ImageLoader
+        get() = repository.imageLoader
+
     val themeId: StateFlow<String> = repository.themeIdFlow
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "hr-partner")
 
     val serverUrl: StateFlow<String> = repository.serverUrlFlow
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), MiniBiRepository.DEFAULT_SERVER_URL)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), BuildConfig.DEFAULT_SERVER_URL)
 
     val currentActor: StateFlow<AppActor?> = repository.currentActorFlow
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
 
-    private val _sessionBootstrapping = MutableStateFlow(false)
+    private val _sessionBootstrapping = MutableStateFlow(true)
     val sessionBootstrapping: StateFlow<Boolean> = _sessionBootstrapping.asStateFlow()
 
     private val _currentDestination = MutableStateFlow(MainDestination.DASHBOARD)
@@ -170,6 +174,18 @@ class MiniBiViewModel(application: Application) : AndroidViewModel(application) 
     val attendanceRecords: StateFlow<List<AttendanceEntity>> = repository.attendanceFlow
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
+    init {
+        bootstrapSession()
+    }
+
+    fun bootstrapSession() {
+        _sessionBootstrapping.value = true
+        viewModelScope.launch {
+            repository.bootstrapSession()
+            _sessionBootstrapping.value = false
+        }
+    }
+
     fun navigateTo(destination: MainDestination) {
         _currentDestination.value = destination
     }
@@ -183,7 +199,8 @@ class MiniBiViewModel(application: Application) : AndroidViewModel(application) 
     fun updateServerUrl(url: String) {
         viewModelScope.launch {
             repository.setServerUrl(url)
-            showBanner("Đã cập nhật URL máy chủ.")
+                .onSuccess { showBanner("Đã cập nhật URL máy chủ: $it") }
+                .onFailure { err -> showBanner(err.message ?: "URL máy chủ không hợp lệ.", isError = true) }
         }
     }
 

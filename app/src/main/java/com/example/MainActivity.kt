@@ -57,8 +57,10 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.rememberCoroutineScope
+import coil.Coil
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -89,6 +91,10 @@ class MainActivity : ComponentActivity() {
         setContent {
             val viewModel: MiniBiViewModel = viewModel()
             val themeId by viewModel.themeId.collectAsStateWithLifecycle()
+
+            LaunchedEffect(viewModel) {
+                Coil.setImageLoader(viewModel.imageLoader)
+            }
 
             MyApplicationTheme(themeId = themeId) {
                 MiniBiAppRoot(viewModel = viewModel)

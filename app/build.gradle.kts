@@ -1,4 +1,5 @@
 import com.google.gms.googleservices.GoogleServicesPlugin.MissingGoogleServicesStrategy
+import java.util.Properties
 
 plugins {
   alias(libs.plugins.android.application)
@@ -20,6 +21,18 @@ android {
     versionName = "1.0"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+    val envProps = Properties().apply {
+      val envFile = rootProject.file(".env")
+      if (envFile.isFile) {
+        envFile.inputStream().use { stream -> load(stream) }
+      }
+    }
+    val resolvedServerUrl = (project.findProperty("MINI_BI_SERVER_URL") as? String)?.trim()?.takeIf { it.isNotEmpty() }
+      ?: System.getenv("MINI_BI_SERVER_URL")?.trim()?.takeIf { it.isNotEmpty() }
+      ?: envProps.getProperty("MINI_BI_SERVER_URL")?.trim()?.takeIf { it.isNotEmpty() }
+      ?: "https://bi.hrpartner.vn"
+    buildConfigField("String", "DEFAULT_SERVER_URL", "\"$resolvedServerUrl\"")
   }
 
   // Do not remove or modify these signingConfigs. They are necessary for building, installing,
