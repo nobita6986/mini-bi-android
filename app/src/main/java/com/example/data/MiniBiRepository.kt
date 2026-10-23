@@ -216,6 +216,7 @@ class MiniBiRepository(
     private val allowDebugUrlOverride: Boolean = BuildConfig.DEBUG,
     cookieStorageFile: File = File(context.noBackupFilesDir, "session_cookies.enc"),
     timeAnchorStorageFile: File = File(context.noBackupFilesDir, "attendance_time_anchor.enc"),
+    savedCredentialsStorageFile: File = File(context.noBackupFilesDir, "saved_login_accounts.enc"),
     cookieCipher: CookieCipher = AndroidKeystoreAesGcmCipher(),
     nowMillis: () -> Long = { System.currentTimeMillis() }
 ) {
@@ -248,6 +249,15 @@ class MiniBiRepository(
         cipher = cookieCipher,
         nowMillis = nowMillis
     )
+
+    val savedCredentialsStore = SavedCredentialsStore(
+        storageFile = savedCredentialsStorageFile,
+        cipher = cookieCipher,
+        nowMillis = nowMillis
+    )
+
+    private val _savedAccounts = MutableStateFlow(savedCredentialsStore.loadAll())
+    val savedAccountsFlow: StateFlow<List<SavedLoginAccount>> = _savedAccounts.asStateFlow()
 
     internal val httpClient = BackendHttpClient(
         cookieJar = cookieJar,
@@ -383,7 +393,11 @@ class MiniBiRepository(
         }
     }
 
-    suspend fun login(rawIdentifier: String, password: String): Result<AppActor> = withContext(Dispatchers.IO) {
+    suspend fun login(
+        rawIdentifier: String,
+        password: String,
+        rememberAccount: Boolean = true
+    ): Result<AppActor> = withContext(Dispatchers.IO) {
         val trimmedIdentifier = rawIdentifier.trim()
         if (trimmedIdentifier.isBlank() || password.isEmpty()) {
             return@withContext Result.failure(
@@ -412,6 +426,16 @@ class MiniBiRepository(
             context.dataStore.edit { prefs ->
                 prefs[KEY_DISPLAY_IDENTIFIER] = displayId
             }
+            if (rememberAccount) {
+                savedCredentialsStore.saveAccount(
+                    identifier = trimmedIdentifier,
+                    password = password,
+                    displayName = actor.displayName
+                )
+            } else {
+                savedCredentialsStore.removeAccount(trimmedIdentifier)
+            }
+            _savedAccounts.value = savedCredentialsStore.loadAll()
             _activeActor.value = actor
             if (dao.getRetryableAttendanceOutboxForUser(actor.appUserId).isNotEmpty()) {
                 AttendanceOutboxService.enqueueDurableOutboxWork(context)
@@ -430,6 +454,11 @@ class MiniBiRepository(
                 )
             )
         }
+    }
+
+    fun removeSavedAccount(identifier: String) {
+        savedCredentialsStore.removeAccount(identifier)
+        _savedAccounts.value = savedCredentialsStore.loadAll()
     }
 
     suspend fun clearLocalSessionAndCache() {

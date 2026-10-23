@@ -31,7 +31,7 @@ android {
     val resolvedServerUrl = (project.findProperty("MINI_BI_SERVER_URL") as? String)?.trim()?.takeIf { it.isNotEmpty() }
       ?: System.getenv("MINI_BI_SERVER_URL")?.trim()?.takeIf { it.isNotEmpty() }
       ?: envProps.getProperty("MINI_BI_SERVER_URL")?.trim()?.takeIf { it.isNotEmpty() }
-      ?: "https://bi.hrpartner.vn"
+      ?: "https://bi2.hrpartner.vn"
     buildConfigField("String", "DEFAULT_SERVER_URL", "\"$resolvedServerUrl\"")
   }
 

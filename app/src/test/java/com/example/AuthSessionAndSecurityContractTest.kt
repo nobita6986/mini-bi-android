@@ -9,6 +9,7 @@ import com.example.data.BackendFailureKind
 import com.example.data.BackendHttpClient
 import com.example.data.CookieCipher
 import com.example.data.EncryptedPersistentCookieJar
+import com.example.data.SavedCredentialsStore
 import com.example.data.MiniBiDatabase
 import com.example.data.MiniBiRepository
 import com.example.data.WorkReportObligationEntity
@@ -77,6 +78,7 @@ class AuthSessionAndSecurityContractTest {
     private lateinit var database: MiniBiDatabase
     private lateinit var server: MockWebServer
     private lateinit var cookieFile: File
+    private lateinit var savedCredentialsFile: File
     private val cipher = JvmAes256GcmCookieCipher()
 
     @Before
@@ -88,6 +90,7 @@ class AuthSessionAndSecurityContractTest {
         server = MockWebServer()
         server.start()
         cookieFile = File(context.cacheDir, "test_cookies_${System.nanoTime()}.enc")
+        savedCredentialsFile = File(context.cacheDir, "test_saved_creds_${System.nanoTime()}.enc")
     }
 
     @After
@@ -95,6 +98,7 @@ class AuthSessionAndSecurityContractTest {
         database.close()
         runCatching { server.shutdown() }
         runCatching { cookieFile.delete() }
+        runCatching { savedCredentialsFile.delete() }
     }
 
     private fun createRepository(
@@ -108,6 +112,7 @@ class AuthSessionAndSecurityContractTest {
             defaultServerUrl = baseUrl,
             allowDebugUrlOverride = allowDebugUrlOverride,
             cookieStorageFile = cookieFile,
+            savedCredentialsStorageFile = savedCredentialsFile,
             cookieCipher = cipher,
             nowMillis = nowMillis
         )
@@ -470,6 +475,69 @@ class AuthSessionAndSecurityContractTest {
     }
 
     // -------------------------------------------------------------------------
+    @Test
+    fun `saved login accounts - encrypts credentials on disk, preserves across logout, and supports removal`() = runBlocking {
+        val repo = createRepository()
+
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(200)
+                .addHeader("Set-Cookie", "mini_bi_sid=session_cookie_123; Path=/; HttpOnly; Max-Age=3600")
+                .setBody(
+                    """
+                    {
+                      "ok": true,
+                      "actor": {
+                        "app_user_id": "11111111-2222-4333-8444-555555555555",
+                        "display_name": "Nguyễn Thị Quản Lý",
+                        "capabilities": ["entry_read"],
+                        "scopes": [{"kind":"own","reference":"self","valid_from":"2026-01-01","valid_to":null}],
+                        "self_recruiter_suggestion": null
+                      }
+                    }
+                    """.trimIndent()
+                )
+        )
+
+        val loginRes = repo.login(
+            rawIdentifier = "ql.bacninh@hrpartner.vn",
+            password = "SuperSecretLogin#2026",
+            rememberAccount = true
+        )
+        assertTrue(loginRes.isSuccess)
+        assertTrue("Encrypted saved credentials file must exist", savedCredentialsFile.exists())
+
+        // Verify zero plaintext password or identifier on disk
+        val rawSavedDisk = savedCredentialsFile.readBytes().toString(Charsets.ISO_8859_1)
+        assertFalse(rawSavedDisk.contains("SuperSecretLogin#2026"))
+        assertFalse(rawSavedDisk.contains("ql.bacninh@hrpartner.vn"))
+
+        assertEquals(1, repo.savedAccountsFlow.value.size)
+        assertEquals("ql.bacninh@hrpartner.vn", repo.savedAccountsFlow.value[0].identifier)
+        assertEquals("SuperSecretLogin#2026", repo.savedAccountsFlow.value[0].password)
+        assertEquals("Nguyễn Thị Quản Lý", repo.savedAccountsFlow.value[0].displayName)
+
+        // Logout clears active session & cookies, while keeping saved account for 1-tap re-login
+        server.enqueue(MockResponse().setResponseCode(204))
+        repo.logout()
+        assertNull(repo.currentActorFlow.value)
+        assertTrue(repo.cookieJar.loadForRequest(server.url("/api/auth/session")).isEmpty())
+        assertEquals(1, repo.savedAccountsFlow.value.size)
+        assertEquals("ql.bacninh@hrpartner.vn", repo.savedAccountsFlow.value[0].identifier)
+
+        // Reloading from disk in a fresh store restores exact account
+        val freshStore = SavedCredentialsStore(storageFile = savedCredentialsFile, cipher = cipher)
+        val reloaded = freshStore.loadAll()
+        assertEquals(1, reloaded.size)
+        assertEquals("ql.bacninh@hrpartner.vn", reloaded[0].identifier)
+        assertEquals("SuperSecretLogin#2026", reloaded[0].password)
+
+        // Removing saved account deletes it from state and disk
+        repo.removeSavedAccount("ql.bacninh@hrpartner.vn")
+        assertTrue(repo.savedAccountsFlow.value.isEmpty())
+        assertFalse(savedCredentialsFile.exists())
+    }
+
     // Item 20: Không có random UUID / capability / scope fallback
     // -------------------------------------------------------------------------
     @Test

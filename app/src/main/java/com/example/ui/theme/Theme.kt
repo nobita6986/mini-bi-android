@@ -34,9 +34,9 @@ fun MyApplicationTheme(
             onBackground = Color(0xFFE2E8F0),
             surface = palette.darkSurface,
             onSurface = Color(0xFFE2E8F0),
-            surfaceVariant = Color(0xFF1E293B),
-            onSurfaceVariant = Color(0xFF94A3B8),
-            outline = Color(0xFF334155),
+            surfaceVariant = Color(0xFF27272A),
+            onSurfaceVariant = Color(0xFFA1A1AA),
+            outline = Color(0xFF3F3F46),
             error = SemanticColors.ErrorDark,
             onError = Color(0xFF0F172A)
         )
@@ -44,8 +44,8 @@ fun MyApplicationTheme(
         lightColorScheme(
             primary = palette.lightPrimary,
             onPrimary = Color.White,
-            primaryContainer = palette.lightPrimary.copy(alpha = 0.12f),
-            onPrimaryContainer = palette.lightPrimary,
+            primaryContainer = palette.lightPrimaryContainer,
+            onPrimaryContainer = palette.lightOnPrimaryContainer,
             secondary = palette.lightSecondary,
             onSecondary = Color.White,
             secondaryContainer = palette.lightSecondary.copy(alpha = 0.12f),
@@ -56,9 +56,10 @@ fun MyApplicationTheme(
             onBackground = Color(0xFF0F172A),
             surface = palette.lightSurface,
             onSurface = Color(0xFF0F172A),
-            surfaceVariant = Color(0xFFF1F5F9),
-            onSurfaceVariant = Color(0xFF475569),
-            outline = Color(0xFFE2E8F0),
+            surfaceVariant = Color(0xFFF3F4F6),
+            onSurfaceVariant = Color(0xFF5B6B7F),
+            outline = Color(0xFFE5E7EB),
+            outlineVariant = palette.lightTopBarBorder,
             error = SemanticColors.ErrorLight,
             onError = Color.White
         )

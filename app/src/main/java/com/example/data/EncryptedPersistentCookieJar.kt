@@ -231,3 +231,138 @@ class EncryptedPersistentCookieJar(
         }
     }
 }
+
+data class SavedLoginAccount(
+    val identifier: String,
+    val password: String,
+    val displayName: String,
+    val savedAtMillis: Long
+)
+
+class SavedCredentialsStore(
+    private val storageFile: File,
+    private val cipher: CookieCipher = AndroidKeystoreAesGcmCipher(),
+    private val nowMillis: () -> Long = { System.currentTimeMillis() }
+) {
+    private val lock = Any()
+    private var loaded = false
+    private val accounts = ArrayList<SavedLoginAccount>()
+
+    companion object {
+        private const val MAX_SAVED_ACCOUNTS = 5
+    }
+
+    private fun ensureLoadedLocked() {
+        if (loaded) return
+        loaded = true
+        accounts.clear()
+        if (!storageFile.exists() || !storageFile.isFile || storageFile.length() <= 0L) {
+            return
+        }
+        try {
+            val encrypted = storageFile.readBytes()
+            val plainBytes = cipher.decrypt(encrypted)
+            val arr = JSONArray(plainBytes.toString(Charsets.UTF_8))
+            for (i in 0 until arr.length()) {
+                val obj = arr.optJSONObject(i) ?: continue
+                val id = obj.optString("identifier", "").trim()
+                val pw = obj.optString("password", "")
+                val name = obj.optString("display_name", "").trim()
+                val savedAt = obj.optLong("saved_at_ms", 0L)
+                if (id.isNotEmpty() && pw.isNotEmpty()) {
+                    accounts.add(
+                        SavedLoginAccount(
+                            identifier = id,
+                            password = pw,
+                            displayName = name.ifBlank { id },
+                            savedAtMillis = savedAt
+                        )
+                    )
+                }
+            }
+            accounts.sortByDescending { it.savedAtMillis }
+        } catch (_: Exception) {
+            accounts.clear()
+            runCatching { storageFile.delete() }
+        }
+    }
+
+    private fun persistLocked() {
+        if (accounts.isEmpty()) {
+            runCatching { storageFile.delete() }
+            return
+        }
+        val arr = JSONArray()
+        accounts.forEach { acc ->
+            arr.put(
+                JSONObject().apply {
+                    put("identifier", acc.identifier)
+                    put("password", acc.password)
+                    put("display_name", acc.displayName)
+                    put("saved_at_ms", acc.savedAtMillis)
+                }
+            )
+        }
+        val plainBytes = arr.toString().toByteArray(Charsets.UTF_8)
+        val encrypted = cipher.encrypt(plainBytes)
+        storageFile.parentFile?.mkdirs()
+        val tmpFile = File(storageFile.parentFile, "${storageFile.name}.tmp")
+        tmpFile.writeBytes(encrypted)
+        if (!tmpFile.renameTo(storageFile)) {
+            storageFile.writeBytes(encrypted)
+            runCatching { tmpFile.delete() }
+        }
+    }
+
+    fun loadAll(): List<SavedLoginAccount> {
+        synchronized(lock) {
+            ensureLoadedLocked()
+            return accounts.toList()
+        }
+    }
+
+    fun saveAccount(identifier: String, password: String, displayName: String) {
+        val cleanId = identifier.trim()
+        if (cleanId.isEmpty() || password.isEmpty()) return
+        val keyLower = cleanId.lowercase(java.util.Locale.ROOT)
+        synchronized(lock) {
+            ensureLoadedLocked()
+            accounts.removeAll { it.identifier.trim().lowercase(java.util.Locale.ROOT) == keyLower }
+            accounts.add(
+                0,
+                SavedLoginAccount(
+                    identifier = cleanId,
+                    password = password,
+                    displayName = displayName.trim().ifBlank { cleanId },
+                    savedAtMillis = nowMillis()
+                )
+            )
+            while (accounts.size > MAX_SAVED_ACCOUNTS) {
+                accounts.removeAt(accounts.lastIndex)
+            }
+            persistLocked()
+        }
+    }
+
+    fun removeAccount(identifier: String) {
+        val keyLower = identifier.trim().lowercase(java.util.Locale.ROOT)
+        if (keyLower.isEmpty()) return
+        synchronized(lock) {
+            ensureLoadedLocked()
+            val changed = accounts.removeAll {
+                it.identifier.trim().lowercase(java.util.Locale.ROOT) == keyLower
+            }
+            if (changed) {
+                persistLocked()
+            }
+        }
+    }
+
+    fun clearAll() {
+        synchronized(lock) {
+            loaded = true
+            accounts.clear()
+            runCatching { storageFile.delete() }
+        }
+    }
+}

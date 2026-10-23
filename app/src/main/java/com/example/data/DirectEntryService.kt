@@ -1,6 +1,8 @@
 package com.example.data
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.net.Uri
 import android.provider.OpenableColumns
 import kotlinx.coroutines.Dispatchers
@@ -71,12 +73,120 @@ object DirectEntryContract {
         "WORK_STATUS"
     )
 
+    /** Synchronized with App BI `DIRECT_ENTRY_GENDER_OPTIONS` (only Nam / Nữ selectable in UI). */
+    val DIRECT_ENTRY_GENDER_OPTIONS = listOf("Nam", "Nữ")
+
     private val UUID_REGEX = Regex(
         "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
         RegexOption.IGNORE_CASE
     )
 
     private val ISO_DATE_REGEX = Regex("^(\\d{4})-(\\d{2})-(\\d{2})$")
+    private val CANONICAL_NATIONAL_ID_REGEX = Regex("^(\\d{9}|\\d{12})$")
+    private val PAYMENT_ACCOUNT_DIGITS_REGEX = Regex("^\\d{1,64}$")
+    private val SAFE_CATALOG_ID_REGEX = Regex("^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+
+    fun isUuid(raw: String): Boolean = UUID_REGEX.matches(raw.trim())
+
+    fun isValidUiOrIsoDate(rawDate: String): Boolean =
+        runCatching { uiDateToIsoDate(rawDate) }.isSuccess
+
+    fun isCanonicalNationalId(raw: String): Boolean =
+        CANONICAL_NATIONAL_ID_REGEX.matches(raw.trim())
+
+    fun hasControlCharacter(raw: String): Boolean =
+        raw.any { it.code < 32 || it.code == 127 }
+
+    fun isFormulaLikeCell(raw: String): Boolean {
+        val trimmed = raw.trim()
+        return trimmed.isNotEmpty() && trimmed[0] in charArrayOf('=', '+', '-', '@')
+    }
+
+    fun isValidFreeDateText(raw: String): Boolean {
+        val trimmed = raw.trim()
+        return trimmed.isEmpty() || (trimmed.length <= 10 && !isFormulaLikeCell(trimmed))
+    }
+
+    fun genderUiLabel(canonicalOrNull: String?): String {
+        return when (canonicalOrNull?.trim()?.uppercase(Locale.ROOT)) {
+            "MALE", "NAM" -> "Nam"
+            "FEMALE", "NỮ" -> "Nữ"
+            "OTHER", "KHÁC" -> "Khác"
+            null, "" -> "—"
+            else -> canonicalOrNull
+        }
+    }
+
+    fun workStatusUiLabel(status: String?): String {
+        return when (status?.trim()?.uppercase(Locale.ROOT)) {
+            "ON" -> "Đang làm"
+            "UNCONFIRMED" -> "Đang chờ việc"
+            "OFF" -> "Đã nghỉ"
+            null, "" -> "—"
+            else -> status
+        }
+    }
+
+    fun documentTypeUiLabel(documentType: String?): String {
+        return when (documentType?.trim()?.uppercase(Locale.ROOT)) {
+            "WORKER_PORTRAIT" -> "Ảnh chân dung"
+            "CCCD_FRONT" -> "CCCD mặt trước"
+            "CCCD_BACK" -> "CCCD mặt sau"
+            "EMPLOYMENT_CONTRACT" -> "Hợp đồng lao động"
+            else -> "Tài liệu đính kèm"
+        }
+    }
+
+    fun allowedWorkStatusTargets(currentStatus: String?): List<String> {
+        return when (currentStatus?.trim()?.uppercase(Locale.ROOT)) {
+            "UNCONFIRMED" -> listOf("ON", "OFF")
+            "ON" -> listOf("OFF")
+            else -> emptyList()
+        }
+    }
+
+    /**
+     * Selectable status chips in Direct Edit dialog:
+     * - ON (Đang làm): keep ON (when editing other fields) or transition ONLY to OFF (Đã nghỉ).
+     * - UNCONFIRMED (Đang chờ việc): keep UNCONFIRMED, or transition to ON (Đang làm) / OFF (Đã nghỉ).
+     * - OFF (Đã nghỉ): locked at OFF (cannot transition back to ON or UNCONFIRMED).
+     */
+    fun selectableDirectEditStatuses(currentStatus: String?): List<String> {
+        return when (currentStatus?.trim()?.uppercase(Locale.ROOT)) {
+            "UNCONFIRMED" -> listOf("UNCONFIRMED", "ON", "OFF")
+            "ON" -> listOf("ON", "OFF")
+            "OFF" -> listOf("OFF")
+            else -> emptyList()
+        }
+    }
+
+    fun defaultSeasonalLaborType(laborTypes: List<CatalogLaborTypeOption>): CatalogLaborTypeOption? {
+        if (laborTypes.isEmpty()) return null
+        val sorted = laborTypes.sortedBy { it.sortOrder }
+        return sorted.firstOrNull {
+            it.displayName.trim().equals("Thời vụ", ignoreCase = true) ||
+                it.laborTypeKey.trim().equals("TEMPORARY", ignoreCase = true)
+        } ?: sorted.firstOrNull {
+            it.displayName.contains("thời vụ", ignoreCase = true) ||
+                it.laborTypeKey.contains("SEASONAL", ignoreCase = true) ||
+                it.laborTypeKey.contains("TEMP", ignoreCase = true)
+        } ?: sorted.firstOrNull()
+    }
+
+    fun createDefaultWorkerDraft(
+        catalog: DirectEntryCatalog? = null,
+        localId: String = UUID.randomUUID().toString()
+    ): NewWorkerEntryDraft {
+        val defaultLabor = catalog?.let { defaultSeasonalLaborType(it.laborTypes) }
+        return NewWorkerEntryDraft(
+            localId = localId,
+            laborTypeKey = defaultLabor?.laborTypeKey.orEmpty(),
+            laborTypeDisplay = defaultLabor?.displayName.orEmpty(),
+            firstWorkDateUi = todayUiInHcm(),
+            employmentStatusUi = "Đang làm",
+            genderUi = "Nam"
+        )
+    }
 
     fun todayIsoInHcm(): String {
         return SimpleDateFormat("yyyy-MM-dd", Locale.US).apply {
@@ -163,8 +273,7 @@ object DirectEntryContract {
         val canonical = when (trimmed) {
             "Nam", "MALE" -> "MALE"
             "Nữ", "FEMALE" -> "FEMALE"
-            "Khác", "OTHER" -> "OTHER"
-            else -> throw invalid("GENDER_VOCABULARY_INVALID", "Giới tính không hợp lệ: $trimmed")
+            else -> throw invalid("GENDER_VOCABULARY_INVALID", "Giới tính chỉ hỗ trợ Nam hoặc Nữ (theo hợp đồng App BI).")
         }
         return JSONObject()
             .put("state", "provided")
@@ -180,15 +289,51 @@ object DirectEntryContract {
         return JSONObject().put("initial_status", canonical)
     }
 
-    fun optionalTextField(raw: String): JSONObject {
+    fun optionalTextField(raw: String, maxLength: Int = Int.MAX_VALUE): JSONObject {
         val trimmed = raw.trim()
-        return if (trimmed.isEmpty()) {
-            JSONObject().put("state", "omitted")
-        } else {
-            JSONObject()
-                .put("state", "provided")
-                .put("value", trimmed)
+        if (trimmed.isEmpty()) {
+            return JSONObject().put("state", "omitted")
         }
+        if (trimmed.length > maxLength) {
+            throw invalid("BATCH_INVALID", "Nội dung nhập vượt quá độ dài tối đa ($maxLength ký tự).")
+        }
+        return JSONObject()
+            .put("state", "provided")
+            .put("value", trimmed)
+    }
+
+    /**
+     * Synchronized with App BI `optionalFreeDate` (`full-profile-contract.ts:152` & `worker-profile-paste.ts:236`):
+     * `date_of_birth` and `national_id_issued_at` are plain text up to 10 characters; raw text is preserved
+     * without ISO date conversion.
+     */
+    fun optionalFreeDateField(raw: String): JSONObject {
+        val trimmed = raw.trim()
+        if (trimmed.isEmpty()) {
+            return JSONObject().put("state", "omitted")
+        }
+        if (isFormulaLikeCell(trimmed)) {
+            throw invalid("PASTE_FORMULA_CELL", "Trường ngày không chấp nhận ký tự công thức đầu dòng.")
+        }
+        if (trimmed.length > 10) {
+            throw invalid("PASTE_TEXT_TOO_LONG", "Trường ngày tối đa 10 ký tự (ví dụ DD/MM/YYYY).")
+        }
+        return JSONObject()
+            .put("state", "provided")
+            .put("value", trimmed)
+    }
+
+    fun optionalNationalIdField(raw: String): JSONObject {
+        val trimmed = raw.trim()
+        if (trimmed.isEmpty()) {
+            return JSONObject().put("state", "omitted")
+        }
+        if (!isCanonicalNationalId(trimmed)) {
+            throw invalid("NATIONAL_ID_INVALID", "Số CCCD/CMND phải gồm đúng 9 hoặc 12 chữ số.")
+        }
+        return JSONObject()
+            .put("state", "provided")
+            .put("value", trimmed)
     }
 
     fun optionalDateField(uiOrIsoDate: String): JSONObject {
@@ -213,6 +358,12 @@ object DirectEntryContract {
         if (acc.isEmpty() && bank.isEmpty() && holder.isEmpty()) {
             return JSONObject.NULL
         }
+        if (acc.length > 64 || hasControlCharacter(acc) ||
+            bank.length > 256 || hasControlCharacter(bank) ||
+            holder.length > 256 || hasControlCharacter(holder)
+        ) {
+            throw invalid("PAYMENT_DETAILS_INVALID", "Thông tin tài khoản ngân hàng không hợp lệ hoặc vượt quá giới hạn ký tự.")
+        }
         return JSONObject().apply {
             put("state", "provided")
             if (acc.isNotEmpty()) put("account_number", acc)
@@ -232,8 +383,13 @@ object DirectEntryContract {
             val laborType = draft.laborTypeKey.trim()
             val displayName = draft.fullName.trim()
 
-            if (projectId.isEmpty() || !UUID_REGEX.matches(recruiterId) || laborType.isEmpty() || displayName.length < 2) {
-                throw invalid("BATCH_INVALID", "Vui lòng chọn đầy đủ Dự án, Người tuyển, Loại hình LĐ từ danh mục và nhập Họ tên.")
+            if (!SAFE_CATALOG_ID_REGEX.matches(projectId) ||
+                !UUID_REGEX.matches(recruiterId) ||
+                laborType.isEmpty() ||
+                displayName.isEmpty() ||
+                draft.fullName.length > 256
+            ) {
+                throw invalid("BATCH_INVALID", "Vui lòng chọn đầy đủ Dự án, Người tuyển, Loại hình LĐ từ danh mục và nhập Họ tên (tối đa 256 ký tự).")
             }
 
             val rowObj = JSONObject().apply {
@@ -247,15 +403,15 @@ object DirectEntryContract {
                     "worker",
                     JSONObject().apply {
                         put("gender", mapGender(draft.genderUi))
-                        put("date_of_birth", optionalDateField(draft.birthDateUi))
-                        put("national_id", optionalTextField(draft.cccd))
-                        put("national_id_issued_at", optionalDateField(draft.cccdIssueDateUi))
-                        put("national_id_issued_place", optionalTextField(draft.cccdIssuePlace))
-                        put("address", optionalTextField(draft.address))
-                        put("phone", optionalTextField(draft.phone))
+                        put("date_of_birth", optionalFreeDateField(draft.birthDateUi))
+                        put("national_id", optionalNationalIdField(draft.cccd))
+                        put("national_id_issued_at", optionalFreeDateField(draft.cccdIssueDateUi))
+                        put("national_id_issued_place", optionalTextField(draft.cccdIssuePlace, 256))
+                        put("address", optionalTextField(draft.address, 1024))
+                        put("phone", optionalTextField(draft.phone, 64))
                     }
                 )
-                put("general_note", optionalTextField(draft.note))
+                put("general_note", optionalTextField(draft.note, 4000))
                 put(
                     "payment",
                     buildAccountMetadataPayment(
@@ -311,8 +467,11 @@ object DirectEntryContract {
         if (proposal.length() == 0) {
             throw invalid("CHANGE_REQUEST_INVALID", "Nội dung đề xuất chưa có thay đổi.")
         }
-        if (idempotencyKey.isBlank()) {
+        if (idempotencyKey.isBlank() || idempotencyKey.length > 128 || hasControlCharacter(idempotencyKey)) {
             throw invalid("CHANGE_REQUEST_INVALID", "Thiếu khóa chống trùng lặp (idempotency_key).")
+        }
+        if (reason != null && reason.length > 4000) {
+            throw invalid("CHANGE_REQUEST_INVALID", "Lý do đề xuất tối đa 4000 ký tự.")
         }
         val normalizedReason = reason?.trim()?.ifEmpty { null }
         val itemObj = JSONObject()
@@ -340,6 +499,15 @@ object DirectEntryContract {
             if (acc.isEmpty() || bank.isEmpty() || holder.isEmpty()) {
                 throw invalid("PAYMENT_INVALID", "Cần nhập đủ Số tài khoản, Ngân hàng từ danh mục và Chủ tài khoản.")
             }
+            if (!PAYMENT_ACCOUNT_DIGITS_REGEX.matches(acc)) {
+                throw invalid("PAYMENT_INVALID", "Số tài khoản chỉ được gồm chữ số (1–64 chữ số).")
+            }
+            if (!SAFE_CATALOG_ID_REGEX.matches(bank)) {
+                throw invalid("PAYMENT_INVALID", "Mã ngân hàng không hợp lệ.")
+            }
+            if (holder.length > 256 || hasControlCharacter(holder)) {
+                throw invalid("PAYMENT_INVALID", "Tên chủ tài khoản không hợp lệ (tối đa 256 ký tự).")
+            }
             JSONObject()
                 .put("state", "provided")
                 .put("account_number", acc)
@@ -357,16 +525,30 @@ object DirectEntryContract {
     fun buildWorkStatusChangeProposal(
         status: String,
         effectiveDateUiOrIso: String,
-        leaveReason: String?
+        leaveReason: String?,
+        baselineStatus: String? = null,
+        baselineEffectiveDateIso: String? = null
     ): JSONObject {
         if (status !in setOf("ON", "UNCONFIRMED", "OFF")) {
             throw invalid("STATUS_INVALID", "Trạng thái làm việc không hợp lệ.")
         }
+        if (baselineStatus != null) {
+            val allowed = allowedWorkStatusTargets(baselineStatus)
+            if (status !in allowed) {
+                throw invalid(
+                    "STATUS_TRANSITION_INVALID",
+                    "Chuyển trạng thái từ ${workStatusUiLabel(baselineStatus)} sang ${workStatusUiLabel(status)} không được máy chủ hỗ trợ."
+                )
+            }
+        }
         val isoDate = uiDateToIsoDate(effectiveDateUiOrIso)
+        if (!baselineEffectiveDateIso.isNullOrBlank() && isoDate < baselineEffectiveDateIso) {
+            throw invalid("STATUS_DATE_INVALID", "Ngày hiệu lực không được nhỏ hơn ngày hiệu lực hiện tại ($baselineEffectiveDateIso).")
+        }
         return if (status == "OFF") {
             val reasonText = leaveReason?.trim().orEmpty()
-            if (reasonText.isEmpty()) {
-                throw invalid("STATUS_REASON_REQUIRED", "Trạng thái Đã nghỉ bắt buộc nhập lý do nghỉ.")
+            if (reasonText.isEmpty() || reasonText.length > 4000) {
+                throw invalid("STATUS_REASON_REQUIRED", "Trạng thái Đã nghỉ bắt buộc nhập lý do nghỉ (tối đa 4000 ký tự).")
             }
             JSONObject()
                 .put("status", "OFF")
@@ -391,6 +573,9 @@ object DirectEntryContract {
         if (patch.length() == 0) {
             throw invalid("PRIVILEGED_EDIT_INVALID", "Chưa có trường thay đổi nào để cập nhật.")
         }
+        if (reason != null && reason.length > 1000) {
+            throw invalid("PRIVILEGED_EDIT_INVALID", "Lý do chỉnh sửa trực tiếp tối đa 1000 ký tự.")
+        }
         val normalizedReason = reason?.trim()?.ifEmpty { null }
         return JSONObject()
             .put("expected_entry_version", expectedEntryVersion)
@@ -401,16 +586,27 @@ object DirectEntryContract {
     fun buildPrivilegedEditEmploymentStatus(
         status: String,
         effectiveDateUiOrIso: String,
-        leaveReason: String?
+        leaveReason: String?,
+        baselineStatus: String? = null
     ): JSONObject {
         if (status !in setOf("ON", "UNCONFIRMED", "OFF")) {
             throw invalid("PRIVILEGED_EDIT_INVALID", "Trạng thái làm việc không hợp lệ.")
         }
+        val normalizedBaseline = baselineStatus?.trim()?.uppercase(Locale.ROOT)?.takeIf { it.isNotEmpty() }
+        if (normalizedBaseline != null && status != normalizedBaseline) {
+            val allowed = allowedWorkStatusTargets(normalizedBaseline)
+            if (status !in allowed) {
+                throw invalid(
+                    "STATUS_TRANSITION_INVALID",
+                    "Chuyển trạng thái từ ${workStatusUiLabel(normalizedBaseline)} sang ${workStatusUiLabel(status)} không được phép."
+                )
+            }
+        }
         val isoDate = uiDateToIsoDate(effectiveDateUiOrIso)
         return if (status == "OFF") {
             val reasonText = leaveReason?.trim().orEmpty()
-            if (reasonText.isEmpty()) {
-                throw invalid("OFF_REQUIRES_DATE_AND_REASON", "Trạng thái Đã nghỉ bắt buộc nhập lý do nghỉ.")
+            if (reasonText.isEmpty() || reasonText.length > 4000) {
+                throw invalid("OFF_REQUIRES_DATE_AND_REASON", "Trạng thái Đã nghỉ bắt buộc nhập lý do nghỉ (tối đa 4000 ký tự).")
             }
             JSONObject()
                 .put("status", "OFF")
@@ -579,14 +775,22 @@ object DirectEntryContract {
 
                 val pendingObj = item.optJSONObject("pending_request")
                 val pendingSummary = if (pendingObj != null) {
-                    "Đang chờ duyệt (${pendingObj.optString("state", "PENDING")})"
+                    "Đang chờ duyệt"
                 } else {
                     ""
                 }
 
                 val decisionObj = item.optJSONObject("last_decision")
                 val decisionSummary = if (decisionObj != null) {
-                    "Quyết định gần nhất: ${decisionObj.optString("state", "")}"
+                    val rawState = decisionObj.optString("state", "").trim()
+                    val vnDecision = when (rawState.uppercase(Locale.ROOT)) {
+                        "APPROVED" -> "Đã duyệt"
+                        "REJECTED" -> "Từ chối"
+                        "CANCELLED" -> "Đã hủy"
+                        "PENDING" -> "Đang chờ duyệt"
+                        else -> rawState
+                    }
+                    if (vnDecision.isNotEmpty()) "Quyết định gần nhất: $vnDecision" else ""
                 } else {
                     ""
                 }
@@ -818,6 +1022,114 @@ object DirectEntryContract {
         )
     }
 
+    private val SHA256_LOWER_HEX_REGEX = Regex("^[0-9a-f]{64}$")
+    private val LAST4_DIGITS_REGEX = Regex("^[0-9]{4}$")
+
+    fun buildSubmissionTransitionPayload(
+        expectedVersion: Int,
+        targetState: String,
+        idempotencyKey: String,
+        duplicateCccdFingerprint: String? = null,
+        duplicateCccdCount: Int? = null
+    ): JSONObject {
+        if (expectedVersion < 1) {
+            throw invalid("SUBMISSION_TRANSITION_INVALID", "Phiên bản đợt nhập không hợp lệ.")
+        }
+        if (targetState !in setOf("DRAFT", "SUBMITTED")) {
+            throw invalid("SUBMISSION_TRANSITION_INVALID", "Trạng thái chuyển đổi không hợp lệ: $targetState")
+        }
+        if (!UUID_REGEX.matches(idempotencyKey.trim())) {
+            throw invalid("IDEMPOTENCY_KEY_INVALID", "Khóa chống gửi trùng không hợp lệ.")
+        }
+        val payload = JSONObject()
+            .put("expected_version", expectedVersion)
+            .put("target_state", targetState)
+            .put("idempotency_key", idempotencyKey.trim())
+
+        if (duplicateCccdFingerprint != null || duplicateCccdCount != null) {
+            val cleanFp = duplicateCccdFingerprint?.trim().orEmpty()
+            val count = duplicateCccdCount ?: 0
+            if (targetState != "SUBMITTED" || !SHA256_LOWER_HEX_REGEX.matches(cleanFp) || count !in 1..1000) {
+                throw invalid("SUBMISSION_TRANSITION_INVALID", "Xác nhận trùng CCCD không hợp lệ.")
+            }
+            payload.put("duplicate_cccd_fingerprint", cleanFp)
+            payload.put("duplicate_cccd_count", count)
+        }
+        return payload
+    }
+
+    fun parseDuplicateCccdPreflightResponse(
+        json: JSONObject,
+        expectedSubmissionId: String
+    ): DuplicateCccdPreflightResult {
+        val submissionId = json.optString("submission_id", "").trim()
+        val version = json.optInt("version", 0)
+        val fingerprint = json.optString("fingerprint", "").trim()
+        val conflictCount = json.optInt("conflict_count", -1)
+        val conflictsArr = json.optJSONArray("conflicts") ?: throw contractInvalid("PREFLIGHT_CONFLICTS_MISSING")
+
+        if (!UUID_REGEX.matches(submissionId) ||
+            submissionId != expectedSubmissionId.trim() ||
+            version < 1 ||
+            !SHA256_LOWER_HEX_REGEX.matches(fingerprint) ||
+            conflictCount !in 0..1000 ||
+            conflictsArr.length() > conflictCount
+        ) {
+            throw contractInvalid("PREFLIGHT_RESPONSE_INVALID")
+        }
+
+        val conflicts = buildList {
+            for (i in 0 until conflictsArr.length()) {
+                val c = conflictsArr.optJSONObject(i) ?: throw contractInvalid("PREFLIGHT_CONFLICT_ITEM_INVALID")
+                val ref = c.optString("conflict_ref", "").trim()
+                val draftName = c.optString("draft_display_name", "")
+                val projDisplay = c.optNullableString("project_display")
+                val empStatus = c.optString("employment_status", "").trim()
+                val last4 = c.optString("cccd_last4", "").trim()
+                if (ref.isEmpty() || empStatus !in setOf("ON", "UNCONFIRMED") || !LAST4_DIGITS_REGEX.matches(last4)) {
+                    throw contractInvalid("PREFLIGHT_CONFLICT_ITEM_INVALID")
+                }
+                add(
+                    DuplicateCccdPreflightConflict(
+                        conflictRef = ref,
+                        draftDisplayName = draftName,
+                        projectDisplay = projDisplay,
+                        employmentStatus = empStatus,
+                        cccdLast4 = last4
+                    )
+                )
+            }
+        }
+        return DuplicateCccdPreflightResult(
+            submissionId = submissionId,
+            version = version,
+            fingerprint = fingerprint,
+            conflictCount = conflictCount,
+            conflicts = conflicts
+        )
+    }
+
+    fun parseSubmissionTransitionResponse(
+        json: JSONObject,
+        expectedSubmissionId: String
+    ): SubmissionTransitionResult {
+        val submissionId = json.optString("submission_id", "").trim()
+        val state = json.optString("state", "").trim()
+        val version = json.optInt("version", 0)
+        if (!UUID_REGEX.matches(submissionId) ||
+            submissionId != expectedSubmissionId.trim() ||
+            state !in setOf("DRAFT", "REVIEW", "SUBMITTED") ||
+            version < 1
+        ) {
+            throw contractInvalid("SUBMISSION_TRANSITION_RESPONSE_INVALID")
+        }
+        return SubmissionTransitionResult(
+            submissionId = submissionId,
+            state = state,
+            version = version
+        )
+    }
+
     private fun JSONObject.optNullableString(key: String): String? {
         if (!has(key) || isNull(key)) return null
         return optString(key, "").trim().ifEmpty { null }
@@ -854,6 +1166,115 @@ object DirectEntryContract {
             statusCode = 200,
             backendCode = code,
             message = "Dữ liệu máy chủ trả về không đúng hợp đồng ($code)."
+        )
+    }
+}
+
+object DocumentImageCompressor {
+    const val MAX_RAW_PICKER_BYTES = 20L * 1024L * 1024L
+
+    fun compressIfImage(
+        rawBytes: ByteArray,
+        mimeType: String,
+        fileName: String,
+        maxDimensionPx: Int = 1600,
+        jpegQuality: Int = 82
+    ): Triple<ByteArray, String, String> {
+        if (rawBytes.isEmpty()) {
+            throw BackendApiException(
+                kind = BackendFailureKind.INVALID_REQUEST,
+                statusCode = 413,
+                backendCode = "DOCUMENT_SIZE_INVALID",
+                message = "Kích thước tệp phải lớn hơn 0 và không vượt quá 10 MB."
+            )
+        }
+        if (mimeType == "application/pdf") {
+            if (rawBytes.size > DirectEntryContract.MAX_STAGE_BYTES) {
+                throw BackendApiException(
+                    kind = BackendFailureKind.INVALID_REQUEST,
+                    statusCode = 413,
+                    backendCode = "DOCUMENT_SIZE_INVALID",
+                    message = "Kích thước tệp PDF không được vượt quá 10 MB."
+                )
+            }
+            return Triple(rawBytes, mimeType, fileName)
+        }
+
+        val boundsOpts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(rawBytes, 0, rawBytes.size, boundsOpts)
+        if (boundsOpts.outWidth <= 0 || boundsOpts.outHeight <= 0) {
+            if (rawBytes.size > DirectEntryContract.MAX_STAGE_BYTES) {
+                throw BackendApiException(
+                    kind = BackendFailureKind.INVALID_REQUEST,
+                    statusCode = 413,
+                    backendCode = "DOCUMENT_SIZE_INVALID",
+                    message = "Kích thước tệp ảnh không được vượt quá 10 MB."
+                )
+            }
+            return Triple(rawBytes, mimeType, fileName)
+        }
+
+        var sampleSize = 1
+        while (
+            boundsOpts.outWidth / (sampleSize * 2) >= maxDimensionPx &&
+            boundsOpts.outHeight / (sampleSize * 2) >= maxDimensionPx
+        ) {
+            sampleSize *= 2
+        }
+
+        val decodeOpts = BitmapFactory.Options().apply {
+            inSampleSize = sampleSize
+            inPreferredConfig = Bitmap.Config.ARGB_8888
+        }
+        val decoded = BitmapFactory.decodeByteArray(rawBytes, 0, rawBytes.size, decodeOpts)
+        if (decoded == null) {
+            if (rawBytes.size > DirectEntryContract.MAX_STAGE_BYTES) {
+                throw BackendApiException(
+                    kind = BackendFailureKind.INVALID_REQUEST,
+                    statusCode = 413,
+                    backendCode = "DOCUMENT_SIZE_INVALID",
+                    message = "Kích thước tệp ảnh không được vượt quá 10 MB."
+                )
+            }
+            return Triple(rawBytes, mimeType, fileName)
+        }
+
+        val maxSide = maxOf(decoded.width, decoded.height)
+        val scaled = if (maxSide > maxDimensionPx && maxDimensionPx > 0) {
+            val ratio = maxDimensionPx.toFloat() / maxSide.toFloat()
+            val targetW = (decoded.width * ratio).toInt().coerceAtLeast(1)
+            val targetH = (decoded.height * ratio).toInt().coerceAtLeast(1)
+            val created = Bitmap.createScaledBitmap(decoded, targetW, targetH, true)
+            if (created !== decoded) {
+                decoded.recycle()
+            }
+            created
+        } else {
+            decoded
+        }
+
+        val baos = ByteArrayOutputStream()
+        scaled.compress(Bitmap.CompressFormat.JPEG, jpegQuality.coerceIn(50, 95), baos)
+        scaled.recycle()
+        val compressed = baos.toByteArray()
+
+        if (compressed.isNotEmpty() &&
+            compressed.size <= DirectEntryContract.MAX_STAGE_BYTES &&
+            (compressed.size < rawBytes.size || rawBytes.size > DirectEntryContract.MAX_STAGE_BYTES)
+        ) {
+            val baseName = fileName.substringBeforeLast('.', fileName).ifBlank { "photo" }
+            return Triple(compressed, "image/jpeg", "$baseName.jpg")
+        }
+
+        if (rawBytes.size <= DirectEntryContract.MAX_STAGE_BYTES) {
+            return Triple(rawBytes, mimeType, fileName)
+        }
+
+        throw BackendApiException(
+            kind = BackendFailureKind.INVALID_REQUEST,
+            statusCode = 413,
+            backendCode = "DOCUMENT_SIZE_INVALID",
+            message = "Kích thước tệp ảnh sau khi tối ưu vẫn vượt quá 10 MB."
         )
     }
 }
@@ -958,19 +1379,25 @@ class DirectEntryService(
             else -> "image/jpeg"
         }
 
-        val bytes = resolver.openInputStream(uri)?.use { input ->
+        val maxAllowedReadBytes = if (normalizedMime == "application/pdf") {
+            DirectEntryContract.MAX_STAGE_BYTES
+        } else {
+            DocumentImageCompressor.MAX_RAW_PICKER_BYTES
+        }
+
+        val rawBytes = resolver.openInputStream(uri)?.use { input ->
             val out = ByteArrayOutputStream()
             val buffer = ByteArray(8192)
             var total = 0L
             var read: Int
             while (input.read(buffer).also { read = it } != -1) {
                 total += read
-                if (total > DirectEntryContract.MAX_STAGE_BYTES) {
+                if (total > maxAllowedReadBytes) {
                     throw BackendApiException(
                         kind = BackendFailureKind.INVALID_REQUEST,
                         statusCode = 413,
                         backendCode = "DOCUMENT_TOO_LARGE",
-                        message = "Tệp đính kèm vượt quá giới hạn 10 MB."
+                        message = "Tệp đính kèm vượt quá giới hạn dung lượng cho phép."
                     )
                 }
                 out.write(buffer, 0, read)
@@ -983,11 +1410,17 @@ class DirectEntryService(
             message = "Không thể đọc tệp đã chọn từ thiết bị."
         )
 
+        val (compressedBytes, outMime, outName) = DocumentImageCompressor.compressIfImage(
+            rawBytes = rawBytes,
+            mimeType = normalizedMime,
+            fileName = displayName
+        )
+
         uploadStageBytes(
             documentType = documentType,
-            fileBytes = bytes,
-            fileName = displayName,
-            mimeType = normalizedMime
+            fileBytes = compressedBytes,
+            fileName = outName,
+            mimeType = outMime
         )
     }
 
@@ -999,6 +1432,281 @@ class DirectEntryService(
             path = "/api/direct-entry/worker-portrait-stages",
             bodyJson = body
         )
+    }
+
+    suspend fun prepareLocalAttachmentBytes(
+        documentType: String,
+        rawBytes: ByteArray,
+        fileName: String,
+        mimeType: String
+    ): StagedDocumentRef = withContext(Dispatchers.IO) {
+        if (documentType !in DirectEntryContract.ALLOWED_STAGE_DOCUMENT_TYPES) {
+            throw BackendApiException(
+                kind = BackendFailureKind.INVALID_REQUEST,
+                statusCode = 400,
+                backendCode = "DOCUMENT_TYPE_INVALID",
+                message = "Loại tài liệu đính kèm không hợp lệ."
+            )
+        }
+        val allowedMimes = if (documentType == "WORKER_PORTRAIT") {
+            setOf("image/jpeg", "image/png")
+        } else {
+            setOf("image/jpeg", "image/png", "application/pdf")
+        }
+        if (mimeType !in allowedMimes) {
+            throw BackendApiException(
+                kind = BackendFailureKind.INVALID_REQUEST,
+                statusCode = 415,
+                backendCode = "DOCUMENT_MIME_INVALID",
+                message = if (documentType == "WORKER_PORTRAIT") {
+                    "Ảnh chân dung chỉ chấp nhận JPEG hoặc PNG."
+                } else {
+                    "Tài liệu chỉ chấp nhận JPEG, PNG hoặc PDF."
+                }
+            )
+        }
+        val (outBytes, outMime, outName) = DocumentImageCompressor.compressIfImage(
+            rawBytes = rawBytes,
+            mimeType = mimeType,
+            fileName = fileName.ifBlank { "attachment" }
+        )
+        val pendingDir = File(context.cacheDir, "pending_worker_docs").apply { mkdirs() }
+        val tempFile = File(pendingDir, "${UUID.randomUUID()}.bin")
+        tempFile.writeBytes(outBytes)
+        StagedDocumentRef(
+            stageId = "",
+            documentType = documentType,
+            fileName = outName.ifBlank { "attachment" },
+            mimeType = outMime,
+            sizeBytes = outBytes.size.toLong(),
+            localFilePath = tempFile.absolutePath
+        )
+    }
+
+    suspend fun prepareLocalAttachmentUri(
+        documentType: String,
+        uri: Uri
+    ): StagedDocumentRef = withContext(Dispatchers.IO) {
+        val resolver = context.contentResolver
+        val rawMime = resolver.getType(uri)?.lowercase(Locale.ROOT).orEmpty()
+        var displayName = "attachment"
+        resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE), null, null, null)?.use { cursor ->
+            if (cursor.moveToFirst()) {
+                val nameIdx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                if (nameIdx >= 0 && !cursor.isNull(nameIdx)) {
+                    displayName = cursor.getString(nameIdx).ifBlank { "attachment" }
+                }
+            }
+        }
+        val normalizedMime = when {
+            rawMime == "image/jpg" -> "image/jpeg"
+            rawMime in setOf("image/jpeg", "image/png", "application/pdf") -> rawMime
+            displayName.lowercase(Locale.ROOT).endsWith(".png") -> "image/png"
+            displayName.lowercase(Locale.ROOT).endsWith(".pdf") -> "application/pdf"
+            else -> "image/jpeg"
+        }
+        val maxAllowedReadBytes = if (normalizedMime == "application/pdf") {
+            DirectEntryContract.MAX_STAGE_BYTES
+        } else {
+            DocumentImageCompressor.MAX_RAW_PICKER_BYTES
+        }
+        val rawBytes = resolver.openInputStream(uri)?.use { input ->
+            val out = ByteArrayOutputStream()
+            val buffer = ByteArray(8192)
+            var total = 0L
+            var read: Int
+            while (input.read(buffer).also { read = it } != -1) {
+                total += read
+                if (total > maxAllowedReadBytes) {
+                    throw BackendApiException(
+                        kind = BackendFailureKind.INVALID_REQUEST,
+                        statusCode = 413,
+                        backendCode = "DOCUMENT_TOO_LARGE",
+                        message = "Tệp đính kèm vượt quá giới hạn dung lượng cho phép."
+                    )
+                }
+                out.write(buffer, 0, read)
+            }
+            out.toByteArray()
+        } ?: throw BackendApiException(
+            kind = BackendFailureKind.INVALID_REQUEST,
+            statusCode = 400,
+            backendCode = "FILE_READ_FAILED",
+            message = "Không thể đọc tệp đã chọn từ thiết bị."
+        )
+        prepareLocalAttachmentBytes(
+            documentType = documentType,
+            rawBytes = rawBytes,
+            fileName = displayName,
+            mimeType = normalizedMime
+        )
+    }
+
+    suspend fun deleteLocalAttachment(localFilePath: String?) = withContext(Dispatchers.IO) {
+        val cleanPath = localFilePath?.trim().orEmpty()
+        if (cleanPath.isEmpty()) return@withContext
+        runCatching {
+            val file = File(cleanPath)
+            val cacheRoot = context.cacheDir.canonicalPath
+            if (file.exists() && file.canonicalPath.startsWith(cacheRoot)) {
+                file.delete()
+            }
+        }
+    }
+
+    /**
+     * Post-entry document upload matching App BI `document-api.ts` & `document-finalize-api.ts`:
+     * 1. Reserve document slot (`POST /api/direct-entry/entries/{entryId}/documents`)
+     * 2. Binary PUT to presigned R2 URL (`upload.url`) without cookies or Origin header
+     * 3. Finalize document (`POST /api/direct-entry/entries/{entryId}/documents/{docId}/finalize`)
+     * Returns the updated authoritative `entry_version` for sequential chaining on the same entry.
+     */
+    suspend fun uploadDocumentToEntry(
+        entryId: String,
+        initialEntryVersion: Int? = null,
+        documentType: String,
+        fileBytes: ByteArray,
+        mimeType: String,
+        idempotencyBaseKey: String = UUID.randomUUID().toString()
+    ): Int = withContext(Dispatchers.IO) {
+        val cleanEntryId = entryId.trim()
+        if (!DirectEntryContract.isUuid(cleanEntryId)) {
+            throw BackendApiException(
+                kind = BackendFailureKind.INVALID_REQUEST,
+                statusCode = 400,
+                backendCode = "ENTRY_ID_INVALID",
+                message = "Mã hồ sơ người lao động không hợp lệ."
+            )
+        }
+        if (documentType !in DirectEntryContract.ALLOWED_STAGE_DOCUMENT_TYPES) {
+            throw BackendApiException(
+                kind = BackendFailureKind.INVALID_REQUEST,
+                statusCode = 400,
+                backendCode = "DOCUMENT_TYPE_INVALID",
+                message = "Loại tài liệu đính kèm không hợp lệ."
+            )
+        }
+        val allowedMimes = if (documentType == "WORKER_PORTRAIT") {
+            setOf("image/jpeg", "image/png")
+        } else {
+            setOf("image/jpeg", "image/png", "application/pdf")
+        }
+        if (mimeType !in allowedMimes) {
+            throw BackendApiException(
+                kind = BackendFailureKind.INVALID_REQUEST,
+                statusCode = 415,
+                backendCode = "DOCUMENT_MIME_INVALID",
+                message = "Định dạng tệp đính kèm không được hỗ trợ."
+            )
+        }
+        if (fileBytes.isEmpty() || fileBytes.size > DirectEntryContract.MAX_STAGE_BYTES) {
+            throw BackendApiException(
+                kind = BackendFailureKind.INVALID_REQUEST,
+                statusCode = 413,
+                backendCode = "DOCUMENT_SIZE_INVALID",
+                message = "Kích thước tệp phải lớn hơn 0 và không vượt quá 10 MB."
+            )
+        }
+
+        fun buildReserveBody(expectedVersion: Int): JSONObject {
+            return JSONObject()
+                .put("document_type", documentType)
+                .put("expected_entry_version", expectedVersion)
+                .put("size_bytes", fileBytes.size)
+                .put("mime_type", mimeType)
+                .put("reason", JSONObject.NULL)
+        }
+
+        val initialVersion = initialEntryVersion?.takeIf { it >= 1 } ?: getEntryDetail(cleanEntryId).version
+        val reservePath = "/api/direct-entry/entries/$cleanEntryId/documents"
+        val reserveJson = try {
+            httpClient.postJson(
+                path = reservePath,
+                bodyJson = buildReserveBody(initialVersion),
+                idempotencyKey = "$idempotencyBaseKey:reserve",
+                requireOkTrue = true
+            )
+        } catch (conflictErr: BackendApiException) {
+            if (conflictErr.kind != BackendFailureKind.CONFLICT) {
+                throw conflictErr
+            }
+            val latestVersion = getEntryDetail(cleanEntryId).version
+            httpClient.postJson(
+                path = reservePath,
+                bodyJson = buildReserveBody(latestVersion),
+                idempotencyKey = "$idempotencyBaseKey:reserve:r1",
+                requireOkTrue = true
+            )
+        }
+
+        val documentId = reserveJson.optString("document_id", "").trim()
+        val reservedEntryVersion = reserveJson.optInt("entry_version", 0)
+        val uploadStatus = reserveJson.optString("upload_status", "").trim()
+        if (!DirectEntryContract.isUuid(documentId) || reservedEntryVersion < 1) {
+            throw BackendApiException(
+                kind = BackendFailureKind.CONTRACT_INVALID,
+                statusCode = 200,
+                backendCode = "DOCUMENT_RESERVE_INVALID",
+                message = "Phản hồi khởi tạo tải tài liệu từ máy chủ không hợp lệ."
+            )
+        }
+
+        val uploadObj = if (reserveJson.has("upload") && !reserveJson.isNull("upload")) {
+            reserveJson.optJSONObject("upload")
+        } else {
+            null
+        }
+
+        if (uploadObj != null) {
+            val signedUrl = uploadObj.optString("url", "").trim()
+            if (signedUrl.isEmpty()) {
+                throw BackendApiException(
+                    kind = BackendFailureKind.CONTRACT_INVALID,
+                    statusCode = 200,
+                    backendCode = "DOCUMENT_UPLOAD_URL_MISSING",
+                    message = "Máy chủ không trả về đường dẫn tải tệp đính kèm."
+                )
+            }
+            val headersMap = linkedMapOf<String, String>()
+            val headersJson = uploadObj.optJSONObject("headers")
+            if (headersJson != null) {
+                val keys = headersJson.keys()
+                while (keys.hasNext()) {
+                    val key = keys.next()
+                    val value = headersJson.optString(key, "")
+                    if (key.isNotBlank() && value.isNotEmpty()) {
+                        headersMap[key] = value
+                    }
+                }
+            }
+            httpClient.putBinaryToSignedUrl(
+                signedUrl = signedUrl,
+                headers = headersMap,
+                bytes = fileBytes,
+                fallbackMimeType = mimeType
+            )
+        } else if (uploadStatus == "READY") {
+            return@withContext reservedEntryVersion
+        }
+
+        val finalizeBody = JSONObject().put("expected_entry_version", reservedEntryVersion)
+        val finalizeJson = httpClient.postJson(
+            path = "/api/direct-entry/entries/$cleanEntryId/documents/$documentId/finalize",
+            bodyJson = finalizeBody,
+            idempotencyKey = "$idempotencyBaseKey:finalize",
+            requireOkTrue = true
+        )
+        val finalizedVersion = finalizeJson.optInt("entry_version", 0)
+        val finalStatus = finalizeJson.optString("upload_status", "").trim()
+        if (finalizedVersion < 1 || finalStatus != "READY") {
+            throw BackendApiException(
+                kind = BackendFailureKind.CONTRACT_INVALID,
+                statusCode = 200,
+                backendCode = "DOCUMENT_FINALIZE_INVALID",
+                message = "Xác nhận hoàn tất tải tài liệu trên máy chủ không hợp lệ."
+            )
+        }
+        finalizedVersion
     }
 
     suspend fun submitFullProfileBatch(
@@ -1079,6 +1787,71 @@ class DirectEntryService(
 
         val json = httpClient.getJson(pathWithQuery = pathWithQuery, requireOkTrue = true)
         DirectEntryContract.parseOwnSubmissionsPage(json)
+    }
+
+    suspend fun preflightDuplicateCccd(
+        submissionId: String
+    ): DuplicateCccdPreflightResult = withContext(Dispatchers.IO) {
+        val cleanId = submissionId.trim()
+        if (!DirectEntryContract.isUuid(cleanId)) {
+            throw BackendApiException(
+                kind = BackendFailureKind.INVALID_REQUEST,
+                statusCode = 400,
+                backendCode = "SUBMISSION_ID_INVALID",
+                message = "Mã đợt nhập liệu không hợp lệ."
+            )
+        }
+        val json = httpClient.getJson(
+            pathWithQuery = "/api/direct-entry/submissions/$cleanId/duplicate-cccd-preflight",
+            requireOkTrue = true
+        )
+        DirectEntryContract.parseDuplicateCccdPreflightResponse(json, expectedSubmissionId = cleanId)
+    }
+
+    suspend fun transitionSubmissionToSubmitted(
+        submissionId: String,
+        expectedVersion: Int,
+        duplicateCccdFingerprint: String? = null,
+        duplicateCccdCount: Int? = null
+    ): SubmissionTransitionResult = withContext(Dispatchers.IO) {
+        val cleanId = submissionId.trim()
+        if (!DirectEntryContract.isUuid(cleanId)) {
+            throw BackendApiException(
+                kind = BackendFailureKind.INVALID_REQUEST,
+                statusCode = 400,
+                backendCode = "SUBMISSION_ID_INVALID",
+                message = "Mã đợt nhập liệu không hợp lệ."
+            )
+        }
+        val ackTag = if (duplicateCccdFingerprint != null && duplicateCccdCount != null) {
+            ":ack:${duplicateCccdFingerprint.trim()}:$duplicateCccdCount"
+        } else {
+            ""
+        }
+        val intentSignature = "submission_transition:$cleanId:SUBMITTED:v$expectedVersion$ackTag"
+        val idempotencyKey = idempotencyStore.resolve(intentSignature)
+        val payload = DirectEntryContract.buildSubmissionTransitionPayload(
+            expectedVersion = expectedVersion,
+            targetState = "SUBMITTED",
+            idempotencyKey = idempotencyKey,
+            duplicateCccdFingerprint = duplicateCccdFingerprint,
+            duplicateCccdCount = duplicateCccdCount
+        )
+        try {
+            val responseJson = httpClient.postJson(
+                path = "/api/direct-entry/submissions/$cleanId/transition",
+                bodyJson = payload,
+                idempotencyKey = idempotencyKey,
+                requireOkTrue = true
+            )
+            idempotencyStore.clear(intentSignature)
+            DirectEntryContract.parseSubmissionTransitionResponse(responseJson, expectedSubmissionId = cleanId)
+        } catch (e: BackendApiException) {
+            if (!idempotencyStore.shouldPreserveForRetry(e)) {
+                idempotencyStore.clear(intentSignature)
+            }
+            throw e
+        }
     }
 
     suspend fun getEntryDetail(entryId: String): WorkerEntryDetail = withContext(Dispatchers.IO) {
