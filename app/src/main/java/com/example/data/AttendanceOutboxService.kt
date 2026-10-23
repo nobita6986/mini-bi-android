@@ -516,7 +516,11 @@ object AttendanceContract {
         }
 
         val boundsOpts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-        BitmapFactory.decodeFile(sourceFile.absolutePath, boundsOpts)
+        runCatching {
+            BitmapFactory.decodeFile(sourceFile.absolutePath, boundsOpts)
+        }.onFailure {
+            return null
+        }
         if (boundsOpts.outWidth <= 0 || boundsOpts.outHeight <= 0) {
             return null
         }
@@ -533,7 +537,9 @@ object AttendanceContract {
             inSampleSize = sampleSize
             inPreferredConfig = Bitmap.Config.ARGB_8888
         }
-        val decoded = BitmapFactory.decodeFile(sourceFile.absolutePath, decodeOpts) ?: return null
+        val decoded = runCatching {
+            BitmapFactory.decodeFile(sourceFile.absolutePath, decodeOpts)
+        }.getOrNull() ?: return null
         if (decoded.width <= 0 || decoded.height <= 0) {
             decoded.recycle()
             return null
