@@ -81,6 +81,7 @@ import com.example.data.AppActor
 import com.example.data.AttendanceContract
 import com.example.data.AttendanceEntity
 import com.example.data.AttendanceOutboxStatus
+import com.example.data.AttendanceTimeContract
 import com.example.data.AttendanceTimeSource
 import com.example.data.CapturedAttendanceTime
 import com.example.ui.MiniBiViewModel
@@ -335,8 +336,12 @@ fun AttendanceScreen(
                                     )
                                     Text(
                                         text = when {
-                                            timeAnchorState.hasValidAnchor ->
-                                                "Đối chiếu thời gian đơn điệu từ máy chủ (hiệu lực đến ${timeAnchorState.expiresAtIso?.take(16)?.replace('T', ' ') ?: "--"})"
+                                            timeAnchorState.hasValidAnchor -> {
+                                                val expiresVi = timeAnchorState.expiresAtIso
+                                                    ?.let { formatIsoToVietnamDateTime(it).take(16) }
+                                                    ?: "--"
+                                                "Đối chiếu thời gian đơn điệu từ máy chủ (hiệu lực đến $expiresVi)"
+                                            }
                                             timeAnchorState.syncing ->
                                                 "Đang lấy mốc thời gian tham chiếu từ máy chủ BI"
                                             else ->
@@ -405,7 +410,8 @@ fun AttendanceScreen(
                                             syncedTodayRecords.isNotEmpty() -> {
                                                 val latest = syncedTodayRecords.first()
                                                 val displayIso = latest.serverCapturedAtIso ?: latest.clientCapturedAtIso
-                                                "Xác nhận gần nhất lúc ${displayIso.drop(11).take(8)}"
+                                                val displayTimeVi = formatIsoToVietnamDateTime(displayIso).drop(11).take(8)
+                                                "Xác nhận gần nhất lúc $displayTimeVi"
                                             }
                                             todayRecords.isNotEmpty() ->
                                                 "Chưa có lượt nào được máy chủ xác nhận (${todayRecords.size} bản ghi tại máy)"
@@ -780,6 +786,9 @@ fun AttendanceScreen(
                     expanded = selectedRecordDetail?.id == item.id,
                     onClick = {
                         selectedRecordDetail = if (selectedRecordDetail?.id == item.id) null else item
+                    },
+                    onRetryCaptureClick = {
+                        startOneTapGpsAndCameraFlow()
                     }
                 )
             }
@@ -788,14 +797,28 @@ fun AttendanceScreen(
 }
 
 @Composable
-private fun AttendanceHistoryCard(
+internal fun AttendanceHistoryCard(
     record: AttendanceEntity,
     serverSequenceInDay: Int?,
     expanded: Boolean,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    onRetryCaptureClick: (() -> Unit)? = null
 ) {
     val effectiveTimeSource = record.serverTimeSource ?: record.timeSource
     val isDeviceClockUnverified = effectiveTimeSource == AttendanceTimeSource.DEVICE_CLOCK_UNVERIFIED
+    val displayStatusMessage = remember(
+        record.syncStatus,
+        record.backendErrorCode,
+        record.httpStatusCode,
+        record.statusMessage
+    ) {
+        AttendanceContract.resolveDisplayStatusMessage(
+            syncStatus = record.syncStatus,
+            backendErrorCode = record.backendErrorCode,
+            httpStatusCode = record.httpStatusCode,
+            rawStatusMessage = record.statusMessage
+        )
+    }
 
     val statusColor = when (record.syncStatus) {
         AttendanceOutboxStatus.SYNCED -> SemanticColors.SuccessLight
@@ -828,9 +851,19 @@ private fun AttendanceHistoryCard(
         record.syncStatus == AttendanceOutboxStatus.AUTH_REQUIRED ->
             "Cần đăng nhập lại"
         record.syncStatus == AttendanceOutboxStatus.DENIED ->
-            "Từ chối quyền"
+            "Chưa đủ quyền"
         else ->
-            "Bị từ chối"
+            "Chưa thành công"
+    }
+    val expandedStatusTitle = when (record.syncStatus) {
+        AttendanceOutboxStatus.SYNCED -> "Đã xác nhận"
+        AttendanceOutboxStatus.QUEUED -> "Đang chờ đồng bộ"
+        AttendanceOutboxStatus.SYNCING -> "Đang gửi lên máy chủ"
+        AttendanceOutboxStatus.RETRYABLE_ERROR -> "Đang chờ tự động gửi lại"
+        AttendanceOutboxStatus.BACKEND_NOT_AVAILABLE -> "Chưa bật trên máy chủ"
+        AttendanceOutboxStatus.AUTH_REQUIRED -> "Cần đăng nhập lại"
+        AttendanceOutboxStatus.DENIED -> "Chưa đủ quyền"
+        else -> "Chưa thành công — vui lòng thử lại"
     }
 
     Card(
@@ -920,20 +953,22 @@ private fun AttendanceHistoryCard(
                     }
 
                     Row(
-                        verticalAlignment = Alignment.CenterVertically,
+                        verticalAlignment = Alignment.Top,
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         Icon(
                             imageVector = statusIcon,
                             contentDescription = null,
                             tint = statusColor,
-                            modifier = Modifier.size(14.dp)
+                            modifier = Modifier
+                                .padding(top = 2.dp)
+                                .size(14.dp)
                         )
                         Text(
-                            text = record.statusMessage,
+                            text = displayStatusMessage,
                             style = MaterialTheme.typography.labelSmall,
                             color = statusColor,
-                            maxLines = 2,
+                            maxLines = 4,
                             overflow = TextOverflow.Ellipsis
                         )
                     }
@@ -973,6 +1008,30 @@ private fun AttendanceHistoryCard(
                             overflow = TextOverflow.Ellipsis
                         )
                     }
+
+                    if (record.syncStatus == AttendanceOutboxStatus.REJECTED && onRetryCaptureClick != null) {
+                        OutlinedButton(
+                            onClick = onRetryCaptureClick,
+                            shape = RoundedCornerShape(10.dp),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                            modifier = Modifier
+                                .padding(top = 2.dp)
+                                .heightIn(min = 34.dp)
+                                .testTag("retry_checkin_card_button_${record.id}")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.PhotoCamera,
+                                contentDescription = null,
+                                modifier = Modifier.size(15.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = "Chụp lại & Thử lại",
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
+                    }
                 }
             }
 
@@ -986,7 +1045,7 @@ private fun AttendanceHistoryCard(
                     verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
                     Text(
-                        text = "Chi tiết lượt chấm công (${record.syncStatus}):",
+                        text = "Chi tiết lượt chấm công ($expandedStatusTitle):",
                         style = MaterialTheme.typography.labelMedium,
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.primary
@@ -995,12 +1054,12 @@ private fun AttendanceHistoryCard(
                         text = if (isDeviceClockUnverified) {
                             "• Nguồn thời gian: ${AttendanceContract.MSG_DEVICE_TIME_UNVERIFIED}"
                         } else {
-                            "• Nguồn thời gian: Giờ chuẩn máy chủ xác thực (SERVER_ANCHORED)"
+                            "• Nguồn thời gian: Giờ chuẩn máy chủ xác thực"
                         },
                         style = MaterialTheme.typography.bodySmall
                     )
                     Text(
-                        text = "• Thời gian chụp khai báo: ${record.clientCapturedAtIso}",
+                        text = "• Thời điểm chụp: ${formatIsoToVietnamDateTime(record.clientCapturedAtIso)}",
                         style = MaterialTheme.typography.bodySmall
                     )
                     if (record.serverCheckinId != null) {
@@ -1009,16 +1068,16 @@ private fun AttendanceHistoryCard(
                             style = MaterialTheme.typography.bodySmall
                         )
                         Text(
-                            text = "• Giờ máy chủ ghi nhận: ${record.serverCapturedAtIso ?: "--"}",
+                            text = "• Giờ máy chủ ghi nhận: ${record.serverCapturedAtIso?.let { formatIsoToVietnamDateTime(it) } ?: "--"}",
                             style = MaterialTheme.typography.bodySmall
                         )
                         Text(
-                            text = "• Giờ máy chủ tiếp nhận: ${record.serverReceivedAtIso ?: "--"}",
+                            text = "• Giờ máy chủ tiếp nhận: ${record.serverReceivedAtIso?.let { formatIsoToVietnamDateTime(it) } ?: "--"}",
                             style = MaterialTheme.typography.bodySmall
                         )
                         if (record.serverReplayed == true) {
                             Text(
-                                text = "• Chống trùng: Phản hồi phát lại an toàn (replayed)",
+                                text = "• Chống trùng: Phản hồi phát lại an toàn",
                                 style = MaterialTheme.typography.bodySmall
                             )
                         }
@@ -1036,6 +1095,17 @@ private fun AttendanceHistoryCard(
                 }
             }
         }
+    }
+}
+
+internal fun formatIsoToVietnamDateTime(iso: String): String {
+    val trimmed = iso.trim()
+    if (trimmed.isEmpty()) return "--"
+    return runCatching {
+        val epochMs = AttendanceTimeContract.parseIsoInstantToEpochMillis(trimmed, "display_iso")
+        AttendanceTimeContract.formatEpochMillisInHcmIso(epochMs).take(19).replace('T', ' ')
+    }.getOrElse {
+        trimmed.take(19).replace('T', ' ')
     }
 }
 

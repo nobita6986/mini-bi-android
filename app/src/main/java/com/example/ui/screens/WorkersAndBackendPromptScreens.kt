@@ -17,9 +17,11 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -1768,8 +1770,8 @@ data class WorkerScopeTabSpec(
 
 fun resolveVisibleWorkerTabs(actor: AppActor): List<WorkerScopeTabSpec> {
     return buildList {
-        add(WorkerScopeTabSpec("managed", "NLĐ dự án tôi quản lý"))
-        add(WorkerScopeTabSpec("recruited", "NLĐ mà tôi tuyển"))
+        add(WorkerScopeTabSpec("managed", "DA tôi quản lý"))
+        add(WorkerScopeTabSpec("recruited", "Tôi tuyển"))
         if (actor.hasScopeKind("team")) {
             add(WorkerScopeTabSpec("team", "Team tôi quản lý"))
         }
@@ -1780,7 +1782,7 @@ fun resolveVisibleWorkerTabs(actor: AppActor): List<WorkerScopeTabSpec> {
             actor.hasScopeKind("all") &&
             (actor.hasCapability("entry_admin") || actor.hasCapability("change_review"))
         ) {
-            add(WorkerScopeTabSpec("all", "Toàn bộ NLĐ"))
+            add(WorkerScopeTabSpec("all", "Toàn hệ thống"))
         }
     }
 }
@@ -1911,7 +1913,9 @@ fun WorkersAndDirectEntryScreen(
                         ) {
                             visibleTabs.chunked(2).forEach { rowTabs ->
                                 Row(
-                                    modifier = Modifier.fillMaxWidth(),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(IntrinsicSize.Min),
                                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
@@ -1925,6 +1929,7 @@ fun WorkersAndDirectEntryScreen(
                                             },
                                             modifier = Modifier
                                                 .weight(1f)
+                                                .fillMaxHeight()
                                                 .heightIn(min = 42.dp)
                                                 .testTag("worker_scope_tab_${tab.key}"),
                                             shape = RoundedCornerShape(12.dp),
@@ -1944,7 +1949,7 @@ fun WorkersAndDirectEntryScreen(
                                         ) {
                                             Box(
                                                 modifier = Modifier
-                                                    .fillMaxWidth()
+                                                    .fillMaxSize()
                                                     .padding(horizontal = 10.dp, vertical = 8.dp),
                                                 contentAlignment = Alignment.Center
                                             ) {
@@ -1958,7 +1963,7 @@ fun WorkersAndDirectEntryScreen(
                                                         MaterialTheme.colorScheme.onSurfaceVariant
                                                     },
                                                     textAlign = TextAlign.Center,
-                                                    maxLines = 2,
+                                                    maxLines = 1,
                                                     overflow = TextOverflow.Ellipsis
                                                 )
                                             }

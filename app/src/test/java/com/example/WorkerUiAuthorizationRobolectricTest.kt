@@ -21,6 +21,9 @@ import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import com.example.data.ActorScope
 import com.example.data.AppActor
+import com.example.data.AttendanceEntity
+import com.example.data.AttendanceOutboxStatus
+import com.example.data.AttendanceTimeSource
 import com.example.data.DirectEntryContract
 import com.example.data.MiniBiDatabase
 import com.example.data.MiniBiRepository
@@ -28,12 +31,14 @@ import com.example.data.SavedLoginAccount
 import com.example.data.WorkerEntryDetail
 import com.example.data.WorkerProfileEntity
 import com.example.ui.MiniBiViewModel
+import com.example.ui.screens.AttendanceHistoryCard
 import com.example.ui.screens.DirectEntryNewWorkersScreen
 import com.example.ui.screens.LoginScreen
 import com.example.ui.screens.WorkerOperationsRowCard
 import com.example.ui.screens.WorkerPrivilegedEditDialog
 import com.example.ui.screens.WorkerProposeChangeDialog
 import com.example.ui.screens.WorkersAndDirectEntryScreen
+import com.example.ui.screens.formatIsoToVietnamDateTime
 import com.example.ui.screens.resolveVisibleWorkerTabs
 import com.example.ui.theme.MyApplicationTheme
 import kotlinx.coroutines.CoroutineExceptionHandler
@@ -283,7 +288,26 @@ class WorkerUiAuthorizationRobolectricTest {
         )
         val realTabs = resolveVisibleWorkerTabs(realBackendActor)
         assertEquals(listOf("managed", "recruited"), realTabs.map { it.key })
-        assertEquals(listOf("NLĐ dự án tôi quản lý", "NLĐ mà tôi tuyển"), realTabs.map { it.label })
+        assertEquals(listOf("DA tôi quản lý", "Tôi tuyển"), realTabs.map { it.label })
+
+        // Full-scope admin actor: ZERO "NLĐ" substring in any top scope tab label
+        val fullAdminActor = AppActor(
+            appUserId = "88888888-2222-4333-8444-555555555555",
+            displayName = "Quản trị HRP",
+            capabilities = listOf("entry_admin", "submission_read"),
+            scopes = listOf(
+                ActorScope("own", "self", "2026-01-01", null),
+                ActorScope("team", "TEAM_NORTH", "2026-01-01", null),
+                ActorScope("all", "ALL", "2026-01-01", null)
+            ),
+            selfRecruiterSuggestion = null
+        )
+        val allTabLabels = resolveVisibleWorkerTabs(fullAdminActor).map { it.label }
+        assertEquals(
+            listOf("DA tôi quản lý", "Tôi tuyển", "Team tôi quản lý", "Tôi đã nhập", "Toàn hệ thống"),
+            allTabLabels
+        )
+        assertTrue(allTabLabels.none { it.contains("NLĐ", ignoreCase = true) })
     }
 
     @Test
@@ -1563,5 +1587,59 @@ class WorkerUiAuthorizationRobolectricTest {
             "Gap between toolbar and first duplicate card title ($gapBetweenToolbarAndGroupTextDp dp) must be compact (< 40dp)",
             gapBetweenToolbarAndGroupTextDp < 40f
         )
+    }
+
+    @Test
+    @Config(qualifiers = "w360dp-h800dp-xxhdpi")
+    fun `personnel scope buttons omit NLD with uniform height and attendance rejected card shows friendly retry UX`() {
+        var retriedCount = 0
+        val legacyRejectedRecord = AttendanceEntity(
+            id = 42L,
+            idempotencyKey = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+            appUserId = "11111111-2222-4333-8444-555555555555",
+            userDisplayName = "vinhnt.td",
+            latitude = 21.27250,
+            longitude = 105.65334,
+            accuracyMeters = 13.0f,
+            addressHint = "7MC3+X9J, Bình Nguyên, Phú Thọ, Việt Nam",
+            photoFilePath = "/data/user/0/app/files/attendance_photos/checkin_1.jpg",
+            photoUri = "content://test/checkin_1.jpg",
+            photoSha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            clientCapturedAtIso = "2026-10-24T01:21:37.318+07:00",
+            epochMillis = 1792779697318L,
+            timeSource = AttendanceTimeSource.SERVER_ANCHORED,
+            timeToken = "at1.sample.token",
+            elapsedSinceAnchorMs = 1500L,
+            note = "",
+            syncStatus = AttendanceOutboxStatus.REJECTED,
+            statusMessage = "Dữ liệu gửi lên không thỏa điều kiện nghiệp vụ.",
+            backendErrorCode = "PHOTO_INVALID",
+            httpStatusCode = 422
+        )
+
+        composeTestRule.setContent {
+            MyApplicationTheme {
+                AttendanceHistoryCard(
+                    record = legacyRejectedRecord,
+                    serverSequenceInDay = null,
+                    expanded = true,
+                    onClick = {},
+                    onRetryCaptureClick = { retriedCount++ }
+                )
+            }
+        }
+
+        // Legacy technical message & English "(REJECTED)" are replaced by friendly Vietnamese + retry button
+        composeTestRule.onNodeWithText("Dữ liệu gửi lên không thỏa điều kiện nghiệp vụ.").assertDoesNotExist()
+        composeTestRule.onNodeWithText("Chi tiết lượt chấm công (REJECTED):").assertDoesNotExist()
+        composeTestRule.onNodeWithText("Chưa thành công").assertIsDisplayed()
+        composeTestRule.onNodeWithText(
+            "Ảnh chụp từ camera chưa đúng chuẩn hệ thống. Vui lòng bấm Chấm công để chụp lại ảnh và thử lại."
+        ).assertIsDisplayed()
+        composeTestRule.onNodeWithTag("retry_checkin_card_button_42").assertIsDisplayed().performClick()
+        assertEquals(1, retriedCount)
+
+        // UTC server timestamp converts cleanly to Vietnam local time (+07:00)
+        assertEquals("2026-10-24 01:11:04", formatIsoToVietnamDateTime("2026-10-23T18:11:04.125Z"))
     }
 }
