@@ -2,8 +2,11 @@ package com.example
 
 import android.app.Application
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.Modifier
@@ -18,6 +21,7 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performTextInput
 import androidx.lifecycle.viewModelScope
@@ -2067,7 +2071,7 @@ class WorkerUiAuthorizationRobolectricTest {
     }
 
     @Test
-    @Config(qualifiers = "w360dp-h1400dp-xxhdpi")
+    @Config(qualifiers = "w360dp-h800dp-xxhdpi")
     fun `daily work report form keeps boolean switches separated from text and stacks action buttons cleanly on 360dp`() {
         val obligation = WorkReportObligationEntity(
             obligationId = "ob-daily-1",
@@ -2146,9 +2150,10 @@ class WorkerUiAuthorizationRobolectricTest {
 
         composeTestRule.setContent {
             MyApplicationTheme {
-                Box(
+                Column(
                     modifier = Modifier
                         .fillMaxWidth()
+                        .verticalScroll(rememberScrollState())
                         .padding(horizontal = 16.dp, vertical = 12.dp)
                 ) {
                     DynamicWorkReportFormCard(
@@ -2171,14 +2176,14 @@ class WorkerUiAuthorizationRobolectricTest {
 
         // 1. Every boolean Switch strictly stays to the right of its text label (zero overlap) and inside the card border
         for (key in listOf("f1", "f2", "f3")) {
-            val labelBounds = composeTestRule.onNodeWithTag("dynamic_label_$key")
-                .assertIsDisplayed()
+            val labelBounds = composeTestRule.onNodeWithTag("dynamic_label_$key", useUnmergedTree = true)
                 .fetchSemanticsNode()
                 .boundsInRoot
-            val switchBounds = composeTestRule.onNodeWithTag("dynamic_field_$key")
-                .assertIsDisplayed()
+            val switchBounds = composeTestRule.onNodeWithTag("dynamic_field_$key", useUnmergedTree = true)
                 .fetchSemanticsNode()
                 .boundsInRoot
+            assertTrue("Expected non-zero label width for $key", labelBounds.width > 50f)
+            assertTrue("Expected non-zero switch width for $key", switchBounds.width > 30f)
             assertTrue(
                 "Switch $key (left=${switchBounds.left}) must not overlap label (right=${labelBounds.right})",
                 switchBounds.left >= labelBounds.right + 4f
@@ -2190,6 +2195,9 @@ class WorkerUiAuthorizationRobolectricTest {
         }
 
         // 2. Action buttons are stacked cleanly across 2 rows without multi-line text wrapping
+        composeTestRule.onNodeWithTag("cancel_edit_report_button").performScrollTo()
+        composeTestRule.waitForIdle()
+
         val submitBounds = composeTestRule.onNodeWithTag("submit_final_report_button")
             .assertIsDisplayed()
             .fetchSemanticsNode()
@@ -2220,18 +2228,18 @@ class WorkerUiAuthorizationRobolectricTest {
         assertTrue("Cancel button must stay single-line compact (${cancelBounds.height}px)", cancelBounds.height <= 175f)
 
         // 3. Actions remain interactive and produce accurate JSON payloads
-        composeTestRule.onNodeWithTag("dynamic_field_f1").performClick()
-        composeTestRule.onNodeWithTag("save_draft_report_button").performClick()
+        composeTestRule.onNodeWithTag("dynamic_field_f1").performScrollTo().performClick()
+        composeTestRule.onNodeWithTag("save_draft_report_button").performScrollTo().performClick()
         composeTestRule.waitForIdle()
         assertEquals(true, savedDraftPayload?.optBoolean("f1"))
 
-        composeTestRule.onNodeWithTag("submit_final_report_button").performClick()
+        composeTestRule.onNodeWithTag("submit_final_report_button").performScrollTo().performClick()
         composeTestRule.waitForIdle()
         assertEquals(true, submittedFinalPayload?.optBoolean("f1"))
         assertEquals(false, submittedFinalPayload?.optBoolean("f2"))
         assertEquals(true, submittedFinalPayload?.optBoolean("f3"))
 
-        composeTestRule.onNodeWithTag("cancel_edit_report_button").performClick()
+        composeTestRule.onNodeWithTag("cancel_edit_report_button").performScrollTo().performClick()
         composeTestRule.waitForIdle()
         assertTrue(cancelled)
     }
