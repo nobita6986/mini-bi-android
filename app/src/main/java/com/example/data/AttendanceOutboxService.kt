@@ -81,6 +81,7 @@ data class ServerAttendanceHistoryItem(
 
 object AttendanceContract {
     const val ENDPOINT_CHECK_IN = "/api/attendance/check-in"
+    const val ENDPOINT_ATTENDANCE_HISTORY = "/api/attendance/history"
     const val ENDPOINT_ADMIN_ATTENDANCE_REPORT = "/api/admin/attendance/report"
     const val UNIQUE_OUTBOX_WORK_NAME = "mini_bi_attendance_outbox_sync"
 
@@ -967,12 +968,12 @@ class AttendanceOutboxService(
     }
 
     /**
-     * Synchronizes confirmed check-in history from the server (`/api/admin/attendance/report?employee_id=...`)
+     * Synchronizes the signed-in user's confirmed check-in history from the server
+     * (`/api/attendance/history`; the server derives the user from the session)
      * into Room `attendance_outbox` so reinstalls or multi-device logins restore server-confirmed logs
      * without duplicating locally recorded check-ins.
      *
-     * Gracefully returns `0` if offline, if `actor.appUserId` is not a canonical UUID, or if the
-     * actor does not hold server attendance-report access (`403 ATTENDANCE_REPORT_ACCESS_DENIED`).
+     * Gracefully returns `0` if offline or if `actor.appUserId` is not a canonical UUID.
      */
     suspend fun syncServerHistoryForUser(
         actor: AppActor,
@@ -982,22 +983,19 @@ class AttendanceOutboxService(
     ): Int = withContext(Dispatchers.IO) {
         val cleanUserId = actor.appUserId.trim()
         if (!WorkReportsContract.isUuid(cleanUserId)) return@withContext 0
-        if (!actor.hasScopeKind("all") && !actor.hasCapability("attendance_report_read")) return@withContext 0
         if (!isNetworkAvailable()) return@withContext 0
 
         val toDate = referenceTodayIso.trim().takeIf { it.matches(Regex("^\\d{4}-\\d{2}-\\d{2}$")) }
             ?: DirectEntryContract.todayIsoInHcm()
         val safeDaysBack = daysBack.coerceIn(1, 365)
         val fromDate = AttendanceContract.shiftIsoDateDays(toDate, -safeDaysBack)
-        val employeeParam = cleanUserId.lowercase(Locale.ROOT)
-
         val collected = mutableListOf<ServerAttendanceHistoryItem>()
         var page = 1
         val safeMaxPages = maxPages.coerceIn(1, 10)
         try {
             while (page <= safeMaxPages) {
-                val path = "${AttendanceContract.ENDPOINT_ADMIN_ATTENDANCE_REPORT}" +
-                    "?from_date=$fromDate&to_date=$toDate&page=$page&page_size=100&employee_id=$employeeParam"
+                val path = "${AttendanceContract.ENDPOINT_ATTENDANCE_HISTORY}" +
+                    "?from_date=$fromDate&to_date=$toDate&page=$page&page_size=100"
                 val json = httpClient.getJson(
                     pathWithQuery = path,
                     requireOkTrue = true,
@@ -1011,7 +1009,7 @@ class AttendanceOutboxService(
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (_: Exception) {
-            // Silently ignore 403/404/network errors during background history pull
+            // Silently ignore unavailable history during background sync.
             if (collected.isEmpty()) return@withContext 0
         }
 
@@ -1039,7 +1037,7 @@ class AttendanceOutboxService(
             }.getOrDefault(System.currentTimeMillis())
             val clientCapturedHcmIso = AttendanceTimeContract.formatEpochMillisInHcmIso(epochMs)
             val remotePhotoUri = runCatching {
-                httpClient.resolveUrl("/api/admin/attendance/checkins/${item.checkinId}/photo").toString()
+                httpClient.resolveUrl("/api/attendance/checkins/${item.checkinId}/photo").toString()
             }.getOrDefault("")
 
             dao.insertAttendance(

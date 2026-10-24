@@ -2569,11 +2569,7 @@ class MiniBiViewModel internal constructor(
 
     fun syncAttendanceHistoryFromServer(actor: AppActor? = currentActor.value) {
         val resolvedActor = actor ?: return
-        if ((!resolvedActor.hasScopeKind("all") && !resolvedActor.hasCapability("attendance_report_read")) ||
-            !WorkReportsContract.isUuid(resolvedActor.appUserId)
-        ) {
-            return
-        }
+        if (!WorkReportsContract.isUuid(resolvedActor.appUserId)) return
         viewModelScope.launch {
             runCatching {
                 val todayIso = resolveReferenceTodayIsoHcm(resolvedActor.appUserId)

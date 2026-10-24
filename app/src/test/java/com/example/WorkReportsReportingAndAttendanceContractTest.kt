@@ -1095,14 +1095,6 @@ class WorkReportsReportingAndAttendanceContractTest {
             isNetworkAvailable = { true },
             outboxWorkScheduler = {}
         )
-        val adminActor = AppActor(
-            appUserId = "11111111-2222-4333-8444-555555555555",
-            displayName = "Quản trị viên BI",
-            capabilities = listOf("entry_read", "attendance_report_read"),
-            scopes = listOf(ActorScope("all", "", "2026-01-01", null)),
-            selfRecruiterSuggestion = null
-        )
-
         val reportPayload = """
             {
               "ok": true,
@@ -1145,31 +1137,27 @@ class WorkReportsReportingAndAttendanceContractTest {
             }
         """.trimIndent()
 
-        // 1. Non-privileged team actor does not hit admin report endpoint
-        assertEquals(0, service.syncServerHistoryForUser(testActor, "2026-10-24", daysBack = 30))
-        assertEquals(0, server.requestCount)
-
-        // 2. Fresh reinstall (empty Room DB) restores both confirmed server check-ins
+        // A regular team actor can restore only their own history through the self-scoped API.
         server.enqueue(
             MockResponse()
                 .setResponseCode(200)
                 .setHeader("Content-Type", "application/json")
                 .setBody(reportPayload)
         )
-        val inserted = service.syncServerHistoryForUser(adminActor, "2026-10-24", daysBack = 30)
+        val inserted = service.syncServerHistoryForUser(testActor, "2026-10-24", daysBack = 30)
         assertEquals(2, inserted)
         val firstReq = server.takeRequest()
         assertEquals(
-            "/api/admin/attendance/report?from_date=2026-09-24&to_date=2026-10-24&page=1&page_size=100&employee_id=11111111-2222-4333-8444-555555555555",
+            "/api/attendance/history?from_date=2026-09-24&to_date=2026-10-24&page=1&page_size=100",
             firstReq.path
         )
 
-        val restored = database.miniBiDao().observeAttendanceForUser(adminActor.appUserId).first()
+        val restored = database.miniBiDao().observeAttendanceForUser(testActor.appUserId).first()
         assertEquals(2, restored.size)
         val latest = restored.first { it.serverSequenceInDay == 2 }
         assertEquals(AttendanceOutboxStatus.SYNCED, latest.syncStatus)
         assertEquals(2, latest.serverDailyCount)
-        assertTrue(latest.photoUri.endsWith("/api/admin/attendance/checkins/aaaa1111-bbbb-4222-8333-cccc44445555/photo"))
+        assertTrue(latest.photoUri.endsWith("/api/attendance/checkins/aaaa1111-bbbb-4222-8333-cccc44445555/photo"))
         assertEquals("", latest.addressHint)
         assertEquals("", latest.note)
 
@@ -1185,8 +1173,8 @@ class WorkReportsReportingAndAttendanceContractTest {
                 .setHeader("Content-Type", "application/json")
                 .setBody(reportPayload)
         )
-        val secondInserted = service.syncServerHistoryForUser(adminActor, "2026-10-24", daysBack = 30)
+        val secondInserted = service.syncServerHistoryForUser(testActor, "2026-10-24", daysBack = 30)
         assertEquals(0, secondInserted)
-        assertEquals(2, database.miniBiDao().observeAttendanceForUser(adminActor.appUserId).first().size)
+        assertEquals(2, database.miniBiDao().observeAttendanceForUser(testActor.appUserId).first().size)
     }
 }
