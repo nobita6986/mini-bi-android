@@ -79,6 +79,7 @@ data class WorkforceDeepMetrics(
     val periodToDate: String? = null,
     val periodNewEpisodes: Int? = null,
     val periodOnInflow: Int? = null,
+    val periodWaitingInflow: Int? = null,
     val periodOffInflow: Int? = null,
     val periodNetOnChange: Int? = null
 )
@@ -91,9 +92,15 @@ data class GeneralOverviewSnapshot(
     val waitingCount: Int,
     val leftCount: Int,
     val audienceKind: String = "own", // "all" | "team" | "own"
+    val isPeriodFiltered: Boolean = false,
+    val workingRatePct: Float? = null,
     val placementRatePct: Float? = null,
     val retention7dPct: Float? = null,
     val retention30dPct: Float? = null,
+    val closingTotalProfiles: Int? = null,
+    val closingWorkingCount: Int? = null,
+    val closingWaitingCount: Int? = null,
+    val closingLeftCount: Int? = null,
     val projectCount: Int = 0,
     val recruiterCount: Int = 0,
     val managedTotal: Int? = null,
@@ -689,6 +696,9 @@ interface MiniBiDao {
 
     @Query("SELECT * FROM attendance_outbox WHERE id = :id LIMIT 1")
     suspend fun getAttendanceById(id: Long): AttendanceEntity?
+
+    @Query("SELECT * FROM attendance_outbox WHERE appUserId = :appUserId AND serverCheckinId = :serverCheckinId LIMIT 1")
+    suspend fun getAttendanceByServerCheckinId(appUserId: String, serverCheckinId: String): AttendanceEntity?
 
     @Query("SELECT * FROM attendance_outbox WHERE syncStatus IN ('QUEUED', 'RETRYABLE_ERROR') ORDER BY epochMillis ASC")
     suspend fun getRetryableAttendanceOutbox(): List<AttendanceEntity>

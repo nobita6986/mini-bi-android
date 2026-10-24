@@ -178,9 +178,10 @@ fun AttendanceScreen(
         }
     }
 
-    // 1. Refresh server time anchor whenever Attendance screen is opened, and fetch GPS if granted
+    // 1. Refresh server time anchor & server attendance history whenever Attendance screen is opened, and fetch GPS if granted
     LaunchedEffect(actor.appUserId) {
         viewModel.syncAttendanceTimeAnchor(actor = actor, force = true)
+        viewModel.syncAttendanceHistoryFromServer(actor = actor)
         val hasFine = ContextCompat.checkSelfPermission(
             context,
             Manifest.permission.ACCESS_FINE_LOCATION
@@ -356,6 +357,7 @@ fun AttendanceScreen(
                             IconButton(
                                 onClick = {
                                     viewModel.syncAttendanceTimeAnchor(actor = actor, force = true)
+                                    viewModel.syncAttendanceHistoryFromServer(actor = actor)
                                 },
                                 enabled = !timeAnchorState.syncing,
                                 modifier = Modifier.testTag("refresh_time_anchor_button")
@@ -954,13 +956,23 @@ internal fun AttendanceHistoryCard(
                             tint = MaterialTheme.colorScheme.primary,
                             modifier = Modifier.size(14.dp)
                         )
-                        Text(
-                            text = "%.5f, %.5f (±%.1fm)".format(
+                        val locationSummary = if (
+                            record.photoFilePath.isBlank() &&
+                            record.latitude == 0.0 &&
+                            record.longitude == 0.0 &&
+                            record.accuracyMeters == 0f
+                        ) {
+                            record.addressHint.ifBlank { "Đã ghi nhận trên máy chủ" }
+                        } else {
+                            "%.5f, %.5f (±%.1fm)".format(
                                 Locale.US,
                                 record.latitude,
                                 record.longitude,
                                 record.accuracyMeters
-                            ),
+                            )
+                        }
+                        Text(
+                            text = locationSummary,
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             maxLines = 1,
@@ -1099,7 +1111,7 @@ internal fun AttendanceHistoryCard(
                         }
                     }
                     Text(
-                        text = "• Địa điểm gợi ý: ${record.addressHint}",
+                        text = "• Địa điểm gợi ý: ${record.addressHint.ifBlank { "Không có" }}",
                         style = MaterialTheme.typography.bodySmall
                     )
                     if (record.note.isNotBlank()) {

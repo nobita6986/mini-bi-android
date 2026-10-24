@@ -1903,8 +1903,14 @@ class WorkerUiAuthorizationRobolectricTest {
                                     """
                                     {
                                       "bucket": {"key": "$expectedVendorKey", "display": "Vendor"},
-                                      "report": {"recruitedTotal": 702, "byDate": {"2026-10-20": 702}},
-                                      "detail": {"total": 702, "rows": [], "nextCursor": null}
+                                      "report": {
+                                        "recruitedTotal": ${if (hasDateFilter) 24 else 702},
+                                        "byRecruiter": {"rv": {"key": "rv", "display": "Vendor Đại Lý", "recruitedCount": ${if (hasDateFilter) 24 else 702}}},
+                                        "byProject": {"p2": {"key": "p2", "display": "Goertek Bắc Ninh", "recruitedCount": ${if (hasDateFilter) 24 else 702}}},
+                                        "byProvider": {"vendor": {"key": "vendor", "display": "Vendor", "recruitedCount": ${if (hasDateFilter) 24 else 702}}},
+                                        "byDate": {"2026-10-21": ${if (hasDateFilter) 24 else 702}}
+                                      },
+                                      "detail": {"total": ${if (hasDateFilter) 24 else 702}, "rows": [], "nextCursor": null}
                                     }
                                     """.trimIndent()
                                 )
@@ -1970,9 +1976,14 @@ class WorkerUiAuthorizationRobolectricTest {
         }
         composeTestRule.waitForIdle()
 
-        // 1. Tab 1 uses short label "BC chuyên sâu", fits on 360dp width, and matches Row 1 sibling height
+        // 1. Tab 1 uses short label "BC chuyên sâu", Tab 3 uses "Báo cáo CCCD trùng" (without count suffix), and banner timeout is 5s
+        assertEquals(5_000L, MiniBiViewModel.BANNER_AUTO_DISMISS_MS)
         composeTestRule.onNodeWithText("BC chuyên sâu").assertIsDisplayed()
         composeTestRule.onNodeWithText("Báo cáo chuyên sâu").assertDoesNotExist()
+        composeTestRule.onNodeWithText("Báo cáo CCCD trùng").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Cảnh báo CCCD trùng", substring = true).assertDoesNotExist()
+        composeTestRule.onNodeWithText("Tỷ lệ đang làm: 82.7%").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Tỷ lệ vào làm", substring = true).assertDoesNotExist()
         val tab0Bounds = composeTestRule.onNodeWithTag("dashboard_tab_0").fetchSemanticsNode().boundsInRoot
         val tab1Bounds = composeTestRule.onNodeWithTag("dashboard_tab_1").fetchSemanticsNode().boundsInRoot
         assertTrue(
@@ -2019,6 +2030,13 @@ class WorkerUiAuthorizationRobolectricTest {
         }
         composeTestRule.waitForIdle()
         assertEquals(42, vm.generalOverview.value?.periodNewEpisodes)
+        assertEquals(true, vm.generalOverview.value?.isPeriodFiltered)
+        assertEquals(42, vm.generalOverview.value?.totalProfiles)
+        assertEquals(38, vm.generalOverview.value?.workingCount)
+        assertEquals(12, vm.generalOverview.value?.leftCount)
+        assertEquals(2, vm.generalOverview.value?.projectCount)
+        assertEquals(2, vm.generalOverview.value?.recruiterCount)
+        assertEquals(2, vm.generalOverview.value?.activeHiringDays)
         assertTrue(recordedPaths.any { it.startsWith("/api/reporting/workforce-deep") && it.contains("from=") && it.contains("to=") })
 
         // Tapping Team 4 (0 new hires in Tháng này -> backend 400 INVALID_FILTER) renders 0-recruited Team 4 instead of error card
@@ -2031,5 +2049,12 @@ class WorkerUiAuthorizationRobolectricTest {
         assertNull(vm.teamReportError.value)
         assertEquals(0, vm.teamReport.value?.totalRecruited)
         assertEquals(180, vm.teamReport.value?.workingCount)
+
+        // Switching back to Tab 0 ("Báo cáo tổng quát") renders period-filtered KPI cards instead of frozen cumulative 1810
+        composeTestRule.onNodeWithTag("dashboard_tab_0").performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithText("TUYỂN MỚI TRONG KỲ").assertIsDisplayed()
+        composeTestRule.onNodeWithText("VÀO LÀM TRONG KỲ").assertIsDisplayed()
+        composeTestRule.onNodeWithText("NGHỈ VIỆC TRONG KỲ").assertIsDisplayed()
     }
 }

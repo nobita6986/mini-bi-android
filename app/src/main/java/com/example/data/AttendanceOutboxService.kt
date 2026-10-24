@@ -64,8 +64,24 @@ data class AttendanceOutboxFlushSummary(
     val terminalFailureCount: Int
 )
 
+data class ServerAttendanceHistoryItem(
+    val checkinId: String,
+    val employeeDisplayName: String,
+    val businessDate: String,
+    val sequenceInDay: Int,
+    val capturedAtIso: String,
+    val receivedAtIso: String,
+    val timeSource: String,
+    val latitude: Double?,
+    val longitude: Double?,
+    val accuracyMeters: Float?,
+    val addressHint: String,
+    val note: String
+)
+
 object AttendanceContract {
     const val ENDPOINT_CHECK_IN = "/api/attendance/check-in"
+    const val ENDPOINT_ADMIN_ATTENDANCE_REPORT = "/api/admin/attendance/report"
     const val UNIQUE_OUTBOX_WORK_NAME = "mini_bi_attendance_outbox_sync"
 
     const val MSG_SYNCED = "Đã chấm công"
@@ -394,6 +410,92 @@ object AttendanceContract {
             timeSource = serverTimeSource,
             replayed = rawReplayed
         )
+    }
+
+    fun shiftIsoDateDays(isoDate: String, deltaDays: Int): String {
+        val parts = isoDate.trim().split('-')
+        if (parts.size != 3) return isoDate.trim()
+        val year = parts[0].toIntOrNull() ?: return isoDate.trim()
+        val month = parts[1].toIntOrNull() ?: return isoDate.trim()
+        val day = parts[2].toIntOrNull() ?: return isoDate.trim()
+        val cal = java.util.Calendar.getInstance(java.util.TimeZone.getTimeZone("UTC"), Locale.US).apply {
+            clear()
+            set(year, month - 1, day)
+            add(java.util.Calendar.DAY_OF_MONTH, deltaDays)
+        }
+        return String.format(
+            Locale.US,
+            "%04d-%02d-%02d",
+            cal.get(java.util.Calendar.YEAR),
+            cal.get(java.util.Calendar.MONTH) + 1,
+            cal.get(java.util.Calendar.DAY_OF_MONTH)
+        )
+    }
+
+    fun parseServerAttendanceReportItems(json: JSONObject): Pair<List<ServerAttendanceHistoryItem>, Boolean> {
+        if (!json.optBoolean("ok", false)) {
+            return emptyList<ServerAttendanceHistoryItem>() to false
+        }
+        val reportObj = json.optJSONObject("report")
+            ?: return emptyList<ServerAttendanceHistoryItem>() to false
+        val itemsArr = reportObj.optJSONArray("items")
+            ?: return emptyList<ServerAttendanceHistoryItem>() to false
+        val paginationObj = reportObj.optJSONObject("pagination")
+        val hasMore = paginationObj?.optBoolean("has_more", false) == true
+
+        val parsed = buildList {
+            for (i in 0 until itemsArr.length()) {
+                val item = itemsArr.optJSONObject(i) ?: continue
+                val checkinId = item.optString("checkin_id", "").trim()
+                val businessDate = item.optString("business_date", "").trim()
+                val capturedAt = item.optString("captured_at", "").trim()
+                if (!UUID_REGEX.matches(checkinId) || !ISO_DATE_REGEX.matches(businessDate) || capturedAt.isEmpty()) {
+                    continue
+                }
+                val rawTimeSource = item.optString("time_source", AttendanceTimeSource.SERVER_ANCHORED).trim()
+                val resolvedTimeSource = if (rawTimeSource in VALID_TIME_SOURCES) {
+                    rawTimeSource
+                } else {
+                    AttendanceTimeSource.SERVER_ANCHORED
+                }
+                val lat = if (item.has("latitude") && !item.isNull("latitude")) {
+                    item.optDouble("latitude", Double.NaN).takeIf { it.isFinite() }
+                } else {
+                    null
+                }
+                val lng = if (item.has("longitude") && !item.isNull("longitude")) {
+                    item.optDouble("longitude", Double.NaN).takeIf { it.isFinite() }
+                } else {
+                    null
+                }
+                val acc = if (item.has("accuracy_meters") && !item.isNull("accuracy_meters")) {
+                    item.optDouble("accuracy_meters", Double.NaN).takeIf { it.isFinite() && it >= 0.0 }?.toFloat()
+                } else {
+                    null
+                }
+                fun optCleanText(key: String, default: String = ""): String {
+                    if (!item.has(key) || item.isNull(key)) return default
+                    return item.optString(key, default).trim()
+                }
+                add(
+                    ServerAttendanceHistoryItem(
+                        checkinId = checkinId,
+                        employeeDisplayName = optCleanText("employee_display_name"),
+                        businessDate = businessDate,
+                        sequenceInDay = item.optInt("sequence_in_day", 1).coerceAtLeast(1),
+                        capturedAtIso = capturedAt,
+                        receivedAtIso = optCleanText("received_at", capturedAt).ifBlank { capturedAt },
+                        timeSource = resolvedTimeSource,
+                        latitude = lat,
+                        longitude = lng,
+                        accuracyMeters = acc,
+                        addressHint = optCleanText("address_hint"),
+                        note = optCleanText("note")
+                    )
+                )
+            }
+        }
+        return parsed to hasMore
     }
 
     fun friendlyAttendanceErrorMessage(
@@ -862,6 +964,120 @@ class AttendanceOutboxService(
             currentActorId = currentActorId.trim(),
             scheduleWorkOnFailure = scheduleWorkOnFailure
         )
+    }
+
+    /**
+     * Synchronizes confirmed check-in history from the server (`/api/admin/attendance/report?employee_id=...`)
+     * into Room `attendance_outbox` so reinstalls or multi-device logins restore server-confirmed logs
+     * without duplicating locally recorded check-ins.
+     *
+     * Gracefully returns `0` if offline, if `actor.appUserId` is not a canonical UUID, or if the
+     * actor does not hold server attendance-report access (`403 ATTENDANCE_REPORT_ACCESS_DENIED`).
+     */
+    suspend fun syncServerHistoryForUser(
+        actor: AppActor,
+        referenceTodayIso: String,
+        daysBack: Int = 90,
+        maxPages: Int = 3
+    ): Int = withContext(Dispatchers.IO) {
+        val cleanUserId = actor.appUserId.trim()
+        if (!WorkReportsContract.isUuid(cleanUserId)) return@withContext 0
+        if (!actor.hasScopeKind("all") && !actor.hasCapability("attendance_report_read")) return@withContext 0
+        if (!isNetworkAvailable()) return@withContext 0
+
+        val toDate = referenceTodayIso.trim().takeIf { it.matches(Regex("^\\d{4}-\\d{2}-\\d{2}$")) }
+            ?: DirectEntryContract.todayIsoInHcm()
+        val safeDaysBack = daysBack.coerceIn(1, 365)
+        val fromDate = AttendanceContract.shiftIsoDateDays(toDate, -safeDaysBack)
+        val employeeParam = cleanUserId.lowercase(Locale.ROOT)
+
+        val collected = mutableListOf<ServerAttendanceHistoryItem>()
+        var page = 1
+        val safeMaxPages = maxPages.coerceIn(1, 10)
+        try {
+            while (page <= safeMaxPages) {
+                val path = "${AttendanceContract.ENDPOINT_ADMIN_ATTENDANCE_REPORT}" +
+                    "?from_date=$fromDate&to_date=$toDate&page=$page&page_size=100&employee_id=$employeeParam"
+                val json = httpClient.getJson(
+                    pathWithQuery = path,
+                    requireOkTrue = true,
+                    clearSessionOn401 = false
+                )
+                val (items, hasMore) = AttendanceContract.parseServerAttendanceReportItems(json)
+                collected.addAll(items)
+                if (!hasMore || items.isEmpty()) break
+                page += 1
+            }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            // Silently ignore 403/404/network errors during background history pull
+            if (collected.isEmpty()) return@withContext 0
+        }
+
+        if (collected.isEmpty()) return@withContext 0
+
+        val dailyCounts = collected
+            .groupBy { it.businessDate }
+            .mapValues { (_, list) ->
+                maxOf(list.size, list.maxOfOrNull { it.sequenceInDay } ?: list.size)
+            }
+
+        var insertedCount = 0
+        for (item in collected) {
+            val existing = dao.getAttendanceByServerCheckinId(cleanUserId, item.checkinId)
+            val resolvedDailyCount = dailyCounts[item.businessDate]
+            if (existing != null) {
+                if (existing.serverDailyCount == null && resolvedDailyCount != null) {
+                    dao.updateAttendance(existing.copy(serverDailyCount = resolvedDailyCount))
+                }
+                continue
+            }
+
+            val epochMs = runCatching {
+                AttendanceTimeContract.parseIsoInstantToEpochMillis(item.capturedAtIso, "captured_at")
+            }.getOrDefault(System.currentTimeMillis())
+            val clientCapturedHcmIso = AttendanceTimeContract.formatEpochMillisInHcmIso(epochMs)
+            val remotePhotoUri = runCatching {
+                httpClient.resolveUrl("/api/admin/attendance/checkins/${item.checkinId}/photo").toString()
+            }.getOrDefault("")
+
+            dao.insertAttendance(
+                AttendanceEntity(
+                    idempotencyKey = "server-sync-${item.checkinId}",
+                    appUserId = cleanUserId,
+                    userDisplayName = item.employeeDisplayName.ifBlank { actor.displayName },
+                    latitude = item.latitude ?: 0.0,
+                    longitude = item.longitude ?: 0.0,
+                    accuracyMeters = item.accuracyMeters ?: 0f,
+                    addressHint = item.addressHint,
+                    photoFilePath = "",
+                    photoUri = remotePhotoUri,
+                    photoSha256 = "",
+                    clientCapturedAtIso = clientCapturedHcmIso,
+                    epochMillis = epochMs,
+                    timeSource = item.timeSource,
+                    timeToken = null,
+                    elapsedSinceAnchorMs = null,
+                    note = item.note,
+                    syncStatus = AttendanceOutboxStatus.SYNCED,
+                    statusMessage = AttendanceContract.MSG_SYNCED,
+                    backendErrorCode = null,
+                    httpStatusCode = 200,
+                    serverCheckinId = item.checkinId,
+                    serverBusinessDate = item.businessDate,
+                    serverSequenceInDay = item.sequenceInDay,
+                    serverDailyCount = resolvedDailyCount,
+                    serverCapturedAtIso = item.capturedAtIso,
+                    serverReceivedAtIso = item.receivedAtIso,
+                    serverTimeSource = item.timeSource,
+                    serverReplayed = false,
+                    retryCount = 0
+                )
+            )
+            insertedCount += 1
+        }
+        insertedCount
     }
 
     /**
