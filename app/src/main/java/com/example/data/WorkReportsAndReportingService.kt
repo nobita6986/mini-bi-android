@@ -3,6 +3,9 @@ package com.example.data
 import android.util.Base64
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
@@ -13,6 +16,15 @@ import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
 import kotlin.math.roundToInt
+
+data class PeriodAllScopeRecruitmentSummary(
+    val totalRecruited: Int,
+    val byRecruiter: List<BiBucketItem>,
+    val byProject: List<BiBucketItem>,
+    val byTeam: List<BiBucketItem>,
+    val byProvider: List<BiBucketItem>,
+    val hiringSummary: WorkReportsContract.HiringDaySummary
+)
 
 data class DuplicateCccdReportPage(
     val page: Int,
@@ -1469,6 +1481,7 @@ class WorkReportsAndReportingService(
             null
         }
         val periodOnInflow = byStatusObj?.optJSONObject("on")?.optInt("totalInflowCount", 0)
+        val periodWaitingInflow = byStatusObj?.optJSONObject("unconfirmed")?.optInt("totalInflowCount", 0)
         val periodOffInflow = byStatusObj?.optJSONObject("off")?.optInt("totalInflowCount", 0)
         val periodNetOnChange = byStatusObj?.optJSONObject("on")?.optInt("netChange", 0)
 
@@ -1515,6 +1528,7 @@ class WorkReportsAndReportingService(
             periodToDate = if (balanceApplicable) toDate?.trim()?.ifBlank { null } else null,
             periodNewEpisodes = periodNewEpisodes,
             periodOnInflow = periodOnInflow,
+            periodWaitingInflow = periodWaitingInflow,
             periodOffInflow = periodOffInflow,
             periodNetOnChange = periodNetOnChange
         )
@@ -1801,6 +1815,201 @@ class WorkReportsAndReportingService(
             byEmployment = byEmployment,
             byProvider = byProvider
         )
+    }
+
+    private data class RawBucketPeriodReport(
+        val bucketKey: String,
+        val bucketDisplay: String,
+        val totalRecruited: Int,
+        val byRecruiter: List<BiBucketItem>,
+        val byProject: List<BiBucketItem>,
+        val byProvider: List<BiBucketItem>,
+        val byDateCounts: Map<String, Int>
+    )
+
+    suspend fun fetchAggregatedPeriodRecruitmentForAllScope(
+        teamBuckets: List<BiBucketItem>,
+        knownTeamCodeMap: Map<String, String> = emptyMap(),
+        fromDate: String?,
+        toDate: String?
+    ): PeriodAllScopeRecruitmentSummary? = withContext(Dispatchers.IO) {
+        if (fromDate.isNullOrBlank() && toDate.isNullOrBlank()) return@withContext null
+
+        val distinctHints = linkedMapOf<String, BiBucketItem>()
+        for (b in teamBuckets) {
+            val decoded = WorkReportsContract.decodeTeamBucketCode(b.key).trim()
+            if (decoded.isNotEmpty()) {
+                distinctHints.putIfAbsent(decoded.lowercase(Locale.ROOT), b)
+            }
+        }
+        distinctHints.putIfAbsent(
+            "unknown",
+            BiBucketItem(key = "unknown", display = "Không xác định", count = 0, sharePct = 0f)
+        )
+
+        val results = coroutineScope {
+            distinctHints.values.map { hint ->
+                async {
+                    fetchSingleBucketPeriodRawOrNull(
+                        hint = hint,
+                        knownTeamCodeMap = knownTeamCodeMap,
+                        fromDate = fromDate,
+                        toDate = toDate
+                    )
+                }
+            }.awaitAll()
+        }
+
+        val validBuckets = results.filterNotNull()
+        if (validBuckets.isEmpty()) return@withContext null
+        val totalRecruited = validBuckets.sumOf { it.totalRecruited }
+
+        fun mergeBucketLists(lists: List<List<BiBucketItem>>, denominator: Int): List<BiBucketItem> {
+            val acc = linkedMapOf<String, Pair<String, Int>>()
+            for (list in lists) {
+                for (item in list) {
+                    if (item.count <= 0) continue
+                    val prev = acc[item.key]
+                    acc[item.key] = if (prev == null) {
+                        item.display to item.count
+                    } else {
+                        prev.first to (prev.second + item.count)
+                    }
+                }
+            }
+            return acc.entries
+                .map { (k, pair) ->
+                    val count = pair.second
+                    val sharePct = if (denominator > 0) {
+                        ((count.toDouble() / denominator.toDouble()) * 1000.0).roundToInt() / 10f
+                    } else {
+                        0f
+                    }
+                    BiBucketItem(
+                        key = k,
+                        display = pair.first,
+                        count = count,
+                        sharePct = sharePct
+                    )
+                }
+                .sortedWith(compareByDescending<BiBucketItem> { it.count }.thenBy { it.display })
+        }
+
+        val mergedByDate = linkedMapOf<String, Int>()
+        for (bucket in validBuckets) {
+            for ((dateIso, cnt) in bucket.byDateCounts) {
+                if (cnt > 0) {
+                    mergedByDate[dateIso] = (mergedByDate[dateIso] ?: 0) + cnt
+                }
+            }
+        }
+
+        val byTeam = validBuckets
+            .filter { it.totalRecruited > 0 }
+            .map { b ->
+                val sharePct = if (totalRecruited > 0) {
+                    ((b.totalRecruited.toDouble() / totalRecruited.toDouble()) * 1000.0).roundToInt() / 10f
+                } else {
+                    0f
+                }
+                BiBucketItem(
+                    key = WorkReportsContract.decodeTeamBucketCode(b.bucketKey),
+                    display = b.bucketDisplay,
+                    count = b.totalRecruited,
+                    sharePct = sharePct
+                )
+            }
+            .sortedWith(compareByDescending<BiBucketItem> { it.count }.thenBy { it.display })
+
+        PeriodAllScopeRecruitmentSummary(
+            totalRecruited = totalRecruited,
+            byRecruiter = mergeBucketLists(validBuckets.map { it.byRecruiter }, totalRecruited),
+            byProject = mergeBucketLists(validBuckets.map { it.byProject }, totalRecruited),
+            byTeam = byTeam,
+            byProvider = mergeBucketLists(validBuckets.map { it.byProvider }, totalRecruited),
+            hiringSummary = WorkReportsContract.computeHiringDaySummary(mergedByDate, totalRecruited)
+        )
+    }
+
+    private suspend fun fetchSingleBucketPeriodRawOrNull(
+        hint: BiBucketItem,
+        knownTeamCodeMap: Map<String, String>,
+        fromDate: String?,
+        toDate: String?
+    ): RawBucketPeriodReport? {
+        val decodedCode = WorkReportsContract.decodeTeamBucketCode(hint.key).trim()
+        if (decodedCode.isEmpty()) return null
+        val hintDisplayLower = hint.display.trim().lowercase(Locale.ROOT).takeIf { it.isNotEmpty() }
+        val mapped = knownTeamCodeMap[decodedCode.lowercase(Locale.ROOT)]
+            ?: hintDisplayLower?.let { knownTeamCodeMap["display:$it"] }
+        val candidates = if (!mapped.isNullOrBlank()) {
+            listOf(mapped)
+        } else {
+            WorkReportsContract.candidateTeamCodes(decodedCode)
+        }
+
+        for (candidate in candidates) {
+            try {
+                val bucketKey = WorkReportsContract.encodeTeamBucketKey(candidate)
+                val params = mutableListOf(
+                    "bucket_key=${encodeParam(bucketKey)}",
+                    "limit=1"
+                )
+                if (!fromDate.isNullOrBlank()) params.add("from=${encodeParam(fromDate.trim())}")
+                if (!toDate.isNullOrBlank()) params.add("to=${encodeParam(toDate.trim())}")
+
+                val json = httpClient.getJson(
+                    pathWithQuery = "/api/reporting/team-report?${params.joinToString("&")}",
+                    requireOkTrue = false,
+                    clearSessionOn401 = false
+                )
+                val bucketObj = json.optJSONObject("bucket") ?: return null
+                val detailObj = json.optJSONObject("detail")
+                val reportObj = if (json.isNull("report")) null else json.optJSONObject("report")
+                val totalRecruited = reportObj?.optInt("recruitedTotal", detailObj?.optInt("total", 0) ?: 0)
+                    ?: detailObj?.optInt("total", 0)
+                    ?: 0
+                val byDateCounts = buildMap {
+                    val byDateObj = reportObj?.optJSONObject("byDate")
+                    if (byDateObj != null) {
+                        val keys = byDateObj.keys()
+                        while (keys.hasNext()) {
+                            val dateKey = keys.next()
+                            val count = byDateObj.optInt(dateKey, 0)
+                            if (count > 0) put(dateKey, count)
+                        }
+                    }
+                }
+                return RawBucketPeriodReport(
+                    bucketKey = bucketObj.optString("key", bucketKey),
+                    bucketDisplay = bucketObj.optString("display", hint.display).ifBlank { hint.display },
+                    totalRecruited = totalRecruited,
+                    byRecruiter = WorkReportsContract.parseReportingBucketRecord(
+                        reportObj?.optJSONObject("byRecruiter"),
+                        totalRecruited
+                    ),
+                    byProject = WorkReportsContract.parseReportingBucketRecord(
+                        reportObj?.optJSONObject("byProject"),
+                        totalRecruited
+                    ),
+                    byProvider = WorkReportsContract.parseReportingBucketRecord(
+                        reportObj?.optJSONObject("byProvider"),
+                        totalRecruited
+                    ),
+                    byDateCounts = byDateCounts
+                )
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: BackendApiException) {
+                if (e.statusCode == 400 && e.backendCode == "INVALID_FILTER") {
+                    continue
+                }
+                return null
+            } catch (_: Exception) {
+                return null
+            }
+        }
+        return null
     }
 
     suspend fun fetchTeamDrillDownPage(

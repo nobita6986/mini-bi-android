@@ -20,6 +20,7 @@ import com.example.data.MiniBiDatabase
 import com.example.data.MiniBiRepository
 import com.example.data.WorkReportsContract
 import com.example.data.WorkerProfileEntity
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
@@ -1081,5 +1082,111 @@ class WorkReportsReportingAndAttendanceContractTest {
             "/api/reporting/team-report?bucket_key=team.VEVBTV81&limit=25&from=2026-10-19&to=2026-10-24",
             server.takeRequest().path
         )
+    }
+
+    @Test
+    fun `server attendance history sync restores checkins into empty Room DB after reinstall and deduplicates`() = runBlocking {
+        val repo = createRepository()
+        val service = AttendanceOutboxService(
+            context = context,
+            httpClient = repo.httpClient,
+            dao = database.miniBiDao(),
+            timeAnchorManager = repo.attendanceTimeAnchorManager,
+            isNetworkAvailable = { true },
+            outboxWorkScheduler = {}
+        )
+        val adminActor = AppActor(
+            appUserId = "11111111-2222-4333-8444-555555555555",
+            displayName = "Quản trị viên BI",
+            capabilities = listOf("entry_read", "attendance_report_read"),
+            scopes = listOf(ActorScope("all", "", "2026-01-01", null)),
+            selfRecruiterSuggestion = null
+        )
+
+        val reportPayload = """
+            {
+              "ok": true,
+              "report": {
+                "summary": {"total_checkins": 2, "distinct_employees": 1, "unverified_time_count": 0},
+                "pagination": {"page": 1, "page_size": 100, "total_items": 2, "total_pages": 1, "has_more": false},
+                "items": [
+                  {
+                    "checkin_id": "aaaa1111-bbbb-4222-8333-cccc44445555",
+                    "employee_id": "11111111-2222-4333-8444-555555555555",
+                    "employee_display_name": "Quản trị viên BI",
+                    "business_date": "2026-10-23",
+                    "sequence_in_day": 2,
+                    "captured_at": "2026-10-23T10:15:00.000Z",
+                    "received_at": "2026-10-23T10:15:01.000Z",
+                    "time_source": "SERVER_ANCHORED",
+                    "latitude": null,
+                    "longitude": null,
+                    "accuracy_meters": null,
+                    "address_hint": null,
+                    "note": null
+                  },
+                  {
+                    "checkin_id": "aaaa1111-bbbb-4222-8333-cccc44446666",
+                    "employee_id": "11111111-2222-4333-8444-555555555555",
+                    "employee_display_name": "Quản trị viên BI",
+                    "business_date": "2026-10-23",
+                    "sequence_in_day": 1,
+                    "captured_at": "2026-10-23T01:05:00.000Z",
+                    "received_at": "2026-10-23T01:05:02.000Z",
+                    "time_source": "SERVER_ANCHORED",
+                    "latitude": 21.02851,
+                    "longitude": 105.85417,
+                    "accuracy_meters": 8.5,
+                    "address_hint": "Hoàn Kiếm, Hà Nội",
+                    "note": "Ca sáng"
+                  }
+                ]
+              }
+            }
+        """.trimIndent()
+
+        // 1. Non-privileged team actor does not hit admin report endpoint
+        assertEquals(0, service.syncServerHistoryForUser(testActor, "2026-10-24", daysBack = 30))
+        assertEquals(0, server.requestCount)
+
+        // 2. Fresh reinstall (empty Room DB) restores both confirmed server check-ins
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "application/json")
+                .setBody(reportPayload)
+        )
+        val inserted = service.syncServerHistoryForUser(adminActor, "2026-10-24", daysBack = 30)
+        assertEquals(2, inserted)
+        val firstReq = server.takeRequest()
+        assertEquals(
+            "/api/admin/attendance/report?from_date=2026-09-24&to_date=2026-10-24&page=1&page_size=100&employee_id=11111111-2222-4333-8444-555555555555",
+            firstReq.path
+        )
+
+        val restored = database.miniBiDao().observeAttendanceForUser(adminActor.appUserId).first()
+        assertEquals(2, restored.size)
+        val latest = restored.first { it.serverSequenceInDay == 2 }
+        assertEquals(AttendanceOutboxStatus.SYNCED, latest.syncStatus)
+        assertEquals(2, latest.serverDailyCount)
+        assertTrue(latest.photoUri.endsWith("/api/admin/attendance/checkins/aaaa1111-bbbb-4222-8333-cccc44445555/photo"))
+        assertEquals("", latest.addressHint)
+        assertEquals("", latest.note)
+
+        val earliest = restored.first { it.serverSequenceInDay == 1 }
+        assertEquals("Hoàn Kiếm, Hà Nội", earliest.addressHint)
+        assertEquals("Ca sáng", earliest.note)
+        assertEquals(2, earliest.serverDailyCount)
+
+        // 3. Re-syncing is strictly idempotent by serverCheckinId
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "application/json")
+                .setBody(reportPayload)
+        )
+        val secondInserted = service.syncServerHistoryForUser(adminActor, "2026-10-24", daysBack = 30)
+        assertEquals(0, secondInserted)
+        assertEquals(2, database.miniBiDao().observeAttendanceForUser(adminActor.appUserId).first().size)
     }
 }

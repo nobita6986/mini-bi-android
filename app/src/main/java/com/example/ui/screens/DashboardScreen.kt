@@ -122,7 +122,7 @@ fun DashboardScreen(
         if (actor.hasScopeKind("all") || actor.hasScopeKind("team")) {
             add("Báo cáo theo nhóm")
         }
-        add("Cảnh báo CCCD trùng (${duplicateGroups.size})")
+        add("Báo cáo CCCD trùng")
     }
 
     val safeTabIndex = selectedTabIndex.coerceIn(0, (tabs.size - 1).coerceAtLeast(0))
@@ -336,17 +336,17 @@ fun DashboardScreen(
                 }
                 when {
                     duplicateLoading -> item {
-                        LoadingSectionCard("Đang tải danh sách cảnh báo CCCD trùng…")
+                        LoadingSectionCard("Đang tải báo cáo CCCD trùng…")
                     }
                     duplicateError != null -> item {
                         DashboardStatusCard(
-                            title = "Không thể tải cảnh báo CCCD trùng",
+                            title = "Không thể tải báo cáo CCCD trùng",
                             subtitle = duplicateError.orEmpty()
                         )
                     }
                     duplicateGroups.isEmpty() -> item {
                         DashboardStatusCard(
-                            title = "Không có cảnh báo CCCD trùng",
+                            title = "Không có hồ sơ CCCD trùng",
                             subtitle = "Máy chủ hiện không ghi nhận nhóm hồ sơ trùng CCCD nào trong phạm vi của bạn."
                         )
                     }
@@ -639,8 +639,16 @@ internal fun GeneralOverviewSection(snapshot: GeneralOverviewSnapshot) {
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold
                     )
+                    val subtitleText = if (snapshot.isPeriodFiltered &&
+                        !snapshot.periodFromDate.isNullOrBlank() &&
+                        !snapshot.periodToDate.isNullOrBlank()
+                    ) {
+                        "Kỳ lọc: ${DirectEntryContract.isoDateToUiDate(snapshot.periodFromDate)} - ${DirectEntryContract.isoDateToUiDate(snapshot.periodToDate)} · Phạm vi: ${snapshot.scopeDescription}"
+                    } else {
+                        "Ngày dữ liệu: ${DirectEntryContract.isoDateToUiDate(snapshot.asOfDate)} · Phạm vi: ${snapshot.scopeDescription}"
+                    }
                     Text(
-                        text = "Ngày dữ liệu: ${DirectEntryContract.isoDateToUiDate(snapshot.asOfDate)} · Phạm vi: ${snapshot.scopeDescription}",
+                        text = subtitleText,
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -655,61 +663,115 @@ internal fun GeneralOverviewSection(snapshot: GeneralOverviewSnapshot) {
                         "${snapshot.projectCount} dự án · ${snapshot.recruiterCount} người tuyển"
                 }
 
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    BiMetricKpiCard(
-                        modifier = Modifier.weight(1f),
-                        label = "TỔNG HỒ SƠ",
-                        value = "${snapshot.totalProfiles}",
-                        unit = "NLĐ",
-                        hint = profileHint,
-                        accentColor = palette.lightPrimary
-                    )
-                    BiMetricKpiCard(
-                        modifier = Modifier.weight(1f),
-                        label = "ĐANG LÀM",
-                        value = "${snapshot.workingCount}",
-                        unit = "NLĐ",
-                        hint = snapshot.placementRatePct?.let {
-                            "Tỷ lệ vào làm: ${String.format(Locale.US, "%.1f%%", it)}"
-                        } ?: "Đang làm việc thực tế",
-                        accentColor = SemanticColors.SuccessLight
+                if (snapshot.isPeriodFiltered && snapshot.audienceKind == "all") {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        BiMetricKpiCard(
+                            modifier = Modifier.weight(1f),
+                            label = "TUYỂN MỚI TRONG KỲ",
+                            value = "${snapshot.totalProfiles}",
+                            unit = "NLĐ",
+                            hint = profileHint,
+                            accentColor = palette.lightPrimary
+                        )
+                        BiMetricKpiCard(
+                            modifier = Modifier.weight(1f),
+                            label = "VÀO LÀM TRONG KỲ",
+                            value = "${snapshot.workingCount}",
+                            unit = "NLĐ",
+                            hint = snapshot.closingWorkingCount?.let { cw ->
+                                val pct = snapshot.workingRatePct
+                                    ?.let { " (${String.format(Locale.US, "%.1f%%", it)})" }
+                                    .orEmpty()
+                                "Đang làm cuối kỳ: $cw$pct"
+                            } ?: "Phát sinh đi làm trong kỳ",
+                            accentColor = SemanticColors.SuccessLight
+                        )
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        BiMetricKpiCard(
+                            modifier = Modifier.weight(1f),
+                            label = "CHỜ VIỆC TRONG KỲ",
+                            value = "${snapshot.waitingCount}",
+                            unit = "NLĐ",
+                            hint = "Chờ việc cuối kỳ: ${snapshot.closingWaitingCount ?: 0} NLĐ",
+                            accentColor = SemanticColors.RunningLight
+                        )
+                        BiMetricKpiCard(
+                            modifier = Modifier.weight(1f),
+                            label = "NGHỈ VIỆC TRONG KỲ",
+                            value = "${snapshot.leftCount}",
+                            unit = "NLĐ",
+                            hint = snapshot.periodNetOnChange?.let { d ->
+                                val signed = if (d > 0) "+$d" else "$d"
+                                "Biến động đang làm: $signed NLĐ"
+                            } ?: "Nghỉ việc trong kỳ",
+                            accentColor = SemanticColors.WarningLight
+                        )
+                    }
+                } else {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        BiMetricKpiCard(
+                            modifier = Modifier.weight(1f),
+                            label = "TỔNG HỒ SƠ",
+                            value = "${snapshot.totalProfiles}",
+                            unit = "NLĐ",
+                            hint = profileHint,
+                            accentColor = palette.lightPrimary
+                        )
+                        BiMetricKpiCard(
+                            modifier = Modifier.weight(1f),
+                            label = "ĐANG LÀM",
+                            value = "${snapshot.workingCount}",
+                            unit = "NLĐ",
+                            hint = snapshot.workingRatePct?.let {
+                                "Tỷ lệ đang làm: ${String.format(Locale.US, "%.1f%%", it)}"
+                            } ?: "Đang làm việc thực tế",
+                            accentColor = SemanticColors.SuccessLight
+                        )
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        BiMetricKpiCard(
+                            modifier = Modifier.weight(1f),
+                            label = "ĐANG CHỜ VIỆC",
+                            value = "${snapshot.waitingCount}",
+                            unit = "NLĐ",
+                            hint = "${snapshot.projectCount} dự án có nhân sự",
+                            accentColor = SemanticColors.RunningLight
+                        )
+                        BiMetricKpiCard(
+                            modifier = Modifier.weight(1f),
+                            label = "ĐÃ NGHỈ",
+                            value = "${snapshot.leftCount}",
+                            unit = "NLĐ",
+                            hint = snapshot.retention7dPct?.let { "Giữ chân 7 ngày: ${it}%" }
+                                ?: "${snapshot.recruiterCount} người tuyển phụ trách",
+                            accentColor = SemanticColors.WarningLight
+                        )
+                    }
+
+                    PeriodBalanceSummaryBanner(
+                        fromDate = snapshot.periodFromDate,
+                        toDate = snapshot.periodToDate,
+                        newEpisodes = snapshot.periodNewEpisodes,
+                        onInflow = snapshot.periodOnInflow,
+                        offInflow = snapshot.periodOffInflow,
+                        netOnChange = snapshot.periodNetOnChange
                     )
                 }
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    BiMetricKpiCard(
-                        modifier = Modifier.weight(1f),
-                        label = "ĐANG CHỜ VIỆC",
-                        value = "${snapshot.waitingCount}",
-                        unit = "NLĐ",
-                        hint = "${snapshot.projectCount} dự án có nhân sự",
-                        accentColor = SemanticColors.RunningLight
-                    )
-                    BiMetricKpiCard(
-                        modifier = Modifier.weight(1f),
-                        label = "ĐÃ NGHỈ",
-                        value = "${snapshot.leftCount}",
-                        unit = "NLĐ",
-                        hint = snapshot.retention7dPct?.let { "Giữ chân 7 ngày: ${it}%" }
-                            ?: "${snapshot.recruiterCount} người tuyển phụ trách",
-                        accentColor = SemanticColors.WarningLight
-                    )
-                }
-
-                PeriodBalanceSummaryBanner(
-                    fromDate = snapshot.periodFromDate,
-                    toDate = snapshot.periodToDate,
-                    newEpisodes = snapshot.periodNewEpisodes,
-                    onInflow = snapshot.periodOnInflow,
-                    offInflow = snapshot.periodOffInflow,
-                    netOnChange = snapshot.periodNetOnChange
-                )
 
                 if (snapshot.activeHiringDays > 0) {
                     Surface(
@@ -751,9 +813,13 @@ internal fun GeneralOverviewSection(snapshot: GeneralOverviewSnapshot) {
                     }
                 }
 
-                if (snapshot.totalProfiles == 0) {
+                if (snapshot.totalProfiles == 0 && (!snapshot.isPeriodFiltered || (snapshot.workingCount == 0 && snapshot.leftCount == 0))) {
                     Text(
-                        text = "Chưa có hồ sơ người lao động nào được ghi nhận trong phạm vi hiện tại.",
+                        text = if (snapshot.isPeriodFiltered) {
+                            "Không có hồ sơ phát sinh trong kỳ lọc đã chọn."
+                        } else {
+                            "Chưa có hồ sơ người lao động nào được ghi nhận trong phạm vi hiện tại."
+                        },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )

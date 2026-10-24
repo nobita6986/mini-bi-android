@@ -321,6 +321,7 @@ class MiniBiViewModel internal constructor(
                 _sessionBootstrapping.value = false
                 res.onSuccess { actor ->
                     syncAttendanceTimeAnchor(actor = actor, force = false)
+                    syncAttendanceHistoryFromServer(actor = actor)
                     refreshDashboardData(actor)
                 }
             } catch (e: Exception) {
@@ -354,7 +355,10 @@ class MiniBiViewModel internal constructor(
                 loadCatalogIfNeeded()
                 ensureInitialWorkerTabLoaded(actor)
             }
-            else -> Unit
+            MainDestination.ATTENDANCE -> {
+                syncAttendanceTimeAnchor(actor = actor, force = false)
+                syncAttendanceHistoryFromServer(actor = actor)
+            }
         }
     }
 
@@ -415,6 +419,7 @@ class MiniBiViewModel internal constructor(
                     _loginError.value = null
                     showBanner("Xin chào ${actor.displayName}")
                     syncAttendanceTimeAnchor(actor = actor, force = true)
+                    syncAttendanceHistoryFromServer(actor = actor)
                     refreshDashboardData(actor)
                 }.onFailure { err ->
                     err.rethrowIfCancelled()
@@ -613,45 +618,100 @@ class MiniBiViewModel internal constructor(
                 _workforceDeep.value = metrics
                 _teamScopeOptions.value = normalizedTeams
 
-                val leadingProject = metrics.byProject.firstOrNull { it.key != "unknown" }
-                    ?: metrics.byProject.firstOrNull()
-                val effectivePlacementRate = when {
-                    metrics.placementRatePct != null && metrics.placementRatePct > 0f ->
-                        metrics.placementRatePct
-                    metrics.eligibleEpisodeTotal > 0 ->
-                        (((metrics.onCount + metrics.offCount).toDouble() / metrics.eligibleEpisodeTotal.toDouble()) * 1000.0)
-                            .roundToInt() / 10f
-                    else -> metrics.placementRatePct
+                val hasDateFilter = !effectiveFrom.isNullOrBlank() || !effectiveTo.isNullOrBlank()
+                val closingWorkingRatePct = if (metrics.eligibleEpisodeTotal > 0) {
+                    ((metrics.onCount.toDouble() / metrics.eligibleEpisodeTotal.toDouble()) * 1000.0)
+                        .roundToInt() / 10f
+                } else {
+                    null
                 }
-                val resolvedProjectCount = metrics.totalProjectCount.takeIf { it > 0 }
-                    ?: metrics.byProject.count { it.key != "unknown" }.coerceAtLeast(metrics.byProject.size)
 
-                _generalOverview.value = GeneralOverviewSnapshot(
-                    asOfDate = metrics.asOfDate,
-                    scopeDescription = "Toàn hệ thống",
-                    totalProfiles = metrics.eligibleEpisodeTotal,
-                    workingCount = metrics.onCount,
-                    waitingCount = metrics.unconfirmedCount,
-                    leftCount = metrics.offCount,
-                    audienceKind = "all",
-                    placementRatePct = effectivePlacementRate,
-                    retention7dPct = metrics.retention7dPct,
-                    retention30dPct = metrics.retention30dPct,
-                    projectCount = resolvedProjectCount,
-                    recruiterCount = metrics.byRecruiter.count { it.key != "unknown" }.coerceAtLeast(metrics.byRecruiter.size),
-                    leadingProject = leadingProject,
-                    byRecruiter = metrics.byRecruiter.take(10),
-                    byProject = metrics.byProject.take(10),
-                    bySecondaryGroup = normalizedTeams.take(10),
-                    secondaryGroupTitle = "Cơ cấu theo nhóm tuyển dụng",
-                    byProvider = metrics.byProvider.take(6),
-                    periodFromDate = metrics.periodFromDate,
-                    periodToDate = metrics.periodToDate,
-                    periodNewEpisodes = metrics.periodNewEpisodes,
-                    periodOnInflow = metrics.periodOnInflow,
-                    periodOffInflow = metrics.periodOffInflow,
-                    periodNetOnChange = metrics.periodNetOnChange
-                )
+                if (!hasDateFilter) {
+                    val leadingProject = metrics.byProject.firstOrNull { it.key != "unknown" }
+                        ?: metrics.byProject.firstOrNull()
+                    val resolvedProjectCount = metrics.totalProjectCount.takeIf { it > 0 }
+                        ?: metrics.byProject.count { it.key != "unknown" }.coerceAtLeast(metrics.byProject.size)
+
+                    _generalOverview.value = GeneralOverviewSnapshot(
+                        asOfDate = metrics.asOfDate,
+                        scopeDescription = "Toàn hệ thống",
+                        totalProfiles = metrics.eligibleEpisodeTotal,
+                        workingCount = metrics.onCount,
+                        waitingCount = metrics.unconfirmedCount,
+                        leftCount = metrics.offCount,
+                        audienceKind = "all",
+                        isPeriodFiltered = false,
+                        workingRatePct = closingWorkingRatePct,
+                        placementRatePct = metrics.placementRatePct,
+                        retention7dPct = metrics.retention7dPct,
+                        retention30dPct = metrics.retention30dPct,
+                        projectCount = resolvedProjectCount,
+                        recruiterCount = metrics.byRecruiter.count { it.key != "unknown" }.coerceAtLeast(metrics.byRecruiter.size),
+                        leadingProject = leadingProject,
+                        byRecruiter = metrics.byRecruiter.take(10),
+                        byProject = metrics.byProject.take(10),
+                        bySecondaryGroup = normalizedTeams.take(10),
+                        secondaryGroupTitle = "Cơ cấu theo nhóm tuyển dụng",
+                        byProvider = metrics.byProvider.take(6),
+                        periodFromDate = metrics.periodFromDate,
+                        periodToDate = metrics.periodToDate,
+                        periodNewEpisodes = metrics.periodNewEpisodes,
+                        periodOnInflow = metrics.periodOnInflow,
+                        periodOffInflow = metrics.periodOffInflow,
+                        periodNetOnChange = metrics.periodNetOnChange
+                    )
+                } else {
+                    val periodAgg = repository.workReportsAndReportingService
+                        .fetchAggregatedPeriodRecruitmentForAllScope(
+                            teamBuckets = normalizedTeams,
+                            knownTeamCodeMap = codeMap,
+                            fromDate = effectiveFrom,
+                            toDate = effectiveTo
+                        )
+                    val periodByProject = periodAgg?.byProject.orEmpty()
+                    val periodByRecruiter = periodAgg?.byRecruiter.orEmpty()
+                    val periodByTeam = periodAgg?.byTeam.orEmpty()
+                    val periodByProvider = periodAgg?.byProvider.orEmpty()
+                    val leadingPeriodProject = periodByProject.firstOrNull { it.key != "unknown" }
+                        ?: periodByProject.firstOrNull()
+
+                    _generalOverview.value = GeneralOverviewSnapshot(
+                        asOfDate = metrics.asOfDate,
+                        scopeDescription = "Toàn hệ thống",
+                        totalProfiles = metrics.periodNewEpisodes ?: periodAgg?.totalRecruited ?: 0,
+                        workingCount = metrics.periodOnInflow ?: 0,
+                        waitingCount = metrics.periodWaitingInflow ?: 0,
+                        leftCount = metrics.periodOffInflow ?: 0,
+                        audienceKind = "all",
+                        isPeriodFiltered = true,
+                        workingRatePct = closingWorkingRatePct,
+                        placementRatePct = metrics.placementRatePct,
+                        retention7dPct = metrics.retention7dPct,
+                        retention30dPct = metrics.retention30dPct,
+                        closingTotalProfiles = metrics.eligibleEpisodeTotal,
+                        closingWorkingCount = metrics.onCount,
+                        closingWaitingCount = metrics.unconfirmedCount,
+                        closingLeftCount = metrics.offCount,
+                        projectCount = periodByProject.count { it.key != "unknown" && it.count > 0 },
+                        recruiterCount = periodByRecruiter.count { it.key != "unknown" && it.count > 0 },
+                        activeHiringDays = periodAgg?.hiringSummary?.activeHiringDays ?: 0,
+                        avgPerActiveDay = periodAgg?.hiringSummary?.avgPerActiveDay,
+                        peakDailyCount = periodAgg?.hiringSummary?.peakDailyCount,
+                        peakDateIso = periodAgg?.hiringSummary?.peakDateIso,
+                        leadingProject = leadingPeriodProject,
+                        byRecruiter = periodByRecruiter.take(10),
+                        byProject = periodByProject.take(10),
+                        bySecondaryGroup = periodByTeam.take(10),
+                        secondaryGroupTitle = "Cơ cấu theo nhóm tuyển dụng",
+                        byProvider = periodByProvider.take(6),
+                        periodFromDate = effectiveFrom ?: metrics.periodFromDate,
+                        periodToDate = effectiveTo ?: metrics.periodToDate,
+                        periodNewEpisodes = metrics.periodNewEpisodes,
+                        periodOnInflow = metrics.periodOnInflow,
+                        periodOffInflow = metrics.periodOffInflow,
+                        periodNetOnChange = metrics.periodNetOnChange
+                    )
+                }
                 _generalOverviewLoading.value = false
 
                 val prevReport = _teamReport.value
@@ -797,8 +857,8 @@ class MiniBiViewModel internal constructor(
                     )
                 }
 
-                val placementRatePct = if (rows.isNotEmpty()) {
-                    ((workingCount + leftCount).toFloat() * 100f) / rows.size.toFloat()
+                val workingRatePct = if (rows.isNotEmpty()) {
+                    (((workingCount.toDouble() / rows.size.toDouble()) * 1000.0).roundToInt()) / 10f
                 } else {
                     null
                 }
@@ -928,7 +988,9 @@ class MiniBiViewModel internal constructor(
                     waitingCount = waitingCount,
                     leftCount = leftCount,
                     audienceKind = if (isTeamActor) "team" else "own",
-                    placementRatePct = placementRatePct,
+                    isPeriodFiltered = hasPresetFilter,
+                    workingRatePct = workingRatePct,
+                    placementRatePct = null,
                     projectCount = projectCount,
                     recruiterCount = recruiterCount,
                     managedTotal = filteredManagedTotal,
@@ -2505,6 +2567,24 @@ class MiniBiViewModel internal constructor(
         }
     }
 
+    fun syncAttendanceHistoryFromServer(actor: AppActor? = currentActor.value) {
+        val resolvedActor = actor ?: return
+        if ((!resolvedActor.hasScopeKind("all") && !resolvedActor.hasCapability("attendance_report_read")) ||
+            !WorkReportsContract.isUuid(resolvedActor.appUserId)
+        ) {
+            return
+        }
+        viewModelScope.launch {
+            runCatching {
+                val todayIso = resolveReferenceTodayIsoHcm(resolvedActor.appUserId)
+                repository.attendanceOutboxService.syncServerHistoryForUser(
+                    actor = resolvedActor,
+                    referenceTodayIso = todayIso
+                )
+            }.onFailure { it.rethrowIfCancelled() }
+        }
+    }
+
     fun millisUntilTimeAnchorRefresh(appUserId: String): Long? {
         return repository.attendanceTimeAnchorManager.millisUntilProactiveRefresh(appUserId)
     }
@@ -2608,6 +2688,6 @@ class MiniBiViewModel internal constructor(
     }
 
     companion object {
-        internal const val BANNER_AUTO_DISMISS_MS = 10_000L
+        internal const val BANNER_AUTO_DISMISS_MS = 5_000L
     }
 }
