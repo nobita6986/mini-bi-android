@@ -1106,40 +1106,42 @@ class WorkReportsReportingAndAttendanceContractTest {
         val reportPayload = """
             {
               "ok": true,
-              "summary": {"total_checkins": 2, "distinct_employees": 1, "unverified_time_count": 0},
-              "pagination": {"page": 1, "page_size": 100, "total_items": 2, "total_pages": 1, "has_more": false},
-              "items": [
-                {
-                  "checkin_id": "aaaa1111-bbbb-4222-8333-cccc44445555",
-                  "employee_id": "11111111-2222-4333-8444-555555555555",
-                  "employee_display_name": "Quản trị viên BI",
-                  "business_date": "2026-10-23",
-                  "sequence_in_day": 2,
-                  "captured_at": "2026-10-23T10:15:00.000Z",
-                  "received_at": "2026-10-23T10:15:01.000Z",
-                  "time_source": "SERVER_ANCHORED",
-                  "latitude": null,
-                  "longitude": null,
-                  "accuracy_meters": null,
-                  "address_hint": null,
-                  "note": null
-                },
-                {
-                  "checkin_id": "aaaa1111-bbbb-4222-8333-cccc44446666",
-                  "employee_id": "11111111-2222-4333-8444-555555555555",
-                  "employee_display_name": "Quản trị viên BI",
-                  "business_date": "2026-10-23",
-                  "sequence_in_day": 1,
-                  "captured_at": "2026-10-23T01:05:00.000Z",
-                  "received_at": "2026-10-23T01:05:02.000Z",
-                  "time_source": "SERVER_ANCHORED",
-                  "latitude": 21.02851,
-                  "longitude": 105.85417,
-                  "accuracy_meters": 8.5,
-                  "address_hint": "Hoàn Kiếm, Hà Nội",
-                  "note": "Ca sáng"
-                }
-              ]
+              "report": {
+                "summary": {"total_checkins": 2, "distinct_employees": 1, "unverified_time_count": 0},
+                "pagination": {"page": 1, "page_size": 100, "total_items": 2, "total_pages": 1, "has_more": false},
+                "items": [
+                  {
+                    "checkin_id": "aaaa1111-bbbb-4222-8333-cccc44445555",
+                    "employee_id": "11111111-2222-4333-8444-555555555555",
+                    "employee_display_name": "Quản trị viên BI",
+                    "business_date": "2026-10-23",
+                    "sequence_in_day": 2,
+                    "captured_at": "2026-10-23T10:15:00.000Z",
+                    "received_at": "2026-10-23T10:15:01.000Z",
+                    "time_source": "SERVER_ANCHORED",
+                    "latitude": null,
+                    "longitude": null,
+                    "accuracy_meters": null,
+                    "address_hint": null,
+                    "note": null
+                  },
+                  {
+                    "checkin_id": "aaaa1111-bbbb-4222-8333-cccc44446666",
+                    "employee_id": "11111111-2222-4333-8444-555555555555",
+                    "employee_display_name": "Quản trị viên BI",
+                    "business_date": "2026-10-23",
+                    "sequence_in_day": 1,
+                    "captured_at": "2026-10-23T01:05:00.000Z",
+                    "received_at": "2026-10-23T01:05:02.000Z",
+                    "time_source": "SERVER_ANCHORED",
+                    "latitude": 21.02851,
+                    "longitude": 105.85417,
+                    "accuracy_meters": 8.5,
+                    "address_hint": "Hoàn Kiếm, Hà Nội",
+                    "note": "Ca sáng"
+                  }
+                ]
+              }
             }
         """.trimIndent()
 
