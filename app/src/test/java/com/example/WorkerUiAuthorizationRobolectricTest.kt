@@ -1,10 +1,17 @@
 package com.example
 
 import android.app.Application
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.collectAsState
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsFocused
 import androidx.compose.ui.test.assertIsNotFocused
@@ -14,6 +21,7 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performTextInput
 import androidx.lifecycle.viewModelScope
@@ -29,6 +37,9 @@ import com.example.data.DirectEntryContract
 import com.example.data.MiniBiDatabase
 import com.example.data.MiniBiRepository
 import com.example.data.SavedLoginAccount
+import com.example.data.WorkReportFieldSpec
+import com.example.data.WorkReportObligationEntity
+import com.example.data.WorkReportSectionSpec
 import com.example.data.WorkReportsContract
 import com.example.data.WorkerEntryDetail
 import com.example.data.WorkerProfileEntity
@@ -36,6 +47,7 @@ import com.example.ui.MiniBiViewModel
 import com.example.ui.screens.AttendanceHistoryCard
 import com.example.ui.screens.AttendanceScreen
 import com.example.ui.screens.DirectEntryNewWorkersScreen
+import com.example.ui.screens.DynamicWorkReportFormCard
 import com.example.ui.screens.LoginScreen
 import com.example.ui.screens.WorkerOperationsRowCard
 import com.example.ui.screens.WorkerPrivilegedEditDialog
@@ -2056,5 +2068,179 @@ class WorkerUiAuthorizationRobolectricTest {
         composeTestRule.onNodeWithText("TUYỂN MỚI TRONG KỲ").assertIsDisplayed()
         composeTestRule.onNodeWithText("VÀO LÀM TRONG KỲ").assertIsDisplayed()
         composeTestRule.onNodeWithText("NGHỈ VIỆC TRONG KỲ").assertIsDisplayed()
+    }
+
+    @Test
+    @Config(qualifiers = "w360dp-h800dp-xxhdpi")
+    fun `daily work report form keeps boolean switches separated from text and stacks action buttons cleanly on 360dp`() {
+        val obligation = WorkReportObligationEntity(
+            obligationId = "ob-daily-1",
+            templateId = "tpl-daily",
+            templateCode = "DAILY_REC",
+            templateName = "Báo cáo công việc hằng ngày",
+            periodType = "DAILY",
+            periodKey = "2026-10-24",
+            periodStartDate = "2026-10-24",
+            periodEndDate = "2026-10-24",
+            dueAtIso = "2026-10-24T10:00:00Z",
+            isMandatory = true,
+            obligationStatus = "ACTIVE",
+            submissionId = null,
+            submissionState = "NOT_STARTED",
+            submissionVersion = null,
+            obligationVersion = 1,
+            schemaJsonRaw = "{}",
+            payloadJsonRaw = "{}",
+            latestReviewDecision = null,
+            latestReviewReason = null,
+            submittedAtIso = null
+        )
+        val sections = listOf(
+            WorkReportSectionSpec(
+                sectionKey = "s1",
+                label = "7h30-9h30",
+                description = null,
+                sortOrder = 1,
+                fields = listOf(
+                    WorkReportFieldSpec(
+                        fieldKey = "f1",
+                        sectionKey = "s1",
+                        sortOrder = 1,
+                        label = "Hỗ trợ nhân viên quản lý đón và tập trung lao động",
+                        description = null,
+                        fieldType = "boolean",
+                        required = true,
+                        defaultValue = "false"
+                    ),
+                    WorkReportFieldSpec(
+                        fieldKey = "f2",
+                        sectionKey = "s1",
+                        sortOrder = 2,
+                        label = "Live 1H quá trình đón lao động, phổ biến và phỏng vấn người lao động",
+                        description = null,
+                        fieldType = "boolean",
+                        required = true,
+                        defaultValue = "false"
+                    )
+                )
+            ),
+            WorkReportSectionSpec(
+                sectionKey = "s2",
+                label = "16h00-17h00",
+                description = null,
+                sortOrder = 2,
+                fields = listOf(
+                    WorkReportFieldSpec(
+                        fieldKey = "f3",
+                        sectionKey = "s2",
+                        sortOrder = 1,
+                        label = "Vào link Báo cáo công việc hàng ngày; tổng hợp danh sách lao động hẹn PV ngày mai.",
+                        description = null,
+                        fieldType = "boolean",
+                        required = true,
+                        defaultValue = "true"
+                    )
+                )
+            )
+        )
+
+        var savedDraftPayload: JSONObject? = null
+        var submittedFinalPayload: JSONObject? = null
+        var cancelled = false
+
+        composeTestRule.setContent {
+            MyApplicationTheme {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .verticalScroll(rememberScrollState())
+                        .padding(horizontal = 16.dp, vertical = 12.dp)
+                ) {
+                    DynamicWorkReportFormCard(
+                        obligation = obligation,
+                        sections = sections,
+                        canSubmit = true,
+                        onCancel = { cancelled = true },
+                        onSaveDraft = { savedDraftPayload = it },
+                        onSubmitFinal = { submittedFinalPayload = it }
+                    )
+                }
+            }
+        }
+        composeTestRule.waitForIdle()
+
+        val cardBounds = composeTestRule.onNodeWithTag("dynamic_work_report_form_card")
+            .assertIsDisplayed()
+            .fetchSemanticsNode()
+            .boundsInRoot
+
+        // 1. Every boolean Switch strictly stays to the right of its text label (zero overlap) and inside the card border
+        for (key in listOf("f1", "f2", "f3")) {
+            val labelBounds = composeTestRule.onNodeWithTag("dynamic_label_$key", useUnmergedTree = true)
+                .fetchSemanticsNode()
+                .boundsInRoot
+            val switchBounds = composeTestRule.onNodeWithTag("dynamic_field_$key", useUnmergedTree = true)
+                .fetchSemanticsNode()
+                .boundsInRoot
+            assertTrue("Expected non-zero label width for $key", labelBounds.width > 50f)
+            assertTrue("Expected non-zero switch width for $key", switchBounds.width > 30f)
+            assertTrue(
+                "Switch $key (left=${switchBounds.left}) must not overlap label (right=${labelBounds.right})",
+                switchBounds.left >= labelBounds.right + 4f
+            )
+            assertTrue(
+                "Switch $key (right=${switchBounds.right}) must fit inside form card (right=${cardBounds.right})",
+                switchBounds.right <= cardBounds.right - 8f
+            )
+        }
+
+        // 2. Action buttons are stacked cleanly across 2 rows without multi-line text wrapping
+        composeTestRule.onNodeWithTag("cancel_edit_report_button").performScrollTo()
+        composeTestRule.waitForIdle()
+
+        val submitBounds = composeTestRule.onNodeWithTag("submit_final_report_button")
+            .assertIsDisplayed()
+            .fetchSemanticsNode()
+            .boundsInRoot
+        val draftBounds = composeTestRule.onNodeWithTag("save_draft_report_button")
+            .assertIsDisplayed()
+            .fetchSemanticsNode()
+            .boundsInRoot
+        val cancelBounds = composeTestRule.onNodeWithTag("cancel_edit_report_button")
+            .assertIsDisplayed()
+            .fetchSemanticsNode()
+            .boundsInRoot
+
+        assertTrue(
+            "Primary 'Nộp báo cáo' row (bottom=${submitBounds.bottom}) must sit above secondary row (top=${draftBounds.top})",
+            draftBounds.top >= submitBounds.bottom
+        )
+        assertTrue(
+            "Secondary 'Lưu nháp' and 'Đóng' buttons must sit side-by-side without overlapping",
+            cancelBounds.left >= draftBounds.right + 4f
+        )
+        assertTrue(
+            "Secondary buttons must have uniform single-line height (draft=${draftBounds.height}, cancel=${cancelBounds.height})",
+            kotlin.math.abs(draftBounds.height - cancelBounds.height) <= 2f
+        )
+        assertTrue("Submit button must stay single-line compact (${submitBounds.height}px)", submitBounds.height <= 185f)
+        assertTrue("Draft button must stay single-line compact (${draftBounds.height}px)", draftBounds.height <= 175f)
+        assertTrue("Cancel button must stay single-line compact (${cancelBounds.height}px)", cancelBounds.height <= 175f)
+
+        // 3. Actions remain interactive and produce accurate JSON payloads
+        composeTestRule.onNodeWithTag("dynamic_field_f1").performScrollTo().performClick()
+        composeTestRule.onNodeWithTag("save_draft_report_button").performScrollTo().performClick()
+        composeTestRule.waitForIdle()
+        assertEquals(true, savedDraftPayload?.optBoolean("f1"))
+
+        composeTestRule.onNodeWithTag("submit_final_report_button").performScrollTo().performClick()
+        composeTestRule.waitForIdle()
+        assertEquals(true, submittedFinalPayload?.optBoolean("f1"))
+        assertEquals(false, submittedFinalPayload?.optBoolean("f2"))
+        assertEquals(true, submittedFinalPayload?.optBoolean("f3"))
+
+        composeTestRule.onNodeWithTag("cancel_edit_report_button").performScrollTo().performClick()
+        composeTestRule.waitForIdle()
+        assertTrue(cancelled)
     }
 }

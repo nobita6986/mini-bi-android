@@ -1,17 +1,24 @@
 package com.example.ui.screens
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -36,13 +43,12 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.ScrollableTabRow
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
-import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -59,6 +65,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -187,11 +194,17 @@ fun WorkReportsScreen(
                         OutlinedButton(
                             onClick = { viewModel.refreshWorkReportsData(actor) },
                             enabled = !loading && !mutationBusy,
-                            shape = RoundedCornerShape(10.dp)
+                            shape = RoundedCornerShape(10.dp),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
                         ) {
                             Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text("Làm mới", style = MaterialTheme.typography.labelMedium)
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = "Làm mới",
+                                style = MaterialTheme.typography.labelMedium,
+                                maxLines = 1,
+                                softWrap = false
+                            )
                         }
                     }
                     Text(
@@ -208,39 +221,68 @@ fun WorkReportsScreen(
         }
 
         item {
-            ScrollableTabRow(
-                selectedTabIndex = safeTab,
-                edgePadding = 0.dp,
-                containerColor = Color.Transparent,
-                indicator = {},
-                divider = {}
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("work_reports_tab_grid"),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                tabDefs.forEachIndexed { index, (key, title) ->
-                    Tab(
-                        selected = safeTab == index,
-                        onClick = { selectedTab = index },
+                val indexedTabs = tabDefs.mapIndexed { index, pair -> Triple(index, pair.first, pair.second) }
+                indexedTabs.chunked(2).forEach { rowItems ->
+                    Row(
                         modifier = Modifier
-                            .padding(end = 6.dp)
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(
-                                if (safeTab == index)
+                            .fillMaxWidth()
+                            .height(IntrinsicSize.Min),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        rowItems.forEach { (index, key, title) ->
+                            val selected = safeTab == index
+                            Surface(
+                                selected = selected,
+                                onClick = { selectedTab = index },
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .fillMaxHeight()
+                                    .heightIn(min = 40.dp)
+                                    .testTag("work_reports_subtab_$key"),
+                                shape = RoundedCornerShape(12.dp),
+                                color = if (selected) {
                                     MaterialTheme.colorScheme.primaryContainer
-                                else
-                                    MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
-                            )
-                            .testTag("work_reports_subtab_$key"),
-                        text = {
-                            Text(
-                                text = title,
-                                style = MaterialTheme.typography.labelLarge,
-                                fontWeight = if (safeTab == index) FontWeight.Bold else FontWeight.Medium,
-                                color = if (safeTab == index)
-                                    MaterialTheme.colorScheme.onPrimaryContainer
-                                else
-                                    MaterialTheme.colorScheme.onSurfaceVariant
-                            )
+                                } else {
+                                    MaterialTheme.colorScheme.surface
+                                },
+                                border = if (selected) {
+                                    BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.35f))
+                                } else {
+                                    BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.22f))
+                                }
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .fillMaxHeight()
+                                        .padding(horizontal = 8.dp, vertical = 8.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = title,
+                                        style = MaterialTheme.typography.labelLarge,
+                                        fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                                        color = if (selected) {
+                                            MaterialTheme.colorScheme.onPrimaryContainer
+                                        } else {
+                                            MaterialTheme.colorScheme.onSurfaceVariant
+                                        },
+                                        textAlign = TextAlign.Center,
+                                        maxLines = 1,
+                                        softWrap = false,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
                         }
-                    )
+                    }
                 }
             }
         }
@@ -316,10 +358,18 @@ fun WorkReportsScreen(
                     }
                 } else {
                     items(activeObligations, key = { it.obligationId }) { item ->
+                        val isOpenInEditor = editingObligation?.obligationId == item.obligationId
                         WorkReportObligationCard(
                             item = item,
                             showEditAction = item.obligationStatus == "ACTIVE",
-                            onOpenEdit = { viewModel.openObligationEditor(item) }
+                            isCurrentlyEditing = isOpenInEditor,
+                            onOpenEdit = {
+                                if (isOpenInEditor) {
+                                    viewModel.closeObligationEditor()
+                                } else {
+                                    viewModel.openObligationEditor(item)
+                                }
+                            }
                         )
                     }
                 }
@@ -335,11 +385,19 @@ fun WorkReportsScreen(
                     }
                 } else {
                     items(historyObligations, key = { it.obligationId }) { item ->
+                        val isOpenInEditor = editingObligation?.obligationId == item.obligationId
                         WorkReportObligationCard(
                             item = item,
                             showEditAction = item.obligationStatus == "ACTIVE" &&
                                 item.submissionState in listOf("DRAFT", "REJECTED"),
-                            onOpenEdit = { viewModel.openObligationEditor(item) }
+                            isCurrentlyEditing = isOpenInEditor,
+                            onOpenEdit = {
+                                if (isOpenInEditor) {
+                                    viewModel.closeObligationEditor()
+                                } else {
+                                    viewModel.openObligationEditor(item)
+                                }
+                            }
                         )
                     }
                 }
@@ -520,181 +578,417 @@ internal fun DynamicWorkReportFormCard(
         return obj
     }
 
-    Column(
+    Card(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(16.dp))
-            .border(
-                width = 1.5.dp,
-                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.4f),
-                shape = RoundedCornerShape(16.dp)
-            )
-            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f))
-            .padding(14.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp)
+            .testTag("dynamic_work_report_form_card"),
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.2.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
     ) {
-        Text(
-            text = "${obligation.templateName.ifBlank { "Báo cáo công việc" }} · Kỳ ${WorkReportsContract.formatPeriodKeyVi(obligation.periodKey)}",
-            style = MaterialTheme.typography.titleMedium,
-            color = MaterialTheme.colorScheme.primary
-        )
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.Top
+            ) {
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(end = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Surface(
+                        shape = RoundedCornerShape(6.dp),
+                        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f)
+                    ) {
+                        Text(
+                            text = "Kỳ ${WorkReportsContract.formatPeriodKeyVi(obligation.periodKey)}",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer,
+                            maxLines = 1,
+                            softWrap = false,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                        )
+                    }
+                    Text(
+                        text = obligation.templateName.ifBlank { "Báo cáo công việc" },
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                }
+                IconButton(
+                    onClick = onCancel,
+                    modifier = Modifier.size(36.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Close,
+                        contentDescription = "Đóng biểu mẫu",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+            }
 
-        if (sections.isEmpty()) {
-            Text(
-                text = "Đang tải nội dung biểu mẫu báo cáo…",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        } else {
-            sections.forEach { section ->
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+
+            if (sections.isEmpty()) {
                 Text(
-                    text = section.label,
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.Bold
+                    text = "Đang tải nội dung biểu mẫu báo cáo…",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-                section.fields.forEach { field ->
-                    val currentVal = fieldValues[field.fieldKey].orEmpty()
-                    val labelWithReq = if (field.required) "${field.label} *" else field.label
-                    when (field.fieldType) {
-                        "boolean" -> {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text(labelWithReq, style = MaterialTheme.typography.bodyMedium)
-                                Switch(
-                                    checked = currentVal.equals("true", ignoreCase = true),
-                                    onCheckedChange = { checked ->
-                                        fieldValues[field.fieldKey] = checked.toString()
-                                    }
-                                )
-                            }
-                        }
-
-                        "single_select" -> {
-                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                Text(labelWithReq, style = MaterialTheme.typography.labelMedium)
-                                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                    field.options.forEach { opt ->
-                                        FilterChip(
-                                            selected = currentVal == opt.value,
-                                            onClick = { fieldValues[field.fieldKey] = opt.value },
-                                            label = { Text(opt.label) }
-                                        )
-                                    }
-                                }
-                            }
-                        }
-
-                        "multi_select" -> {
-                            val selectedSet = currentVal.split(",").map { it.trim() }.filter { it.isNotEmpty() }.toSet()
-                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                Text(labelWithReq, style = MaterialTheme.typography.labelMedium)
-                                field.options.forEach { opt ->
-                                    val isChecked = opt.value in selectedSet
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Checkbox(
-                                            checked = isChecked,
-                                            onCheckedChange = { checked ->
-                                                val updated = if (checked) selectedSet + opt.value else selectedSet - opt.value
-                                                fieldValues[field.fieldKey] = updated.joinToString(",")
-                                            }
-                                        )
-                                        Text(opt.label, style = MaterialTheme.typography.bodySmall)
-                                    }
-                                }
-                            }
-                        }
-
-                        else -> {
-                            val kbType = when (field.fieldType) {
-                                "integer" -> KeyboardType.Number
-                                "decimal" -> KeyboardType.Decimal
-                                else -> KeyboardType.Text
-                            }
-                            OutlinedTextField(
-                                value = currentVal,
-                                onValueChange = { next ->
-                                    formValidationError = null
-                                    val sanitized = when (field.fieldType) {
-                                        "integer" -> next.filterIndexed { idx, ch ->
-                                            ch.isDigit() || (idx == 0 && ch == '-')
-                                        }.take(20)
-                                        "decimal" -> next.replace(',', '.').filterIndexed { idx, ch ->
-                                            ch.isDigit() || ch == '.' || (idx == 0 && ch == '-')
-                                        }.take(24)
-                                        "date" -> next.filter { ch -> ch.code >= 32 && ch.code != 127 }.take(10)
-                                        "textarea" -> next.filter { ch ->
-                                            (ch.code >= 32 && ch.code != 127) || ch == '\n' || ch == '\t'
-                                        }.take(4000)
-                                        else -> next.filter { ch -> ch.code >= 32 && ch.code != 127 }.take(1000)
-                                    }
-                                    fieldValues[field.fieldKey] = sanitized
-                                },
-                                label = { Text(labelWithReq) },
-                                placeholder = if (field.fieldType == "date") {
-                                    { Text("DD/MM/YYYY") }
-                                } else null,
-                                singleLine = field.fieldType != "textarea",
-                                minLines = if (field.fieldType == "textarea") 2 else 1,
-                                keyboardOptions = KeyboardOptions(keyboardType = kbType),
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .testTag("dynamic_field_${field.fieldKey}")
+            } else {
+                sections.forEach { section ->
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.10f)
+                        ) {
+                            Text(
+                                text = section.label,
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
                             )
+                        }
+
+                        if (!section.description.isNullOrBlank()) {
+                            Text(
+                                text = section.description,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+
+                        section.fields.forEach { field ->
+                            val currentVal = fieldValues[field.fieldKey].orEmpty()
+                            val labelWithReq = if (field.required) "${field.label} *" else field.label
+                            when (field.fieldType) {
+                                "boolean" -> {
+                                    val isChecked = currentVal.equals("true", ignoreCase = true)
+                                    Surface(
+                                        shape = RoundedCornerShape(14.dp),
+                                        color = if (isChecked) {
+                                            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.28f)
+                                        } else {
+                                            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.28f)
+                                        },
+                                        border = BorderStroke(
+                                            width = 1.dp,
+                                            color = if (isChecked) {
+                                                MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)
+                                            } else {
+                                                MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)
+                                            }
+                                        ),
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clip(RoundedCornerShape(14.dp))
+                                            .clickable(enabled = canSubmit) {
+                                                formValidationError = null
+                                                fieldValues[field.fieldKey] = (!isChecked).toString()
+                                            }
+                                    ) {
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(horizontal = 14.dp, vertical = 10.dp),
+                                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Column(
+                                                modifier = Modifier.weight(1f),
+                                                verticalArrangement = Arrangement.spacedBy(2.dp)
+                                            ) {
+                                                Text(
+                                                    text = labelWithReq,
+                                                    style = MaterialTheme.typography.bodyMedium,
+                                                    fontWeight = if (isChecked) FontWeight.Medium else FontWeight.Normal,
+                                                    color = MaterialTheme.colorScheme.onSurface,
+                                                    modifier = Modifier.testTag("dynamic_label_${field.fieldKey}")
+                                                )
+                                                if (!field.description.isNullOrBlank()) {
+                                                    Text(
+                                                        text = field.description,
+                                                        style = MaterialTheme.typography.bodySmall,
+                                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                    )
+                                                }
+                                            }
+                                            Switch(
+                                                checked = isChecked,
+                                                enabled = canSubmit,
+                                                onCheckedChange = { checked ->
+                                                    formValidationError = null
+                                                    fieldValues[field.fieldKey] = checked.toString()
+                                                },
+                                                modifier = Modifier.testTag("dynamic_field_${field.fieldKey}")
+                                            )
+                                        }
+                                    }
+                                }
+
+                                "single_select" -> {
+                                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                        Text(
+                                            text = labelWithReq,
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            fontWeight = FontWeight.Medium
+                                        )
+                                        FlowRow(
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                                        ) {
+                                            field.options.forEach { opt ->
+                                                FilterChip(
+                                                    selected = currentVal == opt.value,
+                                                    enabled = canSubmit,
+                                                    onClick = {
+                                                        formValidationError = null
+                                                        fieldValues[field.fieldKey] = opt.value
+                                                    },
+                                                    label = { Text(opt.label) }
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+
+                                "multi_select" -> {
+                                    val selectedSet = currentVal.split(",").map { it.trim() }.filter { it.isNotEmpty() }.toSet()
+                                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                        Text(
+                                            text = labelWithReq,
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            fontWeight = FontWeight.Medium
+                                        )
+                                        field.options.forEach { opt ->
+                                            val isChecked = opt.value in selectedSet
+                                            Row(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .clip(RoundedCornerShape(10.dp))
+                                                    .clickable(enabled = canSubmit) {
+                                                        formValidationError = null
+                                                        val updated = if (!isChecked) selectedSet + opt.value else selectedSet - opt.value
+                                                        fieldValues[field.fieldKey] = updated.joinToString(",")
+                                                    }
+                                                    .padding(vertical = 2.dp),
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Checkbox(
+                                                    checked = isChecked,
+                                                    enabled = canSubmit,
+                                                    onCheckedChange = { checked ->
+                                                        formValidationError = null
+                                                        val updated = if (checked) selectedSet + opt.value else selectedSet - opt.value
+                                                        fieldValues[field.fieldKey] = updated.joinToString(",")
+                                                    }
+                                                )
+                                                Text(
+                                                    text = opt.label,
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    modifier = Modifier.weight(1f)
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+
+                                else -> {
+                                    val kbType = when (field.fieldType) {
+                                        "integer" -> KeyboardType.Number
+                                        "decimal" -> KeyboardType.Decimal
+                                        else -> KeyboardType.Text
+                                    }
+                                    OutlinedTextField(
+                                        value = currentVal,
+                                        enabled = canSubmit,
+                                        onValueChange = { next ->
+                                            formValidationError = null
+                                            val sanitized = when (field.fieldType) {
+                                                "integer" -> next.filterIndexed { idx, ch ->
+                                                    ch.isDigit() || (idx == 0 && ch == '-')
+                                                }.take(20)
+                                                "decimal" -> next.replace(',', '.').filterIndexed { idx, ch ->
+                                                    ch.isDigit() || ch == '.' || (idx == 0 && ch == '-')
+                                                }.take(24)
+                                                "date" -> next.filter { ch -> ch.code >= 32 && ch.code != 127 }.take(10)
+                                                "textarea" -> next.filter { ch ->
+                                                    (ch.code >= 32 && ch.code != 127) || ch == '\n' || ch == '\t'
+                                                }.take(4000)
+                                                else -> next.filter { ch -> ch.code >= 32 && ch.code != 127 }.take(1000)
+                                            }
+                                            fieldValues[field.fieldKey] = sanitized
+                                        },
+                                        label = { Text(labelWithReq) },
+                                        placeholder = if (field.fieldType == "date") {
+                                            { Text("DD/MM/YYYY") }
+                                        } else null,
+                                        shape = RoundedCornerShape(12.dp),
+                                        singleLine = field.fieldType != "textarea",
+                                        minLines = if (field.fieldType == "textarea") 2 else 1,
+                                        keyboardOptions = KeyboardOptions(keyboardType = kbType),
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .testTag("dynamic_field_${field.fieldKey}")
+                                    )
+                                }
+                            }
                         }
                     }
                 }
             }
-        }
 
-        formValidationError?.let { errText ->
-            Text(
-                text = errText,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.error
-            )
-        }
-
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            OutlinedButton(
-                onClick = onCancel,
-                modifier = Modifier.weight(1f)
-            ) {
-                Text("Đóng")
-            }
-            if (canSubmit) {
-                OutlinedButton(
-                    onClick = {
-                        formValidationError = null
-                        onSaveDraft(buildPayloadJson(strictForSubmit = false))
-                    },
-                    modifier = Modifier
-                        .weight(1f)
-                        .testTag("save_draft_report_button")
+            formValidationError?.let { errText ->
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.65f),
+                    modifier = Modifier.fillMaxWidth()
                 ) {
-                    Icon(Icons.Default.Save, contentDescription = null, modifier = Modifier.size(16.dp))
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text("Lưu nháp")
+                    Text(
+                        text = errText,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onErrorContainer,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                    )
                 }
-                Button(
-                    onClick = {
-                        formValidationError = null
-                        runCatching { buildPayloadJson(strictForSubmit = true) }
-                            .onSuccess { payload -> onSubmitFinal(payload) }
-                            .onFailure { err -> formValidationError = err.message ?: "Dữ liệu biểu mẫu chưa hợp lệ." }
-                    },
-                    modifier = Modifier
-                        .weight(1.2f)
-                        .testTag("submit_final_report_button")
+            }
+
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+
+            if (canSubmit) {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    Icon(Icons.AutoMirrored.Filled.Send, contentDescription = null, modifier = Modifier.size(16.dp))
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text("Nộp báo cáo")
+                    Button(
+                        onClick = {
+                            formValidationError = null
+                            runCatching { buildPayloadJson(strictForSubmit = true) }
+                                .onSuccess { payload -> onSubmitFinal(payload) }
+                                .onFailure { err ->
+                                    formValidationError = err.message ?: "Dữ liệu biểu mẫu chưa hợp lệ."
+                                }
+                        },
+                        shape = RoundedCornerShape(12.dp),
+                        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 48.dp)
+                            .testTag("submit_final_report_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.Send,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "Nộp báo cáo",
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            softWrap = false,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        OutlinedButton(
+                            onClick = {
+                                formValidationError = null
+                                onSaveDraft(buildPayloadJson(strictForSubmit = false))
+                            },
+                            shape = RoundedCornerShape(12.dp),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
+                            modifier = Modifier
+                                .weight(1f)
+                                .heightIn(min = 44.dp)
+                                .testTag("save_draft_report_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Save,
+                                contentDescription = null,
+                                modifier = Modifier.size(17.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = "Lưu nháp",
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                softWrap = false,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+
+                        OutlinedButton(
+                            onClick = onCancel,
+                            shape = RoundedCornerShape(12.dp),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
+                            modifier = Modifier
+                                .weight(1f)
+                                .heightIn(min = 44.dp)
+                                .testTag("cancel_edit_report_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Close,
+                                contentDescription = null,
+                                modifier = Modifier.size(17.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = "Đóng",
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = FontWeight.Medium,
+                                maxLines = 1,
+                                softWrap = false,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                }
+            } else {
+                OutlinedButton(
+                    onClick = onCancel,
+                    shape = RoundedCornerShape(12.dp),
+                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 44.dp)
+                        .testTag("cancel_edit_report_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Close,
+                        contentDescription = null,
+                        modifier = Modifier.size(17.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = "Đóng",
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.Medium,
+                        maxLines = 1,
+                        softWrap = false,
+                        overflow = TextOverflow.Ellipsis
+                    )
                 }
             }
         }
@@ -705,13 +999,15 @@ internal fun DynamicWorkReportFormCard(
 private fun WorkReportObligationCard(
     item: WorkReportObligationEntity,
     showEditAction: Boolean,
+    isCurrentlyEditing: Boolean = false,
     onOpenEdit: () -> Unit
 ) {
     val badgeColor = submissionStateColor(item.submissionState)
     val stateLabel = WorkReportsContract.submissionStateDisplayLabel(item.submissionState)
-    val actionLabel = when (item.submissionState) {
-        "DRAFT" -> "Tiếp tục điền"
-        "REJECTED" -> "Sửa & nộp lại"
+    val actionLabel = when {
+        isCurrentlyEditing -> "Thu gọn biểu mẫu"
+        item.submissionState == "DRAFT" -> "Tiếp tục điền"
+        item.submissionState == "REJECTED" -> "Sửa & nộp lại"
         else -> "Làm báo cáo"
     }
 
@@ -798,12 +1094,23 @@ private fun WorkReportObligationCard(
                 ) {
                     OutlinedButton(
                         onClick = onOpenEdit,
-                        shape = RoundedCornerShape(10.dp),
-                        modifier = Modifier.testTag("open_edit_report_${item.obligationId}")
+                        shape = RoundedCornerShape(12.dp),
+                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
+                        modifier = Modifier
+                            .heightIn(min = 42.dp)
+                            .testTag("open_edit_report_${item.obligationId}")
                     ) {
-                        Icon(Icons.Default.EditNote, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Icon(
+                            imageVector = if (isCurrentlyEditing) Icons.Default.Close else Icons.Default.EditNote,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
+                        )
                         Spacer(modifier = Modifier.width(6.dp))
-                        Text(actionLabel)
+                        Text(
+                            text = actionLabel,
+                            maxLines = 1,
+                            softWrap = false
+                        )
                     }
                 }
             }
@@ -924,6 +1231,7 @@ private fun ReviewInboxItemCard(
                     reviewNote = next.filter { ch -> ch.code >= 32 && ch.code != 127 }.take(2000)
                 },
                 label = { Text("Nhận xét hoặc lý do yêu cầu sửa (bắt buộc khi trả lại)") },
+                shape = RoundedCornerShape(12.dp),
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth()
             )
@@ -935,20 +1243,39 @@ private fun ReviewInboxItemCard(
                 OutlinedButton(
                     onClick = { onReject(reviewNote) },
                     enabled = reviewNote.isNotBlank(),
-                    modifier = Modifier.weight(1f)
+                    shape = RoundedCornerShape(12.dp),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
+                    modifier = Modifier
+                        .weight(1f)
+                        .heightIn(min = 44.dp)
                 ) {
                     Icon(Icons.Default.Close, contentDescription = null, modifier = Modifier.size(16.dp))
                     Spacer(modifier = Modifier.width(6.dp))
-                    Text("Yêu cầu sửa")
+                    Text(
+                        text = "Yêu cầu sửa",
+                        maxLines = 1,
+                        softWrap = false,
+                        overflow = TextOverflow.Ellipsis
+                    )
                 }
                 Button(
                     onClick = { onApprove(reviewNote) },
                     colors = ButtonDefaults.buttonColors(containerColor = SemanticColors.SuccessLight),
-                    modifier = Modifier.weight(1f)
+                    shape = RoundedCornerShape(12.dp),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
+                    modifier = Modifier
+                        .weight(1f)
+                        .heightIn(min = 44.dp)
                 ) {
-                    Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp), tint = Color.White)
                     Spacer(modifier = Modifier.width(6.dp))
-                    Text("Đồng ý duyệt", color = Color.White)
+                    Text(
+                        text = "Đồng ý duyệt",
+                        color = Color.White,
+                        maxLines = 1,
+                        softWrap = false,
+                        overflow = TextOverflow.Ellipsis
+                    )
                 }
             }
         }
