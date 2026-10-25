@@ -13,7 +13,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsFocused
+import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertIsNotFocused
 import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.hasTestTag
@@ -49,6 +51,7 @@ import com.example.ui.screens.AttendanceScreen
 import com.example.ui.screens.DirectEntryNewWorkersScreen
 import com.example.ui.screens.DynamicWorkReportFormCard
 import com.example.ui.screens.LoginScreen
+import com.example.ui.screens.ProfileAndPhotoSyncStatusCards
 import com.example.ui.screens.WorkerOperationsRowCard
 import com.example.ui.screens.WorkerPrivilegedEditDialog
 import com.example.ui.screens.WorkerProposeChangeDialog
@@ -1161,6 +1164,16 @@ class WorkerUiAuthorizationRobolectricTest {
         composeTestRule.onNodeWithTag("login_submit_button").performClick()
         assertEquals(Triple("ql.duan@hrpartner.vn", "Password#2", true), submittedTriple)
 
+        // Login form is top-aligned (logo near top <= 40dp) and submit button sits much higher than centered (~980dp)
+        val logoTopDp = with(composeTestRule.density) {
+            composeTestRule.onNodeWithTag("login_brand_logo").fetchSemanticsNode().boundsInRoot.top.toDp().value
+        }
+        val submitBottomDp = with(composeTestRule.density) {
+            composeTestRule.onNodeWithTag("login_submit_button").fetchSemanticsNode().boundsInRoot.bottom.toDp().value
+        }
+        assertTrue("Expected login_brand_logo top ($logoTopDp dp) <= 40dp for top-aligned layout", logoTopDp <= 40f)
+        assertTrue("Expected login_submit_button bottom ($submitBottomDp dp) <= 700dp above keyboard zone", submitBottomDp <= 700f)
+
         // Tap remove button on chip -> triggers removal callback
         composeTestRule.onNodeWithTag("remove_saved_account_ql.duan@hrpartner.vn").performClick()
         assertEquals("ql.duan@hrpartner.vn", removedIdentifier)
@@ -2260,5 +2273,133 @@ class WorkerUiAuthorizationRobolectricTest {
         composeTestRule.onNodeWithTag("cancel_edit_report_button").performScrollTo().performClick()
         composeTestRule.waitForIdle()
         assertTrue(cancelled)
+    }
+
+    @Test
+    @Config(qualifiers = "w480dp-h2800dp")
+    fun `t1 new entry form - requires 12-digit CCCD with leading zeros, allows blank full name, and renders separate profile save vs photo upload status cards`() {
+        val recruiterUuid = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+        val server = MockWebServer()
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val path = request.path.orEmpty()
+                return when {
+                    path.startsWith("/api/direct-entry/catalog") -> MockResponse()
+                        .setResponseCode(200)
+                        .setHeader("Content-Type", "application/json")
+                        .setBody(
+                            """
+                            {
+                              "ok": true,
+                              "catalog": {
+                                "effective_date": "2026-10-25",
+                                "projects": [{"project_id": "PRJ_01", "display_name": "Dự án 1"}],
+                                "recruiters": [
+                                  {
+                                    "recruiter_id": "$recruiterUuid",
+                                    "display_name": "Nguyễn Tuyển Dụng",
+                                    "personnel_code": "HRP001",
+                                    "provider_type": "hrp",
+                                    "label": "Nguyễn Tuyển Dụng (HRP001)"
+                                  }
+                                ],
+                                "banks": [],
+                                "labor_types": [
+                                  {"labor_type_key": "TEMPORARY", "display_name": "Thời vụ", "sort_order": 10}
+                                ]
+                              }
+                            }
+                            """.trimIndent()
+                        )
+                    else -> MockResponse()
+                        .setResponseCode(200)
+                        .setHeader("Content-Type", "application/json")
+                        .setBody("""{"ok":true,"items":[],"page_size":20,"has_more":false,"next_cursor":null}""")
+                }
+            }
+        }
+        server.start()
+
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val db = buildTestDb(app)
+        val cookieFile = File(app.cacheDir, "ui_t1_cccd_${System.nanoTime()}.enc")
+        val prefsFile = File(app.cacheDir, "ui_t1_cccd_prefs_${System.nanoTime()}.preferences_pb")
+        val repo = MiniBiRepository(
+            context = app,
+            database = db,
+            defaultServerUrl = server.url("/").toString().trimEnd('/'),
+            allowDebugUrlOverride = true,
+            cookieStorageFile = cookieFile,
+            preferencesStorageFile = prefsFile,
+            cookieCipher = JvmAes256GcmCookieCipher()
+        )
+        val vm = MiniBiViewModel(app, repo)
+        registerTestResourcesCleanup(vm, db, server, cookieFile, prefsFile)
+        val actor = AppActor(
+            appUserId = "88888888-3333-4333-8444-555555555555",
+            displayName = "Nguyễn Nhập Liệu",
+            capabilities = listOf("entry_create", "submission_create"),
+            scopes = listOf(ActorScope("own", "self", "2026-01-01", null)),
+            selfRecruiterSuggestion = recruiterUuid
+        )
+
+        var retryClickedCount = 0
+        composeTestRule.setContent {
+            MyApplicationTheme {
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    ProfileAndPhotoSyncStatusCards(
+                        profileSaveStatusMessage = "Đã đẩy chính thức 1 hồ sơ NLĐ lên hệ thống. Mã NLĐ: HRP0088",
+                        photoUploadStatusMessage = "Tải ảnh đính kèm: thành công 0/1, lỗi 1 tệp. Bấm Thử lại để gửi tiếp.",
+                        backgroundUploadActiveCount = 0,
+                        hasFailedBackgroundUploads = true,
+                        onRetryFailedUploads = { retryClickedCount++ }
+                    )
+                    DirectEntryNewWorkersScreen(
+                        actor = actor,
+                        viewModel = vm,
+                        onNavigateToWorkersList = {},
+                        onBackToDashboard = {}
+                    )
+                }
+            }
+        }
+
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            vm.catalog.value != null
+        }
+        composeTestRule.waitForIdle()
+
+        // 1. Verify separate status cards for profile save vs photo upload and retry button
+        composeTestRule.onNodeWithTag("profile_save_status_card").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Trạng thái lưu hồ sơ").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("photo_upload_status_card").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Trạng thái tải ảnh").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("retry_photo_upload_button").assertIsDisplayed().performClick()
+        assertEquals(1, retryClickedCount)
+
+        // 2. Select project and provider (auto-selects recruiter) -> still disabled until 12-digit CCCD is entered
+        composeTestRule.onNodeWithTag("row_1_project").performClick()
+        composeTestRule.onNodeWithText("Dự án 1").performClick()
+        composeTestRule.onNodeWithTag("row_1_provider").performClick()
+        composeTestRule.onNodeWithText("HRP").performClick()
+        composeTestRule.waitForIdle()
+
+        composeTestRule.onNodeWithTag("save_valid_workers_button").assertIsNotEnabled()
+
+        // Verify UI labels & field order: "Số CCCD (12 chữ số) *" is mandatory and sits ABOVE optional "Họ và tên" (no '*')
+        composeTestRule.onNodeWithText("Số CCCD (12 chữ số) *").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Họ và tên *").assertDoesNotExist()
+        composeTestRule.onNodeWithText("Họ và tên").assertIsDisplayed()
+        val cccdTop = composeTestRule.onNodeWithTag("row_1_cccd").fetchSemanticsNode().boundsInRoot.top
+        val fullNameTop = composeTestRule.onNodeWithTag("row_1_full_name").fetchSemanticsNode().boundsInRoot.top
+        assertTrue("Expected CCCD field (top=$cccdTop) above Full Name field (top=$fullNameTop)", cccdTop < fullNameTop)
+
+        // 3. Enter 12-digit CCCD with leading zero and leave fullName blank -> row becomes valid and Save button enables
+        composeTestRule.onNodeWithTag("row_1_cccd").performTextInput("079095008811")
+        composeTestRule.waitForIdle()
+
+        composeTestRule.onNodeWithText("NLĐ 1: CCCD 079095008811").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("save_valid_workers_button").assertIsEnabled()
+        composeTestRule.onNodeWithText("worker-profile/1.2").assertDoesNotExist()
     }
 }

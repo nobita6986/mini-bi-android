@@ -51,6 +51,7 @@ class IntentIdempotencyStore(
 
 object DirectEntryContract {
     const val CONTRACT_VERSION_V1_1 = "worker-profile/1.1"
+    const val CONTRACT_VERSION_V1_2 = "worker-profile/1.2"
     const val MAX_STAGE_BYTES = 10L * 1024L * 1024L
 
     val ALLOWED_STAGE_DOCUMENT_TYPES = setOf(
@@ -83,6 +84,7 @@ object DirectEntryContract {
 
     private val ISO_DATE_REGEX = Regex("^(\\d{4})-(\\d{2})-(\\d{2})$")
     private val CANONICAL_NATIONAL_ID_REGEX = Regex("^(\\d{9}|\\d{12})$")
+    private val CCCD_12_DIGITS_REGEX = Regex("^\\d{12}$")
     private val PAYMENT_ACCOUNT_DIGITS_REGEX = Regex("^\\d{1,64}$")
     private val SAFE_CATALOG_ID_REGEX = Regex("^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 
@@ -93,6 +95,11 @@ object DirectEntryContract {
 
     fun isCanonicalNationalId(raw: String): Boolean =
         CANONICAL_NATIONAL_ID_REGEX.matches(raw.trim())
+
+    fun isValidCccd12(raw: String): Boolean {
+        val trimmed = raw.trim()
+        return CCCD_12_DIGITS_REGEX.matches(trimmed) && trimmed != "000000000000"
+    }
 
     fun hasControlCharacter(raw: String): Boolean =
         raw.any { it.code < 32 || it.code == 127 }
@@ -336,6 +343,16 @@ object DirectEntryContract {
             .put("value", trimmed)
     }
 
+    fun requiredNationalId12Field(raw: String): JSONObject {
+        val trimmed = raw.trim()
+        if (!isValidCccd12(trimmed)) {
+            throw invalid("NATIONAL_ID_INVALID", "Số CCCD bắt buộc gồm đúng 12 chữ số hợp lệ (giữ nguyên số 0 ở đầu).")
+        }
+        return JSONObject()
+            .put("state", "provided")
+            .put("value", trimmed)
+    }
+
     fun optionalDateField(uiOrIsoDate: String): JSONObject {
         val trimmed = uiOrIsoDate.trim()
         return if (trimmed.isEmpty()) {
@@ -372,7 +389,10 @@ object DirectEntryContract {
         }
     }
 
-    fun buildFullProfileV11Payload(drafts: List<NewWorkerEntryDraft>): JSONObject {
+    fun buildFullProfileV11Payload(drafts: List<NewWorkerEntryDraft>): JSONObject =
+        buildFullProfileV12Payload(drafts)
+
+    fun buildFullProfileV12Payload(drafts: List<NewWorkerEntryDraft>): JSONObject {
         if (drafts.isEmpty()) {
             throw invalid("BATCH_SIZE_INVALID", "Cần ít nhất 1 hồ sơ hợp lệ để gửi lên máy chủ.")
         }
@@ -386,10 +406,10 @@ object DirectEntryContract {
             if (!SAFE_CATALOG_ID_REGEX.matches(projectId) ||
                 !UUID_REGEX.matches(recruiterId) ||
                 laborType.isEmpty() ||
-                displayName.isEmpty() ||
-                draft.fullName.length > 256
+                draft.fullName.length > 256 ||
+                isFormulaLikeCell(displayName)
             ) {
-                throw invalid("BATCH_INVALID", "Vui lòng chọn đầy đủ Dự án, Người tuyển, Loại hình LĐ từ danh mục và nhập Họ tên (tối đa 256 ký tự).")
+                throw invalid("BATCH_INVALID", "Vui lòng chọn đầy đủ Dự án, Người tuyển, Loại hình LĐ từ danh mục (Họ tên không bắt buộc, tối đa 256 ký tự).")
             }
 
             val rowObj = JSONObject().apply {
@@ -404,7 +424,7 @@ object DirectEntryContract {
                     JSONObject().apply {
                         put("gender", mapGender(draft.genderUi))
                         put("date_of_birth", optionalFreeDateField(draft.birthDateUi))
-                        put("national_id", optionalNationalIdField(draft.cccd))
+                        put("national_id", requiredNationalId12Field(draft.cccd))
                         put("national_id_issued_at", optionalFreeDateField(draft.cccdIssueDateUi))
                         put("national_id_issued_place", optionalTextField(draft.cccdIssuePlace, 256))
                         put("address", optionalTextField(draft.address, 1024))
@@ -443,7 +463,7 @@ object DirectEntryContract {
             rowsArray.put(rowObj)
         }
         return JSONObject()
-            .put("contract_version", CONTRACT_VERSION_V1_1)
+            .put("contract_version", CONTRACT_VERSION_V1_2)
             .put("rows", rowsArray)
     }
 
@@ -897,8 +917,11 @@ object DirectEntryContract {
         }
 
         val workerObj = entry.optJSONObject("worker_details") ?: throw contractInvalid("WORKER_DETAILS_MISSING")
+        if (!workerObj.has("display_name") || workerObj.isNull("display_name")) {
+            throw contractInvalid("WORKER_DISPLAY_NAME_MISSING")
+        }
         val displayName = workerObj.optString("display_name", "").trim()
-        if (displayName.isEmpty()) throw contractInvalid("WORKER_DISPLAY_NAME_MISSING")
+        if (displayName.length > 256) throw contractInvalid("WORKER_DISPLAY_NAME_MISSING")
 
         val generalNote = when (val noteRaw = entry.opt("general_note")) {
             is String -> noteRaw.ifBlank { null }
@@ -1712,8 +1735,8 @@ class DirectEntryService(
     suspend fun submitFullProfileBatch(
         drafts: List<NewWorkerEntryDraft>
     ): FullProfileBatchResult = withContext(Dispatchers.IO) {
-        val payload = DirectEntryContract.buildFullProfileV11Payload(drafts)
-        val intentSignature = "full_profile_v1_1:${payload}"
+        val payload = DirectEntryContract.buildFullProfileV12Payload(drafts)
+        val intentSignature = "full_profile_v1_2:${payload}"
         val idempotencyKey = idempotencyStore.resolve(intentSignature)
         try {
             val responseJson = httpClient.postJson(
