@@ -310,7 +310,50 @@ fun DirectEntryNewWorkersScreen(
         )
     }
 
+    fun attachMultiImagesAsPdfToRow(rowId: String, documentType: String, uris: List<Uri>) {
+        if (uris.isEmpty()) return
+        val index = draftRows.indexOfFirst { it.localId == rowId }
+        if (index < 0) return
+        if (onUploadStageFile != null) {
+            attachDocumentUriToRow(rowId, documentType, uris.first())
+            return
+        }
+        val existingRef = when (documentType) {
+            "EMPLOYMENT_CONTRACT" -> draftRows[index].contractStage
+            else -> null
+        }
+        draftRows[index] = draftRows[index].copy(uploadingSlot = documentType, slotError = null)
+        viewModel.prepareLocalMultiImagePdfStageDocument(
+            documentType = documentType,
+            uris = uris,
+            existingRef = existingRef,
+            onPrepared = { staged ->
+                val currentIdx = draftRows.indexOfFirst { it.localId == rowId }
+                if (currentIdx >= 0) {
+                    if (existingRef != null && existingRef.stageId.isNotBlank()) {
+                        effectiveDiscardRef(existingRef.copy(localFilePath = null, sourceImagePaths = emptyList()))
+                    }
+                    val cur = draftRows[currentIdx]
+                    draftRows[currentIdx] = when (documentType) {
+                        "EMPLOYMENT_CONTRACT" -> cur.copy(contractStage = staged, uploadingSlot = null, slotError = null)
+                        else -> cur.copy(uploadingSlot = null)
+                    }
+                }
+            },
+            onError = { errMsg ->
+                val currentIdx = draftRows.indexOfFirst { it.localId == rowId }
+                if (currentIdx >= 0) {
+                    draftRows[currentIdx] = draftRows[currentIdx].copy(
+                        uploadingSlot = null,
+                        slotError = errMsg
+                    )
+                }
+            }
+        )
+    }
+
     var pendingFileTarget by remember { mutableStateOf<Pair<String, String>?>(null) }
+    var pendingMultiImageTarget by remember { mutableStateOf<Pair<String, String>?>(null) }
 
     val filePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
@@ -319,6 +362,16 @@ fun DirectEntryNewWorkersScreen(
         pendingFileTarget = null
         if (uri != null && target != null) {
             attachDocumentUriToRow(target.first, target.second, uri)
+        }
+    }
+
+    val multiImagePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetMultipleContents()
+    ) { uris: List<Uri> ->
+        val target = pendingMultiImageTarget
+        pendingMultiImageTarget = null
+        if (uris.isNotEmpty() && target != null) {
+            attachMultiImagesAsPdfToRow(target.first, target.second, uris)
         }
     }
 
@@ -331,7 +384,11 @@ fun DirectEntryNewWorkersScreen(
         val capture = pendingCameraCapture
         pendingCameraCapture = null
         if (success && capture != null) {
-            attachDocumentUriToRow(capture.first, capture.second, capture.third)
+            if (capture.second == "EMPLOYMENT_CONTRACT") {
+                attachMultiImagesAsPdfToRow(capture.first, capture.second, listOf(capture.third))
+            } else {
+                attachDocumentUriToRow(capture.first, capture.second, capture.third)
+            }
         }
     }
 
@@ -366,8 +423,15 @@ fun DirectEntryNewWorkersScreen(
         focusManager.clearFocus()
         keyboardController?.hide()
         pendingFileTarget = rowId to documentType
-        val mimeFilter = if (documentType == "EMPLOYMENT_CONTRACT") "*/*" else "image/*"
+        val mimeFilter = if (documentType == "EMPLOYMENT_CONTRACT") "application/pdf" else "image/*"
         filePickerLauncher.launch(mimeFilter)
+    }
+
+    fun pickMultipleImagesForRow(rowId: String, documentType: String) {
+        focusManager.clearFocus()
+        keyboardController?.hide()
+        pendingMultiImageTarget = rowId to documentType
+        multiImagePickerLauncher.launch("image/*")
     }
 
     fun capturePhotoForRow(rowId: String, documentType: String) {
@@ -567,6 +631,7 @@ fun DirectEntryNewWorkersScreen(
                     }
                 },
                 onPickFile = { docType -> pickDocumentForRow(row.localId, docType) },
+                onPickMultipleImages = { docType -> pickMultipleImagesForRow(row.localId, docType) },
                 onCaptureCamera = { docType -> capturePhotoForRow(row.localId, docType) },
                 onScanQrClick = {
                     focusManager.clearFocus()
@@ -1006,6 +1071,7 @@ private fun WorkerMultiEntryCard(
     onUpdate: (NewWorkerEntryDraft) -> Unit,
     onRemove: () -> Unit,
     onPickFile: (documentType: String) -> Unit,
+    onPickMultipleImages: (documentType: String) -> Unit = {},
     onCaptureCamera: (documentType: String) -> Unit = {},
     onScanQrClick: () -> Unit = {},
     onClearStage: (documentType: String, ref: StagedDocumentRef) -> Unit
@@ -1386,12 +1452,13 @@ private fun WorkerMultiEntryCard(
                             )
 
                             DocumentUploadSlotCard(
-                                title = "Hợp đồng lao động",
-                                subtitle = "Ảnh chụp hoặc tệp PDF (tối đa 10 MB)",
+                                title = "Hợp đồng lao động / Hồ sơ",
+                                subtitle = "Chụp/chọn nhiều trang ảnh (tự gộp 1 file PDF) hoặc chọn tệp PDF (tối đa 10 MB)",
                                 staged = draft.contractStage,
                                 uploading = draft.uploadingSlot == "EMPLOYMENT_CONTRACT",
                                 onPickClick = { onPickFile("EMPLOYMENT_CONTRACT") },
-                                onCaptureCameraClick = null,
+                                onCaptureCameraClick = { onCaptureCamera("EMPLOYMENT_CONTRACT") },
+                                onPickMultipleImagesClick = { onPickMultipleImages("EMPLOYMENT_CONTRACT") },
                                 slotTestTagPrefix = "row_${rowNumber}_slot_EMPLOYMENT_CONTRACT",
                                 onClearClick = {
                                     draft.contractStage?.let { onClearStage("EMPLOYMENT_CONTRACT", it) }
@@ -1934,10 +2001,12 @@ private fun DocumentUploadSlotCard(
     uploading: Boolean,
     onPickClick: () -> Unit,
     onCaptureCameraClick: (() -> Unit)? = null,
+    onPickMultipleImagesClick: (() -> Unit)? = null,
     slotTestTagPrefix: String = "",
     onClearClick: () -> Unit
 ) {
     val hasAttachment = staged != null
+    val hasMergedImagePages = staged?.sourceImagePaths?.isNotEmpty() == true
 
     Surface(
         shape = RoundedCornerShape(12.dp),
@@ -1974,7 +2043,14 @@ private fun DocumentUploadSlotCard(
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
-                        Text("Đang chuẩn bị và tối ưu tệp đính kèm…", style = MaterialTheme.typography.bodySmall)
+                        Text(
+                            text = if (onPickMultipleImagesClick != null) {
+                                "Đang nén ảnh và ghép thành tệp PDF…"
+                            } else {
+                                "Đang chuẩn bị và tối ưu tệp đính kèm…"
+                            },
+                            style = MaterialTheme.typography.bodySmall
+                        )
                     }
                 }
                 hasAttachment -> {
@@ -1983,6 +2059,11 @@ private fun DocumentUploadSlotCard(
                         String.format(Locale.US, "%.1f MB", staged.sizeBytes / (1024.0 * 1024.0))
                     } else {
                         "$sizeKb KB"
+                    }
+                    val detailLabel = if (staged.mimeType == "application/pdf" && hasMergedImagePages) {
+                        "${staged.pageCount} trang PDF · $sizeLabel"
+                    } else {
+                        sizeLabel
                     }
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
@@ -1995,7 +2076,7 @@ private fun DocumentUploadSlotCard(
                             modifier = Modifier.size(16.dp)
                         )
                         Text(
-                            text = "Đã đính kèm: ${staged.fileName} ($sizeLabel)",
+                            text = "Đã đính kèm: ${staged.fileName} ($detailLabel)",
                             style = MaterialTheme.typography.labelMedium,
                             color = SemanticColors.SuccessLight,
                             maxLines = 1,
@@ -2017,7 +2098,78 @@ private fun DocumentUploadSlotCard(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                if (onCaptureCameraClick != null) {
+                if (onPickMultipleImagesClick != null) {
+                    if (onCaptureCameraClick != null) {
+                        OutlinedButton(
+                            onClick = onCaptureCameraClick,
+                            enabled = !uploading,
+                            shape = RoundedCornerShape(10.dp),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                            modifier = Modifier
+                                .height(36.dp)
+                                .let { mod ->
+                                    if (slotTestTagPrefix.isNotBlank()) mod.testTag("${slotTestTagPrefix}_camera") else mod
+                                }
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.CameraAlt,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = if (hasMergedImagePages) "Chụp thêm trang" else "Chụp ảnh",
+                                style = MaterialTheme.typography.labelMedium
+                            )
+                        }
+                    }
+
+                    OutlinedButton(
+                        onClick = onPickMultipleImagesClick,
+                        enabled = !uploading,
+                        shape = RoundedCornerShape(10.dp),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                        modifier = Modifier
+                            .height(36.dp)
+                            .let { mod ->
+                                if (slotTestTagPrefix.isNotBlank()) mod.testTag("${slotTestTagPrefix}_multi_album") else mod
+                            }
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.PhotoLibrary,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = if (hasMergedImagePages) "Thêm ảnh (Album)" else "Chọn nhiều ảnh",
+                            style = MaterialTheme.typography.labelMedium
+                        )
+                    }
+
+                    OutlinedButton(
+                        onClick = onPickClick,
+                        enabled = !uploading,
+                        shape = RoundedCornerShape(10.dp),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                        modifier = Modifier
+                            .height(36.dp)
+                            .let { mod ->
+                                if (slotTestTagPrefix.isNotBlank()) mod.testTag("${slotTestTagPrefix}_file") else mod
+                            }
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.FileUpload,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = if (hasAttachment && !hasMergedImagePages) "Đổi PDF" else "Chọn PDF",
+                            style = MaterialTheme.typography.labelMedium
+                        )
+                    }
+                } else if (onCaptureCameraClick != null) {
                     OutlinedButton(
                         onClick = onCaptureCameraClick,
                         enabled = !uploading,
