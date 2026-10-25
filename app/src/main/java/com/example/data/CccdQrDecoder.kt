@@ -5,6 +5,12 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Matrix
 import android.net.Uri
+import com.google.android.gms.tasks.Task
+import com.google.mlkit.vision.barcode.BarcodeScanner
+import com.google.mlkit.vision.barcode.BarcodeScannerOptions
+import com.google.mlkit.vision.barcode.BarcodeScanning
+import com.google.mlkit.vision.barcode.common.Barcode
+import com.google.mlkit.vision.common.InputImage
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.BinaryBitmap
 import com.google.zxing.DecodeHintType
@@ -13,19 +19,25 @@ import com.google.zxing.RGBLuminanceSource
 import com.google.zxing.common.GlobalHistogramBinarizer
 import com.google.zxing.common.HybridBinarizer
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import java.text.Normalizer
 import java.util.Calendar
 import java.util.GregorianCalendar
 import java.util.Locale
 import java.util.TimeZone
+import kotlin.coroutines.resume
 
 /**
- * On-device Vietnamese CCCD QR parser & multi-pass ZXing decoder.
- * Synchronized with Backend `src/lib/direct-entry/cccd-qr-contract.ts` and `cccd-qr-decoder.ts`.
+ * On-device Vietnamese CCCD / Căn cước QR parser & multi-engine decoder (Google ML Kit + ZXing).
+ * Executes 100% locally on the Android device (independent of backend).
  *
- * Standard Vietnamese chip-based CCCD QR payload format (7 pipe-separated fields):
+ * Supports:
+ * - 2021 chip-based CCCD (7 pipe-separated fields on front top-right):
  *   `cccd_12_digits|cmnd_9_digits|full_name|dob_ddmmyyyy|gender|address|issue_date_ddmmyyyy`
+ * - 2024+ Căn cước under Luật Căn cước 2023 (7 to 12+ pipe-separated fields on back top-right, e.g. trailing `||||`):
+ *   `026086006641|135197071|Nguyễn Đức Thuận|06091986|Nam|Tổ Dân Phố Chợ Cánh, Bình Nguyên, Phú Thọ|04022026||||`
+ * - Standalone 12-digit CCCD QR payload.
  */
 object CccdQrDecoder {
 
@@ -36,10 +48,12 @@ object CccdQrDecoder {
     private val ISO_YYYYMMDD_REGEX = Regex("^(\\d{4})-(\\d{2})-(\\d{2})$")
     private val COMBINING_MARKS_REGEX = Regex("\\p{InCombiningDiacriticalMarks}+")
     private val MULTI_SPACE_REGEX = Regex("\\s+")
+    private val MOJIBAKE_HINT_REGEX = Regex("[\\u00C2\\u00C3\\u00C4\\u00C5\\u00C6\\u00E1]")
 
     private val ZXING_HINTS: Map<DecodeHintType, Any> = mapOf(
         DecodeHintType.POSSIBLE_FORMATS to listOf(BarcodeFormat.QR_CODE),
         DecodeHintType.TRY_HARDER to true,
+        DecodeHintType.ALSO_INVERTED to true,
         DecodeHintType.CHARACTER_SET to "UTF-8"
     )
 
@@ -54,6 +68,19 @@ object CccdQrDecoder {
             }
         }
         return sb.toString().replace(MULTI_SPACE_REGEX, " ").trim()
+    }
+
+    /**
+     * Repairs UTF-8 strings that were decoded as ISO-8859-1 when a QR code omits an ECI header.
+     */
+    internal fun repairUtf8MojibakeIfNeeded(raw: String): String {
+        if (raw.isEmpty() || !MOJIBAKE_HINT_REGEX.containsMatchIn(raw)) return raw
+        if (raw.any { it.code > 0xFF }) return raw
+        return runCatching {
+            val bytes = raw.toByteArray(Charsets.ISO_8859_1)
+            val utf8 = String(bytes, Charsets.UTF_8)
+            if (utf8.contains('\uFFFD')) raw else utf8
+        }.getOrDefault(raw)
     }
 
     private fun isValidCalendarDay(day: Int, month: Int, year: Int): Boolean {
@@ -120,23 +147,23 @@ object CccdQrDecoder {
     }
 
     /**
-     * Parses raw text from a Vietnamese CCCD QR code.
-     * Supports both standard 7-segment pipe-delimited payload and standalone 12-digit CCCD QR text.
+     * Parses raw text from a Vietnamese CCCD / Căn cước QR code.
+     * Supports:
+     * - 7-segment pipe-delimited payload (2021 CCCD)
+     * - 8..15+ segment pipe-delimited payload (2024/2026 Căn cước with trailing `||||` or extra segments)
+     * - Partial pipe-delimited payload starting with 12-digit CCCD
+     * - Standalone 12-digit CCCD QR text
      */
     fun parseCccdQrPayload(rawText: String): CccdDecodedQrPayload? {
-        val trimmed = rawText.trim().removePrefix("\uFEFF")
-        if (trimmed.isEmpty() || trimmed.length > 2048) return null
+        val repaired = repairUtf8MojibakeIfNeeded(rawText.trim().removePrefix("\uFEFF"))
+        if (repaired.isEmpty() || repaired.length > 4096) return null
 
-        val parts = trimmed.split("|")
-        if (parts.size < 7) {
-            val singleDigits = stripControlAndCollapseSpaces(trimmed)
+        val parts = repaired.split("|")
+        if (parts.size == 1) {
+            val singleDigits = stripControlAndCollapseSpaces(repaired)
             if (CCCD_12_REGEX.matches(singleDigits) && singleDigits != "000000000000") {
                 return CccdDecodedQrPayload(cccd12 = singleDigits)
             }
-            return null
-        }
-        if (parts.size > 8) return null
-        if (parts.size == 8 && stripControlAndCollapseSpaces(parts[7]).isNotEmpty()) {
             return null
         }
 
@@ -145,23 +172,23 @@ object CccdQrDecoder {
             return null
         }
 
-        val legacyRaw = stripControlAndCollapseSpaces(parts[1])
+        val legacyRaw = parts.getOrNull(1)?.let { stripControlAndCollapseSpaces(it) }.orEmpty()
         val legacyId9 = legacyRaw.takeIf { LEGACY_ID_REGEX.matches(it) }
 
-        val fullNameRaw = stripControlAndCollapseSpaces(parts[2])
+        val fullNameRaw = parts.getOrNull(2)?.let { stripControlAndCollapseSpaces(it) }.orEmpty()
         val fullName = fullNameRaw
             .takeIf { it.isNotEmpty() && !DirectEntryContract.isFormulaLikeCell(it) }
             ?.take(256)
 
-        val dateOfBirthUi = normalizeQrDateToUi(parts[3])
-        val genderPair = normalizeQrGender(parts[4])
+        val dateOfBirthUi = parts.getOrNull(3)?.let { normalizeQrDateToUi(it) }
+        val genderPair = parts.getOrNull(4)?.let { normalizeQrGender(it) }
 
-        val addressRaw = stripControlAndCollapseSpaces(parts[5])
+        val addressRaw = parts.getOrNull(5)?.let { stripControlAndCollapseSpaces(it) }.orEmpty()
         val address = addressRaw
             .takeIf { it.isNotEmpty() && !DirectEntryContract.isFormulaLikeCell(it) }
             ?.take(1024)
 
-        val issueDateUi = normalizeQrDateToUi(parts[6])
+        val issueDateUi = parts.getOrNull(6)?.let { normalizeQrDateToUi(it) }
 
         return CccdDecodedQrPayload(
             cccd12 = cccd12,
@@ -175,11 +202,24 @@ object CccdQrDecoder {
         )
     }
 
+    internal fun parseFromMlKitBarcode(barcode: Barcode): CccdDecodedQrPayload? {
+        barcode.rawValue?.let { raw ->
+            parseCccdQrPayload(raw)?.let { return it }
+        }
+        barcode.rawBytes?.let { bytes ->
+            val utf8 = runCatching { String(bytes, Charsets.UTF_8) }.getOrNull()
+            if (!utf8.isNullOrBlank()) {
+                parseCccdQrPayload(utf8)?.let { return it }
+            }
+        }
+        barcode.displayValue?.let { display ->
+            parseCccdQrPayload(display)?.let { return it }
+        }
+        return null
+    }
+
     /**
      * Applies decoded CCCD QR fields to a `NewWorkerEntryDraft`.
-     * When `overwriteExisting` is true (e.g. user explicitly clicks "Quét QR CCCD"), all non-null
-     * QR fields are applied. When false (e.g. background auto-decode on CCCD photo selection),
-     * only currently blank fields are filled so user edits are never overwritten.
      */
     fun applyQrPayloadToDraft(
         draft: NewWorkerEntryDraft,
@@ -266,16 +306,35 @@ object CccdQrDecoder {
         bitmap.getPixels(pixels, 0, w, 0, 0, w, h)
         decodeFromRgbaPixels(pixels, w, h)?.let { return it }
 
+        // Contrast-stretched grayscale pass for low-contrast / guilloche background cards
+        var minLum = 255
+        var maxLum = 0
+        val lumArray = IntArray(w * h)
+        for (i in pixels.indices) {
+            val p = pixels[i]
+            val r = (p shr 16) and 0xFF
+            val g = (p shr 8) and 0xFF
+            val b = p and 0xFF
+            val lum = (r * 77 + g * 150 + b * 29) shr 8
+            lumArray[i] = lum
+            if (lum < minLum) minLum = lum
+            if (lum > maxLum) maxLum = lum
+        }
+
+        val bwPixels = IntArray(w * h)
+        if (maxLum > minLum + 20) {
+            val range = maxLum - minLum
+            for (i in lumArray.indices) {
+                val stretched = ((lumArray[i] - minLum) * 255 / range).coerceIn(0, 255)
+                bwPixels[i] = (0xFF shl 24) or (stretched shl 16) or (stretched shl 8) or stretched
+            }
+            decodeFromRgbaPixels(bwPixels, w, h)?.let { return it }
+        }
+
         if (thresholds.isNotEmpty()) {
-            val bwPixels = IntArray(w * h)
             for (thresh in thresholds) {
-                for (i in pixels.indices) {
-                    val p = pixels[i]
-                    val r = (p shr 16) and 0xFF
-                    val g = (p shr 8) and 0xFF
-                    val b = p and 0xFF
-                    val lum = (r * 77 + g * 150 + b * 29) shr 8
-                    bwPixels[i] = if (lum < thresh) 0xFF000000.toInt() else 0xFFFFFFFF.toInt()
+                for (i in lumArray.indices) {
+                    bwPixels[i] = if (lumArray[i] < thresh) 0xFF000000.toInt() else 0xFFFFFFFF.toInt()
                 }
                 decodeFromRgbaPixels(bwPixels, w, h)?.let { return it }
             }
@@ -283,7 +342,7 @@ object CccdQrDecoder {
         return null
     }
 
-    private fun cropAndScale(
+    internal fun cropAndScale(
         src: Bitmap,
         leftRatio: Float,
         topRatio: Float,
@@ -312,7 +371,8 @@ object CccdQrDecoder {
         }.getOrNull()
     }
 
-    private fun rotateBitmap(src: Bitmap, degrees: Float): Bitmap? {
+    internal fun rotateBitmap(src: Bitmap, degrees: Float): Bitmap? {
+        if (degrees % 360f == 0f) return src
         return runCatching {
             val matrix = Matrix().apply { postRotate(degrees) }
             Bitmap.createBitmap(src, 0, 0, src.width, src.height, matrix, true)
@@ -320,19 +380,20 @@ object CccdQrDecoder {
     }
 
     /**
-     * Multi-pass QR decoder on an Android `Bitmap`:
+     * Synchronous multi-pass ZXing QR decoder on an Android `Bitmap`:
      * 1. Full frame
-     * 2. Top-right quadrant crop (where Vietnamese CCCD QR is located) + threshold passes
-     * 3. Tight top-right crop + threshold passes
-     * 4. Top-left quadrant crop (in case image is flipped/rotated)
-     * 5. 90° / 180° / 270° rotated frames
+     * 2. Top-right quadrant crop (2021 CCCD front & 2024 Căn cước back QR position)
+     * 3. Tight top-right crop
+     * 4. Center crop (camera viewfinder position)
+     * 5. Top-left / Bottom-left / Bottom-right quadrants
+     * 6. 90° / 180° / 270° rotated frames
      */
     fun decodeFromBitmap(bitmap: Bitmap): CccdDecodedQrPayload? {
         // Pass 1: Full frame
         tryDecodeBitmapPass(bitmap, intArrayOf(128))?.let { return it }
 
-        // Pass 2: Top-right quadrant (standard CCCD front QR position)
-        cropAndScale(bitmap, 0.45f, 0.0f, 0.55f, 0.55f, 960)?.let { cropped ->
+        // Pass 2: Top-right quadrant (standard CCCD front & Căn cước back QR position)
+        cropAndScale(bitmap, 0.45f, 0.0f, 0.55f, 0.60f, 1000)?.let { cropped ->
             try {
                 tryDecodeBitmapPass(cropped, intArrayOf(115, 140, 165))?.let { return it }
             } finally {
@@ -341,7 +402,7 @@ object CccdQrDecoder {
         }
 
         // Pass 3: Tight top-right crop
-        cropAndScale(bitmap, 0.55f, 0.02f, 0.43f, 0.46f, 960)?.let { cropped ->
+        cropAndScale(bitmap, 0.58f, 0.02f, 0.40f, 0.55f, 1000)?.let { cropped ->
             try {
                 tryDecodeBitmapPass(cropped, intArrayOf(110, 135, 160))?.let { return it }
             } finally {
@@ -349,8 +410,17 @@ object CccdQrDecoder {
             }
         }
 
-        // Pass 4: Top-left quadrant
-        cropAndScale(bitmap, 0.0f, 0.0f, 0.55f, 0.55f, 960)?.let { cropped ->
+        // Pass 4: Center crop (viewfinder region)
+        cropAndScale(bitmap, 0.15f, 0.15f, 0.70f, 0.70f, 1000)?.let { cropped ->
+            try {
+                tryDecodeBitmapPass(cropped, intArrayOf(115, 140, 165))?.let { return it }
+            } finally {
+                if (cropped !== bitmap) cropped.recycle()
+            }
+        }
+
+        // Pass 5: Top-left quadrant
+        cropAndScale(bitmap, 0.0f, 0.0f, 0.55f, 0.60f, 1000)?.let { cropped ->
             try {
                 tryDecodeBitmapPass(cropped, intArrayOf(120, 145))?.let { return it }
             } finally {
@@ -358,12 +428,12 @@ object CccdQrDecoder {
             }
         }
 
-        // Pass 5: Rotated orientations (90, 180, 270 degrees) for phone camera photos taken sideways
+        // Pass 6: Rotated orientations (90, 180, 270 degrees) for phone camera photos taken sideways
         for (angle in floatArrayOf(90f, 180f, 270f)) {
             val rotated = rotateBitmap(bitmap, angle) ?: continue
             try {
                 tryDecodeBitmapPass(rotated)?.let { return it }
-                cropAndScale(rotated, 0.45f, 0.0f, 0.55f, 0.55f, 900)?.let { tr ->
+                cropAndScale(rotated, 0.45f, 0.0f, 0.55f, 0.60f, 960)?.let { tr ->
                     try {
                         tryDecodeBitmapPass(tr, intArrayOf(125, 150))?.let { return it }
                     } finally {
@@ -378,21 +448,78 @@ object CccdQrDecoder {
         return null
     }
 
+    internal fun createMlKitScannerOrNull(): BarcodeScanner? {
+        return runCatching {
+            val options = BarcodeScannerOptions.Builder()
+                .setBarcodeFormats(Barcode.FORMAT_QR_CODE)
+                .enableAllPotentialBarcodes()
+                .build()
+            BarcodeScanning.getClient(options)
+        }.getOrNull()
+    }
+
+    internal suspend fun awaitBarcodesOrNull(task: Task<List<Barcode>>): List<Barcode>? =
+        suspendCancellableCoroutine { cont ->
+            task.addOnSuccessListener { list ->
+                if (cont.isActive) cont.resume(list)
+            }.addOnFailureListener {
+                if (cont.isActive) cont.resume(null)
+            }.addOnCanceledListener {
+                if (cont.isActive) cont.resume(null)
+            }
+        }
+
+    private suspend fun tryMlKitOnBitmap(scanner: BarcodeScanner, bitmap: Bitmap, rotationDegrees: Int = 0): CccdDecodedQrPayload? {
+        val image = runCatching { InputImage.fromBitmap(bitmap, rotationDegrees) }.getOrNull() ?: return null
+        val barcodes = runCatching { awaitBarcodesOrNull(scanner.process(image)) }.getOrNull().orEmpty()
+        for (barcode in barcodes) {
+            parseFromMlKitBarcode(barcode)?.let { return it }
+        }
+        return null
+    }
+
+    /**
+     * Asynchronous multi-engine decoder (Google ML Kit Barcode Scanning + Multi-pass ZXing fallback).
+     */
+    suspend fun decodeFromBitmapAsync(bitmap: Bitmap): CccdDecodedQrPayload? = withContext(Dispatchers.Default) {
+        val scanner = createMlKitScannerOrNull()
+        if (scanner != null) {
+            try {
+                // 1. Full frame across orientations
+                for (rot in intArrayOf(0, 90, 180, 270)) {
+                    tryMlKitOnBitmap(scanner, bitmap, rot)?.let { return@withContext it }
+                }
+
+                // 2. Top-right quadrant upscaled (standard CCCD/Căn cước QR corner)
+                val cropSpecs = arrayOf(
+                    floatArrayOf(0.45f, 0.0f, 0.55f, 0.60f),
+                    floatArrayOf(0.55f, 0.0f, 0.45f, 0.55f),
+                    floatArrayOf(0.15f, 0.15f, 0.70f, 0.70f),
+                    floatArrayOf(0.22f, 0.22f, 0.56f, 0.56f),
+                    floatArrayOf(0.0f, 0.0f, 0.55f, 0.60f),
+                    floatArrayOf(0.45f, 0.40f, 0.55f, 0.60f),
+                    floatArrayOf(0.0f, 0.40f, 0.55f, 0.60f)
+                )
+                for (spec in cropSpecs) {
+                    val cropped = cropAndScale(bitmap, spec[0], spec[1], spec[2], spec[3], 1200) ?: continue
+                    try {
+                        tryMlKitOnBitmap(scanner, cropped, 0)?.let { return@withContext it }
+                    } finally {
+                        if (cropped !== bitmap) cropped.recycle()
+                    }
+                }
+            } finally {
+                runCatching { scanner.close() }
+            }
+        }
+
+        // Fallback to multi-pass ZXing
+        decodeFromBitmap(bitmap)
+    }
+
     fun decodeFromImageBytes(imageBytes: ByteArray): CccdDecodedQrPayload? {
         if (imageBytes.isEmpty()) return null
-        val boundsOpts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-        BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size, boundsOpts)
-        if (boundsOpts.outWidth <= 0 || boundsOpts.outHeight <= 0) return null
-
-        var sampleSize = 1
-        while (boundsOpts.outWidth / (sampleSize * 2) >= 2000 && boundsOpts.outHeight / (sampleSize * 2) >= 2000) {
-            sampleSize *= 2
-        }
-        val decodeOpts = BitmapFactory.Options().apply {
-            inSampleSize = sampleSize
-            inPreferredConfig = Bitmap.Config.ARGB_8888
-        }
-        val bmp = BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size, decodeOpts) ?: return null
+        val bmp = decodeBitmapFromBytes(imageBytes) ?: return null
         return try {
             decodeFromBitmap(bmp)
         } finally {
@@ -400,10 +527,51 @@ object CccdQrDecoder {
         }
     }
 
+    internal fun decodeBitmapFromBytes(imageBytes: ByteArray, maxDimension: Int = 2560): Bitmap? {
+        if (imageBytes.isEmpty()) return null
+        val boundsOpts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size, boundsOpts)
+        if (boundsOpts.outWidth <= 0 || boundsOpts.outHeight <= 0) return null
+
+        var sampleSize = 1
+        while (boundsOpts.outWidth / (sampleSize * 2) >= maxDimension &&
+            boundsOpts.outHeight / (sampleSize * 2) >= maxDimension
+        ) {
+            sampleSize *= 2
+        }
+        val decodeOpts = BitmapFactory.Options().apply {
+            inSampleSize = sampleSize
+            inPreferredConfig = Bitmap.Config.ARGB_8888
+        }
+        return BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size, decodeOpts)
+    }
+
     suspend fun decodeFromUri(context: Context, uri: Uri): CccdDecodedQrPayload? = withContext(Dispatchers.IO) {
+        // 1. Try ML Kit directly from Uri (handles EXIF orientation metadata natively)
+        val scanner = createMlKitScannerOrNull()
+        if (scanner != null) {
+            try {
+                val inputImage = runCatching { InputImage.fromFilePath(context, uri) }.getOrNull()
+                if (inputImage != null) {
+                    val barcodes = runCatching { awaitBarcodesOrNull(scanner.process(inputImage)) }.getOrNull().orEmpty()
+                    for (barcode in barcodes) {
+                        parseFromMlKitBarcode(barcode)?.let { return@withContext it }
+                    }
+                }
+            } finally {
+                runCatching { scanner.close() }
+            }
+        }
+
+        // 2. Decode full bitmap and run multi-crop ML Kit + ZXing passes
         runCatching {
             val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() } ?: return@withContext null
-            decodeFromImageBytes(bytes)
+            val bmp = decodeBitmapFromBytes(bytes) ?: return@withContext null
+            try {
+                decodeFromBitmapAsync(bmp)
+            } finally {
+                bmp.recycle()
+            }
         }.getOrNull()
     }
 }
