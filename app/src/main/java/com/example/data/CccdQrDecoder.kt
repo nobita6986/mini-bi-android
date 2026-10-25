@@ -452,7 +452,6 @@ object CccdQrDecoder {
         return runCatching {
             val options = BarcodeScannerOptions.Builder()
                 .setBarcodeFormats(Barcode.FORMAT_QR_CODE)
-                .enableAllPotentialBarcodes()
                 .build()
             BarcodeScanning.getClient(options)
         }.getOrNull()

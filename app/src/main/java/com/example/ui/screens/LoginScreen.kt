@@ -131,7 +131,7 @@ fun LoginScreen(
                 .fillMaxWidth()
                 .widthIn(max = 420.dp)
                 .verticalScroll(scrollState)
-                .padding(horizontal = 22.dp, vertical = 12.dp),
+                .padding(start = 22.dp, end = 22.dp, top = 56.dp, bottom = 20.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Surface(
@@ -172,7 +172,7 @@ fun LoginScreen(
                 textAlign = TextAlign.Center
             )
 
-            Spacer(modifier = Modifier.height(10.dp))
+            Spacer(modifier = Modifier.height(14.dp))
 
             Card(
                 modifier = Modifier.fillMaxWidth(),
