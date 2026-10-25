@@ -1936,6 +1936,32 @@ class MiniBiViewModel internal constructor(
         }
     }
 
+    fun prepareLocalMultiImagePdfStageDocument(
+        documentType: String,
+        uris: List<Uri>,
+        existingRef: StagedDocumentRef? = null,
+        onPrepared: (StagedDocumentRef) -> Unit,
+        onError: (String) -> Unit
+    ) {
+        viewModelScope.launch {
+            try {
+                val prepared = repository.directEntryService.prepareLocalMultiImagePdfAttachment(
+                    documentType = documentType,
+                    uris = uris,
+                    existingRef = existingRef
+                )
+                onPrepared(prepared)
+            } catch (e: Exception) {
+                e.rethrowIfCancelled()
+                onError(
+                    (e as? BackendApiException)?.message
+                        ?: e.message
+                        ?: "Không thể ghép các trang ảnh thành tệp PDF."
+                )
+            }
+        }
+    }
+
     fun deleteStageDocument(stageId: String) {
         if (stageId.isBlank()) return
         viewModelScope.launch {
@@ -1954,9 +1980,9 @@ class MiniBiViewModel internal constructor(
             deleteStageDocument(ref.stageId)
         }
         val localPath = ref.localFilePath?.trim().orEmpty()
-        if (localPath.isNotEmpty()) {
+        if (localPath.isNotEmpty() || ref.sourceImagePaths.isNotEmpty()) {
             viewModelScope.launch {
-                repository.directEntryService.deleteLocalAttachment(localPath)
+                repository.directEntryService.deleteLocalAttachmentRef(ref)
             }
         }
     }
@@ -1983,7 +2009,8 @@ class MiniBiViewModel internal constructor(
                             fileName = ref.fileName,
                             mimeType = ref.mimeType,
                             localFilePath = localPath,
-                            idempotencyBaseKey = UUID.randomUUID().toString()
+                            idempotencyBaseKey = UUID.randomUUID().toString(),
+                            sourceImagePaths = ref.sourceImagePaths
                         )
                     )
                 }
@@ -2036,6 +2063,9 @@ class MiniBiViewModel internal constructor(
                                 idempotencyBaseKey = task.idempotencyBaseKey
                             )
                             repository.directEntryService.deleteLocalAttachment(task.localFilePath)
+                            task.sourceImagePaths.forEach { pagePath ->
+                                repository.directEntryService.deleteLocalAttachment(pagePath)
+                            }
                             succeededCount++
                         } catch (e: Exception) {
                             e.rethrowIfCancelled()

@@ -3,7 +3,10 @@ package com.example.data
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Matrix
+import android.media.ExifInterface
 import android.net.Uri
+import java.io.ByteArrayInputStream
 import android.provider.OpenableColumns
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -1553,6 +1556,245 @@ object DocumentImageCompressor {
             message = "Kích thước tệp ảnh sau khi tối ưu vẫn vượt quá 10 MB."
         )
     }
+
+    data class CompressedJpegPage(
+        val jpegBytes: ByteArray,
+        val widthPx: Int,
+        val heightPx: Int
+    )
+
+    internal fun applyExifOrientation(bitmap: Bitmap, rawBytes: ByteArray): Bitmap {
+        return runCatching {
+            val exif = ExifInterface(ByteArrayInputStream(rawBytes))
+            val orientation = exif.getAttributeInt(
+                ExifInterface.TAG_ORIENTATION,
+                ExifInterface.ORIENTATION_NORMAL
+            )
+            val matrix = Matrix()
+            when (orientation) {
+                ExifInterface.ORIENTATION_ROTATE_90 -> matrix.postRotate(90f)
+                ExifInterface.ORIENTATION_ROTATE_180 -> matrix.postRotate(180f)
+                ExifInterface.ORIENTATION_ROTATE_270 -> matrix.postRotate(270f)
+                ExifInterface.ORIENTATION_FLIP_HORIZONTAL -> matrix.preScale(-1f, 1f)
+                ExifInterface.ORIENTATION_FLIP_VERTICAL -> matrix.preScale(1f, -1f)
+                else -> return bitmap
+            }
+            val rotated = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
+            if (rotated !== bitmap) {
+                bitmap.recycle()
+            }
+            rotated
+        }.getOrDefault(bitmap)
+    }
+
+    fun compressImageToJpegPage(
+        rawBytes: ByteArray,
+        maxDimensionPx: Int = 1600,
+        jpegQuality: Int = 80
+    ): CompressedJpegPage {
+        if (rawBytes.isEmpty()) {
+            throw BackendApiException(
+                kind = BackendFailureKind.INVALID_REQUEST,
+                statusCode = 413,
+                backendCode = "DOCUMENT_SIZE_INVALID",
+                message = "Kích thước tệp ảnh phải lớn hơn 0."
+            )
+        }
+        val boundsOpts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(rawBytes, 0, rawBytes.size, boundsOpts)
+        if (boundsOpts.outWidth <= 0 || boundsOpts.outHeight <= 0) {
+            throw BackendApiException(
+                kind = BackendFailureKind.INVALID_REQUEST,
+                statusCode = 415,
+                backendCode = "DOCUMENT_MIME_INVALID",
+                message = "Tệp đã chọn không phải là hình ảnh hợp lệ."
+            )
+        }
+
+        var sampleSize = 1
+        while (
+            boundsOpts.outWidth / (sampleSize * 2) >= maxDimensionPx &&
+            boundsOpts.outHeight / (sampleSize * 2) >= maxDimensionPx
+        ) {
+            sampleSize *= 2
+        }
+
+        val decodeOpts = BitmapFactory.Options().apply {
+            inSampleSize = sampleSize
+            inPreferredConfig = Bitmap.Config.ARGB_8888
+        }
+        val decoded = BitmapFactory.decodeByteArray(rawBytes, 0, rawBytes.size, decodeOpts)
+            ?: throw BackendApiException(
+                kind = BackendFailureKind.INVALID_REQUEST,
+                statusCode = 415,
+                backendCode = "DOCUMENT_MIME_INVALID",
+                message = "Không thể giải mã hình ảnh đã chọn."
+            )
+
+        val oriented = applyExifOrientation(decoded, rawBytes)
+        val maxSide = maxOf(oriented.width, oriented.height)
+        val scaled = if (maxSide > maxDimensionPx && maxDimensionPx > 0) {
+            val ratio = maxDimensionPx.toFloat() / maxSide.toFloat()
+            val targetW = (oriented.width * ratio).toInt().coerceAtLeast(1)
+            val targetH = (oriented.height * ratio).toInt().coerceAtLeast(1)
+            val created = Bitmap.createScaledBitmap(oriented, targetW, targetH, true)
+            if (created !== oriented) {
+                oriented.recycle()
+            }
+            created
+        } else {
+            oriented
+        }
+
+        val finalW = scaled.width.coerceAtLeast(1)
+        val finalH = scaled.height.coerceAtLeast(1)
+        val baos = ByteArrayOutputStream()
+        scaled.compress(Bitmap.CompressFormat.JPEG, jpegQuality.coerceIn(45, 92), baos)
+        scaled.recycle()
+        val compressed = baos.toByteArray()
+        return CompressedJpegPage(
+            jpegBytes = compressed,
+            widthPx = finalW,
+            heightPx = finalH
+        )
+    }
+
+    fun extractJpegDimensions(jpegBytes: ByteArray): Pair<Int, Int> {
+        val boundsOpts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(jpegBytes, 0, jpegBytes.size, boundsOpts)
+        if (boundsOpts.outWidth > 0 && boundsOpts.outHeight > 0) {
+            return boundsOpts.outWidth to boundsOpts.outHeight
+        }
+        return 595 to 842
+    }
+
+    fun buildPdfFromJpegPages(pages: List<CompressedJpegPage>): ByteArray {
+        if (pages.isEmpty()) {
+            throw BackendApiException(
+                kind = BackendFailureKind.INVALID_REQUEST,
+                statusCode = 400,
+                backendCode = "NO_FILES_SELECTED",
+                message = "Chưa có trang ảnh nào để tạo PDF."
+            )
+        }
+        val out = ByteArrayOutputStream()
+        fun writeAscii(text: String) {
+            out.write(text.toByteArray(Charsets.US_ASCII))
+        }
+
+        // PDF 1.4 header + binary marker
+        writeAscii("%PDF-1.4\n")
+        out.write(byteArrayOf(0x25.toByte(), 0xE2.toByte(), 0xE3.toByte(), 0xCF.toByte(), 0xD3.toByte(), 0x0A.toByte()))
+
+        val totalObjs = 3 + pages.size * 3
+        val offsets = IntArray(totalObjs)
+
+        // Object 1: Catalog
+        offsets[1] = out.size()
+        writeAscii("1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n")
+
+        // Object 2: Pages
+        val kidsRefs = pages.indices.joinToString(" ") { idx -> "${3 + idx * 3} 0 R" }
+        offsets[2] = out.size()
+        writeAscii("2 0 obj\n<< /Type /Pages /Kids [ $kidsRefs ] /Count ${pages.size} >>\nendobj\n")
+
+        for (i in pages.indices) {
+            val page = pages[i]
+            val pageObjNum = 3 + i * 3
+            val contentObjNum = 4 + i * 3
+            val imgObjNum = 5 + i * 3
+
+            val wPx = page.widthPx.coerceAtLeast(1)
+            val hPx = page.heightPx.coerceAtLeast(1)
+            val pageW: Int
+            val pageH: Int
+            if (hPx >= wPx) {
+                pageW = 595
+                pageH = ((595.0 * hPx) / wPx.toDouble()).toInt().coerceIn(200, 1684)
+            } else {
+                pageW = 842
+                pageH = ((842.0 * hPx) / wPx.toDouble()).toInt().coerceIn(200, 1684)
+            }
+
+            // Page object
+            offsets[pageObjNum] = out.size()
+            writeAscii(
+                "$pageObjNum 0 obj\n" +
+                    "<< /Type /Page /Parent 2 0 R /MediaBox [ 0 0 $pageW $pageH ] " +
+                    "/Resources << /XObject << /Im0 $imgObjNum 0 R >> >> " +
+                    "/Contents $contentObjNum 0 R >>\n" +
+                    "endobj\n"
+            )
+
+            // Content stream object
+            val contentBytes = "q\n$pageW 0 0 $pageH 0 0 cm\n/Im0 Do\nQ\n".toByteArray(Charsets.US_ASCII)
+            offsets[contentObjNum] = out.size()
+            writeAscii("$contentObjNum 0 obj\n<< /Length ${contentBytes.size} >>\nstream\n")
+            out.write(contentBytes)
+            writeAscii("endstream\nendobj\n")
+
+            // Image XObject (DCTDecode)
+            offsets[imgObjNum] = out.size()
+            writeAscii(
+                "$imgObjNum 0 obj\n" +
+                    "<< /Type /XObject /Subtype /Image /Width $wPx /Height $hPx " +
+                    "/ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode " +
+                    "/Length ${page.jpegBytes.size} >>\n" +
+                    "stream\n"
+            )
+            out.write(page.jpegBytes)
+            writeAscii("\nendstream\nendobj\n")
+        }
+
+        val xrefOffset = out.size()
+        writeAscii("xref\n0 $totalObjs\n")
+        writeAscii("0000000000 65535 f \r\n")
+        for (objId in 1 until totalObjs) {
+            writeAscii(String.format(Locale.US, "%010d 00000 n \r\n", offsets[objId]))
+        }
+        writeAscii(
+            "trailer\n" +
+                "<< /Size $totalObjs /Root 1 0 R >>\n" +
+                "startxref\n" +
+                "$xrefOffset\n" +
+                "%%EOF\n"
+        )
+        return out.toByteArray()
+    }
+
+    fun mergeRawImagesToPdfBytes(
+        rawImages: List<ByteArray>,
+        maxDimensionPx: Int = 1600,
+        jpegQuality: Int = 80
+    ): ByteArray {
+        if (rawImages.isEmpty()) {
+            throw BackendApiException(
+                kind = BackendFailureKind.INVALID_REQUEST,
+                statusCode = 400,
+                backendCode = "NO_FILES_SELECTED",
+                message = "Chưa chọn ảnh nào để gộp PDF."
+            )
+        }
+        val firstPassPages = rawImages.map { raw ->
+            compressImageToJpegPage(raw, maxDimensionPx = maxDimensionPx, jpegQuality = jpegQuality)
+        }
+        var pdfBytes = buildPdfFromJpegPages(firstPassPages)
+        if (pdfBytes.size > DirectEntryContract.MAX_STAGE_BYTES) {
+            val secondPassPages = rawImages.map { raw ->
+                compressImageToJpegPage(raw, maxDimensionPx = 1200, jpegQuality = 65)
+            }
+            pdfBytes = buildPdfFromJpegPages(secondPassPages)
+        }
+        if (pdfBytes.size > DirectEntryContract.MAX_STAGE_BYTES) {
+            throw BackendApiException(
+                kind = BackendFailureKind.INVALID_REQUEST,
+                statusCode = 413,
+                backendCode = "DOCUMENT_SIZE_INVALID",
+                message = "Tổng dung lượng tệp PDF sau khi gộp vượt quá giới hạn 10 MB. Vui lòng giảm số lượng ảnh."
+            )
+        }
+        return pdfBytes
+    }
 }
 
 class DirectEntryService(
@@ -1818,6 +2060,157 @@ class DirectEntryService(
         )
     }
 
+    suspend fun prepareLocalMultiImagePdfAttachment(
+        documentType: String,
+        uris: List<Uri>,
+        existingRef: StagedDocumentRef? = null
+    ): StagedDocumentRef = withContext(Dispatchers.IO) {
+        if (documentType !in DirectEntryContract.ALLOWED_STAGE_DOCUMENT_TYPES) {
+            throw BackendApiException(
+                kind = BackendFailureKind.INVALID_REQUEST,
+                statusCode = 400,
+                backendCode = "DOCUMENT_TYPE_INVALID",
+                message = "Loại tài liệu đính kèm không hợp lệ."
+            )
+        }
+        if (uris.isEmpty()) {
+            throw BackendApiException(
+                kind = BackendFailureKind.INVALID_REQUEST,
+                statusCode = 400,
+                backendCode = "NO_FILES_SELECTED",
+                message = "Chưa chọn tệp ảnh nào để đính kèm."
+            )
+        }
+        val resolver = context.contentResolver
+
+        // If user selected a single PDF file, handle it via single-file PDF path
+        if (uris.size == 1) {
+            val singleUri = uris.first()
+            val rawMime = resolver.getType(singleUri)?.lowercase(Locale.ROOT).orEmpty()
+            var displayName = ""
+            resolver.query(singleUri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    val idx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                    if (idx >= 0 && !cursor.isNull(idx)) {
+                        displayName = cursor.getString(idx).orEmpty()
+                    }
+                }
+            }
+            if (rawMime == "application/pdf" || displayName.lowercase(Locale.ROOT).endsWith(".pdf")) {
+                deleteLocalAttachmentRef(existingRef)
+                return@withContext prepareLocalAttachmentUri(documentType, singleUri)
+            }
+        }
+
+        val pagesDir = File(context.cacheDir, "pending_worker_docs/pages").apply { mkdirs() }
+        val existingPagePaths = existingRef?.sourceImagePaths
+            ?.map { it.trim() }
+            ?.filter { it.isNotEmpty() && File(it).exists() }
+            .orEmpty()
+
+        val existingPages = existingPagePaths.mapNotNull { path ->
+            runCatching {
+                val bytes = File(path).readBytes()
+                if (bytes.isEmpty()) return@mapNotNull null
+                val (w, h) = DocumentImageCompressor.extractJpegDimensions(bytes)
+                path to DocumentImageCompressor.CompressedJpegPage(bytes, w, h)
+            }.getOrNull()
+        }
+
+        val newCreatedFiles = mutableListOf<File>()
+        try {
+            val newPages = uris.map { uri ->
+                val rawMime = resolver.getType(uri)?.lowercase(Locale.ROOT).orEmpty()
+                if (rawMime == "application/pdf") {
+                    throw BackendApiException(
+                        kind = BackendFailureKind.INVALID_REQUEST,
+                        statusCode = 415,
+                        backendCode = "DOCUMENT_MIME_INVALID",
+                        message = "Khi chọn nhiều trang ảnh, vui lòng chỉ chọn ảnh JPG/PNG (hoặc bấm 'Chọn PDF' nếu đã có sẵn file PDF)."
+                    )
+                }
+                val rawBytes = resolver.openInputStream(uri)?.use { input ->
+                    val out = ByteArrayOutputStream()
+                    val buffer = ByteArray(8192)
+                    var total = 0L
+                    var read: Int
+                    while (input.read(buffer).also { read = it } != -1) {
+                        total += read
+                        if (total > DocumentImageCompressor.MAX_RAW_PICKER_BYTES) {
+                            throw BackendApiException(
+                                kind = BackendFailureKind.INVALID_REQUEST,
+                                statusCode = 413,
+                                backendCode = "DOCUMENT_TOO_LARGE",
+                                message = "Một trong các ảnh đã chọn vượt quá giới hạn dung lượng 20 MB."
+                            )
+                        }
+                        out.write(buffer, 0, read)
+                    }
+                    out.toByteArray()
+                } ?: throw BackendApiException(
+                    kind = BackendFailureKind.INVALID_REQUEST,
+                    statusCode = 400,
+                    backendCode = "FILE_READ_FAILED",
+                    message = "Không thể đọc tệp ảnh đã chọn từ thiết bị."
+                )
+
+                val page = DocumentImageCompressor.compressImageToJpegPage(rawBytes)
+                val pageFile = File(pagesDir, "${UUID.randomUUID()}.jpg")
+                pageFile.writeBytes(page.jpegBytes)
+                newCreatedFiles.add(pageFile)
+                pageFile.absolutePath to page
+            }
+
+            val allEntries = existingPages + newPages
+            var allPages = allEntries.map { it.second }
+            var pdfBytes = DocumentImageCompressor.buildPdfFromJpegPages(allPages)
+
+            if (pdfBytes.size > DirectEntryContract.MAX_STAGE_BYTES) {
+                allPages = allEntries.map { (path, page) ->
+                    val recompressed = DocumentImageCompressor.compressImageToJpegPage(
+                        rawBytes = page.jpegBytes,
+                        maxDimensionPx = 1200,
+                        jpegQuality = 65
+                    )
+                    runCatching { File(path).writeBytes(recompressed.jpegBytes) }
+                    recompressed
+                }
+                pdfBytes = DocumentImageCompressor.buildPdfFromJpegPages(allPages)
+            }
+
+            if (pdfBytes.size > DirectEntryContract.MAX_STAGE_BYTES) {
+                throw BackendApiException(
+                    kind = BackendFailureKind.INVALID_REQUEST,
+                    statusCode = 413,
+                    backendCode = "DOCUMENT_SIZE_INVALID",
+                    message = "Tổng dung lượng tệp PDF (${allPages.size} trang) vượt quá giới hạn 10 MB. Vui lòng giảm bớt số trang ảnh."
+                )
+            }
+
+            val pendingDir = File(context.cacheDir, "pending_worker_docs").apply { mkdirs() }
+            val pdfFile = File(pendingDir, "${UUID.randomUUID()}.pdf")
+            pdfFile.writeBytes(pdfBytes)
+
+            // Delete previous merged PDF file while keeping existing page JPEGs in pagesDir
+            deleteLocalAttachment(existingRef?.localFilePath)
+
+            val totalPages = allPages.size
+            StagedDocumentRef(
+                stageId = "",
+                documentType = documentType,
+                fileName = "ho_so_${totalPages}_trang.pdf",
+                mimeType = "application/pdf",
+                sizeBytes = pdfBytes.size.toLong(),
+                localFilePath = pdfFile.absolutePath,
+                pageCount = totalPages,
+                sourceImagePaths = allEntries.map { it.first }
+            )
+        } catch (e: Exception) {
+            newCreatedFiles.forEach { runCatching { it.delete() } }
+            throw e
+        }
+    }
+
     suspend fun deleteLocalAttachment(localFilePath: String?) = withContext(Dispatchers.IO) {
         val cleanPath = localFilePath?.trim().orEmpty()
         if (cleanPath.isEmpty()) return@withContext
@@ -1827,6 +2220,14 @@ class DirectEntryService(
             if (file.exists() && file.canonicalPath.startsWith(cacheRoot)) {
                 file.delete()
             }
+        }
+    }
+
+    suspend fun deleteLocalAttachmentRef(ref: StagedDocumentRef?) = withContext(Dispatchers.IO) {
+        if (ref == null) return@withContext
+        deleteLocalAttachment(ref.localFilePath)
+        ref.sourceImagePaths.forEach { pagePath ->
+            deleteLocalAttachment(pagePath)
         }
     }
 

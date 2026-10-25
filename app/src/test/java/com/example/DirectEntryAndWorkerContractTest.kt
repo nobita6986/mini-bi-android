@@ -1359,4 +1359,73 @@ class DirectEntryAndWorkerContractTest {
         assertEquals("STANDARDIZE_FROM_QR", resolveBody.getString("action"))
         assertEquals(2, resolveBody.getInt("expected_entry_version"))
     }
+
+    @Test
+    fun `multi-image contract upload - merges multiple images into single PDF 1_4, supports incremental page append, and cleans up page cache`() = runBlocking {
+        val repo = createRepository()
+
+        fun makeSamplePngBytes(width: Int, height: Int, color: Int): ByteArray {
+            val bmp = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+            bmp.eraseColor(color)
+            return ByteArrayOutputStream().also { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }.toByteArray()
+        }
+
+        val img1Bytes = makeSamplePngBytes(400, 600, android.graphics.Color.RED)
+        val img2Bytes = makeSamplePngBytes(600, 400, android.graphics.Color.GREEN)
+        val img3Bytes = makeSamplePngBytes(500, 700, android.graphics.Color.BLUE)
+
+        // 1. Direct merge of 3 raw images into PDF 1.4
+        val mergedPdf = com.example.data.DocumentImageCompressor.mergeRawImagesToPdfBytes(
+            listOf(img1Bytes, img2Bytes, img3Bytes)
+        )
+        assertTrue(mergedPdf.isNotEmpty())
+        assertTrue(mergedPdf.size <= DirectEntryContract.MAX_STAGE_BYTES)
+        val pdfAscii = String(mergedPdf, Charsets.ISO_8859_1)
+        assertTrue(pdfAscii.startsWith("%PDF-1.4\n"))
+        assertTrue(pdfAscii.contains("/Type /Pages /Kids [ 3 0 R 6 0 R 9 0 R ] /Count 3"))
+        assertTrue(pdfAscii.contains("/Filter /DCTDecode"))
+        assertTrue(pdfAscii.trimEnd().endsWith("%%EOF"))
+
+        // 2. Prepare local multi-image PDF attachment from 2 image URIs, then append 1 more page
+        val srcDir = File(context.cacheDir, "test_contract_src").apply { mkdirs() }
+        val f1 = File(srcDir, "page1.png").apply { writeBytes(img1Bytes) }
+        val f2 = File(srcDir, "page2.png").apply { writeBytes(img2Bytes) }
+        val f3 = File(srcDir, "page3.png").apply { writeBytes(img3Bytes) }
+
+        val firstRef = repo.directEntryService.prepareLocalMultiImagePdfAttachment(
+            documentType = "EMPLOYMENT_CONTRACT",
+            uris = listOf(android.net.Uri.fromFile(f1), android.net.Uri.fromFile(f2)),
+            existingRef = null
+        )
+        assertEquals("EMPLOYMENT_CONTRACT", firstRef.documentType)
+        assertEquals("application/pdf", firstRef.mimeType)
+        assertEquals("ho_so_2_trang.pdf", firstRef.fileName)
+        assertEquals(2, firstRef.pageCount)
+        assertEquals(2, firstRef.sourceImagePaths.size)
+        val firstPdfFile = File(firstRef.localFilePath!!)
+        assertTrue(firstPdfFile.exists())
+        assertTrue(String(firstPdfFile.readBytes(), Charsets.ISO_8859_1).contains("/Count 2"))
+
+        // Append 3rd page (simulating "Chụp thêm trang" / "Thêm ảnh")
+        val appendedRef = repo.directEntryService.prepareLocalMultiImagePdfAttachment(
+            documentType = "EMPLOYMENT_CONTRACT",
+            uris = listOf(android.net.Uri.fromFile(f3)),
+            existingRef = firstRef
+        )
+        assertEquals("application/pdf", appendedRef.mimeType)
+        assertEquals("ho_so_3_trang.pdf", appendedRef.fileName)
+        assertEquals(3, appendedRef.pageCount)
+        assertEquals(3, appendedRef.sourceImagePaths.size)
+        assertFalse("Old 2-page merged PDF must be deleted after appending", firstPdfFile.exists())
+        val appendedPdfFile = File(appendedRef.localFilePath!!)
+        assertTrue(appendedPdfFile.exists())
+        assertTrue(String(appendedPdfFile.readBytes(), Charsets.ISO_8859_1).contains("/Count 3"))
+
+        // Clean up ref removes both merged PDF and all cached page JPEGs
+        repo.directEntryService.deleteLocalAttachmentRef(appendedRef)
+        assertFalse(appendedPdfFile.exists())
+        appendedRef.sourceImagePaths.forEach { pagePath ->
+            assertFalse(File(pagePath).exists())
+        }
+    }
 }

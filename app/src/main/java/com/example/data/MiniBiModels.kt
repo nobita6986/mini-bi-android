@@ -267,7 +267,9 @@ data class StagedDocumentRef(
     val fileName: String,
     val mimeType: String,
     val sizeBytes: Long,
-    val localFilePath: String? = null
+    val localFilePath: String? = null,
+    val pageCount: Int = 1,
+    val sourceImagePaths: List<String> = emptyList()
 )
 
 data class PendingEntryAttachmentTask(
@@ -277,7 +279,8 @@ data class PendingEntryAttachmentTask(
     val fileName: String,
     val mimeType: String,
     val localFilePath: String,
-    val idempotencyBaseKey: String
+    val idempotencyBaseKey: String,
+    val sourceImagePaths: List<String> = emptyList()
 )
 
 data class NewWorkerEntryDraft(
