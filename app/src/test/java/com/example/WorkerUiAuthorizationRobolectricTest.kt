@@ -1175,15 +1175,15 @@ class WorkerUiAuthorizationRobolectricTest {
         composeTestRule.onNodeWithTag("login_submit_button").performClick()
         assertEquals(Triple("ql.duan@hrpartner.vn", "Password#2", true), submittedTriple)
 
-        // Login form is top-aligned (logo near top <= 40dp) and submit button sits much higher than centered (~980dp)
+        // Login form is balanced below status bar (logo top ~56dp) and submit button sits above keyboard zone
         val logoTopDp = with(composeTestRule.density) {
             composeTestRule.onNodeWithTag("login_brand_logo").fetchSemanticsNode().boundsInRoot.top.toDp().value
         }
         val submitBottomDp = with(composeTestRule.density) {
             composeTestRule.onNodeWithTag("login_submit_button").fetchSemanticsNode().boundsInRoot.bottom.toDp().value
         }
-        assertTrue("Expected login_brand_logo top ($logoTopDp dp) <= 40dp for top-aligned layout", logoTopDp <= 40f)
-        assertTrue("Expected login_submit_button bottom ($submitBottomDp dp) <= 700dp above keyboard zone", submitBottomDp <= 700f)
+        assertTrue("Expected login_brand_logo top ($logoTopDp dp) in 40..90dp for balanced layout", logoTopDp in 40f..90f)
+        assertTrue("Expected login_submit_button bottom ($submitBottomDp dp) <= 750dp above keyboard zone", submitBottomDp <= 750f)
 
         // Tap remove button on chip -> triggers removal callback
         composeTestRule.onNodeWithTag("remove_saved_account_ql.duan@hrpartner.vn").performClick()

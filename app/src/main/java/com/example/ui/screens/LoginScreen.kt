@@ -124,14 +124,14 @@ fun LoginScreen(
             .statusBarsPadding()
             .navigationBarsPadding()
             .imePadding(),
-        contentAlignment = Alignment.Center
+        contentAlignment = Alignment.TopCenter
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .widthIn(max = 420.dp)
                 .verticalScroll(scrollState)
-                .padding(horizontal = 22.dp, vertical = 18.dp),
+                .padding(start = 22.dp, end = 22.dp, top = 56.dp, bottom = 20.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Surface(
