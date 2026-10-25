@@ -582,13 +582,15 @@ class AuthSessionAndSecurityContractTest {
         assertNotNull("Could not locate app/build.gradle.kts", appGradle)
         val gradleText = appGradle!!.readText()
         assertTrue(
-            "Default server URL in app/build.gradle.kts must point to https://bi.hrpartner.vn",
+            "Release server URL in app/build.gradle.kts must point to https://bi.hrpartner.vn",
             gradleText.contains("\"https://bi.hrpartner.vn\"")
         )
-        assertFalse(
-            "Legacy bi2.hrpartner.vn must not remain in app/build.gradle.kts",
-            gradleText.contains("bi2.hrpartner.vn")
+        assertTrue(
+            "Debug server URL in app/build.gradle.kts must point to https://bi2.hrpartner.vn",
+            gradleText.contains("\"https://bi2.hrpartner.vn\"")
         )
+        assertEquals("BI", resolveBrandBadgeLabel("https://bi.hrpartner.vn"))
+        assertEquals("BI2", resolveBrandBadgeLabel("https://bi2.hrpartner.vn"))
 
         val sharedPrefsFile = File(context.cacheDir, "test_prefs_${System.nanoTime()}.preferences_pb")
         try {

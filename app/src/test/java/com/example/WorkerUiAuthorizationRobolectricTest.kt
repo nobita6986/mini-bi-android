@@ -194,13 +194,14 @@ class WorkerUiAuthorizationRobolectricTest {
     )
 
     // -------------------------------------------------------------------------
-    // Item 11: Worker CTA chỉ xuất hiện theo allowed_actions
+    // Item 11: Worker CTA chỉ xuất hiện theo allowed_actions (bỏ nút Đề xuất thay đổi trên thẻ)
     // -------------------------------------------------------------------------
     @Test
     fun `item 11 - worker CTAs appear strictly when server allowed_actions flags are true`() {
         val idNone = "11111111-1111-4111-8111-111111111111"
         val idProposeOnly = "22222222-2222-4222-8222-222222222222"
         val idDirectOnly = "33333333-3333-4333-8333-333333333333"
+        val idBoth = "44444444-4444-4444-8444-444444444444"
 
         composeTestRule.setContent {
             MaterialTheme {
@@ -223,6 +224,12 @@ class WorkerUiAuthorizationRobolectricTest {
                         onProposeChange = {},
                         onDirectEdit = {}
                     )
+                    WorkerOperationsRowCard(
+                        worker = sampleWorker(idBoth, canView = true, canProposeChange = true, canDirectEdit = true),
+                        onViewDetail = {},
+                        onProposeChange = {},
+                        onDirectEdit = {}
+                    )
                 }
             }
         }
@@ -232,14 +239,25 @@ class WorkerUiAuthorizationRobolectricTest {
         composeTestRule.onNodeWithTag("worker_propose_$idNone").assertDoesNotExist()
         composeTestRule.onNodeWithTag("worker_direct_edit_$idNone").assertDoesNotExist()
 
-        // Row 2: propose_change=true, direct_edit=false
-        composeTestRule.onNodeWithTag("worker_propose_$idProposeOnly").assertIsDisplayed()
+        // Row 2: propose_change=true, direct_edit=false -> "Đề xuất thay đổi" button is removed from row card
+        composeTestRule.onNodeWithTag("worker_detail_$idProposeOnly").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("worker_propose_$idProposeOnly").assertDoesNotExist()
         composeTestRule.onNodeWithTag("worker_direct_edit_$idProposeOnly").assertDoesNotExist()
 
         // Row 3: view=false, propose_change=false, direct_edit=true
         composeTestRule.onNodeWithTag("worker_detail_$idDirectOnly").assertDoesNotExist()
         composeTestRule.onNodeWithTag("worker_propose_$idDirectOnly").assertDoesNotExist()
         composeTestRule.onNodeWithTag("worker_direct_edit_$idDirectOnly").assertIsDisplayed()
+
+        // Row 4: view=true, propose_change=true, direct_edit=true -> only Xem chi tiết + Sửa trực tiếp appear
+        composeTestRule.onNodeWithTag("worker_detail_$idBoth").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("worker_propose_$idBoth").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("worker_direct_edit_$idBoth").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Đề xuất thay đổi").assertDoesNotExist()
+
+        // Brand badge helper distinguishes BI vs BI2 cleanly
+        assertEquals("BI", resolveBrandBadgeLabel("https://bi.hrpartner.vn"))
+        assertEquals("BI2", resolveBrandBadgeLabel("https://bi2.hrpartner.vn"))
     }
 
     @Test

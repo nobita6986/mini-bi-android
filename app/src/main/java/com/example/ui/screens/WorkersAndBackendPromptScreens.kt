@@ -2363,7 +2363,7 @@ private fun OwnSubmissionRowCard(
 internal fun WorkerOperationsRowCard(
     worker: WorkerProfileEntity,
     onViewDetail: () -> Unit,
-    onProposeChange: () -> Unit,
+    onProposeChange: () -> Unit = {},
     onDirectEdit: () -> Unit
 ) {
     val actions = worker.allowedActions
@@ -2513,7 +2513,7 @@ internal fun WorkerOperationsRowCard(
                 }
             }
 
-            if (actions.view || actions.proposeChange || actions.directEdit) {
+            if (actions.view || actions.directEdit) {
                 HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))
 
                 FlowRow(
@@ -2533,21 +2533,6 @@ internal fun WorkerOperationsRowCard(
                             Icon(Icons.Default.Visibility, contentDescription = null, modifier = Modifier.size(15.dp))
                             Spacer(modifier = Modifier.width(4.dp))
                             Text("Xem chi tiết", style = MaterialTheme.typography.labelMedium)
-                        }
-                    }
-
-                    if (actions.proposeChange) {
-                        OutlinedButton(
-                            onClick = onProposeChange,
-                            shape = RoundedCornerShape(10.dp),
-                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
-                            modifier = Modifier
-                                .height(36.dp)
-                                .testTag("worker_propose_${worker.entryId}")
-                        ) {
-                            Icon(Icons.Default.RateReview, contentDescription = null, modifier = Modifier.size(15.dp))
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text("Đề xuất thay đổi", style = MaterialTheme.typography.labelMedium)
                         }
                     }
 

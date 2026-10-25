@@ -121,11 +121,26 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+internal fun resolveBrandBadgeLabel(serverUrl: String = BuildConfig.DEFAULT_SERVER_URL): String {
+    val normalized = serverUrl.trim().lowercase()
+    return if (
+        normalized.contains("://bi2.") ||
+        normalized.contains("//bi2.") ||
+        normalized.startsWith("bi2.")
+    ) {
+        "BI2"
+    } else {
+        "BI"
+    }
+}
+
 @Composable
 fun MiniBiAppRoot(viewModel: MiniBiViewModel) {
     val sessionBootstrapping by viewModel.sessionBootstrapping.collectAsStateWithLifecycle()
     val actor by viewModel.currentActor.collectAsStateWithLifecycle()
     val themeId by viewModel.themeId.collectAsStateWithLifecycle()
+    val serverUrl by viewModel.serverUrl.collectAsStateWithLifecycle()
+    val brandBadgeLabel = resolveBrandBadgeLabel(serverUrl)
     val loginBusy by viewModel.loginBusy.collectAsStateWithLifecycle()
     val loginError by viewModel.loginError.collectAsStateWithLifecycle()
     val savedAccounts by viewModel.savedAccounts.collectAsStateWithLifecycle()
@@ -196,6 +211,7 @@ fun MiniBiAppRoot(viewModel: MiniBiViewModel) {
                 LoginScreen(
                     busy = loginBusy,
                     error = loginError,
+                    brandBadgeLabel = brandBadgeLabel,
                     savedAccounts = savedAccounts,
                     onRemoveSavedAccount = { viewModel.removeSavedAccount(it) },
                     onLoginSubmit = { identifier, password, rememberAccount ->
@@ -272,10 +288,11 @@ fun MiniBiAppRoot(viewModel: MiniBiViewModel) {
                                 )
                                 Surface(
                                     shape = RoundedCornerShape(6.dp),
-                                    color = MaterialTheme.colorScheme.primary
+                                    color = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.testTag("drawer_brand_badge")
                                 ) {
                                     Text(
-                                        text = "BI",
+                                        text = brandBadgeLabel,
                                         style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
                                         fontWeight = FontWeight.Bold,
                                         color = Color.White,
@@ -507,10 +524,11 @@ fun MiniBiAppRoot(viewModel: MiniBiViewModel) {
                                     )
                                     Surface(
                                         shape = RoundedCornerShape(6.dp),
-                                        color = MaterialTheme.colorScheme.primary
+                                        color = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.testTag("topbar_brand_badge")
                                     ) {
                                         Text(
-                                            text = "BI",
+                                            text = brandBadgeLabel,
                                             style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
                                             fontWeight = FontWeight.Bold,
                                             color = Color.White,
