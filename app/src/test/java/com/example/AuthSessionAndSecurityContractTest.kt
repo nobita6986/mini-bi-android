@@ -589,6 +589,14 @@ class AuthSessionAndSecurityContractTest {
             "Debug server URL in app/build.gradle.kts must point to https://bi2.hrpartner.vn",
             gradleText.contains("\"https://bi2.hrpartner.vn\"")
         )
+        assertTrue(
+            "Application ID in app/build.gradle.kts must be vn.hrpartner.bi",
+            gradleText.contains("applicationId = \"vn.hrpartner.bi\"")
+        )
+        assertFalse(
+            "Legacy applicationId com.aistudio.minibi.hrpbia must not remain in app/build.gradle.kts",
+            gradleText.contains("com.aistudio.minibi.hrpbia")
+        )
         assertEquals("BI", resolveBrandBadgeLabel("https://bi.hrpartner.vn"))
         assertEquals("BI2", resolveBrandBadgeLabel("https://bi2.hrpartner.vn"))
 
