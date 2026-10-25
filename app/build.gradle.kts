@@ -13,6 +13,18 @@ android {
   namespace = "com.example"
   compileSdk { version = release(36) { minorApiLevel = 1 } }
 
+  val envProps = Properties().apply {
+    val envFile = rootProject.file(".env")
+    if (envFile.isFile) {
+      envFile.inputStream().use { stream -> load(stream) }
+    }
+  }
+  val explicitServerUrl = (project.findProperty("MINI_BI_SERVER_URL") as? String)?.trim()?.takeIf { it.isNotEmpty() }
+    ?: System.getenv("MINI_BI_SERVER_URL")?.trim()?.takeIf { it.isNotEmpty() }
+    ?: envProps.getProperty("MINI_BI_SERVER_URL")?.trim()?.takeIf { it.isNotEmpty() }
+  val releaseServerUrl = explicitServerUrl ?: "https://bi.hrpartner.vn"
+  val debugServerUrl = explicitServerUrl ?: "https://bi2.hrpartner.vn"
+
   defaultConfig {
     applicationId = "com.aistudio.minibi.hrpbia"
     minSdk = 24
@@ -22,17 +34,7 @@ android {
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
-    val envProps = Properties().apply {
-      val envFile = rootProject.file(".env")
-      if (envFile.isFile) {
-        envFile.inputStream().use { stream -> load(stream) }
-      }
-    }
-    val resolvedServerUrl = (project.findProperty("MINI_BI_SERVER_URL") as? String)?.trim()?.takeIf { it.isNotEmpty() }
-      ?: System.getenv("MINI_BI_SERVER_URL")?.trim()?.takeIf { it.isNotEmpty() }
-      ?: envProps.getProperty("MINI_BI_SERVER_URL")?.trim()?.takeIf { it.isNotEmpty() }
-      ?: "https://bi.hrpartner.vn"
-    buildConfigField("String", "DEFAULT_SERVER_URL", "\"$resolvedServerUrl\"")
+    buildConfigField("String", "DEFAULT_SERVER_URL", "\"$releaseServerUrl\"")
   }
 
   // Do not remove or modify these signingConfigs. They are necessary for building, installing,
@@ -58,11 +60,13 @@ android {
       isCrunchPngs = false
       isMinifyEnabled = false
       proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+      buildConfigField("String", "DEFAULT_SERVER_URL", "\"$releaseServerUrl\"")
       // Do not remove or modify this signingConfig assignment. It is necessary for Android apps in
       // AI Studio.
       signingConfig = signingConfigs.getByName("release")
     }
     debug {
+      buildConfigField("String", "DEFAULT_SERVER_URL", "\"$debugServerUrl\"")
       // Do not remove or modify this signingConfig assignment. It is necessary for Android apps in
       // AI Studio.
       signingConfig = signingConfigs.getByName("debugConfig")

@@ -75,6 +75,7 @@ fun LoginScreen(
     busy: Boolean,
     error: String?,
     onLoginSubmit: (String, String, Boolean) -> Unit,
+    brandBadgeLabel: String = "BI",
     savedAccounts: List<SavedLoginAccount> = emptyList(),
     onRemoveSavedAccount: (String) -> Unit = {}
 ) {
@@ -148,10 +149,11 @@ fun LoginScreen(
             Spacer(modifier = Modifier.height(16.dp))
 
             Text(
-                text = "HRP BI",
+                text = "HRP $brandBadgeLabel",
                 style = MaterialTheme.typography.headlineLarge.copy(fontSize = 26.sp),
                 fontWeight = FontWeight.ExtraBold,
-                color = Color(0xFF0F172A)
+                color = Color(0xFF0F172A),
+                modifier = Modifier.testTag("login_brand_title")
             )
 
             Spacer(modifier = Modifier.height(6.dp))
