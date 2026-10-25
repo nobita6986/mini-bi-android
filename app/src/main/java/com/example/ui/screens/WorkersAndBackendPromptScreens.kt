@@ -1,6 +1,8 @@
 package com.example.ui.screens
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -39,6 +41,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DeleteOutline
@@ -47,6 +50,8 @@ import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.FileUpload
 import androidx.compose.material.icons.filled.FilterAltOff
+import androidx.compose.material.icons.filled.PhotoLibrary
+import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.RateReview
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.Search
@@ -77,6 +82,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -96,10 +102,12 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
+import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import com.example.data.AppActor
+import com.example.data.CccdQrDecoder
 import com.example.data.DirectEntryCatalog
 import com.example.data.DirectEntryContract
 import com.example.data.NewWorkerEntryDraft
@@ -111,6 +119,9 @@ import com.example.data.WorkerProfileEntity
 import com.example.ui.MiniBiViewModel
 import com.example.ui.theme.JetBrainsMono
 import com.example.ui.theme.SemanticColors
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.io.File
 import java.text.Normalizer
@@ -198,6 +209,8 @@ fun DirectEntryNewWorkersScreen(
 ) {
     BackHandler(onBack = onBackToDashboard)
 
+    val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
 
@@ -235,6 +248,7 @@ fun DirectEntryNewWorkersScreen(
     }
 
     var showBatchHistoryDialog by remember { mutableStateOf(false) }
+    var scanningQrRowId by remember { mutableStateOf<String?>(null) }
 
     val draftRows = remember {
         mutableStateListOf(
@@ -250,11 +264,69 @@ fun DirectEntryNewWorkersScreen(
             if (cur.laborTypeKey.isBlank()) {
                 draftRows[i] = cur.copy(
                     laborTypeKey = defaultLabor.laborTypeKey,
-                    laborTypeDisplay = defaultLabor.displayName,
-                    genderUi = cur.genderUi.ifBlank { "Nam" }
+                    laborTypeDisplay = defaultLabor.displayName
                 )
             }
         }
+    }
+
+    fun attachDocumentUriToRow(rowId: String, documentType: String, uri: Uri) {
+        val index = draftRows.indexOfFirst { it.localId == rowId }
+        if (index < 0) return
+        val existingRef = when (documentType) {
+            "WORKER_PORTRAIT" -> draftRows[index].portraitStage
+            "CCCD_FRONT" -> draftRows[index].cccdFrontStage
+            "CCCD_BACK" -> draftRows[index].cccdBackStage
+            "EMPLOYMENT_CONTRACT" -> draftRows[index].contractStage
+            else -> null
+        }
+        draftRows[index] = draftRows[index].copy(uploadingSlot = documentType, slotError = null)
+        if (documentType == "CCCD_FRONT" || documentType == "CCCD_BACK") {
+            coroutineScope.launch {
+                val decoded = withContext(Dispatchers.Default) {
+                    CccdQrDecoder.decodeFromUri(context, uri)
+                }
+                if (decoded != null) {
+                    val curIdx = draftRows.indexOfFirst { it.localId == rowId }
+                    if (curIdx >= 0) {
+                        draftRows[curIdx] = CccdQrDecoder.applyQrPayloadToDraft(
+                            draft = draftRows[curIdx],
+                            qr = decoded,
+                            overwriteExisting = false
+                        )
+                        viewModel.showBanner("Đã tự động đọc mã QR trên ảnh CCCD (${decoded.cccd12}) và điền thông tin NLĐ.")
+                    }
+                }
+            }
+        }
+        effectiveUploadStageFile(
+            rowId,
+            documentType,
+            uri,
+            { staged ->
+                val currentIdx = draftRows.indexOfFirst { it.localId == rowId }
+                if (currentIdx >= 0) {
+                    effectiveDiscardRef(existingRef)
+                    val cur = draftRows[currentIdx]
+                    draftRows[currentIdx] = when (documentType) {
+                        "WORKER_PORTRAIT" -> cur.copy(portraitStage = staged, uploadingSlot = null, slotError = null)
+                        "CCCD_FRONT" -> cur.copy(cccdFrontStage = staged, uploadingSlot = null, slotError = null)
+                        "CCCD_BACK" -> cur.copy(cccdBackStage = staged, uploadingSlot = null, slotError = null)
+                        "EMPLOYMENT_CONTRACT" -> cur.copy(contractStage = staged, uploadingSlot = null, slotError = null)
+                        else -> cur.copy(uploadingSlot = null)
+                    }
+                }
+            },
+            { errMsg ->
+                val currentIdx = draftRows.indexOfFirst { it.localId == rowId }
+                if (currentIdx >= 0) {
+                    draftRows[currentIdx] = draftRows[currentIdx].copy(
+                        uploadingSlot = null,
+                        slotError = errMsg
+                    )
+                }
+            }
+        )
     }
 
     var pendingFileTarget by remember { mutableStateOf<Pair<String, String>?>(null) }
@@ -265,46 +337,47 @@ fun DirectEntryNewWorkersScreen(
         val target = pendingFileTarget
         pendingFileTarget = null
         if (uri != null && target != null) {
-            val (rowId, documentType) = target
-            val index = draftRows.indexOfFirst { it.localId == rowId }
-            if (index >= 0) {
-                val existingRef = when (documentType) {
-                    "WORKER_PORTRAIT" -> draftRows[index].portraitStage
-                    "CCCD_FRONT" -> draftRows[index].cccdFrontStage
-                    "CCCD_BACK" -> draftRows[index].cccdBackStage
-                    "EMPLOYMENT_CONTRACT" -> draftRows[index].contractStage
-                    else -> null
-                }
-                draftRows[index] = draftRows[index].copy(uploadingSlot = documentType, slotError = null)
-                effectiveUploadStageFile(
-                    rowId,
-                    documentType,
-                    uri,
-                    { staged ->
-                        val currentIdx = draftRows.indexOfFirst { it.localId == rowId }
-                        if (currentIdx >= 0) {
-                            effectiveDiscardRef(existingRef)
-                            val cur = draftRows[currentIdx]
-                            draftRows[currentIdx] = when (documentType) {
-                                "WORKER_PORTRAIT" -> cur.copy(portraitStage = staged, uploadingSlot = null, slotError = null)
-                                "CCCD_FRONT" -> cur.copy(cccdFrontStage = staged, uploadingSlot = null, slotError = null)
-                                "CCCD_BACK" -> cur.copy(cccdBackStage = staged, uploadingSlot = null, slotError = null)
-                                "EMPLOYMENT_CONTRACT" -> cur.copy(contractStage = staged, uploadingSlot = null, slotError = null)
-                                else -> cur.copy(uploadingSlot = null)
-                            }
-                        }
-                    },
-                    { errMsg ->
-                        val currentIdx = draftRows.indexOfFirst { it.localId == rowId }
-                        if (currentIdx >= 0) {
-                            draftRows[currentIdx] = draftRows[currentIdx].copy(
-                                uploadingSlot = null,
-                                slotError = errMsg
-                            )
-                        }
-                    }
+            attachDocumentUriToRow(target.first, target.second, uri)
+        }
+    }
+
+    var pendingCameraCapture by remember { mutableStateOf<Triple<String, String, Uri>?>(null) }
+    var pendingCameraPermissionTarget by remember { mutableStateOf<Pair<String, String>?>(null) }
+
+    val cameraLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.TakePicture()
+    ) { success ->
+        val capture = pendingCameraCapture
+        pendingCameraCapture = null
+        if (success && capture != null) {
+            attachDocumentUriToRow(capture.first, capture.second, capture.third)
+        }
+    }
+
+    fun startCameraForRowNow(rowId: String, documentType: String) {
+        runCatching {
+            val dir = File(context.cacheDir, "worker_captures").apply { mkdirs() }
+            val file = File(dir, "capture_${documentType.lowercase(Locale.ROOT)}_${System.currentTimeMillis()}.jpg")
+            val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+            pendingCameraCapture = Triple(rowId, documentType, uri)
+            cameraLauncher.launch(uri)
+        }.onFailure { err ->
+            val currentIdx = draftRows.indexOfFirst { it.localId == rowId }
+            if (currentIdx >= 0) {
+                draftRows[currentIdx] = draftRows[currentIdx].copy(
+                    slotError = "Không thể mở máy ảnh: ${err.message.orEmpty()}"
                 )
             }
+        }
+    }
+
+    val cameraPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        val target = pendingCameraPermissionTarget
+        pendingCameraPermissionTarget = null
+        if (granted && target != null) {
+            startCameraForRowNow(target.first, target.second)
         }
     }
 
@@ -312,8 +385,23 @@ fun DirectEntryNewWorkersScreen(
         focusManager.clearFocus()
         keyboardController?.hide()
         pendingFileTarget = rowId to documentType
-        val mimeFilter = if (documentType == "WORKER_PORTRAIT") "image/*" else "*/*"
+        val mimeFilter = if (documentType == "EMPLOYMENT_CONTRACT") "*/*" else "image/*"
         filePickerLauncher.launch(mimeFilter)
+    }
+
+    fun capturePhotoForRow(rowId: String, documentType: String) {
+        focusManager.clearFocus()
+        keyboardController?.hide()
+        val hasCameraPerm = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.CAMERA
+        ) == PackageManager.PERMISSION_GRANTED
+        if (hasCameraPerm) {
+            startCameraForRowNow(rowId, documentType)
+        } else {
+            pendingCameraPermissionTarget = rowId to documentType
+            cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+        }
     }
 
     val validCount = draftRows.count { it.isValid }
@@ -498,6 +586,12 @@ fun DirectEntryNewWorkersScreen(
                     }
                 },
                 onPickFile = { docType -> pickDocumentForRow(row.localId, docType) },
+                onCaptureCamera = { docType -> capturePhotoForRow(row.localId, docType) },
+                onScanQrClick = {
+                    focusManager.clearFocus()
+                    keyboardController?.hide()
+                    scanningQrRowId = row.localId
+                },
                 onClearStage = { docType, ref ->
                     effectiveDiscardRef(ref)
                     val cur = draftRows[index]
@@ -643,6 +737,10 @@ fun DirectEntryNewWorkersScreen(
                     } else {
                         ownSubmissions.take(15).forEach { sub ->
                             val canSubmitDraft = sub.state == "DRAFT" || "SUBMITTED" in sub.allowedTransitions
+                            val formattedEntryTime = DirectEntryContract.formatIsoTimestampHcmUi(
+                                isoOrNull = sub.submittedAt,
+                                fallbackIso = sub.createdAt.ifBlank { sub.updatedAt }
+                            )
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -654,6 +752,14 @@ fun DirectEntryNewWorkersScreen(
                                         style = MaterialTheme.typography.labelLarge,
                                         fontWeight = FontWeight.SemiBold
                                     )
+                                    if (formattedEntryTime.isNotBlank()) {
+                                        Text(
+                                            text = "Thời gian nhập: $formattedEntryTime",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            fontFamily = JetBrainsMono,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
                                     Text(
                                         text = submissionStateUiLabel(sub.state),
                                         style = MaterialTheme.typography.bodySmall,
@@ -687,6 +793,24 @@ fun DirectEntryNewWorkersScreen(
                 TextButton(onClick = { showBatchHistoryDialog = false }) {
                     Text("Đóng")
                 }
+            }
+        )
+    }
+
+    scanningQrRowId?.let { targetRowId ->
+        CccdQrScannerDialog(
+            onDismiss = { scanningQrRowId = null },
+            onDecoded = { qr ->
+                val idx = draftRows.indexOfFirst { it.localId == targetRowId }
+                if (idx >= 0) {
+                    draftRows[idx] = CccdQrDecoder.applyQrPayloadToDraft(
+                        draft = draftRows[idx],
+                        qr = qr,
+                        overwriteExisting = true
+                    )
+                    viewModel.showBanner("Đã quét mã QR CCCD (${qr.cccd12}) và điền thông tin NLĐ.")
+                }
+                scanningQrRowId = null
             }
         )
     }
@@ -901,6 +1025,8 @@ private fun WorkerMultiEntryCard(
     onUpdate: (NewWorkerEntryDraft) -> Unit,
     onRemove: () -> Unit,
     onPickFile: (documentType: String) -> Unit,
+    onCaptureCamera: (documentType: String) -> Unit = {},
+    onScanQrClick: () -> Unit = {},
     onClearStage: (documentType: String, ref: StagedDocumentRef) -> Unit
 ) {
     val focusManager = LocalFocusManager.current
@@ -1122,6 +1248,35 @@ private fun WorkerMultiEntryCard(
                         testTag = "row_${rowNumber}_status"
                     )
 
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "Thông tin CCCD & cá nhân",
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        OutlinedButton(
+                            onClick = onScanQrClick,
+                            shape = RoundedCornerShape(10.dp),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                            modifier = Modifier
+                                .height(36.dp)
+                                .testTag("row_${rowNumber}_scan_qr_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.QrCodeScanner,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Quét QR CCCD", style = MaterialTheme.typography.labelMedium)
+                        }
+                    }
+
                     OutlinedTextField(
                         value = draft.cccd,
                         onValueChange = { onUpdate(draft.copy(cccd = it.filter { ch -> ch.isDigit() }.take(12))) },
@@ -1153,9 +1308,10 @@ private fun WorkerMultiEntryCard(
 
                     KeyedSelectDropdownField(
                         label = "Giới tính",
-                        selectedLabel = draft.genderUi.ifBlank { "Nam" },
-                        placeholder = "Nam",
-                        options = GENDER_OPTIONS.map { DropdownOptionItem(it, it) },
+                        selectedLabel = draft.genderUi,
+                        placeholder = "",
+                        options = listOf(DropdownOptionItem("", "— Để trống —")) +
+                            GENDER_OPTIONS.map { DropdownOptionItem(it, it) },
                         onSelect = { opt -> onUpdate(draft.copy(genderUi = opt.id)) },
                         testTag = "row_${rowNumber}_gender"
                     )
@@ -1196,7 +1352,7 @@ private fun WorkerMultiEntryCard(
                                 fontWeight = FontWeight.Bold
                             )
                             Text(
-                                text = "Ảnh chụp sẽ được tối ưu dung lượng trên máy và tự động tải ngầm sau khi lưu hồ sơ.",
+                                text = "Chọn ảnh từ Album hoặc chụp trực tiếp bằng Máy ảnh. Khi đính kèm ảnh CCCD, ứng dụng sẽ tự động thử đọc mã QR để điền thông tin.",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -1215,6 +1371,8 @@ private fun WorkerMultiEntryCard(
                                 staged = draft.portraitStage,
                                 uploading = draft.uploadingSlot == "WORKER_PORTRAIT",
                                 onPickClick = { onPickFile("WORKER_PORTRAIT") },
+                                onCaptureCameraClick = { onCaptureCamera("WORKER_PORTRAIT") },
+                                slotTestTagPrefix = "row_${rowNumber}_slot_WORKER_PORTRAIT",
                                 onClearClick = {
                                     draft.portraitStage?.let { onClearStage("WORKER_PORTRAIT", it) }
                                 }
@@ -1222,10 +1380,12 @@ private fun WorkerMultiEntryCard(
 
                             DocumentUploadSlotCard(
                                 title = "CCCD mặt trước",
-                                subtitle = "Ảnh chụp hoặc tệp PDF (tối đa 10 MB)",
+                                subtitle = "Chụp trực tiếp hoặc chọn ảnh từ Album (tự đọc QR nếu có)",
                                 staged = draft.cccdFrontStage,
                                 uploading = draft.uploadingSlot == "CCCD_FRONT",
                                 onPickClick = { onPickFile("CCCD_FRONT") },
+                                onCaptureCameraClick = { onCaptureCamera("CCCD_FRONT") },
+                                slotTestTagPrefix = "row_${rowNumber}_slot_CCCD_FRONT",
                                 onClearClick = {
                                     draft.cccdFrontStage?.let { onClearStage("CCCD_FRONT", it) }
                                 }
@@ -1233,10 +1393,12 @@ private fun WorkerMultiEntryCard(
 
                             DocumentUploadSlotCard(
                                 title = "CCCD mặt sau",
-                                subtitle = "Ảnh chụp hoặc tệp PDF (tối đa 10 MB)",
+                                subtitle = "Chụp trực tiếp hoặc chọn ảnh từ Album (tối đa 10 MB)",
                                 staged = draft.cccdBackStage,
                                 uploading = draft.uploadingSlot == "CCCD_BACK",
                                 onPickClick = { onPickFile("CCCD_BACK") },
+                                onCaptureCameraClick = { onCaptureCamera("CCCD_BACK") },
+                                slotTestTagPrefix = "row_${rowNumber}_slot_CCCD_BACK",
                                 onClearClick = {
                                     draft.cccdBackStage?.let { onClearStage("CCCD_BACK", it) }
                                 }
@@ -1248,6 +1410,8 @@ private fun WorkerMultiEntryCard(
                                 staged = draft.contractStage,
                                 uploading = draft.uploadingSlot == "EMPLOYMENT_CONTRACT",
                                 onPickClick = { onPickFile("EMPLOYMENT_CONTRACT") },
+                                onCaptureCameraClick = null,
+                                slotTestTagPrefix = "row_${rowNumber}_slot_EMPLOYMENT_CONTRACT",
                                 onClearClick = {
                                     draft.contractStage?.let { onClearStage("EMPLOYMENT_CONTRACT", it) }
                                 }
@@ -1780,6 +1944,7 @@ internal fun SearchableSelectDropdownField(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun DocumentUploadSlotCard(
     title: String,
@@ -1787,6 +1952,8 @@ private fun DocumentUploadSlotCard(
     staged: StagedDocumentRef?,
     uploading: Boolean,
     onPickClick: () -> Unit,
+    onCaptureCameraClick: (() -> Unit)? = null,
+    slotTestTagPrefix: String = "",
     onClearClick: () -> Unit
 ) {
     val hasAttachment = staged != null
@@ -1865,21 +2032,73 @@ private fun DocumentUploadSlotCard(
                 }
             }
 
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(
-                    onClick = onPickClick,
-                    enabled = !uploading,
-                    shape = RoundedCornerShape(10.dp),
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-                    modifier = Modifier.height(36.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.FileUpload,
-                        contentDescription = null,
-                        modifier = Modifier.size(16.dp)
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(if (hasAttachment) "Đổi tệp" else "Chọn tệp", style = MaterialTheme.typography.labelMedium)
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                if (onCaptureCameraClick != null) {
+                    OutlinedButton(
+                        onClick = onCaptureCameraClick,
+                        enabled = !uploading,
+                        shape = RoundedCornerShape(10.dp),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                        modifier = Modifier
+                            .height(36.dp)
+                            .let { mod ->
+                                if (slotTestTagPrefix.isNotBlank()) mod.testTag("${slotTestTagPrefix}_camera") else mod
+                            }
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.CameraAlt,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Chụp ảnh", style = MaterialTheme.typography.labelMedium)
+                    }
+
+                    OutlinedButton(
+                        onClick = onPickClick,
+                        enabled = !uploading,
+                        shape = RoundedCornerShape(10.dp),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                        modifier = Modifier
+                            .height(36.dp)
+                            .let { mod ->
+                                if (slotTestTagPrefix.isNotBlank()) mod.testTag("${slotTestTagPrefix}_album") else mod
+                            }
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.PhotoLibrary,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = if (hasAttachment) "Đổi ảnh (Album)" else "Chọn từ Album",
+                            style = MaterialTheme.typography.labelMedium
+                        )
+                    }
+                } else {
+                    OutlinedButton(
+                        onClick = onPickClick,
+                        enabled = !uploading,
+                        shape = RoundedCornerShape(10.dp),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                        modifier = Modifier
+                            .height(36.dp)
+                            .let { mod ->
+                                if (slotTestTagPrefix.isNotBlank()) mod.testTag("${slotTestTagPrefix}_file") else mod
+                            }
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.FileUpload,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(if (hasAttachment) "Đổi tệp" else "Chọn tệp", style = MaterialTheme.typography.labelMedium)
+                    }
                 }
 
                 if (hasAttachment && !uploading) {
@@ -2460,12 +2679,24 @@ private fun OwnSubmissionRowCard(
                     )
                 }
             }
+            val formattedEntryTime = DirectEntryContract.formatIsoTimestampHcmUi(
+                isoOrNull = item.submittedAt,
+                fallbackIso = item.createdAt.ifBlank { item.updatedAt }
+            )
             Text(
                 text = "Số lượng NLĐ: ${item.entryCount} · Lần cập nhật #${item.version}",
                 style = MaterialTheme.typography.bodySmall
             )
+            if (formattedEntryTime.isNotBlank()) {
+                Text(
+                    text = "Thời gian nhập: $formattedEntryTime",
+                    style = MaterialTheme.typography.bodySmall,
+                    fontFamily = JetBrainsMono,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
             Text(
-                text = "Cập nhật: ${item.updatedAt.take(19).replace('T', ' ')}",
+                text = "Cập nhật: ${DirectEntryContract.formatIsoTimestampHcmUi(item.updatedAt).ifBlank { item.updatedAt.take(19).replace('T', ' ') }}",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )

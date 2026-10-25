@@ -17,6 +17,10 @@ import com.example.data.BackendApiException
 import com.example.data.BackendFailureKind
 import com.example.data.BiBucketItem
 import com.example.data.CapturedAttendanceTime
+import com.example.data.CccdReviewQueueItem
+import com.example.data.CccdReviewQueuePage
+import com.example.data.CccdReviewStatusFilter
+import com.example.data.CccdReviewSummary
 import com.example.data.DashboardDatePreset
 import com.example.data.DirectEntryCatalog
 import com.example.data.DirectEntryContract
@@ -182,6 +186,28 @@ class MiniBiViewModel internal constructor(
 
     private val _duplicateManagedOnly = MutableStateFlow(false)
     val duplicateManagedOnly: StateFlow<Boolean> = _duplicateManagedOnly.asStateFlow()
+
+    // CCCD Review & Normalization Queue States (Backend authority only)
+    private val _cccdReviewPage = MutableStateFlow<CccdReviewQueuePage?>(null)
+    val cccdReviewPage: StateFlow<CccdReviewQueuePage?> = _cccdReviewPage.asStateFlow()
+
+    private val _cccdReviewLoading = MutableStateFlow(false)
+    val cccdReviewLoading: StateFlow<Boolean> = _cccdReviewLoading.asStateFlow()
+
+    private val _cccdReviewError = MutableStateFlow<String?>(null)
+    val cccdReviewError: StateFlow<String?> = _cccdReviewError.asStateFlow()
+
+    private val _cccdReviewStatusFilter = MutableStateFlow(CccdReviewStatusFilter.NEEDS_REVIEW.code)
+    val cccdReviewStatusFilter: StateFlow<String> = _cccdReviewStatusFilter.asStateFlow()
+
+    private val _cccdReviewOffset = MutableStateFlow(0)
+    val cccdReviewOffset: StateFlow<Int> = _cccdReviewOffset.asStateFlow()
+
+    private val _cccdReviewMutating = MutableStateFlow(false)
+    val cccdReviewMutating: StateFlow<Boolean> = _cccdReviewMutating.asStateFlow()
+
+    private val _cccdReviewMutationError = MutableStateFlow<String?>(null)
+    val cccdReviewMutationError: StateFlow<String?> = _cccdReviewMutationError.asStateFlow()
 
     // Direct Entry & Worker Directory States (Backend authority only; zero seed data)
     private val _catalog = MutableStateFlow<DirectEntryCatalog?>(null)
@@ -473,6 +499,13 @@ class MiniBiViewModel internal constructor(
             _duplicatePage.value = 1
             _duplicateHasMore.value = false
             _duplicateManagedOnly.value = false
+            _cccdReviewPage.value = null
+            _cccdReviewLoading.value = false
+            _cccdReviewError.value = null
+            _cccdReviewStatusFilter.value = CccdReviewStatusFilter.NEEDS_REVIEW.code
+            _cccdReviewOffset.value = 0
+            _cccdReviewMutating.value = false
+            _cccdReviewMutationError.value = null
             _catalog.value = null
             _workerRows.value = emptyList()
             _ownSubmissions.value = emptyList()
@@ -1351,6 +1384,201 @@ class MiniBiViewModel internal constructor(
             } catch (e: Exception) {
                 e.rethrowIfCancelled()
                 showBanner(e.message ?: "Không thể rút hồ sơ trùng CCCD.", isError = true)
+            }
+        }
+    }
+
+    fun clearCccdReviewMutationError() {
+        _cccdReviewMutationError.value = null
+    }
+
+    fun refreshCccdReviewQueue(
+        statusFilter: String = _cccdReviewStatusFilter.value,
+        offset: Int = _cccdReviewOffset.value,
+        limit: Int = 25
+    ) {
+        val safeStatus = statusFilter.trim().uppercase(Locale.ROOT).ifEmpty {
+            CccdReviewStatusFilter.NEEDS_REVIEW.code
+        }
+        val safeOffset = offset.coerceAtLeast(0)
+        _cccdReviewStatusFilter.value = safeStatus
+        _cccdReviewOffset.value = safeOffset
+        _cccdReviewLoading.value = true
+        _cccdReviewError.value = null
+        viewModelScope.launch {
+            try {
+                val page = repository.directEntryService.fetchCccdReviewQueue(
+                    statusFilter = safeStatus,
+                    limit = limit,
+                    offset = safeOffset
+                )
+                _cccdReviewPage.value = page
+            } catch (e: Exception) {
+                e.rethrowIfCancelled()
+                _cccdReviewError.value = (e as? BackendApiException)?.message
+                    ?: e.message
+                    ?: "Không thể tải danh sách chuẩn hóa thông tin NLĐ."
+            } finally {
+                _cccdReviewLoading.value = false
+            }
+        }
+    }
+
+    fun resolveCccdReviewUpdateEnteredCccd(
+        entryId: String,
+        expectedEntryVersion: Int,
+        nationalId: String,
+        applyBlankFieldsFromQr: Boolean,
+        reason: String?,
+        onResolved: () -> Unit = {}
+    ) {
+        if (_cccdReviewMutating.value) return
+        _cccdReviewMutating.value = true
+        _cccdReviewMutationError.value = null
+        viewModelScope.launch {
+            try {
+                val res = repository.directEntryService.resolveCccdReviewUpdateEnteredCccd(
+                    entryId = entryId,
+                    expectedEntryVersion = expectedEntryVersion,
+                    nationalId = nationalId,
+                    applyBlankFieldsFromQr = applyBlankFieldsFromQr,
+                    reason = reason
+                )
+                showBanner(
+                    "Đã cập nhật số CCCD và đối chiếu lại thành công (${res.updatedFields.size} trường cập nhật)."
+                )
+                refreshCccdReviewQueue()
+                onResolved()
+            } catch (e: Exception) {
+                e.rethrowIfCancelled()
+                val msg = (e as? BackendApiException)?.message
+                    ?: e.message
+                    ?: "Không thể cập nhật số CCCD."
+                _cccdReviewMutationError.value = msg
+                showBanner(msg, isError = true)
+                if ((e as? BackendApiException)?.kind == BackendFailureKind.CONFLICT) {
+                    refreshCccdReviewQueue()
+                }
+            } finally {
+                _cccdReviewMutating.value = false
+            }
+        }
+    }
+
+    fun resolveCccdReviewStandardizeFromQr(
+        entryId: String,
+        expectedEntryVersion: Int,
+        fields: List<String>,
+        reason: String?,
+        onResolved: () -> Unit = {}
+    ) {
+        if (_cccdReviewMutating.value) return
+        _cccdReviewMutating.value = true
+        _cccdReviewMutationError.value = null
+        viewModelScope.launch {
+            try {
+                val res = repository.directEntryService.resolveCccdReviewStandardizeFromQr(
+                    entryId = entryId,
+                    expectedEntryVersion = expectedEntryVersion,
+                    fields = fields,
+                    reason = reason
+                )
+                showBanner(
+                    "Đã chuẩn hóa ${res.updatedFields.size} trường thông tin từ QR thành công."
+                )
+                refreshCccdReviewQueue()
+                onResolved()
+            } catch (e: Exception) {
+                e.rethrowIfCancelled()
+                val msg = (e as? BackendApiException)?.message
+                    ?: e.message
+                    ?: "Không thể chuẩn hóa thông tin từ QR."
+                _cccdReviewMutationError.value = msg
+                showBanner(msg, isError = true)
+                if ((e as? BackendApiException)?.kind == BackendFailureKind.CONFLICT) {
+                    refreshCccdReviewQueue()
+                }
+            } finally {
+                _cccdReviewMutating.value = false
+            }
+        }
+    }
+
+    fun retryCccdQrExtraction(
+        entryId: String,
+        expectedEntryVersion: Int,
+        onCompleted: () -> Unit = {}
+    ) {
+        if (_cccdReviewMutating.value) return
+        _cccdReviewMutating.value = true
+        _cccdReviewMutationError.value = null
+        viewModelScope.launch {
+            try {
+                val res = repository.directEntryService.retryCccdQrExtraction(
+                    entryId = entryId,
+                    expectedEntryVersion = expectedEntryVersion,
+                    applyBlankFields = true
+                )
+                val statusLabel = when (res.reconciliationStatus) {
+                    "MATCHED_INITIAL" -> "Khớp ban đầu"
+                    "MISMATCH" -> "Lệch CCCD"
+                    "QR_UNREADABLE" -> "Không đọc được QR"
+                    "RESOLVED" -> "Đã xử lý"
+                    else -> res.reconciliationStatus
+                }
+                showBanner("Đã đọc lại QR & đối chiếu lại ($statusLabel).")
+                refreshCccdReviewQueue()
+                onCompleted()
+            } catch (e: Exception) {
+                e.rethrowIfCancelled()
+                val msg = (e as? BackendApiException)?.message
+                    ?: e.message
+                    ?: "Không thể đọc lại QR trên hồ sơ này."
+                _cccdReviewMutationError.value = msg
+                showBanner(msg, isError = true)
+                if ((e as? BackendApiException)?.kind == BackendFailureKind.CONFLICT) {
+                    refreshCccdReviewQueue()
+                }
+            } finally {
+                _cccdReviewMutating.value = false
+            }
+        }
+    }
+
+    fun reuploadCccdDocumentInReview(
+        entryId: String,
+        documentType: String,
+        uri: Uri,
+        initialEntryVersion: Int,
+        onCompleted: () -> Unit = {}
+    ) {
+        if (_cccdReviewMutating.value) return
+        _cccdReviewMutating.value = true
+        _cccdReviewMutationError.value = null
+        viewModelScope.launch {
+            try {
+                val docLabel = if (documentType == "CCCD_FRONT") "CCCD mặt trước" else "CCCD mặt sau"
+                repository.directEntryService.reuploadCccdDocumentAndRetryQr(
+                    entryId = entryId,
+                    documentType = documentType,
+                    uri = uri,
+                    initialEntryVersion = initialEntryVersion
+                )
+                showBanner("Đã tải lại $docLabel và tự động giải mã lại QR.")
+                refreshCccdReviewQueue()
+                onCompleted()
+            } catch (e: Exception) {
+                e.rethrowIfCancelled()
+                val msg = (e as? BackendApiException)?.message
+                    ?: e.message
+                    ?: "Không thể tải lại ảnh CCCD."
+                _cccdReviewMutationError.value = msg
+                showBanner(msg, isError = true)
+                if ((e as? BackendApiException)?.kind == BackendFailureKind.CONFLICT) {
+                    refreshCccdReviewQueue()
+                }
+            } finally {
+                _cccdReviewMutating.value = false
             }
         }
     }

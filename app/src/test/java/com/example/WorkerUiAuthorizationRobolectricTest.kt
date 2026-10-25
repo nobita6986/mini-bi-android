@@ -566,13 +566,23 @@ class WorkerUiAuthorizationRobolectricTest {
         composeTestRule.waitForIdle()
 
         composeTestRule.onNodeWithText("Thời vụ").assertIsDisplayed()
-        composeTestRule.onNodeWithText("Nam").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Nam").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("row_1_scan_qr_button").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("row_1_slot_WORKER_PORTRAIT_camera").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("row_1_slot_WORKER_PORTRAIT_album").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("row_1_slot_CCCD_FRONT_camera").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("row_1_slot_CCCD_FRONT_album").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("row_1_slot_CCCD_BACK_camera").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("row_1_slot_CCCD_BACK_album").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("row_1_slot_EMPLOYMENT_CONTRACT_file").assertIsDisplayed()
 
-        // Open gender dropdown -> only "Nam" and "Nữ", no "Bỏ trống"
+        // Open gender dropdown -> allows "— Để trống —", "Nam", and "Nữ"
         composeTestRule.onNodeWithTag("row_1_gender").performClick()
+        composeTestRule.onNodeWithText("— Để trống —").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Nam").assertIsDisplayed()
         composeTestRule.onNodeWithText("Nữ").assertIsDisplayed()
-        composeTestRule.onNodeWithText("Bỏ trống").assertDoesNotExist()
         composeTestRule.onNodeWithText("Nữ").performClick()
+        composeTestRule.onNodeWithText("Nữ").assertIsDisplayed()
 
         // Type worker name
         composeTestRule.onNodeWithTag("row_1_full_name").performTextInput("Lê Văn Thử Nghiệm")
@@ -585,11 +595,12 @@ class WorkerUiAuthorizationRobolectricTest {
         composeTestRule.onNodeWithTag("confirm_reset_worker_row_dialog").assertDoesNotExist()
         composeTestRule.onNodeWithText("Lê Văn Thử Nghiệm").assertIsDisplayed()
 
-        // Click "Làm mới dòng này" -> confirm "Đồng ý" -> clears row and restores defaults ("Nam", "Thời vụ")
+        // Click "Làm mới dòng này" -> confirm "Đồng ý" -> clears row and restores blank gender + "Thời vụ"
         composeTestRule.onNodeWithTag("row_1_reset_or_remove_button").performClick()
         composeTestRule.onNodeWithTag("confirm_reset_worker_row_button").performClick()
         composeTestRule.onNodeWithText("Lê Văn Thử Nghiệm").assertDoesNotExist()
-        composeTestRule.onNodeWithText("Nam").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Nam").assertDoesNotExist()
+        composeTestRule.onNodeWithText("Nữ").assertDoesNotExist()
         composeTestRule.onNodeWithText("Thời vụ").assertIsDisplayed()
     }
 
@@ -2401,5 +2412,178 @@ class WorkerUiAuthorizationRobolectricTest {
         composeTestRule.onNodeWithText("NLĐ 1: CCCD 079095008811").assertIsDisplayed()
         composeTestRule.onNodeWithTag("save_valid_workers_button").assertIsEnabled()
         composeTestRule.onNodeWithText("worker-profile/1.2").assertDoesNotExist()
+    }
+
+    @Test
+    @Config(qualifiers = "w480dp-h2400dp")
+    fun `dashboard cccd review tab and batch submission history timestamp render and resolve cleanly`() {
+        val entryId = "33333333-4444-4555-8666-777777777777"
+        val server = MockWebServer()
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val path = request.path.orEmpty()
+                return when {
+                    path.startsWith("/api/direct-entry/cccd-review") -> MockResponse()
+                        .setResponseCode(200)
+                        .setHeader("Content-Type", "application/json")
+                        .setBody(
+                            """
+                            {
+                              "ok": true,
+                              "scope_kind": "own",
+                              "status_filter": "NEEDS_REVIEW",
+                              "limit": 25,
+                              "offset": 0,
+                              "total_count": 1,
+                              "summary": {
+                                "total_count": 4,
+                                "needs_review_count": 1,
+                                "mismatch_count": 1,
+                                "qr_unreadable_count": 0,
+                                "pending_count": 0,
+                                "matched_initial_count": 2,
+                                "resolved_count": 1
+                              },
+                              "rows": [
+                                {
+                                  "entry_id": "$entryId",
+                                  "submission_id": "11111111-1111-4111-8111-111111111111",
+                                  "submission_state": "SUBMITTED",
+                                  "entry_version": 2,
+                                  "employee_code": "HRP0102",
+                                  "project_id": "PRJ_01",
+                                  "project_display": "KCN Bắc Ninh",
+                                  "first_work_date": "2026-10-25",
+                                  "recruiter_id": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+                                  "recruiter_display": "Nguyễn Tuyển Dụng",
+                                  "entered_display_name": "Nguyễn Thị Minh Ánh",
+                                  "entered_national_id": "001195012349",
+                                  "cccd_front_qr_status": "DECODED",
+                                  "cccd_back_qr_status": "NOT_UPLOADED",
+                                  "qr_extracted_payload": {
+                                    "cccd_12": "001195012345",
+                                    "full_name": "Nguyễn Thị Minh Ánh",
+                                    "gender_canonical": "FEMALE",
+                                    "gender_raw": "Nữ"
+                                  },
+                                  "reconciliation_status": "MISMATCH",
+                                  "comparison": [
+                                    {
+                                      "field": "national_id",
+                                      "label": "Số CCCD",
+                                      "entered_value": "001195012349",
+                                      "qr_value": "001195012345",
+                                      "status": "DIFFERENT"
+                                    }
+                                  ]
+                                }
+                              ]
+                            }
+                            """.trimIndent()
+                        )
+                    path.startsWith("/api/direct-entry/submissions") -> MockResponse()
+                        .setResponseCode(200)
+                        .setHeader("Content-Type", "application/json")
+                        .setBody(
+                            """
+                            {
+                              "ok": true,
+                              "items": [
+                                {
+                                  "submission_id": "99999999-8888-4777-8666-555555555555",
+                                  "state": "SUBMITTED",
+                                  "version": 1,
+                                  "entry_count": 3,
+                                  "created_at": "2026-10-25T10:24:00Z",
+                                  "updated_at": "2026-10-25T10:25:00Z",
+                                  "submitted_at": "2026-10-25T10:24:00Z",
+                                  "allowed_transitions": [],
+                                  "project_scoped": true
+                                }
+                              ],
+                              "page_size": 20,
+                              "has_more": false,
+                              "next_cursor": null
+                            }
+                            """.trimIndent()
+                        )
+                    else -> MockResponse()
+                        .setResponseCode(200)
+                        .setHeader("Content-Type", "application/json")
+                        .setBody("""{"ok":true,"groups":[],"total_groups":0,"total_entries":0,"page":1,"page_size":25,"has_more":false,"authorization_date":"2026-10-25","data":[],"items":[]}""")
+                }
+            }
+        }
+        server.start()
+
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val db = buildTestDb(app)
+        val cookieFile = File(app.cacheDir, "ui_cccd_rev_${System.nanoTime()}.enc")
+        val prefsFile = File(app.cacheDir, "ui_cccd_rev_prefs_${System.nanoTime()}.preferences_pb")
+        val repo = MiniBiRepository(
+            context = app,
+            database = db,
+            defaultServerUrl = server.url("/").toString().trimEnd('/'),
+            allowDebugUrlOverride = true,
+            cookieStorageFile = cookieFile,
+            preferencesStorageFile = prefsFile,
+            cookieCipher = JvmAes256GcmCookieCipher()
+        )
+        val vm = MiniBiViewModel(app, repo)
+        registerTestResourcesCleanup(vm, db, server, cookieFile, prefsFile)
+        val actor = AppActor(
+            appUserId = "88888888-3333-4333-8444-555555555555",
+            displayName = "Nguyễn Tuyển Dụng",
+            capabilities = listOf("entry_read", "submission_read"),
+            scopes = listOf(ActorScope("own", "self", "2026-01-01", null)),
+            selfRecruiterSuggestion = null
+        )
+
+        val activeScreen = androidx.compose.runtime.mutableStateOf("DASHBOARD")
+        composeTestRule.setContent {
+            MyApplicationTheme {
+                when (activeScreen.value) {
+                    "DASHBOARD" -> com.example.ui.screens.DashboardScreen(
+                        actor = actor,
+                        viewModel = vm
+                    )
+                    "WORKERS" -> WorkersAndDirectEntryScreen(
+                        actor = actor,
+                        viewModel = vm,
+                        onBackToDashboard = {}
+                    )
+                }
+            }
+        }
+
+        // 1. Verify "Chuẩn hoá thông tin NLĐ" tab appears in Dashboard and loads the CCCD review queue
+        composeTestRule.onNodeWithText("Chuẩn hoá thông tin NLĐ").assertIsDisplayed().performClick()
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            vm.cccdReviewPage.value != null
+        }
+        composeTestRule.waitForIdle()
+
+        composeTestRule.onNodeWithTag("cccd_review_toolbar_card").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("cccd_review_row_$entryId").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("cccd_review_open_button_$entryId").performClick()
+        composeTestRule.waitForIdle()
+
+        composeTestRule.onNodeWithTag("cccd_review_detail_dialog").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("cccd_review_mode_standardize_qr").performScrollTo().assertIsDisplayed()
+        composeTestRule.onNodeWithTag("cccd_review_mode_update_cccd").performScrollTo().assertIsDisplayed()
+        composeTestRule.onNodeWithTag("close_cccd_review_dialog_button").performClick()
+        composeTestRule.waitForIdle()
+
+        // 2. Switch to Workers screen -> "Tôi đã nhập" tab shows "Thời gian nhập: 17:24 · 25/10/2026"
+        composeTestRule.runOnIdle { activeScreen.value = "WORKERS" }
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("worker_scope_tab_uploader").performClick()
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            vm.ownSubmissions.value.isNotEmpty()
+        }
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithText("Thời gian nhập: 17:24 · 25/10/2026").assertIsDisplayed()
     }
 }

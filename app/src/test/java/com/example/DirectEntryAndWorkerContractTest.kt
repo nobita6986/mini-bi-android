@@ -659,7 +659,7 @@ class DirectEntryAndWorkerContractTest {
     }
 
     @Test
-    fun `default worker draft uses gender Nam and seasonal labor type Thoi vu without marking row started`() {
+    fun `default worker draft leaves gender blank and uses seasonal labor type Thoi vu without marking row started`() {
         val catalog = DirectEntryCatalog(
             effectiveDate = "2026-10-23",
             projects = emptyList(),
@@ -672,7 +672,8 @@ class DirectEntryAndWorkerContractTest {
             )
         )
         val defaultDraft = DirectEntryContract.createDefaultWorkerDraft(catalog = catalog, localId = "row-default")
-        assertEquals("Nam", defaultDraft.genderUi)
+        assertEquals("", defaultDraft.genderUi)
+        assertEquals("omitted", DirectEntryContract.mapGender(defaultDraft.genderUi).getString("state"))
         assertEquals("TEMPORARY", defaultDraft.laborTypeKey)
         assertEquals("Thời vụ", defaultDraft.laborTypeDisplay)
         assertFalse(defaultDraft.isStarted)
@@ -1182,5 +1183,159 @@ class DirectEntryAndWorkerContractTest {
             vm.cancelScopeForTest()
             runCatching { r2Server.shutdown() }
         }
+    }
+
+    @Test
+    fun `cccd qr decoder, batch timestamp formatting, and cccd review queue and resolve endpoints`() = runBlocking {
+        // 1. Batch timestamp formatting in Asia/Ho_Chi_Minh
+        assertEquals(
+            "17:24 · 25/10/2026",
+            DirectEntryContract.formatIsoTimestampHcmUi("2026-10-25T10:24:00Z")
+        )
+
+        // 2. Vietnamese CCCD QR payload parsing + ZXing bitmap decode + draft auto-fill
+        val rawQrText = "001195012345|012345678|Nguyễn Thị Minh Ánh|19041995|Nữ|Thôn 2, Đông Anh, Hà Nội|10052021"
+        val parsedQr = com.example.data.CccdQrDecoder.parseCccdQrPayload(rawQrText)
+        assertNotNull(parsedQr)
+        assertEquals("001195012345", parsedQr!!.cccd12)
+        assertEquals("Nguyễn Thị Minh Ánh", parsedQr.fullName)
+        assertEquals("19/04/1995", parsedQr.dateOfBirthUi)
+        assertEquals("Nữ", parsedQr.genderUi)
+        assertEquals("Thôn 2, Đông Anh, Hà Nội", parsedQr.address)
+        assertEquals("10/05/2021", parsedQr.issueDateUi)
+
+        // Generate a QR code bitmap and verify CccdQrDecoder.decodeFromBitmap
+        val writer = com.google.zxing.qrcode.QRCodeWriter()
+        val hints = mapOf(com.google.zxing.EncodeHintType.CHARACTER_SET to "UTF-8")
+        val matrix = writer.encode(rawQrText, com.google.zxing.BarcodeFormat.QR_CODE, 240, 240, hints)
+        val qrBitmap = Bitmap.createBitmap(240, 240, Bitmap.Config.ARGB_8888)
+        for (x in 0 until 240) {
+            for (y in 0 until 240) {
+                qrBitmap.setPixel(x, y, if (matrix.get(x, y)) android.graphics.Color.BLACK else android.graphics.Color.WHITE)
+            }
+        }
+        val decodedFromBitmap = com.example.data.CccdQrDecoder.decodeFromBitmap(qrBitmap)
+        assertNotNull(decodedFromBitmap)
+        assertEquals("001195012345", decodedFromBitmap!!.cccd12)
+        assertEquals("Nguyễn Thị Minh Ánh", decodedFromBitmap.fullName)
+        assertEquals("Nữ", decodedFromBitmap.genderUi)
+
+        val emptyDraft = DirectEntryContract.createDefaultWorkerDraft()
+        assertEquals("", emptyDraft.genderUi)
+        val autoFilledDraft = com.example.data.CccdQrDecoder.applyQrPayloadToDraft(
+            draft = emptyDraft,
+            qr = decodedFromBitmap,
+            overwriteExisting = true
+        )
+        assertEquals("001195012345", autoFilledDraft.cccd)
+        assertEquals("Nguyễn Thị Minh Ánh", autoFilledDraft.fullName)
+        assertEquals("Nữ", autoFilledDraft.genderUi)
+        assertEquals("19/04/1995", autoFilledDraft.birthDateUi)
+        assertEquals("10/05/2021", autoFilledDraft.cccdIssueDateUi)
+        assertEquals("Thôn 2, Đông Anh, Hà Nội", autoFilledDraft.address)
+        assertTrue(autoFilledDraft.showOptionalSection)
+
+        // 3. CCCD Review Queue + Resolve + Retry QR endpoints
+        val repo = createRepository()
+        val entryId = "33333333-4444-4555-8666-777777777777"
+        server.enqueue(
+            MockResponse().setResponseCode(200).setBody(
+                """
+                {
+                  "ok": true,
+                  "scope_kind": "own",
+                  "status_filter": "NEEDS_REVIEW",
+                  "limit": 25,
+                  "offset": 0,
+                  "total_count": 1,
+                  "summary": {
+                    "total_count": 6,
+                    "needs_review_count": 1,
+                    "mismatch_count": 1,
+                    "qr_unreadable_count": 0,
+                    "pending_count": 0,
+                    "matched_initial_count": 3,
+                    "resolved_count": 2
+                  },
+                  "rows": [
+                    {
+                      "entry_id": "$entryId",
+                      "submission_id": "11111111-1111-4111-8111-111111111111",
+                      "submission_state": "SUBMITTED",
+                      "entry_version": 2,
+                      "employee_code": "HRP0102",
+                      "project_id": "PRJ_01",
+                      "project_display": "KCN Bắc Ninh",
+                      "first_work_date": "2026-10-25",
+                      "recruiter_id": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+                      "recruiter_display": "Nguyễn Tuyển Dụng",
+                      "entered_display_name": "Nguyễn Thị Minh Ánh",
+                      "entered_national_id": "001195012349",
+                      "cccd_front_qr_status": "DECODED",
+                      "cccd_back_qr_status": "NOT_UPLOADED",
+                      "qr_extracted_payload": {
+                        "cccd_12": "001195012345",
+                        "full_name": "Nguyễn Thị Minh Ánh",
+                        "gender_canonical": "FEMALE",
+                        "gender_raw": "Nữ"
+                      },
+                      "reconciliation_status": "MISMATCH",
+                      "comparison": [
+                        {
+                          "field": "national_id",
+                          "label": "Số CCCD",
+                          "entered_value": "001195012349",
+                          "qr_value": "001195012345",
+                          "status": "DIFFERENT"
+                        }
+                      ]
+                    }
+                  ]
+                }
+                """.trimIndent()
+            )
+        )
+
+        val queuePage = repo.directEntryService.fetchCccdReviewQueue(statusFilter = "NEEDS_REVIEW", limit = 25, offset = 0)
+        assertEquals(1, queuePage.totalCount)
+        assertEquals(1, queuePage.summary.mismatchCount)
+        assertEquals(1, queuePage.rows.size)
+        val item = queuePage.rows.single()
+        assertEquals("MISMATCH", item.reconciliationStatus)
+        assertEquals("001195012349", item.enteredNationalId)
+        assertEquals("001195012345", item.qrExtractedPayload?.cccd12)
+
+        val queueReq = server.takeRequest()
+        assertEquals("GET", queueReq.method)
+        assertEquals("/api/direct-entry/cccd-review?status=NEEDS_REVIEW&limit=25&offset=0", queueReq.path)
+
+        server.enqueue(
+            MockResponse().setResponseCode(200).setBody(
+                """
+                {
+                  "ok": true,
+                  "entry_id": "$entryId",
+                  "entry_version": 3,
+                  "action": "STANDARDIZE_FROM_QR",
+                  "reconciliation_status": "RESOLVED",
+                  "updated_fields": ["national_id"]
+                }
+                """.trimIndent()
+            )
+        )
+        val resolved = repo.directEntryService.resolveCccdReviewStandardizeFromQr(
+            entryId = entryId,
+            expectedEntryVersion = 2,
+            fields = listOf("national_id"),
+            reason = "Chuẩn hoá theo QR"
+        )
+        assertEquals("RESOLVED", resolved.reconciliationStatus)
+        assertEquals(listOf("national_id"), resolved.updatedFields)
+        val resolveReq = server.takeRequest()
+        assertEquals("POST", resolveReq.method)
+        assertEquals("/api/direct-entry/entries/$entryId/cccd-review", resolveReq.path)
+        val resolveBody = JSONObject(resolveReq.body.readUtf8())
+        assertEquals("STANDARDIZE_FROM_QR", resolveBody.getString("action"))
+        assertEquals(2, resolveBody.getInt("expected_entry_version"))
     }
 }

@@ -191,7 +191,7 @@ object DirectEntryContract {
             laborTypeDisplay = defaultLabor?.displayName.orEmpty(),
             firstWorkDateUi = todayUiInHcm(),
             employmentStatusUi = "Đang làm",
-            genderUi = "Nam"
+            genderUi = ""
         )
     }
 
@@ -1153,6 +1153,260 @@ object DirectEntryContract {
         )
     }
 
+    val ALLOWED_CCCD_REVIEW_STATUS_FILTERS = setOf(
+        "NEEDS_REVIEW",
+        "MISMATCH",
+        "QR_UNREADABLE",
+        "PENDING",
+        "MATCHED_INITIAL",
+        "RESOLVED",
+        "ALL"
+    )
+
+    val ALLOWED_CCCD_STANDARDIZE_FIELDS = setOf(
+        "national_id",
+        "display_name",
+        "date_of_birth",
+        "gender",
+        "address",
+        "national_id_issued_at"
+    )
+
+    fun formatIsoTimestampHcmUi(isoOrNull: String?, fallbackIso: String? = null): String {
+        val raw = isoOrNull?.trim()?.takeIf { it.isNotEmpty() }
+            ?: fallbackIso?.trim()?.takeIf { it.isNotEmpty() }
+            ?: return ""
+        val epochMs = runCatching { java.time.Instant.parse(raw).toEpochMilli() }.getOrNull()
+            ?: runCatching { java.time.OffsetDateTime.parse(raw).toInstant().toEpochMilli() }.getOrNull()
+        if (epochMs != null) {
+            return SimpleDateFormat("HH:mm · dd/MM/yyyy", Locale.US).apply {
+                timeZone = TimeZone.getTimeZone("Asia/Ho_Chi_Minh")
+            }.format(Date(epochMs))
+        }
+        val dateOnly = raw.take(10)
+        return if (ISO_DATE_REGEX.matches(dateOnly)) isoDateToUiDate(dateOnly) else raw
+    }
+
+    fun parseCccdReviewQueueResponse(json: JSONObject): CccdReviewQueuePage {
+        val scopeKind = json.optString("scope_kind", "own").trim()
+        val statusFilter = json.optString("status_filter", "NEEDS_REVIEW").trim()
+        val limit = json.optInt("limit", 25).coerceIn(1, 100)
+        val offset = json.optInt("offset", 0).coerceAtLeast(0)
+        val totalCount = json.optInt("total_count", 0).coerceAtLeast(0)
+
+        val summaryObj = json.optJSONObject("summary")
+        val summary = CccdReviewSummary(
+            totalCount = summaryObj?.optInt("total_count", totalCount) ?: totalCount,
+            needsReviewCount = summaryObj?.optInt("needs_review_count", 0) ?: 0,
+            mismatchCount = summaryObj?.optInt("mismatch_count", 0) ?: 0,
+            qrUnreadableCount = summaryObj?.optInt("qr_unreadable_count", 0) ?: 0,
+            pendingCount = summaryObj?.optInt("pending_count", 0) ?: 0,
+            matchedInitialCount = summaryObj?.optInt("matched_initial_count", 0) ?: 0,
+            resolvedCount = summaryObj?.optInt("resolved_count", 0) ?: 0
+        )
+
+        val rowsArr = json.optJSONArray("rows") ?: JSONArray()
+        val rows = buildList {
+            for (i in 0 until rowsArr.length()) {
+                val r = rowsArr.optJSONObject(i) ?: continue
+                val entryId = r.optString("entry_id", "").trim()
+                if (!UUID_REGEX.matches(entryId)) continue
+                val qrObj = r.optJSONObject("qr_extracted_payload")
+                val qrPayload = if (qrObj != null) {
+                    val cccd12 = qrObj.optString("cccd_12", "").trim()
+                    if (cccd12.isNotEmpty()) {
+                        val gCanon = qrObj.optNullableString("gender_canonical")
+                        val gUi = qrObj.optNullableString("gender_raw") ?: when (gCanon) {
+                            "MALE" -> "Nam"
+                            "FEMALE" -> "Nữ"
+                            else -> null
+                        }
+                        CccdDecodedQrPayload(
+                            cccd12 = cccd12,
+                            legacyId9 = qrObj.optNullableString("legacy_id_9"),
+                            fullName = qrObj.optNullableString("full_name"),
+                            dateOfBirthUi = qrObj.optNullableString("date_of_birth_ui"),
+                            genderCanonical = gCanon,
+                            genderUi = gUi,
+                            address = qrObj.optNullableString("address"),
+                            issueDateUi = qrObj.optNullableString("issue_date_ui")
+                        )
+                    } else null
+                } else null
+
+                val compArr = r.optJSONArray("comparison") ?: JSONArray()
+                val comparison = buildList {
+                    for (j in 0 until compArr.length()) {
+                        val c = compArr.optJSONObject(j) ?: continue
+                        val fieldKey = c.optString("field", "").trim()
+                        if (fieldKey.isEmpty()) continue
+                        add(
+                            CccdReviewComparisonField(
+                                field = fieldKey,
+                                label = c.optString("label", fieldKey),
+                                enteredValue = c.optNullableString("entered_value"),
+                                qrValue = c.optNullableString("qr_value"),
+                                status = c.optString("status", "QR_MISSING").trim()
+                            )
+                        )
+                    }
+                }
+
+                add(
+                    CccdReviewQueueItem(
+                        entryId = entryId,
+                        submissionId = r.optString("submission_id", "").trim(),
+                        submissionState = r.optString("submission_state", "").trim(),
+                        entryVersion = r.optInt("entry_version", 1).coerceAtLeast(1),
+                        employeeCode = r.optString("employee_code", "").trim(),
+                        projectId = r.optString("project_id", "").trim(),
+                        projectDisplay = r.optString("project_display", "").trim(),
+                        firstWorkDate = r.optString("first_work_date", "").trim(),
+                        recruiterId = r.optString("recruiter_id", "").trim(),
+                        recruiterDisplay = r.optString("recruiter_display", "").trim(),
+                        enteredDisplayName = r.optString("entered_display_name", "").trim(),
+                        enteredNationalId = r.optNullableString("entered_national_id"),
+                        enteredDateOfBirth = r.optNullableString("entered_date_of_birth"),
+                        enteredGender = r.optNullableString("entered_gender"),
+                        enteredAddress = r.optNullableString("entered_address"),
+                        enteredNationalIdIssuedAt = r.optNullableString("entered_national_id_issued_at"),
+                        cccdFrontDocumentId = r.optNullableString("cccd_front_document_id"),
+                        cccdFrontUploadStatus = r.optNullableString("cccd_front_upload_status"),
+                        cccdFrontQrStatus = r.optString("cccd_front_qr_status", "NOT_UPLOADED").trim(),
+                        cccdFrontPreviewPath = r.optNullableString("cccd_front_preview_path"),
+                        cccdBackDocumentId = r.optNullableString("cccd_back_document_id"),
+                        cccdBackUploadStatus = r.optNullableString("cccd_back_upload_status"),
+                        cccdBackQrStatus = r.optString("cccd_back_qr_status", "NOT_UPLOADED").trim(),
+                        cccdBackPreviewPath = r.optNullableString("cccd_back_preview_path"),
+                        qrExtractedPayload = qrPayload,
+                        reconciliationStatus = r.optString("reconciliation_status", "PENDING").trim(),
+                        resolutionAction = r.optNullableString("resolution_action"),
+                        resolvedAt = r.optNullableString("resolved_at"),
+                        resolvedByUserId = r.optNullableString("resolved_by_user_id"),
+                        resolutionNote = r.optNullableString("resolution_note"),
+                        comparison = comparison
+                    )
+                )
+            }
+        }
+
+        return CccdReviewQueuePage(
+            scopeKind = scopeKind,
+            statusFilter = statusFilter,
+            limit = limit,
+            offset = offset,
+            totalCount = totalCount,
+            summary = summary,
+            rows = rows
+        )
+    }
+
+    fun buildCccdReviewUpdateEnteredCccdPayload(
+        expectedEntryVersion: Int,
+        nationalId: String,
+        applyBlankFieldsFromQr: Boolean = true,
+        reason: String? = null
+    ): JSONObject {
+        if (expectedEntryVersion < 1) {
+            throw invalid("EXPECTED_VERSION_INVALID", "Phiên bản hồ sơ không hợp lệ.")
+        }
+        val cleanCccd = nationalId.trim()
+        if (!isValidCccd12(cleanCccd)) {
+            throw invalid("NATIONAL_ID_INVALID", "Số CCCD cần sửa phải gồm đúng 12 chữ số hợp lệ (giữ nguyên số 0 ở đầu).")
+        }
+        val cleanReason = reason?.trim()?.takeIf { it.isNotEmpty() }
+        if (cleanReason != null && (cleanReason.length > 500 || hasControlCharacter(cleanReason))) {
+            throw invalid("REASON_INVALID", "Ghi chú xử lý không hợp lệ (tối đa 500 ký tự).")
+        }
+        return JSONObject()
+            .put("action", "UPDATE_ENTERED_CCCD")
+            .put("expected_entry_version", expectedEntryVersion)
+            .put("national_id", cleanCccd)
+            .put("apply_blank_fields_from_qr", applyBlankFieldsFromQr)
+            .put("reason", cleanReason ?: JSONObject.NULL)
+    }
+
+    fun buildCccdReviewStandardizeFromQrPayload(
+        expectedEntryVersion: Int,
+        fields: List<String>,
+        reason: String? = null
+    ): JSONObject {
+        if (expectedEntryVersion < 1) {
+            throw invalid("EXPECTED_VERSION_INVALID", "Phiên bản hồ sơ không hợp lệ.")
+        }
+        val distinctFields = fields.map { it.trim() }.filter { it.isNotEmpty() }.distinct()
+        if (distinctFields.isEmpty() || distinctFields.any { it !in ALLOWED_CCCD_STANDARDIZE_FIELDS }) {
+            throw invalid("STANDARDIZE_FIELDS_INVALID", "Vui lòng chọn ít nhất 1 trường hợp lệ để chuẩn hóa từ QR.")
+        }
+        val cleanReason = reason?.trim()?.takeIf { it.isNotEmpty() }
+        if (cleanReason != null && (cleanReason.length > 500 || hasControlCharacter(cleanReason))) {
+            throw invalid("REASON_INVALID", "Ghi chú xử lý không hợp lệ (tối đa 500 ký tự).")
+        }
+        val fieldsArr = JSONArray()
+        distinctFields.forEach { fieldsArr.put(it) }
+        return JSONObject()
+            .put("action", "STANDARDIZE_FROM_QR")
+            .put("expected_entry_version", expectedEntryVersion)
+            .put("fields", fieldsArr)
+            .put("reason", cleanReason ?: JSONObject.NULL)
+    }
+
+    fun parseCccdReviewResolveResponse(
+        json: JSONObject,
+        expectedEntryId: String
+    ): CccdReviewResolveResult {
+        val entryId = json.optString("entry_id", "").trim()
+        val entryVersion = json.optInt("entry_version", 0)
+        val action = json.optString("action", "").trim()
+        val reconciliationStatus = json.optString("reconciliation_status", "").trim()
+        if (!UUID_REGEX.matches(entryId) || entryId != expectedEntryId.trim() || entryVersion < 1) {
+            throw contractInvalid("CCCD_REVIEW_RESOLVE_RESPONSE_INVALID")
+        }
+        val updatedArr = json.optJSONArray("updated_fields") ?: JSONArray()
+        val updatedFields = buildList {
+            for (i in 0 until updatedArr.length()) {
+                val f = updatedArr.optString(i, "").trim()
+                if (f.isNotEmpty()) add(f)
+            }
+        }
+        return CccdReviewResolveResult(
+            entryId = entryId,
+            entryVersion = entryVersion,
+            action = action,
+            reconciliationStatus = reconciliationStatus,
+            updatedFields = updatedFields
+        )
+    }
+
+    fun parseCccdQrRetryResponse(
+        json: JSONObject,
+        expectedEntryId: String
+    ): CccdQrRetryResult {
+        val entryId = json.optString("entry_id", "").trim()
+        val entryVersion = json.optInt("entry_version", 0)
+        val reconciliationStatus = json.optString("reconciliation_status", "PENDING").trim()
+        val frontQrStatus = json.optString("front_qr_status", "NOT_UPLOADED").trim()
+        val backQrStatus = json.optString("back_qr_status", "NOT_UPLOADED").trim()
+        if (!UUID_REGEX.matches(entryId) || entryId != expectedEntryId.trim() || entryVersion < 1) {
+            throw contractInvalid("CCCD_QR_RETRY_RESPONSE_INVALID")
+        }
+        val filledArr = json.optJSONArray("auto_filled_fields") ?: JSONArray()
+        val autoFilled = buildList {
+            for (i in 0 until filledArr.length()) {
+                val f = filledArr.optString(i, "").trim()
+                if (f.isNotEmpty()) add(f)
+            }
+        }
+        return CccdQrRetryResult(
+            entryId = entryId,
+            entryVersion = entryVersion,
+            reconciliationStatus = reconciliationStatus,
+            frontQrStatus = frontQrStatus,
+            backQrStatus = backQrStatus,
+            autoFilledFields = autoFilled
+        )
+    }
+
     private fun JSONObject.optNullableString(key: String): String? {
         if (!has(key) || isNull(key)) return null
         return optString(key, "").trim().ifEmpty { null }
@@ -2014,6 +2268,163 @@ class DirectEntryService(
         val downloadDir = File(context.cacheDir, "downloads").apply { mkdirs() }
         val outFile = File(downloadDir, finalName)
         outFile.writeBytes(bytes)
-        outFile
+        return@withContext outFile
+    }
+
+    suspend fun fetchCccdReviewQueue(
+        statusFilter: String = "NEEDS_REVIEW",
+        limit: Int = 25,
+        offset: Int = 0
+    ): CccdReviewQueuePage = withContext(Dispatchers.IO) {
+        val normalizedStatus = statusFilter.trim().uppercase(Locale.ROOT).let {
+            if (it in DirectEntryContract.ALLOWED_CCCD_REVIEW_STATUS_FILTERS) it else "NEEDS_REVIEW"
+        }
+        val safeLimit = limit.coerceIn(1, 100)
+        val safeOffset = offset.coerceAtLeast(0)
+        val pathWithQuery = "/api/direct-entry/cccd-review?status=$normalizedStatus&limit=$safeLimit&offset=$safeOffset"
+        val json = httpClient.getJson(pathWithQuery = pathWithQuery, requireOkTrue = true)
+        DirectEntryContract.parseCccdReviewQueueResponse(json)
+    }
+
+    suspend fun resolveCccdReviewUpdateEnteredCccd(
+        entryId: String,
+        expectedEntryVersion: Int,
+        nationalId: String,
+        applyBlankFieldsFromQr: Boolean = true,
+        reason: String? = null
+    ): CccdReviewResolveResult = withContext(Dispatchers.IO) {
+        val cleanEntryId = entryId.trim()
+        if (!DirectEntryContract.isUuid(cleanEntryId)) {
+            throw BackendApiException(
+                kind = BackendFailureKind.INVALID_REQUEST,
+                statusCode = 400,
+                backendCode = "ENTRY_ID_INVALID",
+                message = "Mã hồ sơ người lao động không hợp lệ."
+            )
+        }
+        val payload = DirectEntryContract.buildCccdReviewUpdateEnteredCccdPayload(
+            expectedEntryVersion = expectedEntryVersion,
+            nationalId = nationalId,
+            applyBlankFieldsFromQr = applyBlankFieldsFromQr,
+            reason = reason
+        )
+        val intentSignature = "cccd_review_update:$cleanEntryId:$payload"
+        val idempotencyKey = idempotencyStore.resolve(intentSignature)
+        try {
+            val json = httpClient.postJson(
+                path = "/api/direct-entry/entries/$cleanEntryId/cccd-review",
+                bodyJson = payload,
+                idempotencyKey = idempotencyKey,
+                requireOkTrue = true
+            )
+            idempotencyStore.clear(intentSignature)
+            DirectEntryContract.parseCccdReviewResolveResponse(json, cleanEntryId)
+        } catch (e: BackendApiException) {
+            if (!idempotencyStore.shouldPreserveForRetry(e)) {
+                idempotencyStore.clear(intentSignature)
+            }
+            throw e
+        }
+    }
+
+    suspend fun resolveCccdReviewStandardizeFromQr(
+        entryId: String,
+        expectedEntryVersion: Int,
+        fields: List<String>,
+        reason: String? = null
+    ): CccdReviewResolveResult = withContext(Dispatchers.IO) {
+        val cleanEntryId = entryId.trim()
+        if (!DirectEntryContract.isUuid(cleanEntryId)) {
+            throw BackendApiException(
+                kind = BackendFailureKind.INVALID_REQUEST,
+                statusCode = 400,
+                backendCode = "ENTRY_ID_INVALID",
+                message = "Mã hồ sơ người lao động không hợp lệ."
+            )
+        }
+        val payload = DirectEntryContract.buildCccdReviewStandardizeFromQrPayload(
+            expectedEntryVersion = expectedEntryVersion,
+            fields = fields,
+            reason = reason
+        )
+        val intentSignature = "cccd_review_standardize:$cleanEntryId:$payload"
+        val idempotencyKey = idempotencyStore.resolve(intentSignature)
+        try {
+            val json = httpClient.postJson(
+                path = "/api/direct-entry/entries/$cleanEntryId/cccd-review",
+                bodyJson = payload,
+                idempotencyKey = idempotencyKey,
+                requireOkTrue = true
+            )
+            idempotencyStore.clear(intentSignature)
+            DirectEntryContract.parseCccdReviewResolveResponse(json, cleanEntryId)
+        } catch (e: BackendApiException) {
+            if (!idempotencyStore.shouldPreserveForRetry(e)) {
+                idempotencyStore.clear(intentSignature)
+            }
+            throw e
+        }
+    }
+
+    suspend fun retryCccdQrExtraction(
+        entryId: String,
+        expectedEntryVersion: Int,
+        applyBlankFields: Boolean = true
+    ): CccdQrRetryResult = withContext(Dispatchers.IO) {
+        val cleanEntryId = entryId.trim()
+        if (!DirectEntryContract.isUuid(cleanEntryId)) {
+            throw BackendApiException(
+                kind = BackendFailureKind.INVALID_REQUEST,
+                statusCode = 400,
+                backendCode = "ENTRY_ID_INVALID",
+                message = "Mã hồ sơ người lao động không hợp lệ."
+            )
+        }
+        val body = JSONObject()
+            .put("apply_blank_fields", applyBlankFields)
+            .put("expected_entry_version", expectedEntryVersion.coerceAtLeast(1))
+        val json = httpClient.postJson(
+            path = "/api/direct-entry/entries/$cleanEntryId/cccd-qr",
+            bodyJson = body,
+            idempotencyKey = UUID.randomUUID().toString(),
+            requireOkTrue = true
+        )
+        DirectEntryContract.parseCccdQrRetryResponse(json, cleanEntryId)
+    }
+
+    suspend fun reuploadCccdDocumentAndRetryQr(
+        entryId: String,
+        documentType: String,
+        uri: Uri,
+        initialEntryVersion: Int
+    ): CccdQrRetryResult = withContext(Dispatchers.IO) {
+        if (documentType != "CCCD_FRONT" && documentType != "CCCD_BACK") {
+            throw BackendApiException(
+                kind = BackendFailureKind.INVALID_REQUEST,
+                statusCode = 400,
+                backendCode = "DOCUMENT_TYPE_INVALID",
+                message = "Chỉ hỗ trợ tải lại ảnh CCCD mặt trước hoặc mặt sau."
+            )
+        }
+        val prepared = prepareLocalAttachmentUri(documentType, uri)
+        try {
+            val localFile = File(prepared.localFilePath ?: "")
+            val fileBytes = localFile.readBytes()
+            val updatedVersion = uploadDocumentToEntry(
+                entryId = entryId,
+                initialEntryVersion = initialEntryVersion,
+                documentType = documentType,
+                fileBytes = fileBytes,
+                mimeType = prepared.mimeType,
+                idempotencyBaseKey = UUID.randomUUID().toString()
+            )
+            retryCccdQrExtraction(
+                entryId = entryId,
+                expectedEntryVersion = updatedVersion,
+                applyBlankFields = true
+            )
+        } finally {
+            deleteLocalAttachment(prepared.localFilePath)
+        }
     }
 }

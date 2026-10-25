@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -49,11 +50,9 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
@@ -73,7 +72,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.R
 import com.example.data.SavedLoginAccount
-import kotlinx.coroutines.launch
 
 @Composable
 fun LoginScreen(
@@ -87,7 +85,6 @@ fun LoginScreen(
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
     val scrollState = rememberScrollState()
-    val coroutineScope = rememberCoroutineScope()
     val latestSaved = savedAccounts.firstOrNull()
 
     var identifier by remember { mutableStateOf(latestSaved?.identifier.orEmpty()) }
@@ -109,12 +106,6 @@ fun LoginScreen(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .pointerInput(Unit) {
-                detectTapGestures(onTap = {
-                    focusManager.clearFocus()
-                    keyboardController?.hide()
-                })
-            }
             .background(
                 Brush.verticalGradient(
                     colors = listOf(
@@ -124,7 +115,14 @@ fun LoginScreen(
                     )
                 )
             )
+            .pointerInput(Unit) {
+                detectTapGestures(onTap = {
+                    focusManager.clearFocus()
+                    keyboardController?.hide()
+                })
+            }
             .statusBarsPadding()
+            .navigationBarsPadding()
             .imePadding(),
         contentAlignment = Alignment.TopCenter
     ) {
@@ -133,7 +131,7 @@ fun LoginScreen(
                 .fillMaxWidth()
                 .widthIn(max = 420.dp)
                 .verticalScroll(scrollState)
-                .padding(horizontal = 22.dp, vertical = 10.dp),
+                .padding(horizontal = 22.dp, vertical = 12.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Surface(
@@ -332,13 +330,6 @@ fun LoginScreen(
                         ),
                         modifier = Modifier
                             .fillMaxWidth()
-                            .onFocusChanged {
-                                if (it.isFocused) {
-                                    coroutineScope.launch {
-                                        scrollState.animateScrollTo(scrollState.maxValue)
-                                    }
-                                }
-                            }
                             .testTag("login_identifier_input")
                     )
 
@@ -393,13 +384,6 @@ fun LoginScreen(
                         },
                         modifier = Modifier
                             .fillMaxWidth()
-                            .onFocusChanged {
-                                if (it.isFocused) {
-                                    coroutineScope.launch {
-                                        scrollState.animateScrollTo(scrollState.maxValue)
-                                    }
-                                }
-                            }
                             .testTag("login_password_input")
                     )
 
