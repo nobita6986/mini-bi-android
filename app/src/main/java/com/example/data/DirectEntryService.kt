@@ -1176,8 +1176,7 @@ object DirectEntryContract {
         val raw = isoOrNull?.trim()?.takeIf { it.isNotEmpty() }
             ?: fallbackIso?.trim()?.takeIf { it.isNotEmpty() }
             ?: return ""
-        val epochMs = runCatching { java.time.Instant.parse(raw).toEpochMilli() }.getOrNull()
-            ?: runCatching { java.time.OffsetDateTime.parse(raw).toInstant().toEpochMilli() }.getOrNull()
+        val epochMs = runCatching { AttendanceTimeContract.parseIsoInstantToEpochMillis(raw) }.getOrNull()
         if (epochMs != null) {
             return SimpleDateFormat("HH:mm · dd/MM/yyyy", Locale.US).apply {
                 timeZone = TimeZone.getTimeZone("Asia/Ho_Chi_Minh")
