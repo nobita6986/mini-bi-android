@@ -746,7 +746,8 @@ data class WorkReportObligationEntity(
     val payloadJsonRaw: String,
     val latestReviewDecision: String?,
     val latestReviewReason: String?,
-    val submittedAtIso: String?
+    val submittedAtIso: String?,
+    val isOverdue: Boolean = false
 )
 
 @Entity(tableName = "cached_worker_directory_rows")
@@ -848,7 +849,7 @@ interface MiniBiDao {
         WorkReportObligationEntity::class,
         WorkerProfileEntity::class
     ],
-    version = 5,
+    version = 6,
     exportSchema = false
 )
 abstract class MiniBiDatabase : RoomDatabase() {
@@ -868,6 +869,12 @@ abstract class MiniBiDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE cached_work_report_obligations ADD COLUMN isOverdue INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
         @Volatile
         private var INSTANCE: MiniBiDatabase? = null
 
@@ -878,7 +885,7 @@ abstract class MiniBiDatabase : RoomDatabase() {
                     MiniBiDatabase::class.java,
                     "mini_bi_hrpartner.db"
                 )
-                    .addMigrations(MIGRATION_4_5)
+                    .addMigrations(MIGRATION_4_5, MIGRATION_5_6)
                     .fallbackToDestructiveMigration(true)
                     .build()
                 INSTANCE = instance

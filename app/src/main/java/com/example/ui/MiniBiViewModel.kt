@@ -1710,6 +1710,30 @@ class MiniBiViewModel internal constructor(
         _editingObligation.value = null
     }
 
+    private suspend fun handleWorkReportDeadlinePassed(obligation: WorkReportObligationEntity) {
+        val currentOpen = _editingObligation.value?.takeIf { it.obligationId == obligation.obligationId } ?: obligation
+        val lockedFallback = currentOpen.copy(isOverdue = true)
+        _editingObligation.value = lockedFallback
+        repository.dao.upsertWorkReportCache(lockedFallback)
+
+        val refreshedList = runCatching {
+            repository.workReportsAndReportingService.fetchMyObligations(status = null)
+        }.onFailure { it.rethrowIfCancelled() }.getOrNull()
+
+        val fromList = refreshedList?.firstOrNull { it.obligationId == obligation.obligationId }
+        val resolvedPayload = lockedFallback.payloadJsonRaw.takeIf { it.isNotBlank() && it != "{}" }
+            ?: fromList?.payloadJsonRaw
+            ?: lockedFallback.payloadJsonRaw
+        val finalLocked = (fromList ?: lockedFallback).copy(
+            isOverdue = true,
+            payloadJsonRaw = resolvedPayload
+        )
+        repository.dao.upsertWorkReportCache(finalLocked)
+        if (_editingObligation.value?.obligationId == obligation.obligationId) {
+            _editingObligation.value = finalLocked
+        }
+    }
+
     fun saveWorkReportDraft(obligation: WorkReportObligationEntity, payloadJson: JSONObject) {
         if (_workReportMutationBusy.value) return
         _workReportMutationBusy.value = true
@@ -1725,7 +1749,9 @@ class MiniBiViewModel internal constructor(
                 showBanner("Đã lưu bản nháp báo cáo.")
             } catch (e: BackendApiException) {
                 showBanner(e.message, isError = true)
-                if (e.kind == BackendFailureKind.CONFLICT) {
+                if (e.backendCode == "WORK_REPORT_DEADLINE_PASSED") {
+                    handleWorkReportDeadlinePassed(obligation)
+                } else if (e.kind == BackendFailureKind.CONFLICT) {
                     val refreshed = runCatching {
                         repository.workReportsAndReportingService.fetchObligationDetail(
                             obligationId = obligation.obligationId,
@@ -1761,7 +1787,9 @@ class MiniBiViewModel internal constructor(
                 showBanner("Đã nộp báo cáo thành công ($vnState).")
             } catch (e: BackendApiException) {
                 showBanner(e.message, isError = true)
-                if (e.kind == BackendFailureKind.CONFLICT) {
+                if (e.backendCode == "WORK_REPORT_DEADLINE_PASSED") {
+                    handleWorkReportDeadlinePassed(obligation)
+                } else if (e.kind == BackendFailureKind.CONFLICT) {
                     val refreshed = runCatching {
                         repository.workReportsAndReportingService.fetchObligationDetail(
                             obligationId = obligation.obligationId,

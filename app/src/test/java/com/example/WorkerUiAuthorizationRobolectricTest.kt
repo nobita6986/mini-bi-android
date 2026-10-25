@@ -2588,4 +2588,255 @@ class WorkerUiAuthorizationRobolectricTest {
         composeTestRule.waitForIdle()
         composeTestRule.onNodeWithText("Thời gian nhập: 17:24 · 25/10/2026").assertIsDisplayed()
     }
+
+    @Test
+    @Config(qualifiers = "w480dp-h1600dp")
+    fun `work reports screen moves overdue obligations to history with red badges and read-only viewer while keeping past-due REJECTED editable`() {
+        val idOverdueNotStarted = "33333333-bbbb-4222-8333-cccc44440001"
+        val idOverdueDraft = "33333333-bbbb-4222-8333-cccc44440002"
+        val idRejectedPastDue = "33333333-bbbb-4222-8333-cccc44440003"
+        val templateId = "dddd1111-eeee-4222-8333-ffff44445555"
+        val schemaJson = """
+            {
+              "contract_version": "work-report-schema/1.0",
+              "sections": [{"section_key": "kpi", "label": "KPI Tuyển dụng", "sort_order": 1}],
+              "fields": [{"field_key": "calls_made", "section_key": "kpi", "field_type": "integer", "label": "Số cuộc gọi", "required": true, "sort_order": 1}]
+            }
+        """.trimIndent()
+
+        val server = MockWebServer()
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val path = request.path.orEmpty()
+                return when {
+                    path == "/api/work-reports/obligations" -> MockResponse()
+                        .setResponseCode(200)
+                        .setHeader("Content-Type", "application/json")
+                        .setBody(
+                            """
+                            {
+                              "ok": true,
+                              "data": [
+                                {
+                                  "obligation_id": "$idOverdueNotStarted",
+                                  "template_id": "$templateId",
+                                  "template_code": "DAILY_REC",
+                                  "template_name": "Báo cáo ngày 20/10",
+                                  "period_type": "DAILY",
+                                  "period_key": "2026-10-20",
+                                  "period_start_date": "2026-10-20",
+                                  "period_end_date": "2026-10-20",
+                                  "due_at": "2026-10-20T17:00:00Z",
+                                  "is_mandatory": true,
+                                  "obligation_status": "ACTIVE",
+                                  "is_overdue": true,
+                                  "submission_id": null,
+                                  "submission_state": "NOT_STARTED",
+                                  "submission_version": null,
+                                  "version": 1,
+                                  "schema_json": $schemaJson
+                                },
+                                {
+                                  "obligation_id": "$idOverdueDraft",
+                                  "template_id": "$templateId",
+                                  "template_code": "DAILY_REC",
+                                  "template_name": "Báo cáo ngày 21/10",
+                                  "period_type": "DAILY",
+                                  "period_key": "2026-10-21",
+                                  "period_start_date": "2026-10-21",
+                                  "period_end_date": "2026-10-21",
+                                  "due_at": "2026-10-21T17:00:00Z",
+                                  "is_mandatory": true,
+                                  "obligation_status": "ACTIVE",
+                                  "is_overdue": true,
+                                  "submission_id": "99991111-2222-4333-8444-555566660002",
+                                  "submission_state": "DRAFT",
+                                  "submission_version": 1,
+                                  "version": 1,
+                                  "schema_json": $schemaJson
+                                },
+                                {
+                                  "obligation_id": "$idRejectedPastDue",
+                                  "template_id": "$templateId",
+                                  "template_code": "DAILY_REC",
+                                  "template_name": "Báo cáo cần sửa lại",
+                                  "period_type": "DAILY",
+                                  "period_key": "2020-01-01",
+                                  "period_start_date": "2020-01-01",
+                                  "period_end_date": "2020-01-01",
+                                  "due_at": "2020-01-01T00:00:00Z",
+                                  "is_mandatory": true,
+                                  "obligation_status": "ACTIVE",
+                                  "is_overdue": false,
+                                  "submission_id": "99991111-2222-4333-8444-555566660003",
+                                  "submission_state": "REJECTED",
+                                  "submission_version": 2,
+                                  "version": 1,
+                                  "schema_json": $schemaJson
+                                }
+                              ]
+                            }
+                            """.trimIndent()
+                        )
+                    path == "/api/work-reports/obligations/$idOverdueDraft" -> MockResponse()
+                        .setResponseCode(200)
+                        .setHeader("Content-Type", "application/json")
+                        .setBody(
+                            """
+                            {
+                              "ok": true,
+                              "data": {
+                                "obligation": {
+                                  "obligation_id": "$idOverdueDraft",
+                                  "template_id": "$templateId",
+                                  "period_type": "DAILY",
+                                  "period_key": "2026-10-21",
+                                  "period_start_date": "2026-10-21",
+                                  "period_end_date": "2026-10-21",
+                                  "due_at": "2026-10-21T17:00:00Z",
+                                  "is_mandatory": true,
+                                  "obligation_status": "ACTIVE",
+                                  "is_overdue": true,
+                                  "version": 1
+                                },
+                                "template": {
+                                  "template_code": "DAILY_REC",
+                                  "display_name": "Báo cáo ngày 21/10",
+                                  "schema_json": $schemaJson
+                                },
+                                "submission": {
+                                  "submission_id": "99991111-2222-4333-8444-555566660002",
+                                  "state": "DRAFT",
+                                  "version": 1,
+                                  "draft_payload_json": {"calls_made": 18}
+                                },
+                                "revisions": [],
+                                "latest_review_event": null
+                              }
+                            }
+                            """.trimIndent()
+                        )
+                    path == "/api/work-reports/obligations/$idRejectedPastDue" -> MockResponse()
+                        .setResponseCode(200)
+                        .setHeader("Content-Type", "application/json")
+                        .setBody(
+                            """
+                            {
+                              "ok": true,
+                              "data": {
+                                "obligation": {
+                                  "obligation_id": "$idRejectedPastDue",
+                                  "template_id": "$templateId",
+                                  "period_type": "DAILY",
+                                  "period_key": "2020-01-01",
+                                  "period_start_date": "2020-01-01",
+                                  "period_end_date": "2020-01-01",
+                                  "due_at": "2020-01-01T00:00:00Z",
+                                  "is_mandatory": true,
+                                  "obligation_status": "ACTIVE",
+                                  "is_overdue": false,
+                                  "version": 1
+                                },
+                                "template": {
+                                  "template_code": "DAILY_REC",
+                                  "display_name": "Báo cáo cần sửa lại",
+                                  "schema_json": $schemaJson
+                                },
+                                "submission": {
+                                  "submission_id": "99991111-2222-4333-8444-555566660003",
+                                  "state": "REJECTED",
+                                  "version": 2,
+                                  "draft_payload_json": {"calls_made": 9}
+                                },
+                                "revisions": [],
+                                "latest_review_event": {"decision": "REJECTED", "reason": "Cần cập nhật lại"}
+                              }
+                            }
+                            """.trimIndent()
+                        )
+                    else -> MockResponse()
+                        .setResponseCode(200)
+                        .setHeader("Content-Type", "application/json")
+                        .setBody("""{"ok":true,"data":[]}""")
+                }
+            }
+        }
+        server.start()
+
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val db = buildTestDb(app)
+        val cookieFile = File(app.cacheDir, "ui_wr_overdue_${System.nanoTime()}.enc")
+        val prefsFile = File(app.cacheDir, "ui_wr_overdue_prefs_${System.nanoTime()}.preferences_pb")
+        val repo = MiniBiRepository(
+            context = app,
+            database = db,
+            defaultServerUrl = server.url("/").toString().trimEnd('/'),
+            allowDebugUrlOverride = true,
+            cookieStorageFile = cookieFile,
+            preferencesStorageFile = prefsFile,
+            cookieCipher = JvmAes256GcmCookieCipher()
+        )
+        val vm = MiniBiViewModel(app, repo)
+        registerTestResourcesCleanup(vm, db, server, cookieFile, prefsFile)
+        val actor = AppActor(
+            appUserId = "88888888-3333-4333-8444-555555555555",
+            displayName = "Nguyễn Tuyển Dụng",
+            capabilities = listOf("entry_read"),
+            scopes = listOf(ActorScope("own", "self", "2026-01-01", null)),
+            selfRecruiterSuggestion = null
+        )
+
+        composeTestRule.setContent {
+            MyApplicationTheme {
+                com.example.ui.screens.WorkReportsScreen(
+                    actor = actor,
+                    viewModel = vm,
+                    onBackToDashboard = {}
+                )
+            }
+        }
+
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            !vm.workReportsLoading.value && vm.workReports.value.size == 3
+        }
+        composeTestRule.waitForIdle()
+
+        // 1. Active tab ("Cần nộp (1)") contains ONLY the REJECTED obligation, not overdue items
+        composeTestRule.onNodeWithText("Cần nộp (1)").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Đã lưu / Đã nộp (3)").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Báo cáo cần sửa lại").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Báo cáo ngày 20/10").assertDoesNotExist()
+        composeTestRule.onNodeWithText("Báo cáo ngày 21/10").assertDoesNotExist()
+
+        // REJECTED obligation with past due_at remains editable when opened
+        composeTestRule.onNodeWithTag("open_edit_report_$idRejectedPastDue").performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("submit_final_report_button").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("save_draft_report_button").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("cancel_edit_report_button").performClick()
+        composeTestRule.waitForIdle()
+
+        // 2. Switch to History tab ("Đã lưu / Đã nộp (3)") -> shows overdue badges and read-only form viewer
+        composeTestRule.onNodeWithTag("work_reports_subtab_history").performClick()
+        composeTestRule.waitForIdle()
+
+        composeTestRule.onNodeWithText("Quá hạn · Chưa nộp").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Quá hạn · Bản nháp chưa nộp").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("open_edit_report_$idOverdueNotStarted").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("open_edit_report_$idOverdueDraft").assertIsDisplayed().performClick()
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            vm.editingObligation.value?.obligationId == idOverdueDraft &&
+                vm.editingObligation.value?.payloadJsonRaw?.contains("18") == true
+        }
+        composeTestRule.waitForIdle()
+
+        // Form is open in read-only mode: shows overdue banner, hides save/submit buttons, keeps close button
+        composeTestRule.onNodeWithTag("overdue_readonly_form_banner").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("submit_final_report_button").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("save_draft_report_button").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("cancel_edit_report_button").assertIsDisplayed().performClick()
+        composeTestRule.waitForIdle()
+    }
 }

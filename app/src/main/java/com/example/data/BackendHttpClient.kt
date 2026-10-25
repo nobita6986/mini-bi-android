@@ -65,7 +65,10 @@ class BackendHttpClient(
             "ATTENDANCE_REQUEST_INVALID" to "Dữ liệu chấm công gửi lên chưa đầy đủ. Vui lòng chụp lại ảnh, kiểm tra GPS và thử lại.",
             "ATTENDANCE_CONFIG_REQUIRED" to "Hệ thống chấm công trên máy chủ đang bảo trì cấu hình. Vui lòng thử lại sau ít phút.",
             "ATTENDANCE_UNAVAILABLE" to "Hệ thống chấm công đang bận tạm thời. Vui lòng thử lại sau ít phút.",
-            "ACTOR_NOT_AVAILABLE" to "Tài khoản hiện chưa được kích hoạt quyền chấm công. Vui lòng đăng nhập lại và thử lại, hoặc liên hệ quản trị viên."
+            "ACTOR_NOT_AVAILABLE" to "Tài khoản hiện chưa được kích hoạt quyền chấm công. Vui lòng đăng nhập lại và thử lại, hoặc liên hệ quản trị viên.",
+            // Work report business codes
+            "WORK_REPORT_DEADLINE_PASSED" to "Đã quá hạn nộp báo cáo.",
+            "WORK_REPORT_VERSION_CONFLICT" to "Dữ liệu báo cáo đã thay đổi trên máy chủ (xung đột phiên bản). Vui lòng tải lại và thử lại."
         )
 
         internal fun extractErrorCodeAndMessage(bodyStr: String): Pair<String?, String?> {

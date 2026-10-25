@@ -524,6 +524,11 @@ object WorkReportsContract {
             message = "Thiếu cấu trúc biểu mẫu báo cáo từ máy chủ."
         )
         val keepCachedDetail = cachedEntity != null && cachedEntity.submissionVersion == submissionVersion
+        val isOverdue = if (obj.has("is_overdue") && !obj.isNull("is_overdue")) {
+            obj.optBoolean("is_overdue", false)
+        } else {
+            cachedEntity?.isOverdue ?: false
+        }
         return WorkReportObligationEntity(
             obligationId = obligationId,
             templateId = templateId,
@@ -544,7 +549,8 @@ object WorkReportsContract {
             payloadJsonRaw = if (keepCachedDetail) cachedEntity!!.payloadJsonRaw else "{}",
             latestReviewDecision = if (keepCachedDetail) cachedEntity!!.latestReviewDecision else null,
             latestReviewReason = if (keepCachedDetail) cachedEntity!!.latestReviewReason else null,
-            submittedAtIso = if (keepCachedDetail) cachedEntity!!.submittedAtIso else null
+            submittedAtIso = if (keepCachedDetail) cachedEntity!!.submittedAtIso else null,
+            isOverdue = isOverdue
         )
     }
 
@@ -628,6 +634,12 @@ object WorkReportsContract {
             null
         }
 
+        val isOverdue = if (obligationObj.has("is_overdue") && !obligationObj.isNull("is_overdue")) {
+            obligationObj.optBoolean("is_overdue", false)
+        } else {
+            fallback?.isOverdue ?: false
+        }
+
         return WorkReportObligationEntity(
             obligationId = obligationId,
             templateId = templateId,
@@ -649,7 +661,8 @@ object WorkReportsContract {
             latestReviewDecision = latestReviewObj?.optNullableText("decision"),
             latestReviewReason = latestReviewObj?.optNullableText("reason"),
             submittedAtIso = submissionObj?.optNullableText("latest_submitted_at")
-                ?: submissionObj?.optNullableText("first_submitted_at")
+                ?: submissionObj?.optNullableText("first_submitted_at"),
+            isOverdue = isOverdue
         )
     }
 
@@ -774,6 +787,34 @@ object WorkReportsContract {
         "NOT_STARTED" -> "Chưa làm"
         "" -> "—"
         else -> "Đang xử lý"
+    }
+
+    fun isActionableObligation(item: WorkReportObligationEntity): Boolean {
+        val status = item.obligationStatus.trim().uppercase(Locale.ROOT)
+        val state = item.submissionState.trim().uppercase(Locale.ROOT)
+        return status == "ACTIVE" &&
+            !item.isOverdue &&
+            state in setOf("NOT_STARTED", "DRAFT", "REJECTED")
+    }
+
+    fun isHistoryObligation(item: WorkReportObligationEntity): Boolean {
+        val state = item.submissionState.trim().uppercase(Locale.ROOT)
+        return item.isOverdue || state != "NOT_STARTED"
+    }
+
+    fun isEditableObligation(item: WorkReportObligationEntity): Boolean =
+        isActionableObligation(item)
+
+    fun obligationBadgeDisplayLabel(item: WorkReportObligationEntity): String {
+        val state = item.submissionState.trim().uppercase(Locale.ROOT)
+        if (item.isOverdue) {
+            return when (state) {
+                "DRAFT" -> "Quá hạn · Bản nháp chưa nộp"
+                "NOT_STARTED" -> "Quá hạn · Chưa nộp"
+                else -> submissionStateDisplayLabel(state)
+            }
+        }
+        return submissionStateDisplayLabel(state)
     }
 
     fun formatPercentVi(pct: Float?): String {
