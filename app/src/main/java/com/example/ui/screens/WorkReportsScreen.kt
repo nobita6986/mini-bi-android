@@ -139,13 +139,10 @@ fun WorkReportsScreen(
     }
 
     val activeObligations = remember(reports) {
-        reports.filter {
-            it.obligationStatus == "ACTIVE" &&
-                it.submissionState in listOf("NOT_STARTED", "DRAFT", "REJECTED")
-        }
+        reports.filter { WorkReportsContract.isActionableObligation(it) }
     }
     val historyObligations = remember(reports) {
-        reports.filter { it.submissionState != "NOT_STARTED" }
+        reports.filter { WorkReportsContract.isHistoryObligation(it) }
     }
 
     val tabDefs = buildList {
@@ -320,8 +317,7 @@ fun WorkReportsScreen(
                 val sections = remember(target.schemaJsonRaw) {
                     parseDynamicSections(target.schemaJsonRaw)
                 }
-                val isEditableObligation = target.obligationStatus == "ACTIVE" &&
-                    target.submissionState in listOf("NOT_STARTED", "DRAFT", "REJECTED")
+                val isEditableObligation = WorkReportsContract.isEditableObligation(target)
                 DynamicWorkReportFormCard(
                     obligation = target,
                     sections = sections,
@@ -388,8 +384,10 @@ fun WorkReportsScreen(
                         val isOpenInEditor = editingObligation?.obligationId == item.obligationId
                         WorkReportObligationCard(
                             item = item,
-                            showEditAction = item.obligationStatus == "ACTIVE" &&
-                                item.submissionState in listOf("DRAFT", "REJECTED"),
+                            showEditAction = item.isOverdue || (
+                                item.obligationStatus == "ACTIVE" &&
+                                    item.submissionState in listOf("DRAFT", "REJECTED")
+                            ),
                             isCurrentlyEditing = isOpenInEditor,
                             onOpenEdit = {
                                 if (isOpenInEditor) {
@@ -639,6 +637,25 @@ internal fun DynamicWorkReportFormCard(
             }
 
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+
+            if (obligation.isOverdue) {
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = SemanticColors.ErrorLight.copy(alpha = 0.12f),
+                    border = BorderStroke(1.dp, SemanticColors.ErrorLight.copy(alpha = 0.35f)),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("overdue_readonly_form_banner")
+                ) {
+                    Text(
+                        text = "Biểu mẫu đang ở chế độ chỉ xem (quá hạn nộp).",
+                        style = MaterialTheme.typography.bodySmall,
+                        fontWeight = FontWeight.Medium,
+                        color = SemanticColors.ErrorLight,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)
+                    )
+                }
+            }
 
             if (sections.isEmpty()) {
                 Text(
@@ -1002,10 +1019,18 @@ private fun WorkReportObligationCard(
     isCurrentlyEditing: Boolean = false,
     onOpenEdit: () -> Unit
 ) {
-    val badgeColor = submissionStateColor(item.submissionState)
-    val stateLabel = WorkReportsContract.submissionStateDisplayLabel(item.submissionState)
+    val isOverdueBadge = item.isOverdue &&
+        item.submissionState.trim().uppercase() in setOf("NOT_STARTED", "DRAFT")
+    val badgeColor = if (isOverdueBadge) {
+        SemanticColors.ErrorLight
+    } else {
+        submissionStateColor(item.submissionState)
+    }
+    val stateLabel = WorkReportsContract.obligationBadgeDisplayLabel(item)
     val actionLabel = when {
         isCurrentlyEditing -> "Thu gọn biểu mẫu"
+        item.isOverdue && item.submissionState == "DRAFT" -> "Xem bản nháp"
+        item.isOverdue -> "Xem nội dung"
         item.submissionState == "DRAFT" -> "Tiếp tục điền"
         item.submissionState == "REJECTED" -> "Sửa & nộp lại"
         else -> "Làm báo cáo"

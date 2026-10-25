@@ -1177,4 +1177,422 @@ class WorkReportsReportingAndAttendanceContractTest {
         assertEquals(0, secondInserted)
         assertEquals(2, database.miniBiDao().observeAttendanceForUser(testActor.appUserId).first().size)
     }
+
+    @Test
+    fun `work report obligations parse is_overdue with backward compatibility and classify active vs history tabs without locking REJECTED past due_at`() = runBlocking {
+        val repo = createRepository()
+        val templateId = "dddd1111-eeee-4222-8333-ffff44445555"
+        val idOverdueNotStarted = "11111111-bbbb-4222-8333-cccc44440001"
+        val idOverdueDraft = "11111111-bbbb-4222-8333-cccc44440002"
+        val idRejectedPastDue = "11111111-bbbb-4222-8333-cccc44440003"
+        val idLegacyNoFlag = "11111111-bbbb-4222-8333-cccc44440004"
+
+        val schemaJson = """
+            {
+              "contract_version": "work-report-schema/1.0",
+              "sections": [{"section_key": "kpi", "label": "KPI", "sort_order": 1}],
+              "fields": [{"field_key": "calls_made", "section_key": "kpi", "field_type": "integer", "label": "Số cuộc gọi", "required": true, "sort_order": 1}]
+            }
+        """.trimIndent()
+
+        server.enqueue(
+            MockResponse().setResponseCode(200).setBody(
+                """
+                {
+                  "ok": true,
+                  "data": [
+                    {
+                      "obligation_id": "$idOverdueNotStarted",
+                      "template_id": "$templateId",
+                      "template_code": "DAILY_REC",
+                      "template_name": "Báo cáo ngày",
+                      "period_type": "DAILY",
+                      "period_key": "2026-10-20",
+                      "period_start_date": "2026-10-20",
+                      "period_end_date": "2026-10-20",
+                      "due_at": "2026-10-20T17:00:00Z",
+                      "is_mandatory": true,
+                      "obligation_status": "ACTIVE",
+                      "is_overdue": true,
+                      "submission_id": null,
+                      "submission_state": "NOT_STARTED",
+                      "submission_version": null,
+                      "version": 1,
+                      "schema_json": $schemaJson
+                    },
+                    {
+                      "obligation_id": "$idOverdueDraft",
+                      "template_id": "$templateId",
+                      "template_code": "DAILY_REC",
+                      "template_name": "Báo cáo ngày",
+                      "period_type": "DAILY",
+                      "period_key": "2026-10-21",
+                      "period_start_date": "2026-10-21",
+                      "period_end_date": "2026-10-21",
+                      "due_at": "2026-10-21T17:00:00Z",
+                      "is_mandatory": true,
+                      "obligation_status": "ACTIVE",
+                      "is_overdue": true,
+                      "submission_id": "99991111-2222-4333-8444-555566660002",
+                      "submission_state": "DRAFT",
+                      "submission_version": 1,
+                      "version": 1,
+                      "schema_json": $schemaJson
+                    },
+                    {
+                      "obligation_id": "$idRejectedPastDue",
+                      "template_id": "$templateId",
+                      "template_code": "DAILY_REC",
+                      "template_name": "Báo cáo ngày",
+                      "period_type": "DAILY",
+                      "period_key": "2020-01-01",
+                      "period_start_date": "2020-01-01",
+                      "period_end_date": "2020-01-01",
+                      "due_at": "2020-01-01T00:00:00Z",
+                      "is_mandatory": true,
+                      "obligation_status": "ACTIVE",
+                      "is_overdue": false,
+                      "submission_id": "99991111-2222-4333-8444-555566660003",
+                      "submission_state": "REJECTED",
+                      "submission_version": 2,
+                      "version": 1,
+                      "schema_json": $schemaJson
+                    },
+                    {
+                      "obligation_id": "$idLegacyNoFlag",
+                      "template_id": "$templateId",
+                      "template_code": "DAILY_REC",
+                      "template_name": "Báo cáo ngày",
+                      "period_type": "DAILY",
+                      "period_key": "2026-10-25",
+                      "period_start_date": "2026-10-25",
+                      "period_end_date": "2026-10-25",
+                      "due_at": "2026-10-25T17:00:00Z",
+                      "is_mandatory": true,
+                      "obligation_status": "ACTIVE",
+                      "submission_id": null,
+                      "submission_state": "NOT_STARTED",
+                      "submission_version": null,
+                      "version": 1,
+                      "schema_json": $schemaJson
+                    }
+                  ]
+                }
+                """.trimIndent()
+            )
+        )
+
+        val obligations = repo.workReportsAndReportingService.fetchMyObligations(status = null)
+        assertEquals(4, obligations.size)
+
+        val overdueNotStarted = obligations.first { it.obligationId == idOverdueNotStarted }
+        val overdueDraft = obligations.first { it.obligationId == idOverdueDraft }
+        val rejectedPastDue = obligations.first { it.obligationId == idRejectedPastDue }
+        val legacyNoFlag = obligations.first { it.obligationId == idLegacyNoFlag }
+
+        assertTrue(overdueNotStarted.isOverdue)
+        assertFalse(WorkReportsContract.isActionableObligation(overdueNotStarted))
+        assertTrue(WorkReportsContract.isHistoryObligation(overdueNotStarted))
+        assertFalse(WorkReportsContract.isEditableObligation(overdueNotStarted))
+        assertEquals("Quá hạn · Chưa nộp", WorkReportsContract.obligationBadgeDisplayLabel(overdueNotStarted))
+
+        assertTrue(overdueDraft.isOverdue)
+        assertFalse(WorkReportsContract.isActionableObligation(overdueDraft))
+        assertTrue(WorkReportsContract.isHistoryObligation(overdueDraft))
+        assertFalse(WorkReportsContract.isEditableObligation(overdueDraft))
+        assertEquals("Quá hạn · Bản nháp chưa nộp", WorkReportsContract.obligationBadgeDisplayLabel(overdueDraft))
+
+        // REJECTED with due_at in 2020 but server is_overdue=false must remain actionable & editable
+        assertFalse(rejectedPastDue.isOverdue)
+        assertTrue(WorkReportsContract.isActionableObligation(rejectedPastDue))
+        assertTrue(WorkReportsContract.isHistoryObligation(rejectedPastDue))
+        assertTrue(WorkReportsContract.isEditableObligation(rejectedPastDue))
+        assertEquals("Cần sửa lại", WorkReportsContract.obligationBadgeDisplayLabel(rejectedPastDue))
+
+        // Legacy backend without is_overdue field defaults to false and stays actionable
+        assertFalse(legacyNoFlag.isOverdue)
+        assertTrue(WorkReportsContract.isActionableObligation(legacyNoFlag))
+        assertFalse(WorkReportsContract.isHistoryObligation(legacyNoFlag))
+        assertTrue(WorkReportsContract.isEditableObligation(legacyNoFlag))
+        assertEquals("Chưa làm", WorkReportsContract.obligationBadgeDisplayLabel(legacyNoFlag))
+
+        val activeIds = obligations.filter { WorkReportsContract.isActionableObligation(it) }.map { it.obligationId }
+        val historyIds = obligations.filter { WorkReportsContract.isHistoryObligation(it) }.map { it.obligationId }
+        assertEquals(listOf(idRejectedPastDue, idLegacyNoFlag), activeIds)
+        assertEquals(listOf(idOverdueNotStarted, idOverdueDraft, idRejectedPastDue), historyIds)
+    }
+
+    @Test
+    fun `work report 409 WORK_REPORT_DEADLINE_PASSED maps distinctly from version conflict and locks form while reloading list`() = runBlocking {
+        val deadlineErr = com.example.data.BackendHttpClient.mapHttpError(
+            statusCode = 409,
+            backendCode = "WORK_REPORT_DEADLINE_PASSED",
+            backendMessage = "Work report deadline has passed"
+        )
+        assertEquals(com.example.data.BackendFailureKind.CONFLICT, deadlineErr.kind)
+        assertEquals(409, deadlineErr.statusCode)
+        assertEquals("WORK_REPORT_DEADLINE_PASSED", deadlineErr.backendCode)
+        assertEquals("Đã quá hạn nộp báo cáo.", deadlineErr.message)
+
+        val versionErr = com.example.data.BackendHttpClient.mapHttpError(
+            statusCode = 409,
+            backendCode = "WORK_REPORT_VERSION_CONFLICT",
+            backendMessage = "Version conflict"
+        )
+        assertEquals(com.example.data.BackendFailureKind.CONFLICT, versionErr.kind)
+        assertEquals("WORK_REPORT_VERSION_CONFLICT", versionErr.backendCode)
+        assertFalse(versionErr.message.contains("Đã quá hạn nộp báo cáo."))
+
+        val obligationId = "22222222-bbbb-4222-8333-cccc44440099"
+        val legacyObligationId = "22222222-bbbb-4222-8333-cccc44440088"
+        val templateId = "dddd1111-eeee-4222-8333-ffff44445555"
+        val schemaJson = """
+            {
+              "contract_version": "work-report-schema/1.0",
+              "sections": [{"section_key": "kpi", "label": "KPI", "sort_order": 1}],
+              "fields": [{"field_key": "calls_made", "section_key": "kpi", "field_type": "integer", "label": "Số cuộc gọi", "required": true, "sort_order": 1}]
+            }
+        """.trimIndent()
+
+        var returnVersionConflict = false
+        var detailVersion = 1
+        val recordedPaths = java.util.Collections.synchronizedList(mutableListOf<String>())
+        server.dispatcher = object : okhttp3.mockwebserver.Dispatcher() {
+            override fun dispatch(request: okhttp3.mockwebserver.RecordedRequest): MockResponse {
+                val path = request.path.orEmpty()
+                recordedPaths.add("${request.method} $path")
+                return when (path) {
+                    "/api/work-reports/obligations/$obligationId" -> MockResponse()
+                        .setResponseCode(200)
+                        .setHeader("Content-Type", "application/json")
+                        .setBody(
+                            """
+                            {
+                              "ok": true,
+                              "data": {
+                                "obligation": {
+                                  "obligation_id": "$obligationId",
+                                  "template_id": "$templateId",
+                                  "period_type": "DAILY",
+                                  "period_key": "2026-10-24",
+                                  "period_start_date": "2026-10-24",
+                                  "period_end_date": "2026-10-24",
+                                  "due_at": "2026-10-24T17:00:00Z",
+                                  "is_mandatory": true,
+                                  "obligation_status": "ACTIVE",
+                                  "is_overdue": false,
+                                  "version": 1
+                                },
+                                "template": {
+                                  "template_code": "DAILY_REC",
+                                  "display_name": "Báo cáo ngày",
+                                  "schema_json": $schemaJson
+                                },
+                                "submission": {
+                                  "submission_id": "99991111-2222-4333-8444-555566660099",
+                                  "state": "DRAFT",
+                                  "version": $detailVersion,
+                                  "draft_payload_json": {"calls_made": 12}
+                                },
+                                "revisions": [],
+                                "latest_review_event": null
+                              }
+                            }
+                            """.trimIndent()
+                        )
+                    "/api/work-reports/submissions/$obligationId/draft",
+                    "/api/work-reports/submissions/$obligationId/submit" -> {
+                        val code = if (returnVersionConflict) "WORK_REPORT_VERSION_CONFLICT" else "WORK_REPORT_DEADLINE_PASSED"
+                        MockResponse()
+                            .setResponseCode(409)
+                            .setHeader("Content-Type", "application/json")
+                            .setBody("""{"ok":false,"code":"$code","message":"Conflict"}""")
+                    }
+                    "/api/work-reports/submissions/$legacyObligationId/draft" -> MockResponse()
+                        .setResponseCode(409)
+                        .setHeader("Content-Type", "application/json")
+                        .setBody("""{"ok":false,"code":"WORK_REPORT_DEADLINE_PASSED","message":"Deadline passed"}""")
+                    "/api/work-reports/obligations" -> MockResponse()
+                        .setResponseCode(200)
+                        .setHeader("Content-Type", "application/json")
+                        .setBody(
+                            """
+                            {
+                              "ok": true,
+                              "data": [
+                                {
+                                  "obligation_id": "$obligationId",
+                                  "template_id": "$templateId",
+                                  "template_code": "DAILY_REC",
+                                  "template_name": "Báo cáo ngày",
+                                  "period_type": "DAILY",
+                                  "period_key": "2026-10-24",
+                                  "period_start_date": "2026-10-24",
+                                  "period_end_date": "2026-10-24",
+                                  "due_at": "2026-10-24T17:00:00Z",
+                                  "is_mandatory": true,
+                                  "obligation_status": "ACTIVE",
+                                  "is_overdue": true,
+                                  "submission_id": "99991111-2222-4333-8444-555566660099",
+                                  "submission_state": "DRAFT",
+                                  "submission_version": 1,
+                                  "version": 1,
+                                  "schema_json": $schemaJson
+                                },
+                                {
+                                  "obligation_id": "$legacyObligationId",
+                                  "template_id": "$templateId",
+                                  "template_code": "DAILY_REC",
+                                  "template_name": "Báo cáo ngày cũ",
+                                  "period_type": "DAILY",
+                                  "period_key": "2026-10-23",
+                                  "period_start_date": "2026-10-23",
+                                  "period_end_date": "2026-10-23",
+                                  "due_at": "2026-10-23T17:00:00Z",
+                                  "is_mandatory": true,
+                                  "obligation_status": "ACTIVE",
+                                  "submission_id": null,
+                                  "submission_state": "NOT_STARTED",
+                                  "submission_version": null,
+                                  "version": 1,
+                                  "schema_json": $schemaJson
+                                }
+                              ]
+                            }
+                            """.trimIndent()
+                        )
+                    else -> MockResponse()
+                        .setResponseCode(401)
+                        .setHeader("Content-Type", "application/json")
+                        .setBody("""{"ok":false,"code":"AUTH_UNAUTHENTICATED"}""")
+                }
+            }
+        }
+
+        val app = ApplicationProvider.getApplicationContext<android.app.Application>()
+        val repo = createRepository()
+        val vm = com.example.ui.MiniBiViewModel(app, repo)
+        try {
+            val initialObligation = com.example.data.WorkReportObligationEntity(
+                obligationId = obligationId,
+                templateId = templateId,
+                templateCode = "DAILY_REC",
+                templateName = "Báo cáo ngày",
+                periodType = "DAILY",
+                periodKey = "2026-10-24",
+                periodStartDate = "2026-10-24",
+                periodEndDate = "2026-10-24",
+                dueAtIso = "2026-10-24T17:00:00Z",
+                isMandatory = true,
+                obligationStatus = "ACTIVE",
+                submissionId = "99991111-2222-4333-8444-555566660099",
+                submissionState = "DRAFT",
+                submissionVersion = 1,
+                obligationVersion = 1,
+                schemaJsonRaw = schemaJson,
+                payloadJsonRaw = """{"calls_made":12}""",
+                latestReviewDecision = null,
+                latestReviewReason = null,
+                submittedAtIso = null,
+                isOverdue = false
+            )
+            database.miniBiDao().upsertWorkReportCache(initialObligation)
+
+            // 1. Open obligation editor -> fetches detail
+            vm.openObligationEditor(initialObligation)
+            var attempts = 0
+            while (!recordedPaths.contains("GET /api/work-reports/obligations/$obligationId") && attempts < 80) {
+                org.robolectric.shadows.ShadowLooper.idleMainLooper()
+                Thread.sleep(15)
+                attempts++
+            }
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            assertFalse(vm.editingObligation.value!!.isOverdue)
+            assertTrue(WorkReportsContract.isEditableObligation(vm.editingObligation.value!!))
+
+            // 2. Non-deadline 409 WORK_REPORT_VERSION_CONFLICT -> refetches detail, updates version, does NOT lock as overdue
+            returnVersionConflict = true
+            detailVersion = 2
+            recordedPaths.clear()
+            vm.submitWorkReportFinal(vm.editingObligation.value!!, JSONObject().put("calls_made", 14))
+            attempts = 0
+            while (
+                (vm.workReportMutationBusy.value ||
+                    !recordedPaths.contains("POST /api/work-reports/submissions/$obligationId/submit") ||
+                    !recordedPaths.contains("GET /api/work-reports/obligations/$obligationId")) &&
+                attempts < 100
+            ) {
+                org.robolectric.shadows.ShadowLooper.idleMainLooper()
+                Thread.sleep(15)
+                attempts++
+            }
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            assertFalse(recordedPaths.contains("GET /api/work-reports/obligations"))
+            assertFalse(vm.statusBannerMessage.value.orEmpty().contains("Đã quá hạn nộp báo cáo."))
+            assertFalse(vm.editingObligation.value!!.isOverdue)
+            assertEquals(2, vm.editingObligation.value!!.submissionVersion)
+            assertTrue(WorkReportsContract.isEditableObligation(vm.editingObligation.value!!))
+
+            // 3. Submit report -> server rejects with 409 WORK_REPORT_DEADLINE_PASSED, followed by obligations list reload
+            returnVersionConflict = false
+            recordedPaths.clear()
+            vm.submitWorkReportFinal(vm.editingObligation.value!!, JSONObject().put("calls_made", 15))
+            attempts = 0
+            while (
+                (vm.workReportMutationBusy.value ||
+                    !recordedPaths.contains("POST /api/work-reports/submissions/$obligationId/submit") ||
+                    !recordedPaths.contains("GET /api/work-reports/obligations")) &&
+                attempts < 100
+            ) {
+                org.robolectric.shadows.ShadowLooper.idleMainLooper()
+                Thread.sleep(15)
+                attempts++
+            }
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+
+            assertTrue(recordedPaths.contains("POST /api/work-reports/submissions/$obligationId/submit"))
+            assertTrue(recordedPaths.contains("GET /api/work-reports/obligations"))
+            assertEquals("Đã quá hạn nộp báo cáo.", vm.statusBannerMessage.value)
+            assertTrue(vm.statusBannerIsError.value)
+
+            val lockedEditing = vm.editingObligation.value
+            assertNotNull(lockedEditing)
+            assertTrue(lockedEditing!!.isOverdue)
+            assertFalse(WorkReportsContract.isEditableObligation(lockedEditing))
+
+            val cachedAfterSubmit409 = database.miniBiDao().getCachedWorkReportsSnapshot().first { it.obligationId == obligationId }
+            assertTrue(cachedAfterSubmit409.isOverdue)
+            assertFalse(WorkReportsContract.isActionableObligation(cachedAfterSubmit409))
+            assertTrue(WorkReportsContract.isHistoryObligation(cachedAfterSubmit409))
+            assertEquals("Quá hạn · Bản nháp chưa nộp", WorkReportsContract.obligationBadgeDisplayLabel(cachedAfterSubmit409))
+
+            // 4. Legacy backend omits is_overdue on list reload, but saveWorkReportDraft 409 WORK_REPORT_DEADLINE_PASSED still locks & moves to history
+            val legacyInitial = database.miniBiDao().getCachedWorkReportsSnapshot().first { it.obligationId == legacyObligationId }
+            assertFalse(legacyInitial.isOverdue)
+            recordedPaths.clear()
+            vm.saveWorkReportDraft(legacyInitial, JSONObject().put("calls_made", 5))
+            attempts = 0
+            while (
+                (vm.workReportMutationBusy.value ||
+                    !recordedPaths.contains("POST /api/work-reports/submissions/$legacyObligationId/draft") ||
+                    !recordedPaths.contains("GET /api/work-reports/obligations")) &&
+                attempts < 100
+            ) {
+                org.robolectric.shadows.ShadowLooper.idleMainLooper()
+                Thread.sleep(15)
+                attempts++
+            }
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+
+            assertEquals("Đã quá hạn nộp báo cáo.", vm.statusBannerMessage.value)
+            assertTrue(vm.editingObligation.value!!.isOverdue)
+            val cachedLegacyAfterDraft409 = database.miniBiDao().getCachedWorkReportsSnapshot().first { it.obligationId == legacyObligationId }
+            assertTrue(cachedLegacyAfterDraft409.isOverdue)
+            assertFalse(WorkReportsContract.isActionableObligation(cachedLegacyAfterDraft409))
+            assertTrue(WorkReportsContract.isHistoryObligation(cachedLegacyAfterDraft409))
+            assertEquals("Quá hạn · Chưa nộp", WorkReportsContract.obligationBadgeDisplayLabel(cachedLegacyAfterDraft409))
+        } finally {
+            vm.cancelScopeForTest()
+        }
+    }
 }
