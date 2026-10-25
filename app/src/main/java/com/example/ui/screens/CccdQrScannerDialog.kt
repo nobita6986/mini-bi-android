@@ -85,40 +85,24 @@ import java.util.concurrent.Executor
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.atomic.AtomicInteger
 
 @androidx.annotation.OptIn(ExperimentalGetImage::class)
 private fun analyzeCameraFrame(
     imageProxy: ImageProxy,
     mlKitScanner: BarcodeScanner?,
     resolvedOnce: AtomicBoolean,
-    frameCounter: AtomicInteger,
+    inFlight: AtomicBoolean,
     mainExecutor: Executor,
     onDecoded: (CccdDecodedQrPayload) -> Unit
 ) {
-    if (resolvedOnce.get()) {
+    if (resolvedOnce.get() || !inFlight.compareAndSet(false, true)) {
         imageProxy.close()
         return
     }
 
-    val frameIndex = frameCounter.incrementAndGet()
     val rotationDegrees = imageProxy.imageInfo.rotationDegrees
-
-    // Prepare an upscaled center viewfinder crop on every 2nd frame for tiny CCCD QR codes
-    val centerCropBitmap = if (frameIndex % 2 == 0) {
-        runCatching {
-            val rawBmp = imageProxy.toBitmap()
-            val rotated = CccdQrDecoder.rotateBitmap(rawBmp, rotationDegrees.toFloat()) ?: rawBmp
-            val cropped = CccdQrDecoder.cropAndScale(rotated, 0.16f, 0.16f, 0.68f, 0.68f, 1000)
-            if (rotated !== rawBmp && rotated !== cropped) rotated.recycle()
-            if (rawBmp !== cropped) rawBmp.recycle()
-            cropped
-        }.getOrNull()
-    } else {
-        null
-    }
-
     val mediaImage = imageProxy.image
+
     if (mlKitScanner != null && mediaImage != null) {
         val fullInput = runCatching { InputImage.fromMediaImage(mediaImage, rotationDegrees) }.getOrNull()
         if (fullInput != null) {
@@ -135,71 +119,15 @@ private fun analyzeCameraFrame(
                     }
                 }
                 .addOnCompleteListener {
-                    try {
-                        imageProxy.close()
-                    } catch (_: Exception) {
-                    }
-                    if (centerCropBitmap != null) {
-                        if (!resolvedOnce.get()) {
-                            val cropInput = runCatching { InputImage.fromBitmap(centerCropBitmap, 0) }.getOrNull()
-                            if (cropInput != null) {
-                                mlKitScanner.process(cropInput)
-                                    .addOnSuccessListener { cropBarcodes ->
-                                        if (!resolvedOnce.get()) {
-                                            for (barcode in cropBarcodes) {
-                                                val decoded = CccdQrDecoder.parseFromMlKitBarcode(barcode)
-                                                if (decoded != null && resolvedOnce.compareAndSet(false, true)) {
-                                                    mainExecutor.execute { onDecoded(decoded) }
-                                                    break
-                                                }
-                                            }
-                                        }
-                                    }
-                                    .addOnCompleteListener {
-                                        if (!resolvedOnce.get()) {
-                                            runCatching {
-                                                val zxingDecoded = CccdQrDecoder.decodeFromBitmap(centerCropBitmap)
-                                                if (zxingDecoded != null && resolvedOnce.compareAndSet(false, true)) {
-                                                    mainExecutor.execute { onDecoded(zxingDecoded) }
-                                                }
-                                            }
-                                        }
-                                        runCatching { centerCropBitmap.recycle() }
-                                    }
-                            } else {
-                                runCatching { centerCropBitmap.recycle() }
-                            }
-                        } else {
-                            runCatching { centerCropBitmap.recycle() }
-                        }
-                    }
+                    inFlight.set(false)
+                    runCatching { imageProxy.close() }
                 }
             return
         }
     }
 
-    // Fallback when ML Kit MediaImage path is unavailable
-    try {
-        if (!resolvedOnce.get()) {
-            val targetBmp = centerCropBitmap ?: runCatching { imageProxy.toBitmap() }.getOrNull()
-            if (targetBmp != null) {
-                try {
-                    val decoded = CccdQrDecoder.decodeFromBitmap(targetBmp)
-                    if (decoded != null && resolvedOnce.compareAndSet(false, true)) {
-                        mainExecutor.execute { onDecoded(decoded) }
-                    }
-                } finally {
-                    if (targetBmp !== centerCropBitmap) {
-                        runCatching { targetBmp.recycle() }
-                    }
-                }
-            }
-        }
-    } catch (_: Exception) {
-    } finally {
-        runCatching { centerCropBitmap?.recycle() }
-        runCatching { imageProxy.close() }
-    }
+    inFlight.set(false)
+    runCatching { imageProxy.close() }
 }
 
 @Composable
@@ -226,7 +154,7 @@ fun CccdQrScannerDialog(
     var selectedZoomRatio by remember { mutableFloatStateOf(1.5f) }
     var torchEnabled by remember { mutableStateOf(false) }
     val resolvedOnce = remember { AtomicBoolean(false) }
-    val frameCounter = remember { AtomicInteger(0) }
+    val inFlight = remember { AtomicBoolean(false) }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
@@ -325,7 +253,7 @@ fun CccdQrScannerDialog(
                     val mlKitScanner = remember { CccdQrDecoder.createMlKitScannerOrNull() }
                     val previewView = remember {
                         PreviewView(context).apply {
-                            implementationMode = PreviewView.ImplementationMode.COMPATIBLE
+                            implementationMode = PreviewView.ImplementationMode.PERFORMANCE
                             scaleType = PreviewView.ScaleType.FILL_CENTER
                         }
                     }
@@ -342,7 +270,7 @@ fun CccdQrScannerDialog(
                                 val resolutionSelector = ResolutionSelector.Builder()
                                     .setResolutionStrategy(
                                         ResolutionStrategy(
-                                            Size(1920, 1080),
+                                            Size(1280, 720),
                                             ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER
                                         )
                                     )
@@ -357,7 +285,7 @@ fun CccdQrScannerDialog(
                                         imageProxy = imageProxy,
                                         mlKitScanner = mlKitScanner,
                                         resolvedOnce = resolvedOnce,
-                                        frameCounter = frameCounter,
+                                        inFlight = inFlight,
                                         mainExecutor = mainExecutor,
                                         onDecoded = onDecoded
                                     )
@@ -420,7 +348,6 @@ fun CccdQrScannerDialog(
                                 shape = RoundedCornerShape(16.dp)
                             )
                             .clickable {
-                                // Tap to re-trigger center focus on the QR box
                                 boundCamera?.let { cam ->
                                     runCatching {
                                         val factory = SurfaceOrientedMeteringPointFactory(1f, 1f)
@@ -449,7 +376,6 @@ fun CccdQrScannerDialog(
                                 )
                         )
 
-                        // Bottom overlay bar for quick zoom (1x / 1.5x / 2x) and Flash toggle
                         Row(
                             modifier = Modifier
                                 .align(Alignment.BottomCenter)

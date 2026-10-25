@@ -1430,7 +1430,7 @@ private fun WorkerMultiEntryCard(
                                     tint = MaterialTheme.colorScheme.primary
                                 )
                                 Text(
-                                    text = "Thông tin thêm: tài khoản ngân hàng, ghi chú và thông tin cá nhân",
+                                    text = "Thông tin thêm: địa chỉ, ngày sinh, ngày cấp CCCD, tài khoản ngân hàng và ghi chú",
                                     style = MaterialTheme.typography.labelLarge,
                                     fontWeight = FontWeight.SemiBold,
                                     modifier = Modifier.weight(1f)
@@ -1447,6 +1447,36 @@ private fun WorkerMultiEntryCard(
                                 ) {
                                     HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
 
+                                    OutlinedTextField(
+                                        value = draft.address,
+                                        onValueChange = { onUpdate(draft.copy(address = sanitizeSingleLineInput(it, 1024))) },
+                                        label = { Text("Địa chỉ thường trú / quê quán") },
+                                        singleLine = true,
+                                        shape = RoundedCornerShape(12.dp),
+                                        modifier = Modifier.fillMaxWidth()
+                                    )
+                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        OutlinedTextField(
+                                            value = draft.birthDateUi,
+                                            onValueChange = { onUpdate(draft.copy(birthDateUi = sanitizeSingleLineInput(it, 10))) },
+                                            label = { Text("Ngày sinh") },
+                                            placeholder = { Text("DD/MM/YYYY") },
+                                            isError = !DirectEntryContract.isValidFreeDateText(draft.birthDateUi),
+                                            singleLine = true,
+                                            shape = RoundedCornerShape(12.dp),
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                        OutlinedTextField(
+                                            value = draft.cccdIssueDateUi,
+                                            onValueChange = { onUpdate(draft.copy(cccdIssueDateUi = sanitizeSingleLineInput(it, 10))) },
+                                            label = { Text("Ngày cấp CCCD") },
+                                            placeholder = { Text("DD/MM/YYYY") },
+                                            isError = !DirectEntryContract.isValidFreeDateText(draft.cccdIssueDateUi),
+                                            singleLine = true,
+                                            shape = RoundedCornerShape(12.dp),
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                    }
                                     OutlinedTextField(
                                         value = draft.bankAccountNumber,
                                         onValueChange = { onUpdate(draft.copy(bankAccountNumber = sanitizeSingleLineInput(it, 64))) },
@@ -1475,36 +1505,6 @@ private fun WorkerMultiEntryCard(
                                         value = draft.note,
                                         onValueChange = { onUpdate(draft.copy(note = sanitizeMultiLineInput(it, 4000))) },
                                         label = { Text("Ghi chú") },
-                                        singleLine = true,
-                                        shape = RoundedCornerShape(12.dp),
-                                        modifier = Modifier.fillMaxWidth()
-                                    )
-                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                        OutlinedTextField(
-                                            value = draft.birthDateUi,
-                                            onValueChange = { onUpdate(draft.copy(birthDateUi = sanitizeSingleLineInput(it, 10))) },
-                                            label = { Text("Ngày sinh") },
-                                            placeholder = { Text("DD/MM/YYYY") },
-                                            isError = !DirectEntryContract.isValidFreeDateText(draft.birthDateUi),
-                                            singleLine = true,
-                                            shape = RoundedCornerShape(12.dp),
-                                            modifier = Modifier.weight(1f)
-                                        )
-                                        OutlinedTextField(
-                                            value = draft.cccdIssueDateUi,
-                                            onValueChange = { onUpdate(draft.copy(cccdIssueDateUi = sanitizeSingleLineInput(it, 10))) },
-                                            label = { Text("Ngày cấp CCCD") },
-                                            placeholder = { Text("DD/MM/YYYY") },
-                                            isError = !DirectEntryContract.isValidFreeDateText(draft.cccdIssueDateUi),
-                                            singleLine = true,
-                                            shape = RoundedCornerShape(12.dp),
-                                            modifier = Modifier.weight(1f)
-                                        )
-                                    }
-                                    OutlinedTextField(
-                                        value = draft.address,
-                                        onValueChange = { onUpdate(draft.copy(address = sanitizeSingleLineInput(it, 1024))) },
-                                        label = { Text("Địa chỉ thường trú / quê quán") },
                                         singleLine = true,
                                         shape = RoundedCornerShape(12.dp),
                                         modifier = Modifier.fillMaxWidth()
