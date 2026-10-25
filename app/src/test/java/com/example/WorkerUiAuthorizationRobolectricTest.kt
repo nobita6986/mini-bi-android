@@ -1164,6 +1164,16 @@ class WorkerUiAuthorizationRobolectricTest {
         composeTestRule.onNodeWithTag("login_submit_button").performClick()
         assertEquals(Triple("ql.duan@hrpartner.vn", "Password#2", true), submittedTriple)
 
+        // Login form is top-aligned (logo near top <= 40dp) and submit button sits much higher than centered (~980dp)
+        val logoTopDp = with(composeTestRule.density) {
+            composeTestRule.onNodeWithTag("login_brand_logo").fetchSemanticsNode().boundsInRoot.top.toDp().value
+        }
+        val submitBottomDp = with(composeTestRule.density) {
+            composeTestRule.onNodeWithTag("login_submit_button").fetchSemanticsNode().boundsInRoot.bottom.toDp().value
+        }
+        assertTrue("Expected login_brand_logo top ($logoTopDp dp) <= 40dp for top-aligned layout", logoTopDp <= 40f)
+        assertTrue("Expected login_submit_button bottom ($submitBottomDp dp) <= 700dp above keyboard zone", submitBottomDp <= 700f)
+
         // Tap remove button on chip -> triggers removal callback
         composeTestRule.onNodeWithTag("remove_saved_account_ql.duan@hrpartner.vn").performClick()
         assertEquals("ql.duan@hrpartner.vn", removedIdentifier)
@@ -2375,6 +2385,14 @@ class WorkerUiAuthorizationRobolectricTest {
         composeTestRule.waitForIdle()
 
         composeTestRule.onNodeWithTag("save_valid_workers_button").assertIsNotEnabled()
+
+        // Verify UI labels & field order: "Số CCCD (12 chữ số) *" is mandatory and sits ABOVE optional "Họ và tên" (no '*')
+        composeTestRule.onNodeWithText("Số CCCD (12 chữ số) *").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Họ và tên *").assertDoesNotExist()
+        composeTestRule.onNodeWithText("Họ và tên").assertIsDisplayed()
+        val cccdTop = composeTestRule.onNodeWithTag("row_1_cccd").fetchSemanticsNode().boundsInRoot.top
+        val fullNameTop = composeTestRule.onNodeWithTag("row_1_full_name").fetchSemanticsNode().boundsInRoot.top
+        assertTrue("Expected CCCD field (top=$cccdTop) above Full Name field (top=$fullNameTop)", cccdTop < fullNameTop)
 
         // 3. Enter 12-digit CCCD with leading zero and leave fullName blank -> row becomes valid and Save button enables
         composeTestRule.onNodeWithTag("row_1_cccd").performTextInput("079095008811")

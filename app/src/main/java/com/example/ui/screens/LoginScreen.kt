@@ -14,8 +14,10 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
@@ -47,9 +49,11 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
@@ -69,6 +73,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.R
 import com.example.data.SavedLoginAccount
+import kotlinx.coroutines.launch
 
 @Composable
 fun LoginScreen(
@@ -81,6 +86,8 @@ fun LoginScreen(
 ) {
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
+    val scrollState = rememberScrollState()
+    val coroutineScope = rememberCoroutineScope()
     val latestSaved = savedAccounts.firstOrNull()
 
     var identifier by remember { mutableStateOf(latestSaved?.identifier.orEmpty()) }
@@ -116,24 +123,26 @@ fun LoginScreen(
                         Color(0xFFF5F4F2)
                     )
                 )
-            ),
-        contentAlignment = Alignment.Center
+            )
+            .statusBarsPadding()
+            .imePadding(),
+        contentAlignment = Alignment.TopCenter
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .widthIn(max = 420.dp)
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 22.dp, vertical = 32.dp),
+                .verticalScroll(scrollState)
+                .padding(horizontal = 22.dp, vertical = 10.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Surface(
-                shape = RoundedCornerShape(22.dp),
+                shape = RoundedCornerShape(18.dp),
                 color = Color.White,
                 border = BorderStroke(1.dp, Color(0xFFE5E7EB)),
                 shadowElevation = 4.dp,
                 modifier = Modifier
-                    .size(92.dp)
+                    .size(64.dp)
                     .testTag("login_brand_logo")
             ) {
                 Image(
@@ -142,21 +151,21 @@ fun LoginScreen(
                     contentScale = ContentScale.Fit,
                     modifier = Modifier
                         .fillMaxSize()
-                        .padding(10.dp)
+                        .padding(8.dp)
                 )
             }
 
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(8.dp))
 
             Text(
                 text = "HRP $brandBadgeLabel",
-                style = MaterialTheme.typography.headlineLarge.copy(fontSize = 26.sp),
+                style = MaterialTheme.typography.headlineLarge.copy(fontSize = 22.sp),
                 fontWeight = FontWeight.ExtraBold,
                 color = Color(0xFF0F172A),
                 modifier = Modifier.testTag("login_brand_title")
             )
 
-            Spacer(modifier = Modifier.height(6.dp))
+            Spacer(modifier = Modifier.height(2.dp))
 
             Text(
                 text = "Hệ thống quản trị nhân sự HRP",
@@ -165,7 +174,7 @@ fun LoginScreen(
                 textAlign = TextAlign.Center
             )
 
-            Spacer(modifier = Modifier.height(26.dp))
+            Spacer(modifier = Modifier.height(10.dp))
 
             Card(
                 modifier = Modifier.fillMaxWidth(),
@@ -179,8 +188,8 @@ fun LoginScreen(
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 22.dp, vertical = 24.dp),
-                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                        .padding(horizontal = 18.dp, vertical = 14.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         Text(
@@ -323,6 +332,13 @@ fun LoginScreen(
                         ),
                         modifier = Modifier
                             .fillMaxWidth()
+                            .onFocusChanged {
+                                if (it.isFocused) {
+                                    coroutineScope.launch {
+                                        scrollState.animateScrollTo(scrollState.maxValue)
+                                    }
+                                }
+                            }
                             .testTag("login_identifier_input")
                     )
 
@@ -377,6 +393,13 @@ fun LoginScreen(
                         },
                         modifier = Modifier
                             .fillMaxWidth()
+                            .onFocusChanged {
+                                if (it.isFocused) {
+                                    coroutineScope.launch {
+                                        scrollState.animateScrollTo(scrollState.maxValue)
+                                    }
+                                }
+                            }
                             .testTag("login_password_input")
                     )
 
@@ -423,8 +446,6 @@ fun LoginScreen(
                         }
                     }
 
-                    Spacer(modifier = Modifier.height(2.dp))
-
                     Button(
                         onClick = {
                             focusManager.clearFocus()
@@ -441,7 +462,7 @@ fun LoginScreen(
                         ),
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(52.dp)
+                            .height(48.dp)
                             .testTag("login_submit_button")
                     ) {
                         if (busy) {
