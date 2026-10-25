@@ -292,7 +292,7 @@ data class NewWorkerEntryDraft(
     val firstWorkDateUi: String = "", // DD/MM/YYYY
     val employmentStatusUi: String = "Đang làm", // "Đang làm" | "Đang chờ việc"
     val fullName: String = "",
-    val genderUi: String = "Nam", // "Nam" | "Nữ" (mặc định Nam)
+    val genderUi: String = "", // "" (chưa chọn) | "Nam" | "Nữ"
     val phone: String = "",
     val cccd: String = "",
     val cccdIssuePlace: String = "",
@@ -479,6 +479,106 @@ data class WorkerEntryDetail(
     val portraitPreviewPath: String?,
     val portraitDownloadPath: String?,
     val documents: List<EntryDocumentItem>
+)
+
+data class CccdDecodedQrPayload(
+    val cccd12: String,
+    val legacyId9: String? = null,
+    val fullName: String? = null,
+    val dateOfBirthUi: String? = null,
+    val genderCanonical: String? = null,
+    val genderUi: String? = null,
+    val address: String? = null,
+    val issueDateUi: String? = null
+)
+
+enum class CccdReviewStatusFilter(val code: String, val label: String) {
+    NEEDS_REVIEW("NEEDS_REVIEW", "Cần Review"),
+    MISMATCH("MISMATCH", "Lệch CCCD"),
+    QR_UNREADABLE("QR_UNREADABLE", "Không đọc được QR"),
+    PENDING("PENDING", "Chờ đọc QR"),
+    MATCHED_INITIAL("MATCHED_INITIAL", "Khớp ban đầu"),
+    RESOLVED("RESOLVED", "Đã xử lý"),
+    ALL("ALL", "Tất cả")
+}
+
+data class CccdReviewSummary(
+    val totalCount: Int = 0,
+    val needsReviewCount: Int = 0,
+    val mismatchCount: Int = 0,
+    val qrUnreadableCount: Int = 0,
+    val pendingCount: Int = 0,
+    val matchedInitialCount: Int = 0,
+    val resolvedCount: Int = 0
+)
+
+data class CccdReviewComparisonField(
+    val field: String,
+    val label: String,
+    val enteredValue: String?,
+    val qrValue: String?,
+    val status: String // "MATCH" | "DIFFERENT" | "ENTERED_BLANK" | "QR_MISSING"
+)
+
+data class CccdReviewQueueItem(
+    val entryId: String,
+    val submissionId: String,
+    val submissionState: String,
+    val entryVersion: Int,
+    val employeeCode: String,
+    val projectId: String,
+    val projectDisplay: String,
+    val firstWorkDate: String,
+    val recruiterId: String,
+    val recruiterDisplay: String,
+    val enteredDisplayName: String,
+    val enteredNationalId: String?,
+    val enteredDateOfBirth: String?,
+    val enteredGender: String?,
+    val enteredAddress: String?,
+    val enteredNationalIdIssuedAt: String?,
+    val cccdFrontDocumentId: String?,
+    val cccdFrontUploadStatus: String?,
+    val cccdFrontQrStatus: String,
+    val cccdFrontPreviewPath: String?,
+    val cccdBackDocumentId: String?,
+    val cccdBackUploadStatus: String?,
+    val cccdBackQrStatus: String,
+    val cccdBackPreviewPath: String?,
+    val qrExtractedPayload: CccdDecodedQrPayload?,
+    val reconciliationStatus: String,
+    val resolutionAction: String?,
+    val resolvedAt: String?,
+    val resolvedByUserId: String?,
+    val resolutionNote: String?,
+    val comparison: List<CccdReviewComparisonField>
+)
+
+data class CccdReviewQueuePage(
+    val scopeKind: String,
+    val statusFilter: String,
+    val limit: Int,
+    val offset: Int,
+    val totalCount: Int,
+    val summary: CccdReviewSummary,
+    val rows: List<CccdReviewQueueItem>
+)
+
+data class CccdReviewResolveResult(
+    val entryId: String,
+    val entryVersion: Int,
+    val action: String,
+    val reconciliationStatus: String,
+    val updatedFields: List<String>
+)
+
+data class CccdQrRetryResult(
+    val entryId: String,
+    val entryVersion: Int,
+    val reconciliationStatus: String,
+    val frontQrStatus: String,
+    val backQrStatus: String,
+    val autoFilledFields: List<String>
 )
 
 // 4. Work Reports Dynamic Schema & Models

@@ -44,6 +44,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -61,6 +62,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.AppActor
 import com.example.data.BiBucketItem
+import com.example.data.CccdReviewQueueItem
 import com.example.data.DashboardDatePreset
 import com.example.data.DirectEntryContract
 import com.example.data.DuplicateCccdGroupItem
@@ -105,6 +107,24 @@ fun DashboardScreen(
     val duplicateManagedOnly by viewModel.duplicateManagedOnly.collectAsStateWithLifecycle()
     val selectedDatePreset by viewModel.dashboardDatePreset.collectAsStateWithLifecycle()
 
+    val cccdReviewPage by viewModel.cccdReviewPage.collectAsStateWithLifecycle()
+    val cccdReviewLoading by viewModel.cccdReviewLoading.collectAsStateWithLifecycle()
+    val cccdReviewError by viewModel.cccdReviewError.collectAsStateWithLifecycle()
+    val cccdReviewStatusFilter by viewModel.cccdReviewStatusFilter.collectAsStateWithLifecycle()
+    val cccdReviewMutating by viewModel.cccdReviewMutating.collectAsStateWithLifecycle()
+    val cccdReviewMutationError by viewModel.cccdReviewMutationError.collectAsStateWithLifecycle()
+    val serverUrl by viewModel.serverUrl.collectAsStateWithLifecycle()
+
+    var selectedCccdReviewItem by remember { mutableStateOf<CccdReviewQueueItem?>(null) }
+
+    LaunchedEffect(cccdReviewPage) {
+        val current = selectedCccdReviewItem ?: return@LaunchedEffect
+        val updated = cccdReviewPage?.rows?.firstOrNull { it.entryId == current.entryId }
+        if (updated != null) {
+            selectedCccdReviewItem = updated
+        }
+    }
+
     LaunchedEffect(actor.appUserId) {
         if ((generalOverview == null && !generalOverviewLoading && generalOverviewError == null) ||
             (duplicateGroups.isEmpty() && !duplicateLoading && duplicateError == null)
@@ -123,9 +143,20 @@ fun DashboardScreen(
             add("Báo cáo theo nhóm")
         }
         add("Báo cáo CCCD trùng")
+        add("Chuẩn hoá thông tin NLĐ")
     }
 
     val safeTabIndex = selectedTabIndex.coerceIn(0, (tabs.size - 1).coerceAtLeast(0))
+    val currentTabLabel = tabs.getOrNull(safeTabIndex).orEmpty()
+
+    LaunchedEffect(currentTabLabel) {
+        if (currentTabLabel.startsWith("Chuẩn hoá thông tin") &&
+            cccdReviewPage == null &&
+            !cccdReviewLoading
+        ) {
+            viewModel.refreshCccdReviewQueue()
+        }
+    }
 
     LazyColumn(
         modifier = Modifier
@@ -220,13 +251,16 @@ fun DashboardScreen(
                     },
                     onRefreshClick = {
                         focusManager.clearFocus()
-                        viewModel.refreshDashboardData(actor)
+                        if (currentTabLabel.startsWith("Chuẩn hoá thông tin")) {
+                            viewModel.refreshCccdReviewQueue()
+                        } else {
+                            viewModel.refreshDashboardData(actor)
+                        }
                     }
                 )
             }
         }
 
-        val currentTabLabel = tabs.getOrNull(safeTabIndex).orEmpty()
         when {
             currentTabLabel.startsWith("Báo cáo tổng quát") -> {
                 item {
@@ -306,6 +340,65 @@ fun DashboardScreen(
                 }
             }
 
+            currentTabLabel.startsWith("Chuẩn hoá thông tin") -> {
+                val curPage = cccdReviewPage
+                val curOffset = curPage?.offset ?: 0
+                val curLimit = curPage?.limit ?: 25
+                item {
+                    CccdReviewToolbarAndFilterCard(
+                        page = curPage,
+                        selectedFilterCode = cccdReviewStatusFilter,
+                        loading = cccdReviewLoading,
+                        onSelectFilter = { status ->
+                            viewModel.refreshCccdReviewQueue(statusFilter = status, offset = 0)
+                        },
+                        onPreviousPage = {
+                            viewModel.refreshCccdReviewQueue(
+                                statusFilter = cccdReviewStatusFilter,
+                                offset = (curOffset - curLimit).coerceAtLeast(0)
+                            )
+                        },
+                        onNextPage = {
+                            viewModel.refreshCccdReviewQueue(
+                                statusFilter = cccdReviewStatusFilter,
+                                offset = curOffset + curLimit
+                            )
+                        },
+                        onRefresh = {
+                            viewModel.refreshCccdReviewQueue(
+                                statusFilter = cccdReviewStatusFilter,
+                                offset = curOffset
+                            )
+                        }
+                    )
+                }
+                when {
+                    cccdReviewLoading && curPage == null -> item {
+                        LoadingSectionCard("Đang tải danh sách chuẩn hoá thông tin NLĐ…")
+                    }
+                    cccdReviewError != null && curPage == null -> item {
+                        DashboardStatusCard(
+                            title = "Không thể tải danh sách chuẩn hoá thông tin NLĐ",
+                            subtitle = cccdReviewError.orEmpty()
+                        )
+                    }
+                    curPage == null || curPage.rows.isEmpty() -> item {
+                        DashboardStatusCard(
+                            title = "Không có hồ sơ cần chuẩn hoá",
+                            subtitle = "Máy chủ hiện không ghi nhận hồ sơ nào thuộc bộ lọc đã chọn."
+                        )
+                    }
+                    else -> {
+                        items(curPage.rows, key = { it.entryId }) { reviewItem ->
+                            CccdReviewQueueItemCard(
+                                item = reviewItem,
+                                onOpenReview = { selectedCccdReviewItem = reviewItem }
+                            )
+                        }
+                    }
+                }
+            }
+
             else -> {
                 item {
                     DuplicateCccdToolbarCard(
@@ -363,6 +456,44 @@ fun DashboardScreen(
                 }
             }
         }
+    }
+
+    selectedCccdReviewItem?.let { detailItem ->
+        CccdReviewDetailDialog(
+            item = detailItem,
+            serverUrl = serverUrl,
+            mutating = cccdReviewMutating,
+            mutationError = cccdReviewMutationError,
+            onDismiss = {
+                viewModel.clearCccdReviewMutationError()
+                selectedCccdReviewItem = null
+            },
+            onRetryQr = { entryId, expectedVersion ->
+                viewModel.retryCccdQrExtraction(entryId, expectedVersion)
+            },
+            onReuploadDocument = { entryId, docType, uri, expectedVersion ->
+                viewModel.reuploadCccdDocumentInReview(entryId, docType, uri, expectedVersion)
+            },
+            onResolveUpdateEnteredCccd = { entryId, ver, cccd12, applyBlank, reason ->
+                viewModel.resolveCccdReviewUpdateEnteredCccd(
+                    entryId = entryId,
+                    expectedEntryVersion = ver,
+                    nationalId = cccd12,
+                    applyBlankFieldsFromQr = applyBlank,
+                    reason = reason,
+                    onResolved = { selectedCccdReviewItem = null }
+                )
+            },
+            onResolveStandardizeFromQr = { entryId, ver, fields, reason ->
+                viewModel.resolveCccdReviewStandardizeFromQr(
+                    entryId = entryId,
+                    expectedEntryVersion = ver,
+                    fields = fields,
+                    reason = reason,
+                    onResolved = { selectedCccdReviewItem = null }
+                )
+            }
+        )
     }
 }
 

@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <paths xmlns:android="http://schemas.android.com/apk/res/android">
     <cache-path name="attendance_captures" path="attendance_captures/" />
+    <cache-path name="worker_captures" path="worker_captures/" />
     <cache-path name="exports" path="exports/" />
     <cache-path name="downloads" path="downloads/" />
     <files-path name="attendance_photos" path="attendance_photos/" />
