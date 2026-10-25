@@ -73,7 +73,7 @@ import kotlin.math.roundToInt
 
 enum class MainDestination(val route: String, val label: String) {
     DASHBOARD("dashboard", "Tổng quan"),
-    WORK_REPORTS("work_reports", "Báo cáo ngày"),
+    WORK_REPORTS("work_reports", "Báo cáo"),
     ATTENDANCE("attendance", "Chấm công"),
     WORKERS("workers", "Nhân sự"),
     NEW_ENTRY("new_entry", "Cấp mới")

@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.consumeWindowInsets
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -31,6 +32,9 @@ import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -56,9 +60,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.ModalNavigationDrawer
-import androidx.compose.material3.NavigationBar
-import androidx.compose.material3.NavigationBarItem
-import androidx.compose.material3.NavigationBarItemDefaults
+import androidx.compose.material3.NavigationBarDefaults
 import androidx.compose.material3.NavigationDrawerItem
 import androidx.compose.material3.NavigationDrawerItemDefaults
 import androidx.compose.material3.OutlinedButton
@@ -68,6 +70,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.rememberCoroutineScope
@@ -77,12 +80,16 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
@@ -588,39 +595,87 @@ fun MiniBiAppRoot(viewModel: MiniBiViewModel) {
             bottomBar = {
                 Column(modifier = Modifier.fillMaxWidth()) {
                     HorizontalDivider(thickness = 1.dp, color = MaterialTheme.colorScheme.outline)
-                    NavigationBar(
-                        containerColor = MaterialTheme.colorScheme.surface,
-                        tonalElevation = 0.dp
-                    ) {
-                        navDestinations.forEach { (dest, filledIcon, outlinedIcon) ->
-                            val selected = currentDestination == dest
-                            NavigationBarItem(
-                                selected = selected,
-                                onClick = { viewModel.navigateTo(dest) },
-                                icon = {
-                                    Icon(
-                                        imageVector = if (selected) filledIcon else outlinedIcon,
-                                        contentDescription = dest.label
-                                    )
-                                },
-                                label = {
-                                    Text(
-                                        text = dest.label,
-                                        style = MaterialTheme.typography.labelMedium,
-                                        fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                },
-                                colors = NavigationBarItemDefaults.colors(
-                                    selectedIconColor = MaterialTheme.colorScheme.primary,
-                                    selectedTextColor = MaterialTheme.colorScheme.primary,
-                                    indicatorColor = MaterialTheme.colorScheme.primaryContainer,
-                                    unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant
-                                ),
-                                modifier = Modifier.testTag("bottom_nav_${dest.route}")
-                            )
+                    val currentDensity = LocalDensity.current
+                    val bottomBarDensity = Density(
+                        density = currentDensity.density,
+                        fontScale = currentDensity.fontScale.coerceAtMost(1.05f)
+                    )
+                    CompositionLocalProvider(LocalDensity provides bottomBarDensity) {
+                        Surface(
+                            color = MaterialTheme.colorScheme.surface,
+                            tonalElevation = 0.dp,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .windowInsetsPadding(NavigationBarDefaults.windowInsets)
+                                    .height(68.dp)
+                                    .selectableGroup()
+                                    .padding(horizontal = 2.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                navDestinations.forEach { (dest, filledIcon, outlinedIcon) ->
+                                    val selected = currentDestination == dest
+                                    Column(
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .fillMaxHeight()
+                                            .selectable(
+                                                selected = selected,
+                                                onClick = { viewModel.navigateTo(dest) },
+                                                role = Role.Tab
+                                            )
+                                            .padding(horizontal = 1.dp, vertical = 6.dp)
+                                            .testTag("bottom_nav_${dest.route}"),
+                                        horizontalAlignment = Alignment.CenterHorizontally,
+                                        verticalArrangement = Arrangement.Center
+                                    ) {
+                                        Box(
+                                            modifier = Modifier
+                                                .width(52.dp)
+                                                .height(30.dp)
+                                                .clip(RoundedCornerShape(15.dp))
+                                                .background(
+                                                    if (selected) MaterialTheme.colorScheme.primaryContainer
+                                                    else Color.Transparent
+                                                ),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Icon(
+                                                imageVector = if (selected) filledIcon else outlinedIcon,
+                                                contentDescription = dest.label,
+                                                tint = if (selected) {
+                                                    MaterialTheme.colorScheme.primary
+                                                } else {
+                                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                                },
+                                                modifier = Modifier.size(22.dp)
+                                            )
+                                        }
+                                        Spacer(modifier = Modifier.height(4.dp))
+                                        Text(
+                                            text = dest.label,
+                                            style = MaterialTheme.typography.labelMedium.copy(
+                                                fontSize = 11.sp,
+                                                lineHeight = 14.sp,
+                                                letterSpacing = (-0.15).sp
+                                            ),
+                                            fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                                            color = if (selected) {
+                                                MaterialTheme.colorScheme.primary
+                                            } else {
+                                                MaterialTheme.colorScheme.onSurfaceVariant
+                                            },
+                                            maxLines = 1,
+                                            softWrap = false,
+                                            overflow = TextOverflow.Visible,
+                                            textAlign = TextAlign.Center,
+                                            modifier = Modifier.testTag("bottom_nav_label_${dest.route}")
+                                        )
+                                    }
+                                }
+                            }
                         }
                     }
                 }
