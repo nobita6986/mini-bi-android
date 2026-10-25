@@ -247,6 +247,15 @@ class MiniBiViewModel internal constructor(
     private val _hasFailedBackgroundUploads = MutableStateFlow(false)
     val hasFailedBackgroundUploads: StateFlow<Boolean> = _hasFailedBackgroundUploads.asStateFlow()
 
+    private val _profileSaveStatusMessage = MutableStateFlow<String?>(null)
+    val profileSaveStatusMessage: StateFlow<String?> = _profileSaveStatusMessage.asStateFlow()
+
+    private val _photoUploadStatusMessage = MutableStateFlow<String?>(null)
+    val photoUploadStatusMessage: StateFlow<String?> = _photoUploadStatusMessage.asStateFlow()
+
+    private val _pendingOfflineProfileDrafts = MutableStateFlow<List<NewWorkerEntryDraft>>(emptyList())
+    val pendingOfflineProfileDrafts: StateFlow<List<NewWorkerEntryDraft>> = _pendingOfflineProfileDrafts.asStateFlow()
+
     private val backgroundUploadMutex = Mutex()
 
     private var workerFetchJob: Job? = null
@@ -482,6 +491,9 @@ class MiniBiViewModel internal constructor(
             _failedBackgroundUploads.value = emptyList()
             _hasFailedBackgroundUploads.value = false
             _backgroundUploadActiveCount.value = 0
+            _profileSaveStatusMessage.value = null
+            _photoUploadStatusMessage.value = null
+            _pendingOfflineProfileDrafts.value = emptyList()
             _editingObligation.value = null
             _workReportsError.value = null
             _reviewQueue.value = emptyList()
@@ -1729,14 +1741,16 @@ class MiniBiViewModel internal constructor(
         val tasks = mutableListOf<PendingEntryAttachmentTask>()
         for (i in 0 until count) {
             val draft = validDrafts[i]
-            val entryId = entryIds[i]
+            val entryId = entryIds[i].trim()
+            if (!DirectEntryContract.isUuid(entryId)) continue
+            val fallbackLabel = draft.fullName.trim().ifBlank { "CCCD ${draft.cccd.trim()}" }
             for (ref in draft.localPendingAttachments()) {
                 val localPath = ref.localFilePath?.trim().orEmpty()
                 if (localPath.isNotEmpty()) {
                     tasks.add(
                         PendingEntryAttachmentTask(
                             entryId = entryId,
-                            workerDisplayName = draft.fullName.trim(),
+                            workerDisplayName = fallbackLabel,
                             documentType = ref.documentType,
                             fileName = ref.fileName,
                             mimeType = ref.mimeType,
@@ -1750,9 +1764,18 @@ class MiniBiViewModel internal constructor(
         return tasks
     }
 
+    fun clearProfileSaveStatus() {
+        _profileSaveStatusMessage.value = null
+    }
+
+    fun clearPhotoUploadStatus() {
+        _photoUploadStatusMessage.value = null
+    }
+
     internal fun enqueueBackgroundEntryUploads(tasks: List<PendingEntryAttachmentTask>) {
         if (tasks.isEmpty()) return
         _backgroundUploadActiveCount.value = _backgroundUploadActiveCount.value + tasks.size
+        _photoUploadStatusMessage.value = "Đang tải ngầm ${tasks.size} ảnh & giấy tờ đính kèm…"
         viewModelScope.launch {
             backgroundUploadMutex.withLock {
                 var succeededCount = 0
@@ -1761,7 +1784,7 @@ class MiniBiViewModel internal constructor(
 
                 val grouped = tasks.groupBy { it.entryId }
                 for ((entryId, entryTasks) in grouped) {
-                    var knownVersion: Int? = null
+                    var knownVersion: Int? = 1
                     for (task in entryTasks) {
                         try {
                             val fileBytes = withContext(Dispatchers.IO) {
@@ -1788,7 +1811,7 @@ class MiniBiViewModel internal constructor(
                             succeededCount++
                         } catch (e: Exception) {
                             e.rethrowIfCancelled()
-                            knownVersion = null
+                            knownVersion = 1
                             failedTasks.add(
                                 task.copy(idempotencyBaseKey = UUID.randomUUID().toString())
                             )
@@ -1807,20 +1830,21 @@ class MiniBiViewModel internal constructor(
 
                 if (failedTasks.isEmpty()) {
                     _hasFailedBackgroundUploads.value = _failedBackgroundUploads.value.isNotEmpty()
-                    showBanner(
-                        "Đã tải ngầm thành công $succeededCount/${tasks.size} ảnh & giấy tờ đính kèm lên hồ sơ NLĐ.",
-                        isError = false
-                    )
+                    val msg = "Đã tải ngầm thành công $succeededCount/${tasks.size} ảnh & giấy tờ đính kèm lên hồ sơ NLĐ."
+                    _photoUploadStatusMessage.value = msg
+                    showBanner(msg, isError = false)
                 } else {
                     val merged = (_failedBackgroundUploads.value + failedTasks)
                         .distinctBy { "${it.entryId}:${it.documentType}:${it.localFilePath}" }
                     _failedBackgroundUploads.value = merged
                     _hasFailedBackgroundUploads.value = merged.isNotEmpty()
+                    if (_profileSaveStatusMessage.value.isNullOrBlank()) {
+                        _profileSaveStatusMessage.value = "Hồ sơ NLĐ đã được ghi nhận trên hệ thống."
+                    }
                     val detailSuffix = lastErrorDetail?.takeIf { it.isNotBlank() }?.let { " ($it)" }.orEmpty()
-                    showBanner(
-                        "Tải ảnh đính kèm: thành công $succeededCount/${tasks.size}, lỗi ${failedTasks.size} tệp$detailSuffix. Bấm Thử lại để gửi tiếp.",
-                        isError = true
-                    )
+                    val msg = "Tải ảnh đính kèm: thành công $succeededCount/${tasks.size}, lỗi ${failedTasks.size} tệp$detailSuffix. Bấm Thử lại để gửi tiếp."
+                    _photoUploadStatusMessage.value = msg
+                    showBanner(msg, isError = true)
                 }
             }
         }
@@ -1831,8 +1855,23 @@ class MiniBiViewModel internal constructor(
         if (pendingFailed.isEmpty()) return
         _failedBackgroundUploads.value = emptyList()
         _hasFailedBackgroundUploads.value = false
-        showBanner("Đang tải lại ${pendingFailed.size} ảnh & giấy tờ đính kèm…", isError = false)
+        val msg = "Đang tải lại ${pendingFailed.size} ảnh & giấy tờ đính kèm…"
+        _photoUploadStatusMessage.value = msg
+        showBanner(msg, isError = false)
         enqueueBackgroundEntryUploads(pendingFailed)
+    }
+
+    fun syncPendingOfflineProfiles(
+        onDraftsSaved: () -> Unit = {},
+        onSubmittedSuccess: () -> Unit = {}
+    ) {
+        val queued = _pendingOfflineProfileDrafts.value
+        if (queued.isEmpty()) return
+        submitFullProfileDrafts(
+            validDrafts = queued,
+            onDraftsSaved = onDraftsSaved,
+            onSubmittedSuccess = onSubmittedSuccess
+        )
     }
 
     fun submitFullProfileDrafts(
@@ -1846,6 +1885,7 @@ class MiniBiViewModel internal constructor(
         viewModelScope.launch {
             try {
                 val result = repository.directEntryService.submitFullProfileBatch(validDrafts)
+                _pendingOfflineProfileDrafts.value = emptyList()
                 val pendingAttachments = buildPendingAttachmentTasks(validDrafts, result.entryIds)
                 onDraftsSaved()
                 val codesNote = if (result.employeeCodes.isNotEmpty()) {
@@ -1853,15 +1893,20 @@ class MiniBiViewModel internal constructor(
                 } else {
                     ""
                 }
+                _profileSaveStatusMessage.value =
+                    "Đã lưu ${result.entryIds.size} hồ sơ NLĐ trên hệ thống.$codesNote"
                 if (result.state == "SUBMITTED") {
                     refreshOwnSubmissionsForHistory()
+                    val profileMsg = "Đã đẩy chính thức ${result.entryIds.size} hồ sơ NLĐ lên hệ thống.$codesNote"
+                    _profileSaveStatusMessage.value = profileMsg
                     if (pendingAttachments.isNotEmpty()) {
                         showBanner(
-                            "Đã đẩy chính thức ${result.entryIds.size} hồ sơ NLĐ lên hệ thống.$codesNote Đang tải ngầm ${pendingAttachments.size} ảnh & giấy tờ…"
+                            "$profileMsg Đang tải ngầm ${pendingAttachments.size} ảnh & giấy tờ…"
                         )
                         enqueueBackgroundEntryUploads(pendingAttachments)
                     } else {
-                        showBanner("Đã đẩy chính thức ${result.entryIds.size} hồ sơ NLĐ lên hệ thống.$codesNote")
+                        _photoUploadStatusMessage.value = null
+                        showBanner(profileMsg)
                     }
                     onSubmittedSuccess()
                     return@launch
@@ -1877,7 +1922,20 @@ class MiniBiViewModel internal constructor(
                 )
             } catch (e: Exception) {
                 e.rethrowIfCancelled()
-                val msg = (e as? BackendApiException)?.message
+                val apiEx = e as? BackendApiException
+                if (apiEx != null &&
+                    (apiEx.kind == BackendFailureKind.NETWORK || apiEx.kind == BackendFailureKind.SERVER_UNAVAILABLE)
+                ) {
+                    _pendingOfflineProfileDrafts.value = validDrafts
+                    val hasLocalPhotos = validDrafts.any { it.localPendingAttachments().isNotEmpty() }
+                    _profileSaveStatusMessage.value =
+                        "Đang chờ đồng bộ ${validDrafts.size} hồ sơ lên máy chủ khi có kết nối mạng."
+                    if (hasLocalPhotos) {
+                        _photoUploadStatusMessage.value =
+                            "Ảnh đính kèm đang chờ hồ sơ được tạo thành công trên máy chủ trước khi tải lên."
+                    }
+                }
+                val msg = apiEx?.message
                     ?: e.message
                     ?: "Không thể gửi hồ sơ lên máy chủ."
                 _workerMutationError.value = msg
@@ -1950,10 +2008,12 @@ class MiniBiViewModel internal constructor(
             } else {
                 "Đã gửi $entryCount hồ sơ NLĐ sang trạng thái chờ duyệt.$codesNote"
             }
+            _profileSaveStatusMessage.value = baseBannerMsg
             if (pendingAttachments.isNotEmpty()) {
                 showBanner("$baseBannerMsg Đang tải ngầm ${pendingAttachments.size} ảnh & giấy tờ…")
                 enqueueBackgroundEntryUploads(pendingAttachments)
             } else {
+                _photoUploadStatusMessage.value = null
                 showBanner(baseBannerMsg)
             }
             onSubmittedSuccess()
@@ -2028,10 +2088,12 @@ class MiniBiViewModel internal constructor(
                 } else {
                     "Đã xác nhận và gửi ${pending.entryCount} hồ sơ NLĐ sang trạng thái chờ duyệt.$codesNote"
                 }
+                _profileSaveStatusMessage.value = baseBannerMsg
                 if (pending.pendingAttachments.isNotEmpty()) {
                     showBanner("$baseBannerMsg Đang tải ngầm ${pending.pendingAttachments.size} ảnh & giấy tờ…")
                     enqueueBackgroundEntryUploads(pending.pendingAttachments)
                 } else {
+                    _photoUploadStatusMessage.value = null
                     showBanner(baseBannerMsg)
                 }
                 if (pending.navigateToWorkersOnConfirm) {
@@ -2065,6 +2127,8 @@ class MiniBiViewModel internal constructor(
         val pending = _pendingDuplicateCccdSubmission.value ?: return
         _pendingDuplicateCccdSubmission.value = null
         refreshOwnSubmissionsForHistory()
+        _profileSaveStatusMessage.value =
+            "Đợt nhập (${pending.entryCount} NLĐ) đã lưu trên hệ thống ở trạng thái Bản nháp."
         if (pending.pendingAttachments.isNotEmpty()) {
             showBanner(
                 "Đợt nhập (${pending.entryCount} NLĐ) đang được giữ ở Bản nháp. Đang tải ngầm ${pending.pendingAttachments.size} ảnh & giấy tờ…",

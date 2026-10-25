@@ -315,16 +315,15 @@ data class NewWorkerEntryDraft(
     val isValid: Boolean
         get() {
             val providerNorm = providerType.trim().lowercase()
-            val trimmedName = fullName.trim()
             return projectId.isNotBlank() &&
                 (providerNorm == "hrp" || providerNorm == "vendor") &&
                 DirectEntryContract.isUuid(recruiterId) &&
                 laborTypeKey.isNotBlank() &&
                 DirectEntryContract.isValidUiOrIsoDate(firstWorkDateUi) &&
-                trimmedName.isNotEmpty() &&
                 fullName.length <= 256 &&
+                !DirectEntryContract.isFormulaLikeCell(fullName) &&
                 (genderUi.isBlank() || genderUi.trim() in setOf("Nam", "Nữ", "MALE", "FEMALE")) &&
-                (cccd.trim().isEmpty() || DirectEntryContract.isCanonicalNationalId(cccd)) &&
+                DirectEntryContract.isValidCccd12(cccd) &&
                 DirectEntryContract.isValidFreeDateText(birthDateUi) &&
                 DirectEntryContract.isValidFreeDateText(cccdIssueDateUi) &&
                 phone.trim().length <= 64 &&

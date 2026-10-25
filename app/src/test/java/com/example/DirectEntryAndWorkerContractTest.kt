@@ -12,6 +12,7 @@ import com.example.data.DirectEntryContract
 import com.example.data.MiniBiDatabase
 import com.example.data.MiniBiRepository
 import com.example.data.NewWorkerEntryDraft
+import com.example.ui.MiniBiViewModel
 import com.example.ui.screens.DropdownOptionItem
 import com.example.ui.screens.filterDropdownOptions
 import com.example.ui.screens.normalizeVietnameseForSearch
@@ -108,7 +109,8 @@ class DirectEntryAndWorkerContractTest {
                 firstWorkDateUi = "12/11/2026",
                 employmentStatusUi = "Đang chờ việc",
                 fullName = "Trần Thị Nữ",
-                genderUi = "Nữ"
+                genderUi = "Nữ",
+                cccd = "079095008811"
             ),
             NewWorkerEntryDraft(
                 localId = "row-3",
@@ -119,7 +121,8 @@ class DirectEntryAndWorkerContractTest {
                 firstWorkDateUi = "15/11/2026",
                 employmentStatusUi = "Đang làm",
                 fullName = "Lê Minh An",
-                genderUi = ""
+                genderUi = "",
+                cccd = "012345678901"
             )
         )
 
@@ -157,7 +160,7 @@ class DirectEntryAndWorkerContractTest {
         assertNotNull(req2.getHeader("Origin"))
 
         val wireBody = JSONObject(req2.body.readUtf8())
-        assertEquals("worker-profile/1.1", wireBody.getString("contract_version"))
+        assertEquals("worker-profile/1.2", wireBody.getString("contract_version"))
         assertFalse(wireBody.has("actor"))
         assertFalse(wireBody.has("scopes"))
         assertFalse(wireBody.has("capabilities"))
@@ -246,6 +249,7 @@ class DirectEntryAndWorkerContractTest {
             firstWorkDateUi = "20/10/2026",
             employmentStatusUi = "Đang làm",
             fullName = "Hoàng Văn Tài",
+            cccd = "001099012345",
             portraitStage = uploadedRefs["WORKER_PORTRAIT"],
             cccdFrontStage = uploadedRefs["CCCD_FRONT"],
             cccdBackStage = uploadedRefs["CCCD_BACK"],
@@ -561,9 +565,14 @@ class DirectEntryAndWorkerContractTest {
             recruiterId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
             laborTypeKey = "OFFICIAL",
             firstWorkDateUi = "20/10/2026",
-            fullName = "Nguyễn Văn A"
+            fullName = "Nguyễn Văn A",
+            cccd = "001099012345"
         )
         assertTrue(baseDraft.isValid)
+        assertTrue("Full name is optional under worker-profile/1.2", baseDraft.copy(fullName = "").isValid)
+        assertFalse("CCCD is mandatory under worker-profile/1.2", baseDraft.copy(cccd = "").isValid)
+        assertFalse("9-digit CMND is rejected for new worker entry under worker-profile/1.2", baseDraft.copy(cccd = "012345678").isValid)
+        assertFalse("All-zero 12-digit CCCD is rejected", baseDraft.copy(cccd = "000000000000").isValid)
         assertFalse(baseDraft.copy(genderUi = "Khác").isValid)
         assertFalse(baseDraft.copy(cccd = "1234567890").isValid)
         assertTrue(baseDraft.copy(cccd = "001099012345", genderUi = "Nữ").isValid)
@@ -784,12 +793,14 @@ class DirectEntryAndWorkerContractTest {
                 firstWorkDateUi = "24/10/2026",
                 employmentStatusUi = "Đang làm",
                 fullName = "Vũ Văn Nhanh",
+                cccd = "079095008811",
                 portraitStage = localPortrait
             )
             assertEquals(1, draft.localPendingAttachments().size)
 
-            // DB-first batch payload MUST NOT include empty stage IDs
+            // DB-first batch payload MUST NOT include empty stage IDs and must use worker-profile/1.2
             val batchPayload = DirectEntryContract.buildFullProfileV11Payload(listOf(draft))
+            assertEquals("worker-profile/1.2", batchPayload.getString("contract_version"))
             val row0 = batchPayload.getJSONArray("rows").getJSONObject(0)
             assertFalse(row0.has("portrait_stage_id"))
             assertFalse(row0.has("document_stage_ids"))
@@ -906,5 +917,270 @@ class DirectEntryAndWorkerContractTest {
         // Prefix prioritization: query "tran" puts Trần Thị Đức Hạnh first
         val matchDuc = filterDropdownOptions(options, "duc")
         assertEquals(setOf("r2", "r3"), matchDuc.map { it.id }.toSet())
+    }
+
+    @Test
+    fun `t1 worker-profile v1_2 contract - requires 12-digit CCCD with leading zeros preserved and allows blank display_name`() {
+        val recruiterUuid = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+
+        // Reject missing, 9-digit, 11-digit, 13-digit, non-digit, or all-zero CCCD
+        listOf("", "012345678", "07909500881", "0790950088119", "07909500881A", "000000000000").forEach { invalidCccd ->
+            assertFalse("Expected '$invalidCccd' to be invalid 12-digit CCCD", DirectEntryContract.isValidCccd12(invalidCccd))
+            val ex = runCatching { DirectEntryContract.requiredNationalId12Field(invalidCccd) }
+                .exceptionOrNull() as? BackendApiException
+            assertNotNull("Expected BackendApiException for '$invalidCccd'", ex)
+            assertEquals("NATIONAL_ID_INVALID", ex!!.backendCode)
+        }
+
+        // Preserve leading zeros as exact 12-char string with blank fullName
+        val blankNameDraft = NewWorkerEntryDraft(
+            localId = "t1-blank-name",
+            projectId = "PRJ_01",
+            providerType = "hrp",
+            recruiterId = recruiterUuid,
+            laborTypeKey = "TEMPORARY",
+            firstWorkDateUi = "25/10/2026",
+            employmentStatusUi = "Đang làm",
+            fullName = "   ",
+            genderUi = "Nam",
+            cccd = "007909500881"
+        )
+        assertTrue(blankNameDraft.isValid)
+
+        val payload = DirectEntryContract.buildFullProfileV12Payload(listOf(blankNameDraft))
+        assertEquals("worker-profile/1.2", payload.getString("contract_version"))
+        val row = payload.getJSONArray("rows").getJSONObject(0)
+        assertEquals("", row.getString("display_name"))
+        val nationalIdObj = row.getJSONObject("worker").getJSONObject("national_id")
+        assertEquals("provided", nationalIdObj.getString("state"))
+        assertEquals("007909500881", nationalIdObj.getString("value"))
+        assertEquals(12, nationalIdObj.getString("value").length)
+        assertTrue(nationalIdObj.getString("value").startsWith("00"))
+
+        // Also verify parseEntryDetailResponse accepts blank display_name before QR autofill and keeps entered national_id
+        val detailJson = JSONObject(
+            """
+            {
+              "ok": true,
+              "entry": {
+                "entry_id": "22222222-2222-4222-8222-222222222221",
+                "submission_id": "11111111-1111-4111-8111-111111111111",
+                "version": 1,
+                "project_id": "PRJ_01",
+                "first_work_date": "2026-10-25",
+                "employee_code": "HRP0088",
+                "recruiter_id": "$recruiterUuid",
+                "provider_type": "hrp",
+                "labor_type": "TEMPORARY",
+                "labor_type_display": "Thời vụ",
+                "worker_details": {
+                  "display_name": "",
+                  "national_id": {
+                    "state": "provided",
+                    "value": "007909500881"
+                  }
+                },
+                "employment_status": {
+                  "status": "ON",
+                  "effective_date": "2026-10-25",
+                  "version": 1
+                },
+                "documents": []
+              }
+            }
+            """.trimIndent()
+        )
+        val parsedDetail = DirectEntryContract.parseEntryDetailResponse(detailJson)
+        assertEquals("", parsedDetail.displayName)
+        assertEquals("007909500881", parsedDetail.nationalId)
+    }
+
+    @Test
+    fun `t1 record-first and offline sync - saves profile before uploading CCCD photos, blocks photo upload while profile awaits offline sync, and retries failed photo without creating duplicate profile`() = runBlocking {
+        val entryId = "77777777-6666-4555-8444-333333333333"
+        val docId = "88888888-7777-4666-8555-444444444444"
+        val r2Server = MockWebServer()
+        r2Server.start()
+        val presignedUrl = r2Server.url("/r2-bucket/cccd-front").toString()
+
+        val directEntryRequests = java.util.concurrent.CopyOnWriteArrayList<Pair<String, String>>()
+        val batchAttempts = java.util.concurrent.atomic.AtomicInteger(0)
+        val reserveAttempts = java.util.concurrent.atomic.AtomicInteger(0)
+        var capturedMimeType = "image/jpeg"
+
+        server.dispatcher = object : okhttp3.mockwebserver.Dispatcher() {
+            override fun dispatch(request: okhttp3.mockwebserver.RecordedRequest): MockResponse {
+                val path = request.path.orEmpty()
+                val bodyStr = request.body.readUtf8()
+                if (path.startsWith("/api/direct-entry/")) {
+                    directEntryRequests.add(path to bodyStr)
+                }
+                return when {
+                    path.startsWith("/api/auth/session") -> MockResponse()
+                        .setResponseCode(401)
+                        .setBody("""{"ok":false,"code":"AUTH_UNAUTHENTICATED"}""")
+                    path == "/api/direct-entry/batches/full-profile" -> {
+                        if (batchAttempts.incrementAndGet() == 1) {
+                            MockResponse().setResponseCode(503).setBody(
+                                """{"ok":false,"code":"TEMP_UNAVAILABLE","message":"Mất kết nối máy chủ"}"""
+                            )
+                        } else {
+                            MockResponse().setResponseCode(201).setBody(
+                                """
+                                {
+                                  "ok": true,
+                                  "submission_id": "11111111-1111-4111-8111-111111111111",
+                                  "state": "SUBMITTED",
+                                  "version": 1,
+                                  "entry_ids": ["$entryId"],
+                                  "employee_codes": ["HRP0099"]
+                                }
+                                """.trimIndent()
+                            )
+                        }
+                    }
+                    path.startsWith("/api/direct-entry/submissions") -> MockResponse()
+                        .setResponseCode(200)
+                        .setBody("""{"ok":true,"items":[],"page_size":20,"has_more":false,"next_cursor":null}""")
+                    path == "/api/direct-entry/entries/$entryId/documents" -> {
+                        if (reserveAttempts.incrementAndGet() == 1) {
+                            MockResponse().setResponseCode(500).setBody(
+                                """{"ok":false,"code":"UPLOAD_RESERVE_FAILED","message":"Lỗi kết nối kho lưu trữ ảnh"}"""
+                            )
+                        } else {
+                            MockResponse().setResponseCode(200).setBody(
+                                """
+                                {
+                                  "ok": true,
+                                  "document_id": "$docId",
+                                  "entry_version": 2,
+                                  "upload_status": "UPLOADING",
+                                  "upload": {
+                                    "url": "$presignedUrl",
+                                    "headers": {
+                                      "Content-Type": "$capturedMimeType"
+                                    }
+                                  }
+                                }
+                                """.trimIndent()
+                            )
+                        }
+                    }
+                    path == "/api/direct-entry/entries/$entryId/documents/$docId/finalize" -> MockResponse()
+                        .setResponseCode(200)
+                        .setBody(
+                            """
+                            {
+                              "ok": true,
+                              "document_id": "$docId",
+                              "entry_version": 3,
+                              "upload_status": "READY"
+                            }
+                            """.trimIndent()
+                        )
+                    else -> MockResponse().setResponseCode(404)
+                }
+            }
+        }
+
+        val repo = createRepository()
+        val vm = MiniBiViewModel(context.applicationContext as android.app.Application, repo)
+
+        try {
+            val bmp = Bitmap.createBitmap(100, 100, Bitmap.Config.ARGB_8888)
+            val pngBytes = ByteArrayOutputStream().also { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }.toByteArray()
+            val localCccdFront = repo.directEntryService.prepareLocalAttachmentBytes(
+                documentType = "CCCD_FRONT",
+                rawBytes = pngBytes,
+                fileName = "cccd_front.png",
+                mimeType = "image/png"
+            )
+            capturedMimeType = localCccdFront.mimeType
+
+            val draft = NewWorkerEntryDraft(
+                localId = "t1-row-1",
+                projectId = "PRJ_01",
+                providerType = "hrp",
+                recruiterId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+                laborTypeKey = "TEMPORARY",
+                firstWorkDateUi = "25/10/2026",
+                employmentStatusUi = "Đang làm",
+                fullName = "",
+                cccd = "079095008811",
+                cccdFrontStage = localCccdFront
+            )
+            assertTrue(draft.isValid)
+
+            // Step 1: Simulate offline/unavailable server (503) when saving profile -> MUST NOT trigger any photo upload
+            var draftsSavedCount = 0
+            vm.submitFullProfileDrafts(
+                validDrafts = listOf(draft),
+                onDraftsSaved = { draftsSavedCount++ }
+            )
+            val deadlineOffline = System.currentTimeMillis() + 3_000L
+            while ((vm.workerMutationBusy.value || batchAttempts.get() < 1) && System.currentTimeMillis() < deadlineOffline) {
+                org.robolectric.shadows.ShadowLooper.idleMainLooper()
+                Thread.sleep(20)
+            }
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            assertEquals("Drafts must not be marked saved when offline", 0, draftsSavedCount)
+            assertEquals("Only the failed batch save was attempted; zero photo uploads allowed", listOf("/api/direct-entry/batches/full-profile"), directEntryRequests.map { it.first })
+            assertEquals(0, reserveAttempts.get())
+            assertEquals(0, r2Server.requestCount)
+            assertEquals(1, vm.pendingOfflineProfileDrafts.value.size)
+            assertTrue(File(localCccdFront.localFilePath!!).exists())
+
+            // Step 2: Sync profile when back online -> profile creation succeeds (returns entry_id), but first photo upload fails (500 on reserve)
+            vm.syncPendingOfflineProfiles(onDraftsSaved = { draftsSavedCount++ })
+            val deadlineFirstUpload = System.currentTimeMillis() + 5_000L
+            while ((vm.workerMutationBusy.value || vm.backgroundUploadActiveCount.value > 0 || !vm.hasFailedBackgroundUploads.value) &&
+                System.currentTimeMillis() < deadlineFirstUpload
+            ) {
+                org.robolectric.shadows.ShadowLooper.idleMainLooper()
+                Thread.sleep(25)
+            }
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+
+            assertEquals("Profile save succeeded without waiting for QR or photo", 1, draftsSavedCount)
+            assertTrue("Pending offline queue cleared after server profile creation", vm.pendingOfflineProfileDrafts.value.isEmpty())
+            assertTrue("Profile save status remains recorded even when photo upload fails", vm.profileSaveStatusMessage.value.orEmpty().contains("HRP0099"))
+            assertTrue("Photo upload failure is flagged for retry", vm.hasFailedBackgroundUploads.value)
+            assertTrue("Photo upload status message is separate from profile status", vm.photoUploadStatusMessage.value.orEmpty().contains("lỗi 1 tệp"))
+            assertTrue("Local file is kept on disk for retry", File(localCccdFront.localFilePath!!).exists())
+
+            // Verify request order: batch full-profile happened BEFORE document reserve
+            val batchIndex = directEntryRequests.indexOfLast { it.first == "/api/direct-entry/batches/full-profile" }
+            val reserveIndex = directEntryRequests.indexOfFirst { it.first == "/api/direct-entry/entries/$entryId/documents" }
+            assertTrue("Batch profile creation must happen before document reserve", batchIndex in 1 until reserveIndex)
+
+            val onlineBatchBody = JSONObject(directEntryRequests[batchIndex].second)
+            assertEquals("worker-profile/1.2", onlineBatchBody.getString("contract_version"))
+            assertEquals("079095008811", onlineBatchBody.getJSONArray("rows").getJSONObject(0).getJSONObject("worker").getJSONObject("national_id").getString("value"))
+            assertEquals(2, batchAttempts.get())
+
+            // Step 3: Retry failed photo upload -> MUST ONLY call reserve/PUT/finalize for existing entryId and NEVER re-post /batches/full-profile
+            r2Server.enqueue(MockResponse().setResponseCode(200))
+
+            vm.retryFailedBackgroundUploads()
+            val deadlineRetry = System.currentTimeMillis() + 5_000L
+            while ((vm.backgroundUploadActiveCount.value > 0 || vm.hasFailedBackgroundUploads.value) &&
+                System.currentTimeMillis() < deadlineRetry
+            ) {
+                org.robolectric.shadows.ShadowLooper.idleMainLooper()
+                Thread.sleep(25)
+            }
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+
+            assertFalse("Retry succeeded", vm.hasFailedBackgroundUploads.value)
+            assertTrue("Photo upload status updated to success", vm.photoUploadStatusMessage.value.orEmpty().contains("Đã tải ngầm thành công 1/1"))
+            assertTrue("Profile save status is still preserved", vm.profileSaveStatusMessage.value.orEmpty().contains("HRP0099"))
+            assertEquals("Retry must NEVER call /batches/full-profile again (no duplicate profile)", 2, batchAttempts.get())
+            assertEquals(2, reserveAttempts.get())
+            assertTrue(directEntryRequests.any { it.first == "/api/direct-entry/entries/$entryId/documents/$docId/finalize" })
+            assertEquals(1, r2Server.requestCount)
+        } finally {
+            vm.cancelScopeForTest()
+            runCatching { r2Server.shutdown() }
+        }
     }
 }

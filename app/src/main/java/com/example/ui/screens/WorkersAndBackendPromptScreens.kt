@@ -208,6 +208,10 @@ fun DirectEntryNewWorkersScreen(
     val mutationBusy by viewModel.workerMutationBusy.collectAsStateWithLifecycle()
     val mutationError by viewModel.workerMutationError.collectAsStateWithLifecycle()
     val pendingDuplicateSubmission by viewModel.pendingDuplicateCccdSubmission.collectAsStateWithLifecycle()
+    val profileSaveStatusMessage by viewModel.profileSaveStatusMessage.collectAsStateWithLifecycle()
+    val photoUploadStatusMessage by viewModel.photoUploadStatusMessage.collectAsStateWithLifecycle()
+    val backgroundUploadActiveCount by viewModel.backgroundUploadActiveCount.collectAsStateWithLifecycle()
+    val hasFailedBackgroundUploads by viewModel.hasFailedBackgroundUploads.collectAsStateWithLifecycle()
 
     val effectiveUploadStageFile: (String, String, Uri, (StagedDocumentRef) -> Unit, (String) -> Unit) -> Unit =
         onUploadStageFile ?: { _, documentType, uri, onStaged, onError ->
@@ -460,6 +464,14 @@ fun DirectEntryNewWorkersScreen(
                             }
                         }
                     }
+
+                    ProfileAndPhotoSyncStatusCards(
+                        profileSaveStatusMessage = profileSaveStatusMessage,
+                        photoUploadStatusMessage = photoUploadStatusMessage,
+                        backgroundUploadActiveCount = backgroundUploadActiveCount,
+                        hasFailedBackgroundUploads = hasFailedBackgroundUploads,
+                        onRetryFailedUploads = { viewModel.retryFailedBackgroundUploads() }
+                    )
                 }
             }
         }
@@ -602,7 +614,7 @@ fun DirectEntryNewWorkersScreen(
 
                     if (validCount == 0) {
                         Text(
-                            text = "Điền các trường có dấu * từ danh mục máy chủ (Dự án, HRP/Vendor, Người tuyển, Loại hình LĐ, Ngày bắt đầu DD/MM/YYYY, Họ và tên) để bật nút Lưu.",
+                            text = "Điền các trường có dấu * từ danh mục máy chủ (Dự án, HRP/Vendor, Người tuyển, Loại hình LĐ, Ngày bắt đầu DD/MM/YYYY, Số CCCD 12 chữ số) để bật nút Lưu.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -759,6 +771,127 @@ internal fun DuplicateCccdSubmitConfirmDialog(
 }
 
 @Composable
+internal fun ProfileAndPhotoSyncStatusCards(
+    profileSaveStatusMessage: String?,
+    photoUploadStatusMessage: String?,
+    backgroundUploadActiveCount: Int,
+    hasFailedBackgroundUploads: Boolean,
+    onRetryFailedUploads: () -> Unit
+) {
+    if (!profileSaveStatusMessage.isNullOrBlank()) {
+        Surface(
+            shape = RoundedCornerShape(12.dp),
+            color = SemanticColors.SuccessLight.copy(alpha = 0.12f),
+            border = BorderStroke(1.dp, SemanticColors.SuccessLight.copy(alpha = 0.35f)),
+            modifier = Modifier
+                .fillMaxWidth()
+                .testTag("profile_save_status_card")
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.CheckCircle,
+                    contentDescription = null,
+                    tint = SemanticColors.SuccessLight,
+                    modifier = Modifier.size(18.dp)
+                )
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Trạng thái lưu hồ sơ",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = SemanticColors.SuccessLight
+                    )
+                    Text(
+                        text = profileSaveStatusMessage,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                }
+            }
+        }
+    }
+
+    val showPhotoCard = backgroundUploadActiveCount > 0 ||
+        hasFailedBackgroundUploads ||
+        !photoUploadStatusMessage.isNullOrBlank()
+    if (showPhotoCard) {
+        val statusColor = when {
+            hasFailedBackgroundUploads -> SemanticColors.WarningLight
+            backgroundUploadActiveCount > 0 -> MaterialTheme.colorScheme.primary
+            else -> SemanticColors.SuccessLight
+        }
+        val resolvedPhotoMsg = photoUploadStatusMessage
+            ?: if (backgroundUploadActiveCount > 0) {
+                "Đang tải ngầm $backgroundUploadActiveCount ảnh & giấy tờ đính kèm…"
+            } else {
+                "Ảnh đính kèm chưa hoàn tất tải lên."
+            }
+        Surface(
+            shape = RoundedCornerShape(12.dp),
+            color = statusColor.copy(alpha = 0.12f),
+            border = BorderStroke(1.dp, statusColor.copy(alpha = 0.35f)),
+            modifier = Modifier
+                .fillMaxWidth()
+                .testTag("photo_upload_status_card")
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                if (backgroundUploadActiveCount > 0) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(18.dp),
+                        strokeWidth = 2.dp,
+                        color = statusColor
+                    )
+                } else {
+                    Icon(
+                        imageVector = if (hasFailedBackgroundUploads) Icons.Default.FileUpload else Icons.Default.CheckCircle,
+                        contentDescription = null,
+                        tint = statusColor,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Trạng thái tải ảnh",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = statusColor
+                    )
+                    Text(
+                        text = resolvedPhotoMsg,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                }
+                if (hasFailedBackgroundUploads) {
+                    OutlinedButton(
+                        onClick = onRetryFailedUploads,
+                        shape = RoundedCornerShape(10.dp),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                        modifier = Modifier
+                            .height(34.dp)
+                            .testTag("retry_photo_upload_button")
+                    ) {
+                        Text("Thử lại tải ảnh", style = MaterialTheme.typography.labelSmall)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun WorkerMultiEntryCard(
     rowNumber: Int,
     draft: NewWorkerEntryDraft,
@@ -784,7 +917,9 @@ private fun WorkerMultiEntryCard(
         draft.isValid -> SemanticColors.SuccessLight
         else -> SemanticColors.WarningLight
     }
-    val headerName = draft.fullName.trim().ifBlank { "Chưa nhập họ tên" }
+    val headerName = draft.fullName.trim().ifBlank {
+        if (draft.cccd.isNotBlank()) "CCCD ${draft.cccd.trim()}" else "Chưa nhập họ tên"
+    }
 
     val projectOptions = remember(catalog) {
         catalog?.projects?.map { proj ->
@@ -960,7 +1095,7 @@ private fun WorkerMultiEntryCard(
                     val startDateInvalid = draft.firstWorkDateUi.isNotBlank() &&
                         !DirectEntryContract.isValidUiOrIsoDate(draft.firstWorkDateUi)
                     val cccdInvalid = draft.cccd.isNotEmpty() &&
-                        !DirectEntryContract.isCanonicalNationalId(draft.cccd)
+                        !DirectEntryContract.isValidCccd12(draft.cccd)
 
                     OutlinedTextField(
                         value = draft.firstWorkDateUi,
@@ -988,10 +1123,27 @@ private fun WorkerMultiEntryCard(
                     )
 
                     OutlinedTextField(
+                        value = draft.cccd,
+                        onValueChange = { onUpdate(draft.copy(cccd = it.filter { ch -> ch.isDigit() }.take(12))) },
+                        label = { Text("Số CCCD (12 chữ số) *") },
+                        placeholder = { Text("Nhập đúng 12 chữ số CCCD") },
+                        isError = cccdInvalid,
+                        supportingText = if (cccdInvalid) {
+                            { Text("Số CCCD bắt buộc gồm đúng 12 chữ số (giữ nguyên số 0 ở đầu)") }
+                        } else null,
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("row_${rowNumber}_cccd")
+                    )
+
+                    OutlinedTextField(
                         value = draft.fullName,
                         onValueChange = { onUpdate(draft.copy(fullName = sanitizeSingleLineInput(it, 256))) },
-                        label = { Text("Họ và tên *") },
-                        placeholder = { Text("Nhập họ và tên người lao động") },
+                        label = { Text("Họ và tên") },
+                        placeholder = { Text("Không bắt buộc (hệ thống tự điền từ QR CCCD nếu để trống)") },
                         singleLine = true,
                         shape = RoundedCornerShape(12.dp),
                         modifier = Modifier
@@ -1019,23 +1171,6 @@ private fun WorkerMultiEntryCard(
                         modifier = Modifier
                             .fillMaxWidth()
                             .testTag("row_${rowNumber}_phone")
-                    )
-
-                    OutlinedTextField(
-                        value = draft.cccd,
-                        onValueChange = { onUpdate(draft.copy(cccd = it.filter { ch -> ch.isDigit() }.take(12))) },
-                        label = { Text("Số CCCD / CMND") },
-                        placeholder = { Text("Nhập đúng 9 hoặc 12 chữ số") },
-                        isError = cccdInvalid,
-                        supportingText = if (cccdInvalid) {
-                            { Text("CCCD/CMND phải gồm đúng 9 hoặc 12 chữ số (hoặc để trống)") }
-                        } else null,
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                        shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .testTag("row_${rowNumber}_cccd")
                     )
 
                     Surface(
@@ -2398,7 +2533,7 @@ internal fun WorkerOperationsRowCard(
             ) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = worker.displayName,
+                        text = worker.displayName.ifBlank { "Chưa cập nhật họ tên" },
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold
                     )
@@ -2569,7 +2704,7 @@ internal fun WorkerEntryDetailDialog(
         title = {
             Column {
                 Text(
-                    text = detail.displayName,
+                    text = detail.displayName.ifBlank { "Chưa cập nhật họ tên" },
                     style = MaterialTheme.typography.titleLarge,
                     fontWeight = FontWeight.Bold
                 )
