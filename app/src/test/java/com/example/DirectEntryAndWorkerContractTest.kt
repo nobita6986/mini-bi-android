@@ -1193,7 +1193,7 @@ class DirectEntryAndWorkerContractTest {
             DirectEntryContract.formatIsoTimestampHcmUi("2026-10-25T10:24:00Z")
         )
 
-        // 2. Vietnamese CCCD QR payload parsing + ZXing bitmap decode + draft auto-fill
+        // 2. Vietnamese CCCD QR payload parsing (both 2021 7-part CCCD and 2024+ 11-part Căn cước with trailing pipes) + ZXing bitmap decode + draft auto-fill
         val rawQrText = "001195012345|012345678|Nguyễn Thị Minh Ánh|19041995|Nữ|Thôn 2, Đông Anh, Hà Nội|10052021"
         val parsedQr = com.example.data.CccdQrDecoder.parseCccdQrPayload(rawQrText)
         assertNotNull(parsedQr)
@@ -1203,6 +1203,27 @@ class DirectEntryAndWorkerContractTest {
         assertEquals("Nữ", parsedQr.genderUi)
         assertEquals("Thôn 2, Đông Anh, Hà Nội", parsedQr.address)
         assertEquals("10/05/2021", parsedQr.issueDateUi)
+
+        // 2024/2026 Căn cước 11-segment payload (with trailing "||||")
+        val canCuoc2026QrText = "026086006641|135197071|Nguyễn Đức Thuận|06091986|Nam|Tổ Dân Phố Chợ Cánh, Bình Nguyên, Phú Thọ|04022026||||"
+        val parsedCanCuoc2026 = com.example.data.CccdQrDecoder.parseCccdQrPayload(canCuoc2026QrText)
+        assertNotNull(parsedCanCuoc2026)
+        assertEquals("026086006641", parsedCanCuoc2026!!.cccd12)
+        assertEquals("135197071", parsedCanCuoc2026.legacyId9)
+        assertEquals("Nguyễn Đức Thuận", parsedCanCuoc2026.fullName)
+        assertEquals("06/09/1986", parsedCanCuoc2026.dateOfBirthUi)
+        assertEquals("MALE", parsedCanCuoc2026.genderCanonical)
+        assertEquals("Nam", parsedCanCuoc2026.genderUi)
+        assertEquals("Tổ Dân Phố Chợ Cánh, Bình Nguyên, Phú Thọ", parsedCanCuoc2026.address)
+        assertEquals("04/02/2026", parsedCanCuoc2026.issueDateUi)
+
+        // Also verify ISO-8859-1 -> UTF-8 mojibake repair when QR lacks ECI header
+        val mojibakeQrText = String(canCuoc2026QrText.toByteArray(Charsets.UTF_8), Charsets.ISO_8859_1)
+        val parsedFromMojibake = com.example.data.CccdQrDecoder.parseCccdQrPayload(mojibakeQrText)
+        assertNotNull(parsedFromMojibake)
+        assertEquals("026086006641", parsedFromMojibake!!.cccd12)
+        assertEquals("Nguyễn Đức Thuận", parsedFromMojibake.fullName)
+        assertEquals("Tổ Dân Phố Chợ Cánh, Bình Nguyên, Phú Thọ", parsedFromMojibake.address)
 
         // Generate a QR code bitmap and verify CccdQrDecoder.decodeFromBitmap
         val writer = com.google.zxing.qrcode.QRCodeWriter()

@@ -210,7 +210,6 @@ fun DirectEntryNewWorkersScreen(
     BackHandler(onBack = onBackToDashboard)
 
     val context = LocalContext.current
-    val coroutineScope = rememberCoroutineScope()
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
 
@@ -281,24 +280,6 @@ fun DirectEntryNewWorkersScreen(
             else -> null
         }
         draftRows[index] = draftRows[index].copy(uploadingSlot = documentType, slotError = null)
-        if (documentType == "CCCD_FRONT" || documentType == "CCCD_BACK") {
-            coroutineScope.launch {
-                val decoded = withContext(Dispatchers.Default) {
-                    CccdQrDecoder.decodeFromUri(context, uri)
-                }
-                if (decoded != null) {
-                    val curIdx = draftRows.indexOfFirst { it.localId == rowId }
-                    if (curIdx >= 0) {
-                        draftRows[curIdx] = CccdQrDecoder.applyQrPayloadToDraft(
-                            draft = draftRows[curIdx],
-                            qr = decoded,
-                            overwriteExisting = false
-                        )
-                        viewModel.showBanner("Đã tự động đọc mã QR trên ảnh CCCD (${decoded.cccd12}) và điền thông tin NLĐ.")
-                    }
-                }
-            }
-        }
         effectiveUploadStageFile(
             rowId,
             documentType,
@@ -1352,7 +1333,7 @@ private fun WorkerMultiEntryCard(
                                 fontWeight = FontWeight.Bold
                             )
                             Text(
-                                text = "Chọn ảnh từ Album hoặc chụp trực tiếp bằng Máy ảnh. Khi đính kèm ảnh CCCD, ứng dụng sẽ tự động thử đọc mã QR để điền thông tin.",
+                                text = "Chọn ảnh từ Album hoặc chụp trực tiếp bằng Máy ảnh (tối đa 10 MB mỗi tệp).",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -1380,7 +1361,7 @@ private fun WorkerMultiEntryCard(
 
                             DocumentUploadSlotCard(
                                 title = "CCCD mặt trước",
-                                subtitle = "Chụp trực tiếp hoặc chọn ảnh từ Album (tự đọc QR nếu có)",
+                                subtitle = "Chụp trực tiếp hoặc chọn ảnh từ Album (tối đa 10 MB)",
                                 staged = draft.cccdFrontStage,
                                 uploading = draft.uploadingSlot == "CCCD_FRONT",
                                 onPickClick = { onPickFile("CCCD_FRONT") },
