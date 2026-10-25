@@ -26,7 +26,7 @@ android {
   val debugServerUrl = explicitServerUrl ?: "https://bi2.hrpartner.vn"
 
   defaultConfig {
-    applicationId = "com.aistudio.minibi.hrpbia"
+    applicationId = "vn.hrpartner.bi"
     minSdk = 24
     targetSdk = 36
     versionCode = 1
