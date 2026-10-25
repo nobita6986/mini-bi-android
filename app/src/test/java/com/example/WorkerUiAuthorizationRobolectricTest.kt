@@ -1091,6 +1091,8 @@ class WorkerUiAuthorizationRobolectricTest {
         composeTestRule.onNodeWithText("Chưa hỗ trợ trên ứng dụng").assertDoesNotExist()
         composeTestRule.onNodeWithTag("general_overview_section").assertIsDisplayed()
         composeTestRule.onNodeWithText("Báo cáo Tổng quát Tuyển dụng").assertIsDisplayed()
+        assertEquals("Báo cáo", com.example.ui.MainDestination.WORK_REPORTS.label)
+        composeTestRule.onNodeWithTag("bottom_nav_work_reports").assertIsDisplayed()
 
         // 2. Measure content Y position WITHOUT banner
         composeTestRule.runOnIdle { vm.clearBanner() }
