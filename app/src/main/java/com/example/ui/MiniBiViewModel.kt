@@ -6,6 +6,7 @@ import android.content.Context
 import android.location.Geocoder
 import android.location.LocationManager
 import android.net.Uri
+import androidx.compose.runtime.mutableStateListOf
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import coil.ImageLoader
@@ -282,6 +283,14 @@ class MiniBiViewModel internal constructor(
     private val _pendingOfflineProfileDrafts = MutableStateFlow<List<NewWorkerEntryDraft>>(emptyList())
     val pendingOfflineProfileDrafts: StateFlow<List<NewWorkerEntryDraft>> = _pendingOfflineProfileDrafts.asStateFlow()
 
+    val newWorkerDraftRows = mutableStateListOf<NewWorkerEntryDraft>()
+
+    fun ensureInitialNewWorkerDraftRow(catalog: DirectEntryCatalog? = _catalog.value) {
+        if (newWorkerDraftRows.isEmpty()) {
+            newWorkerDraftRows.add(DirectEntryContract.createDefaultWorkerDraft(catalog = catalog))
+        }
+    }
+
     private val backgroundUploadMutex = Mutex()
 
     private var workerFetchJob: Job? = null
@@ -527,6 +536,10 @@ class MiniBiViewModel internal constructor(
             _profileSaveStatusMessage.value = null
             _photoUploadStatusMessage.value = null
             _pendingOfflineProfileDrafts.value = emptyList()
+            newWorkerDraftRows.toList()
+                .flatMap { it.allAttachments() }
+                .forEach { discardDraftAttachment(it) }
+            newWorkerDraftRows.clear()
             _editingObligation.value = null
             _workReportsError.value = null
             _reviewQueue.value = emptyList()

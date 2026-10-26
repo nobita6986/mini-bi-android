@@ -470,14 +470,19 @@ class WorkerUiAuthorizationRobolectricTest {
             selfRecruiterSuggestion = null
         )
 
+        val activeMenu = androidx.compose.runtime.mutableStateOf("NEW_ENTRY")
         composeTestRule.setContent {
             MyApplicationTheme {
-                DirectEntryNewWorkersScreen(
-                    actor = actor,
-                    viewModel = vm,
-                    onNavigateToWorkersList = {},
-                    onBackToDashboard = {}
-                )
+                if (activeMenu.value == "NEW_ENTRY") {
+                    DirectEntryNewWorkersScreen(
+                        actor = actor,
+                        viewModel = vm,
+                        onNavigateToWorkersList = {},
+                        onBackToDashboard = {}
+                    )
+                } else {
+                    androidx.compose.material3.Text("Màn hình menu khác")
+                }
             }
         }
 
@@ -548,14 +553,19 @@ class WorkerUiAuthorizationRobolectricTest {
             selfRecruiterSuggestion = null
         )
 
+        val activeMenu = androidx.compose.runtime.mutableStateOf("NEW_ENTRY")
         composeTestRule.setContent {
             MyApplicationTheme {
-                DirectEntryNewWorkersScreen(
-                    actor = actor,
-                    viewModel = vm,
-                    onNavigateToWorkersList = {},
-                    onBackToDashboard = {}
-                )
+                if (activeMenu.value == "NEW_ENTRY") {
+                    DirectEntryNewWorkersScreen(
+                        actor = actor,
+                        viewModel = vm,
+                        onNavigateToWorkersList = {},
+                        onBackToDashboard = {}
+                    )
+                } else {
+                    androidx.compose.material3.Text("Màn hình menu khác")
+                }
             }
         }
 
@@ -587,6 +597,15 @@ class WorkerUiAuthorizationRobolectricTest {
         // Type worker name
         composeTestRule.onNodeWithTag("row_1_full_name").performTextInput("Lê Văn Thử Nghiệm")
         composeTestRule.onNodeWithText("Lê Văn Thử Nghiệm").assertIsDisplayed()
+
+        // Switch to another bottom-nav menu and return to "Cấp mới" -> in-progress draft data must remain intact
+        composeTestRule.runOnIdle { activeMenu.value = "OTHER_MENU" }
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithText("Màn hình menu khác").assertIsDisplayed()
+        composeTestRule.runOnIdle { activeMenu.value = "NEW_ENTRY" }
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithText("Lê Văn Thử Nghiệm").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Nữ").assertIsDisplayed()
 
         // Click "Làm mới dòng này" -> confirmation dialog must appear first, preserving data if cancelled
         composeTestRule.onNodeWithTag("row_1_reset_or_remove_button").performClick()
@@ -879,14 +898,19 @@ class WorkerUiAuthorizationRobolectricTest {
             selfRecruiterSuggestion = null
         )
 
+        val activeMenu = androidx.compose.runtime.mutableStateOf("NEW_ENTRY")
         composeTestRule.setContent {
             MyApplicationTheme {
-                DirectEntryNewWorkersScreen(
-                    actor = actor,
-                    viewModel = vm,
-                    onNavigateToWorkersList = {},
-                    onBackToDashboard = {}
-                )
+                if (activeMenu.value == "NEW_ENTRY") {
+                    DirectEntryNewWorkersScreen(
+                        actor = actor,
+                        viewModel = vm,
+                        onNavigateToWorkersList = {},
+                        onBackToDashboard = {}
+                    )
+                } else {
+                    androidx.compose.material3.Text("Màn hình menu khác")
+                }
             }
         }
 
