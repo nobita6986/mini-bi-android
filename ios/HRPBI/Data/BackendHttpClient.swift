@@ -1,183 +1,52 @@
 import Foundation
 
-public enum BackendFailureKind: String, Equatable, Sendable {
-    case unauthenticated = "UNAUTHENTICATED"
-    case pendingAccess = "PENDING_ACCESS"
-    case forbidden = "FORBIDDEN"
-    case conflict = "CONFLICT"
-    case validationError = "VALIDATION_ERROR"
-    case invalidRequest = "INVALID_REQUEST"
-    case notFound = "NOT_FOUND"
-    case serverUnavailable = "SERVER_UNAVAILABLE"
-    case network = "NETWORK"
-    case unknown = "UNKNOWN"
-}
+// MARK: - Backend HTTP Response & Client
+// Mirrors Android's `data/BackendHttpClient.kt` 100%
 
-public struct BackendApiException: Error, LocalizedError, Equatable, Sendable {
-    public let kind: BackendFailureKind
+public struct BackendHttpResponse: @unchecked Sendable {
     public let statusCode: Int
-    public let backendCode: String?
-    public let message: String
+    public let headers: [AnyHashable: Any]
+    public let rawData: Data
+    public let rawBody: String
+    public let jsonObject: [String: Any]?
+    public let errorCode: String?
+    public let errorMessage: String?
+
+    public var isSuccess: Bool {
+        (200...299).contains(statusCode)
+    }
 
     public init(
-        kind: BackendFailureKind,
-        statusCode: Int = 0,
-        backendCode: String? = nil,
-        message: String
+        statusCode: Int,
+        headers: [AnyHashable: Any] = [:],
+        rawData: Data = Data(),
+        rawBody: String = "",
+        jsonObject: [String: Any]? = nil,
+        errorCode: String? = nil,
+        errorMessage: String? = nil
     ) {
-        self.kind = kind
-        self.statusCode = statusCode
-        self.backendCode = backendCode
-        self.message = message
-    }
-
-    public var errorDescription: String? {
-        message
-    }
-
-    public var isRetryable: Bool {
-        kind == .network || kind == .serverUnavailable || statusCode == 429 || statusCode == 502 || statusCode == 503 || statusCode == 504
-    }
-}
-
-public struct HttpRawResponse: Sendable {
-    public let statusCode: Int
-    public let headers: [String: String]
-    public let data: Data
-
-    public init(statusCode: Int, headers: [String: String] = [:], data: Data = Data()) {
         self.statusCode = statusCode
         self.headers = headers
-        self.data = data
+        self.rawData = rawData
+        self.rawBody = rawBody
+        self.jsonObject = jsonObject
+        self.errorCode = errorCode
+        self.errorMessage = errorMessage
     }
 }
 
 public final class BackendHttpClient: @unchecked Sendable {
-    public typealias TransportHandler = @Sendable (URLRequest) async throws -> HttpRawResponse
+    public static let shared = BackendHttpClient()
 
     public let cookieStore: KeychainCookieStore
-    private let session: URLSession
-    private let signedUploadSession: URLSession
+    public let sseSession: URLSession
+    private let apiSession: URLSession
+    private let presignedSession: URLSession
     private let lock = NSLock()
     private var baseUrlInternal: String
-    private let allowHttpForDebug: Bool
-    public var transportOverride: TransportHandler?
+    private let enforceHttps: Bool
 
-    public init(
-        baseUrl: String,
-        cookieStore: KeychainCookieStore = KeychainCookieStore(),
-        allowHttpForDebug: Bool = false,
-        transportOverride: TransportHandler? = nil
-    ) {
-        self.cookieStore = cookieStore
-        self.allowHttpForDebug = allowHttpForDebug
-        self.baseUrlInternal = (try? Self.normalizeBaseUrl(baseUrl, allowHttpForDebug: allowHttpForDebug))
-            ?? "https://bi.hrpartner.vn"
-        self.transportOverride = transportOverride
-
-        let config = URLSessionConfiguration.ephemeral
-        config.timeoutIntervalForRequest = 30
-        config.timeoutIntervalForResource = 60
-        config.httpShouldSetCookies = false
-        self.session = URLSession(configuration: config)
-
-        let cleanConfig = URLSessionConfiguration.ephemeral
-        cleanConfig.timeoutIntervalForRequest = 45
-        cleanConfig.timeoutIntervalForResource = 90
-        cleanConfig.httpShouldSetCookies = false
-        self.signedUploadSession = URLSession(configuration: cleanConfig)
-    }
-
-    public var baseUrl: String {
-        lock.lock()
-        defer { lock.unlock() }
-        return baseUrlInternal
-    }
-
-    public func updateBaseUrl(_ rawUrl: String) throws -> String {
-        let normalized = try Self.normalizeBaseUrl(rawUrl, allowHttpForDebug: allowHttpForDebug)
-        lock.lock()
-        baseUrlInternal = normalized
-        lock.unlock()
-        return normalized
-    }
-
-    public func hasSessionCookies() -> Bool {
-        cookieStore.hasSessionCookies()
-    }
-
-    public func clearSessionCookies() {
-        cookieStore.clearAll()
-    }
-
-    // MARK: - URL Normalization & Origin
-
-    public static func normalizeBaseUrl(_ rawInput: String, allowHttpForDebug: Bool = false) throws -> String {
-        var trimmed = rawInput.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else {
-            throw BackendApiException(
-                kind: .invalidRequest,
-                statusCode: 0,
-                backendCode: "EMPTY_URL",
-                message: "Địa chỉ máy chủ không được để trống."
-            )
-        }
-        if !trimmed.contains("://") {
-            trimmed = "https://\(trimmed)"
-        }
-        guard let components = URLComponents(string: trimmed),
-              let scheme = components.scheme?.lowercased(),
-              let host = components.host?.lowercased(),
-              !host.isEmpty
-        else {
-            throw BackendApiException(
-                kind: .invalidRequest,
-                statusCode: 0,
-                backendCode: "INVALID_URL",
-                message: "Địa chỉ máy chủ không hợp lệ."
-            )
-        }
-        if scheme != "https" && !(allowHttpForDebug && scheme == "http") {
-            throw BackendApiException(
-                kind: .invalidRequest,
-                statusCode: 0,
-                backendCode: "HTTPS_REQUIRED",
-                message: "Bắt buộc sử dụng giao thức bảo mật HTTPS."
-            )
-        }
-        var out = "\(scheme)://\(host)"
-        if let port = components.port {
-            let isDefaultPort = (scheme == "https" && port == 443) || (scheme == "http" && port == 80)
-            if !isDefaultPort {
-                out += ":\(port)"
-            }
-        }
-        let cleanPath = components.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        if !cleanPath.isEmpty {
-            out += "/\(cleanPath)"
-        }
-        return out
-    }
-
-    public static func extractOrigin(_ baseUrl: String) -> String {
-        guard let components = URLComponents(string: baseUrl),
-              let scheme = components.scheme?.lowercased(),
-              let host = components.host?.lowercased()
-        else {
-            return baseUrl
-        }
-        if let port = components.port {
-            let isDefaultPort = (scheme == "https" && port == 443) || (scheme == "http" && port == 80)
-            if !isDefaultPort {
-                return "\(scheme)://\(host):\(port)"
-            }
-        }
-        return "\(scheme)://\(host)"
-    }
-
-    // MARK: - Error Mapping
-
-    public static let directEntryCodeMessages: [String: String] = [
+    public static let codeMessagesVi: [String: String] = [
         "UNAUTHENTICATED": "Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.",
         "SESSION_EXPIRED": "Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.",
         "INVALID_CREDENTIALS": "Thông tin đăng nhập không hợp lệ.",
@@ -189,178 +58,138 @@ public final class BackendHttpClient: @unchecked Sendable {
         "CSRF_REJECTED": "Yêu cầu bị từ chối do kiểm tra bảo mật Origin/CSRF.",
         "VERSION_CONFLICT": "Dữ liệu đã được cập nhật bởi phiên khác. Vui lòng tải lại.",
         "OPTIMISTIC_LOCK_CONFLICT": "Phiên bản hồ sơ đã thay đổi trên máy chủ. Đã tải lại bản mới nhất.",
-        "WORK_REPORT_VERSION_CONFLICT": "Dữ liệu báo cáo đã thay đổi trên máy chủ (xung đột phiên bản). Vui lòng tải lại và thử lại.",
+        "WORK_REPORT_VERSION_CONFLICT": "Báo cáo đã được cập nhật ở phiên làm việc khác. Đã tải lại phiên bản mới nhất.",
         "WORK_REPORT_DEADLINE_PASSED": "Đã quá hạn nộp báo cáo.",
         "DUPLICATE_CCCD_CONFIRMATION_REQUIRED": "Phát hiện CCCD đã tồn tại trên hệ thống. Vui lòng xác nhận trước khi gửi chính thức.",
         "INVALID_NATIONAL_ID": "Số CCCD phải gồm đúng 12 chữ số hợp lệ.",
         "FILE_TOO_LARGE": "Tệp đính kèm vượt quá dung lượng tối đa 10 MB.",
-        "UNSUPPORTED_MEDIA_TYPE": "Định dạng tệp không được hỗ trợ (chỉ nhận JPG, PNG, WEBP hoặc PDF).",
-        "STAGE_EXPIRED": "Tệp đính kèm tạm đã hết hạn. Vui lòng chọn lại tệp.",
-        "TIME_TOKEN_EXPIRED": "Mốc thời gian máy chủ đã hết hạn. Hệ thống đang đồng bộ lại.",
-        "TIME_ANCHOR_INVALID": "Mốc thời gian xác thực không hợp lệ."
+        "UNSUPPORTED_MEDIA_TYPE": "Định dạng tệp không được hỗ trợ (chỉ nhận JPG, PNG, WEBP hoặc PDF)."
     ]
 
-    public static func mapHttpFailure(
-        statusCode: Int,
-        rawBody: String,
-        fallbackMessage: String = ""
-    ) -> BackendApiException {
-        var backendCode: String? = nil
-        var serverMessage: String? = nil
+    public init(
+        baseUrl: String? = nil,
+        cookieStore: KeychainCookieStore = KeychainCookieStore(),
+        enforceHttps: Bool = AppEnvironmentConfig.current.enforceHttps
+    ) {
+        let defaultUrl = baseUrl ?? AppEnvironmentConfig.current.defaultBaseUrl
+        self.cookieStore = cookieStore
+        self.enforceHttps = enforceHttps
+        self.baseUrlInternal = Self.normalizeBaseUrl(defaultUrl, enforceHttps: enforceHttps)
+            ?? AppEnvironmentConfig.current.defaultBaseUrl
 
-        if let data = rawBody.data(using: .utf8),
-           let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] {
-            if let errObj = json["error"] as? [String: Any] {
-                backendCode = errObj.optCleanString("code") ?? json.optCleanString("code")
-                serverMessage = errObj.optCleanString("message")
-                    ?? errObj.optCleanString("detail")
-                    ?? json.optCleanString("message")
-            } else {
-                backendCode = json.optCleanString("code") ?? json.optCleanString("error_code")
-                serverMessage = json.optCleanString("message")
-                    ?? json.optCleanString("detail")
-                    ?? (json["error"] as? String)
-            }
-        }
+        let apiConfig = URLSessionConfiguration.ephemeral
+        apiConfig.timeoutIntervalForRequest = 30
+        apiConfig.timeoutIntervalForResource = 60
+        apiConfig.httpShouldSetCookies = false
+        self.apiSession = URLSession(configuration: apiConfig)
 
-        let normCode = backendCode?.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
-        let mappedVi = normCode.flatMap { directEntryCodeMessages[$0] }
+        let sseConfig = URLSessionConfiguration.ephemeral
+        sseConfig.timeoutIntervalForRequest = 300
+        sseConfig.timeoutIntervalForResource = 3600
+        sseConfig.httpShouldSetCookies = false
+        self.sseSession = URLSession(configuration: sseConfig)
 
-        let kind: BackendFailureKind
-        switch statusCode {
-        case 401:
-            kind = .unauthenticated
-        case 403:
-            if normCode == "PENDING_ACCESS" || normCode == "ACCOUNT_INACTIVE" {
-                kind = .pendingAccess
-            } else {
-                kind = .forbidden
-            }
-        case 404:
-            kind = .notFound
-        case 409:
-            kind = .conflict
-        case 422:
-            kind = .validationError
-        case 400, 413, 415:
-            kind = .invalidRequest
-        case 500...599:
-            kind = .serverUnavailable
-        default:
-            kind = .unknown
-        }
-
-        let finalMessage: String
-        if let mapped = mappedVi, !mapped.isEmpty {
-            finalMessage = mapped
-        } else if let srv = serverMessage?.trimmingCharacters(in: .whitespacesAndNewlines), !srv.isEmpty {
-            finalMessage = srv
-        } else if !fallbackMessage.isEmpty {
-            finalMessage = fallbackMessage
-        } else {
-            switch kind {
-            case .unauthenticated:
-                finalMessage = "Phiên đăng nhập không hợp lệ hoặc đã hết hạn."
-            case .pendingAccess:
-                finalMessage = "Tài khoản đang chờ cấp quyền truy cập."
-            case .forbidden:
-                finalMessage = "Bạn không có quyền thực hiện thao tác này."
-            case .conflict:
-                finalMessage = "Dữ liệu bị xung đột phiên bản trên máy chủ. Vui lòng tải lại."
-            case .validationError, .invalidRequest:
-                finalMessage = "Dữ liệu gửi lên không hợp lệ (HTTP \(statusCode))."
-            case .notFound:
-                finalMessage = "Không tìm thấy dữ liệu yêu cầu trên máy chủ."
-            case .serverUnavailable:
-                finalMessage = "Máy chủ đang bận hoặc bảo trì (HTTP \(statusCode))."
-            default:
-                finalMessage = "Lỗi kết nối máy chủ (HTTP \(statusCode))."
-            }
-        }
-
-        return BackendApiException(
-            kind: kind,
-            statusCode: statusCode,
-            backendCode: normCode,
-            message: finalMessage
-        )
+        let presignedConfig = URLSessionConfiguration.ephemeral
+        presignedConfig.timeoutIntervalForRequest = 60
+        presignedConfig.timeoutIntervalForResource = 120
+        presignedConfig.httpShouldSetCookies = false
+        self.presignedSession = URLSession(configuration: presignedConfig)
     }
 
-    // MARK: - HTTP Requests
-
-    private func buildUrl(path: String, queryParams: [(String, String?)] = []) throws -> URL {
-        let currentBase = baseUrl
-        let cleanPath = path.hasPrefix("/") ? path : "/\(path)"
-        let fullString = path.hasPrefix("http://") || path.hasPrefix("https://")
-            ? path
-            : "\(currentBase)\(cleanPath)"
-        guard var components = URLComponents(string: fullString) else {
-            throw BackendApiException(kind: .invalidRequest, statusCode: 0, backendCode: "INVALID_URL", message: "Đường dẫn API không hợp lệ.")
-        }
-        let nonEmptyParams = queryParams.compactMap { (k, v) -> URLQueryItem? in
-            guard let v = v?.trimmingCharacters(in: .whitespacesAndNewlines), !v.isEmpty else { return nil }
-            return URLQueryItem(name: k, value: v)
-        }
-        if !nonEmptyParams.isEmpty {
-            var existing = components.queryItems ?? []
-            existing.append(contentsOf: nonEmptyParams)
-            components.queryItems = existing
-        }
-        guard let url = components.url else {
-            throw BackendApiException(kind: .invalidRequest, statusCode: 0, backendCode: "INVALID_URL", message: "Không thể khởi tạo URL.")
-        }
-        return url
+    public var baseUrl: String {
+        lock.lock()
+        defer { lock.unlock() }
+        return baseUrlInternal
     }
 
-    private func execute(_ request: URLRequest, saveCookies: Bool = true) async throws -> HttpRawResponse {
-        if let override = transportOverride {
-            let resp = try await override(request)
-            if saveCookies, let url = request.url {
-                cookieStore.saveFromResponseHeaders(resp.headers, for: url)
-            }
-            return resp
+    @discardableResult
+    public func setBaseUrl(_ rawUrl: String) -> Bool {
+        guard let normalized = Self.normalizeBaseUrl(rawUrl, enforceHttps: enforceHttps) else {
+            return false
         }
-
-        do {
-            let (data, urlResponse) = try await session.data(for: request)
-            guard let httpResp = urlResponse as? HTTPURLResponse else {
-                throw BackendApiException(
-                    kind: .network,
-                    statusCode: 0,
-                    backendCode: "NON_HTTP_RESPONSE",
-                    message: "Phản hồi từ máy chủ không hợp lệ."
-                )
-            }
-            var headers: [String: String] = [:]
-            for (k, v) in httpResp.allHeaderFields {
-                if let ks = k as? String, let vs = v as? String {
-                    headers[ks] = vs
-                }
-            }
-            if saveCookies, let url = request.url {
-                cookieStore.saveFromResponseHeaders(headers, for: url)
-            }
-            return HttpRawResponse(statusCode: httpResp.statusCode, headers: headers, data: data)
-        } catch let apiEx as BackendApiException {
-            throw apiEx
-        } catch {
-            throw BackendApiException(
-                kind: .network,
-                statusCode: 0,
-                backendCode: "NETWORK_IO_ERROR",
-                message: "Không thể kết nối tới máy chủ. Vui lòng kiểm tra kết nối mạng."
-            )
-        }
+        lock.lock()
+        baseUrlInternal = normalized
+        lock.unlock()
+        return true
     }
 
-    public func requestJson(
+    // MARK: - URL Normalization & Origin Extraction
+
+    public static func normalizeBaseUrl(_ rawInput: String, enforceHttps: Bool = true) -> String? {
+        var trimmed = rawInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        if !trimmed.contains("://") {
+            trimmed = "https://\(trimmed)"
+        }
+        guard let components = URLComponents(string: trimmed),
+              let scheme = components.scheme?.lowercased(),
+              let host = components.host?.lowercased(),
+              !host.isEmpty
+        else {
+            return nil
+        }
+
+        if enforceHttps && scheme != "https" {
+            return nil
+        }
+        if scheme != "https" && scheme != "http" {
+            return nil
+        }
+
+        var result = "\(scheme)://\(host)"
+        if let port = components.port {
+            let isDefault = (scheme == "https" && port == 443) || (scheme == "http" && port == 80)
+            if !isDefault {
+                result += ":\(port)"
+            }
+        }
+
+        var path = components.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        if path.lowercased() == "api" {
+            path = ""
+        } else if path.lowercased().hasSuffix("/api") {
+            path = String(path.dropLast(4)).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        }
+        if !path.isEmpty {
+            result += "/\(path)"
+        }
+        return result
+    }
+
+    public static func extractOrigin(from url: URL) -> String? {
+        guard let scheme = url.scheme?.lowercased(),
+              let host = url.host?.lowercased(),
+              !host.isEmpty
+        else {
+            return nil
+        }
+        if let port = url.port {
+            let isDefault = (scheme == "https" && port == 443) || (scheme == "http" && port == 80)
+            if !isDefault {
+                return "\(scheme)://\(host):\(port)"
+            }
+        }
+        return "\(scheme)://\(host)"
+    }
+
+    // MARK: - Core JSON / Raw Request
+
+    public func request(
         method: String = "GET",
         path: String,
-        queryParams: [(String, String?)] = [],
+        queryItems: [URLQueryItem] = [],
         jsonBody: Any? = nil,
-        headers: [String: String] = [:]
-    ) async throws -> [String: Any] {
-        let url = try buildUrl(path: path, queryParams: queryParams)
+        additionalHeaders: [String: String] = [:]
+    ) async -> BackendHttpResponse {
+        guard let url = buildUrl(path: path, queryItems: queryItems) else {
+            return BackendHttpResponse(
+                statusCode: 0,
+                errorCode: "INVALID_URL",
+                errorMessage: "Đường dẫn máy chủ không hợp lệ."
+            )
+        }
+
         var req = URLRequest(url: url)
         let upperMethod = method.uppercased()
         req.httpMethod = upperMethod
@@ -370,167 +199,220 @@ public final class BackendHttpClient: @unchecked Sendable {
             req.setValue(cookieHeader, forHTTPHeaderField: "Cookie")
         }
 
-        if ["POST", "PUT", "PATCH", "DELETE"].contains(upperMethod) {
-            req.setValue(Self.extractOrigin(baseUrl), forHTTPHeaderField: "Origin")
+        if ["POST", "PUT", "PATCH", "DELETE"].contains(upperMethod),
+           let origin = Self.extractOrigin(from: url) {
+            req.setValue(origin, forHTTPHeaderField: "Origin")
         }
 
-        if let jsonBody = jsonBody {
+        if let jsonBody {
             req.setValue("application/json; charset=utf-8", forHTTPHeaderField: "Content-Type")
-            req.httpBody = try JSONSerialization.data(withJSONObject: jsonBody, options: [])
-        } else if ["POST", "PUT", "PATCH"].contains(upperMethod) {
-            req.setValue("application/json; charset=utf-8", forHTTPHeaderField: "Content-Type")
-            req.httpBody = Data("{}".utf8)
+            req.httpBody = try? JSONSerialization.data(withJSONObject: jsonBody, options: [])
         }
 
-        for (k, v) in headers {
+        for (k, v) in additionalHeaders {
             req.setValue(v, forHTTPHeaderField: k)
         }
 
-        let response = try await execute(req)
-        let rawBody = String(data: response.data, encoding: .utf8) ?? ""
-        if !(200...299).contains(response.statusCode) {
-            throw Self.mapHttpFailure(statusCode: response.statusCode, rawBody: rawBody)
-        }
-        if response.data.isEmpty {
-            return [:]
-        }
-        if let dict = (try? JSONSerialization.jsonObject(with: response.data)) as? [String: Any] {
-            return dict
-        }
-        if let arr = (try? JSONSerialization.jsonObject(with: response.data)) as? [Any] {
-            return ["items": arr]
-        }
-        return [:]
+        return await executeRequest(req, session: apiSession, saveCookies: true)
     }
 
-    public func requestRawBytes(
-        method: String = "GET",
-        path: String,
-        queryParams: [(String, String?)] = [],
-        headers: [String: String] = [:]
-    ) async throws -> (data: Data, contentType: String?, contentDisposition: String?) {
-        let url = try buildUrl(path: path, queryParams: queryParams)
-        var req = URLRequest(url: url)
-        req.httpMethod = method.uppercased()
-        if let cookieHeader = cookieStore.cookieHeader(for: url) {
-            req.setValue(cookieHeader, forHTTPHeaderField: "Cookie")
-        }
-        for (k, v) in headers {
-            req.setValue(v, forHTTPHeaderField: k)
-        }
-        let response = try await execute(req)
-        if !(200...299).contains(response.statusCode) {
-            let rawText = String(data: response.data, encoding: .utf8) ?? ""
-            throw Self.mapHttpFailure(statusCode: response.statusCode, rawBody: rawText)
-        }
-        let ct = response.headers.first { $0.key.caseInsensitiveCompare("Content-Type") == .orderedSame }?.value
-        let cd = response.headers.first { $0.key.caseInsensitiveCompare("Content-Disposition") == .orderedSame }?.value
-        return (response.data, ct, cd)
-    }
+    // MARK: - Multipart File Upload (`POST /api/workers/{ma_nld}/contract-file`, etc.)
 
-    public func postMultipartFile(
+    public func uploadMultipart(
         path: String,
         fieldName: String = "file",
         fileName: String,
         mimeType: String,
-        fileBytes: Data,
-        extraFields: [String: String] = [:],
-        headers: [String: String] = [:]
-    ) async throws -> [String: Any] {
-        let url = try buildUrl(path: path)
+        fileData: Data,
+        extraFields: [String: String] = [:]
+    ) async -> BackendHttpResponse {
+        guard let url = buildUrl(path: path, queryItems: []) else {
+            return BackendHttpResponse(
+                statusCode: 0,
+                errorCode: "INVALID_URL",
+                errorMessage: "Đường dẫn tải tệp không hợp lệ."
+            )
+        }
+
         let boundary = "Boundary-HRPBI-\(UUID().uuidString)"
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Accept")
         req.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
-        req.setValue(Self.extractOrigin(baseUrl), forHTTPHeaderField: "Origin")
+
+        if let origin = Self.extractOrigin(from: url) {
+            req.setValue(origin, forHTTPHeaderField: "Origin")
+        }
         if let cookieHeader = cookieStore.cookieHeader(for: url) {
             req.setValue(cookieHeader, forHTTPHeaderField: "Cookie")
-        }
-        for (k, v) in headers {
-            req.setValue(v, forHTTPHeaderField: k)
         }
 
         var body = Data()
         for (k, v) in extraFields {
-            body.append("--\(boundary)\r\n".data(using: .utf8)!)
-            body.append("Content-Disposition: form-data; name=\"\(k)\"\r\n\r\n".data(using: .utf8)!)
-            body.append("\(v)\r\n".data(using: .utf8)!)
+            body.append(Data("--\(boundary)\r\n".utf8))
+            body.append(Data("Content-Disposition: form-data; name=\"\(k)\"\r\n\r\n".utf8))
+            body.append(Data("\(v)\r\n".utf8))
         }
-        let safeName = fileName.replacingOccurrences(of: "\"", with: "_")
-        body.append("--\(boundary)\r\n".data(using: .utf8)!)
-        body.append("Content-Disposition: form-data; name=\"\(fieldName)\"; filename=\"\(safeName)\"\r\n".data(using: .utf8)!)
-        body.append("Content-Type: \(mimeType)\r\n\r\n".data(using: .utf8)!)
-        body.append(fileBytes)
-        body.append("\r\n--\(boundary)--\r\n".data(using: .utf8)!)
+        let safeFileName = fileName.replacingOccurrences(of: "\"", with: "_")
+        body.append(Data("--\(boundary)\r\n".utf8))
+        body.append(Data("Content-Disposition: form-data; name=\"\(fieldName)\"; filename=\"\(safeFileName)\"\r\n".utf8))
+        body.append(Data("Content-Type: \(mimeType)\r\n\r\n".utf8))
+        body.append(fileData)
+        body.append(Data("\r\n--\(boundary)--\r\n".utf8))
         req.httpBody = body
 
-        let response = try await execute(req)
-        let rawBody = String(data: response.data, encoding: .utf8) ?? ""
-        if !(200...299).contains(response.statusCode) {
-            throw Self.mapHttpFailure(statusCode: response.statusCode, rawBody: rawBody)
-        }
-        if let dict = (try? JSONSerialization.jsonObject(with: response.data)) as? [String: Any] {
-            return dict
-        }
-        return [:]
+        return await executeRequest(req, session: apiSession, saveCookies: true)
     }
 
-    public func putBinaryToSignedUrl(
+    // MARK: - Presigned R2 PUT Upload (Cookie-free & Origin-free)
+
+    public func putPresignedUrl(
         uploadUrl: String,
-        mimeType: String,
-        bytes: Data,
-        requiredHeaders: [String: String] = [:]
-    ) async throws {
+        fileData: Data,
+        contentType: String,
+        additionalHeaders: [String: String] = [:]
+    ) async -> BackendHttpResponse {
         guard let url = URL(string: uploadUrl) else {
-            throw BackendApiException(
-                kind: .invalidRequest,
+            return BackendHttpResponse(
                 statusCode: 0,
-                backendCode: "INVALID_SIGNED_URL",
-                message: "Đường dẫn tải tệp lên kho lưu trữ không hợp lệ."
+                errorCode: "INVALID_PRESIGNED_URL",
+                errorMessage: "Đường dẫn tải tệp lên kho lưu trữ không hợp lệ."
             )
         }
+
         var req = URLRequest(url: url)
         req.httpMethod = "PUT"
-        req.setValue(mimeType, forHTTPHeaderField: "Content-Type")
-        for (k, v) in requiredHeaders {
+        req.setValue(contentType, forHTTPHeaderField: "Content-Type")
+        for (k, v) in additionalHeaders {
             req.setValue(v, forHTTPHeaderField: k)
         }
-        req.httpBody = bytes
+        req.httpBody = fileData
 
-        if let override = transportOverride {
-            let resp = try await override(req)
-            if !(200...299).contains(resp.statusCode) {
-                throw BackendApiException(
-                    kind: .serverUnavailable,
-                    statusCode: resp.statusCode,
-                    backendCode: "R2_PUT_FAILED",
-                    message: "Không thể tải tệp đính kèm lên kho lưu trữ (HTTP \(resp.statusCode))."
-                )
-            }
-            return
+        return await executeRequest(req, session: presignedSession, saveCookies: false)
+    }
+
+    // MARK: - Real-time SSE Stream Request (`GET /api/notifications/stream`)
+
+    public func makeSseRequest(path: String = "/api/notifications/stream") throws -> URLRequest {
+        guard let url = buildUrl(path: path, queryItems: []) else {
+            throw URLError(.badURL)
         }
+        var req = URLRequest(url: url)
+        req.httpMethod = "GET"
+        req.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+        req.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
+        if let cookieHeader = cookieStore.cookieHeader(for: url) {
+            req.setValue(cookieHeader, forHTTPHeaderField: "Cookie")
+        }
+        return req
+    }
 
+    // MARK: - Internal Helpers
+
+    private func buildUrl(path: String, queryItems: [URLQueryItem]) -> URL? {
+        let currentBase = baseUrl
+        let cleanPath = path.hasPrefix("/") ? path : "/\(path)"
+        let fullStr = (path.hasPrefix("https://") || path.hasPrefix("http://"))
+            ? path
+            : "\(currentBase)\(cleanPath)"
+        guard var components = URLComponents(string: fullStr) else {
+            return nil
+        }
+        if !queryItems.isEmpty {
+            var existing = components.queryItems ?? []
+            existing.append(contentsOf: queryItems)
+            components.queryItems = existing
+        }
+        return components.url
+    }
+
+    private func executeRequest(
+        _ request: URLRequest,
+        session: URLSession,
+        saveCookies: Bool
+    ) async -> BackendHttpResponse {
         do {
-            let (_, urlResponse) = try await signedUploadSession.data(for: req)
-            let code = (urlResponse as? HTTPURLResponse)?.statusCode ?? 0
-            if !(200...299).contains(code) {
-                throw BackendApiException(
-                    kind: .serverUnavailable,
-                    statusCode: code,
-                    backendCode: "R2_PUT_FAILED",
-                    message: "Không thể tải tệp đính kèm lên kho lưu trữ (HTTP \(code))."
+            let (data, urlResponse) = try await session.data(for: request)
+            guard let httpResp = urlResponse as? HTTPURLResponse else {
+                return BackendHttpResponse(
+                    statusCode: 0,
+                    errorCode: "NON_HTTP_RESPONSE",
+                    errorMessage: "Phản hồi từ máy chủ không hợp lệ."
                 )
             }
-        } catch let apiEx as BackendApiException {
-            throw apiEx
+
+            if saveCookies, let url = request.url {
+                var stringHeaders: [String: String] = [:]
+                for (k, v) in httpResp.allHeaderFields {
+                    if let ks = k as? String, let vs = v as? String {
+                        stringHeaders[ks] = vs
+                    }
+                }
+                cookieStore.saveFromResponseHeaders(stringHeaders, for: url)
+            }
+
+            let rawBody = String(data: data, encoding: .utf8) ?? ""
+            var parsedDict: [String: Any]?
+            if !data.isEmpty,
+               let json = try? JSONSerialization.jsonObject(with: data, options: []) {
+                if let dict = json as? [String: Any] {
+                    parsedDict = dict
+                } else if let arr = json as? [[String: Any]] {
+                    parsedDict = ["items": arr]
+                }
+            }
+
+            let isSuccess = (200...299).contains(httpResp.statusCode)
+            let (errCode, errMsg) = isSuccess
+                ? (nil, nil)
+                : Self.extractErrorDetails(statusCode: httpResp.statusCode, jsonObject: parsedDict, rawBody: rawBody)
+
+            return BackendHttpResponse(
+                statusCode: httpResp.statusCode,
+                headers: httpResp.allHeaderFields,
+                rawData: data,
+                rawBody: rawBody,
+                jsonObject: parsedDict,
+                errorCode: errCode,
+                errorMessage: errMsg
+            )
         } catch {
-            throw BackendApiException(
-                kind: .network,
+            return BackendHttpResponse(
                 statusCode: 0,
-                backendCode: "R2_NETWORK_ERROR",
-                message: "Lỗi kết nối mạng khi tải tệp lên kho lưu trữ."
+                errorCode: "NETWORK_ERROR",
+                errorMessage: "Không thể kết nối máy chủ (\(error.localizedDescription))."
             )
         }
+    }
+
+    private static func extractErrorDetails(
+        statusCode: Int,
+        jsonObject: [String: Any]?,
+        rawBody: String
+    ) -> (code: String?, message: String?) {
+        var code: String?
+        var serverMsg: String?
+
+        if let jsonObject {
+            if let errDict = jsonObject["error"] as? [String: Any] {
+                code = errDict.optNullableString("code", "error_code")
+                    ?? jsonObject.optNullableString("code", "error_code")
+                serverMsg = errDict.optNullableString("message", "detail")
+                    ?? jsonObject.optNullableString("message", "detail")
+            } else {
+                code = jsonObject.optNullableString("code", "error_code")
+                serverMsg = jsonObject.optNullableString("message", "detail")
+                    ?? (jsonObject["error"] as? String)
+            }
+        }
+
+        let normalizedCode = code?.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        if let normalizedCode, let mapped = codeMessagesVi[normalizedCode] {
+            return (normalizedCode, mapped)
+        }
+        if let serverMsg, !serverMsg.isEmpty {
+            return (normalizedCode, serverMsg)
+        }
+        return (normalizedCode, "Yêu cầu thất bại (HTTP \(statusCode)).")
     }
 }

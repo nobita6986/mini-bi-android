@@ -1,6 +1,7 @@
 import Foundation
 
-// MARK: - Environment & Versioning Configuration
+// MARK: - Environment Variants & Versioning (`HRP BI` vs `HRP BI 2`)
+// Mirrors Android's `release` and `debug` buildTypes in `app/build.gradle.kts`
 
 public enum AppEnvironmentVariant: String, CaseIterable, Equatable, Sendable {
     case release = "release"
@@ -9,14 +10,33 @@ public enum AppEnvironmentVariant: String, CaseIterable, Equatable, Sendable {
 
 public struct AppEnvironmentConfig: Equatable, Sendable {
     public let variant: AppEnvironmentVariant
-    public let appDisplayName: String
-    public let loginBrandTitle: String
-    public let brandBadgeLabel: String
-    public let defaultServerUrl: String
+    public let appBrandTitle: String
+    public let appBrandBadgeText: String
+    public let defaultBaseUrl: String
     public let bundleIdentifier: String
-    public let allowDebugUrlOverride: Bool
+    public let enforceHttps: Bool
     public let marketingVersion: String
     public let buildNumber: String
+
+    public init(
+        variant: AppEnvironmentVariant,
+        appBrandTitle: String,
+        appBrandBadgeText: String,
+        defaultBaseUrl: String,
+        bundleIdentifier: String,
+        enforceHttps: Bool,
+        marketingVersion: String,
+        buildNumber: String
+    ) {
+        self.variant = variant
+        self.appBrandTitle = appBrandTitle
+        self.appBrandBadgeText = appBrandBadgeText
+        self.defaultBaseUrl = defaultBaseUrl
+        self.bundleIdentifier = bundleIdentifier
+        self.enforceHttps = enforceHttps
+        self.marketingVersion = marketingVersion
+        self.buildNumber = buildNumber
+    }
 
     public static func forVariant(
         _ variant: AppEnvironmentVariant,
@@ -27,51 +47,56 @@ public struct AppEnvironmentConfig: Equatable, Sendable {
         case .release:
             return AppEnvironmentConfig(
                 variant: .release,
-                appDisplayName: "HRP BI",
-                loginBrandTitle: "HRP BI",
-                brandBadgeLabel: "BI",
-                defaultServerUrl: "https://bi.hrpartner.vn",
+                appBrandTitle: "HRP BI",
+                appBrandBadgeText: "BI",
+                defaultBaseUrl: "https://bi.hrpartner.vn",
                 bundleIdentifier: "com.aistudio.minibi.hrpbia",
-                allowDebugUrlOverride: false,
+                enforceHttps: true,
                 marketingVersion: marketingVersion,
                 buildNumber: buildNumber
             )
         case .staging:
             return AppEnvironmentConfig(
                 variant: .staging,
-                appDisplayName: "HRP BI 2",
-                loginBrandTitle: "HRP BI 2",
-                brandBadgeLabel: "BI2",
-                defaultServerUrl: "https://bi2.hrpartner.vn",
+                appBrandTitle: "HRP BI 2",
+                appBrandBadgeText: "BI2",
+                defaultBaseUrl: "https://bi2.hrpartner.vn",
                 bundleIdentifier: "com.aistudio.minibi.hrpbia.bi2",
-                allowDebugUrlOverride: true,
+                enforceHttps: false,
                 marketingVersion: marketingVersion,
                 buildNumber: buildNumber
             )
         }
     }
 
-    public static func current(bundle: Bundle = .main) -> AppEnvironmentConfig {
+    public static var current: AppEnvironmentConfig {
+        fromBundle(.main)
+    }
+
+    public static func fromBundle(_ bundle: Bundle) -> AppEnvironmentConfig {
         let info = bundle.infoDictionary ?? [:]
         let marketing = (info["CFBundleShortVersionString"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
         let build = (info["CFBundleVersion"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
         let resolvedMarketing = (marketing?.isEmpty == false) ? marketing! : "1.0.1.27102026"
         let resolvedBuild = (build?.isEmpty == false) ? build! : "1"
 
-        let bundleId = (bundle.bundleIdentifier ?? (info["CFBundleIdentifier"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        let badge = (info["BRAND_BADGE_LABEL"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let host = (info["DEFAULT_SERVER_HOST"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let bundleId = (bundle.bundleIdentifier ?? (info["CFBundleIdentifier"] as? String) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let badge = (info["BRAND_BADGE_LABEL"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let host = (info["DEFAULT_SERVER_HOST"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
 
         #if BI2_STAGING
-        let defaultVariant: AppEnvironmentVariant = .staging
+        let compiledStaging = true
         #else
-        let defaultVariant: AppEnvironmentVariant = .release
+        let compiledStaging = false
         #endif
 
-        let isStaging = bundleId.hasSuffix(".bi2")
+        let isStaging = compiledStaging
+            || bundleId.hasSuffix(".bi2")
             || badge.uppercased() == "BI2"
             || host.lowercased().hasPrefix("bi2.")
-            || defaultVariant == .staging
 
         return forVariant(
             isStaging ? .staging : .release,
@@ -81,1288 +106,1319 @@ public struct AppEnvironmentConfig: Equatable, Sendable {
     }
 }
 
-// MARK: - Saved Login Account
+// MARK: - Generic API Result Envelope
+
+public enum MiniBiApiResult<T> {
+    case success(T, statusCode: Int = 200)
+    case failure(
+        message: String,
+        httpStatus: Int? = nil,
+        errorCode: String? = nil,
+        rawBody: String? = nil
+    )
+}
+
+// MARK: - Auth & Session Models
 
 public struct SavedLoginAccount: Codable, Equatable, Identifiable, Sendable {
     public var id: String { identifier.lowercased() }
     public let identifier: String
     public let password: String
     public let displayName: String
-    public let lastUsedEpochMs: Int64
+    public let role: String
+    public let updatedAtEpochMs: Int64
 
     public init(
         identifier: String,
         password: String,
         displayName: String = "",
-        lastUsedEpochMs: Int64 = Int64(Date().timeIntervalSince1970 * 1000.0)
+        role: String = "",
+        updatedAtEpochMs: Int64 = Int64(Date().timeIntervalSince1970 * 1000)
     ) {
         self.identifier = identifier
         self.password = password
-        self.displayName = displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? identifier : displayName
-        self.lastUsedEpochMs = lastUsedEpochMs
+        self.displayName = displayName.isEmpty ? identifier : displayName
+        self.role = role
+        self.updatedAtEpochMs = updatedAtEpochMs
     }
 }
 
-// MARK: - Actor & Session Authorization Contract
-
-public struct AppActor: Codable, Equatable, Sendable {
-    public let appUserId: String
+public struct MiniBiUser: Codable, Equatable, Identifiable, Sendable {
+    public let id: String
+    public let username: String
+    public let fullName: String
+    public let role: String
+    public let roleLabel: String
     public let email: String
-    public let displayName: String
-    public let status: String
-    public let roleKeys: Set<String>
-    public let capabilities: Set<String>
-    public let scopeKinds: Set<String>
-    public let teamBucketKeys: Set<String>
-    public let projectIds: Set<String>
-    public let recruiterIds: Set<String>
-    public let selfRecruiterSuggestion: String?
-    public let isPendingAccess: Bool
+    public let phone: String
+    public let teamName: String
+    public let permissions: [String]
+    public let allowedWorkerScopes: [String]
 
     public init(
-        appUserId: String,
-        email: String,
-        displayName: String,
-        status: String,
-        roleKeys: Set<String>,
-        capabilities: Set<String>,
-        scopeKinds: Set<String>,
-        teamBucketKeys: Set<String> = [],
-        projectIds: Set<String> = [],
-        recruiterIds: Set<String> = [],
-        selfRecruiterSuggestion: String? = nullString,
-        isPendingAccess: Bool = false
+        id: String,
+        username: String,
+        fullName: String,
+        role: String = "USER",
+        roleLabel: String = "Nhân sự",
+        email: String = "",
+        phone: String = "",
+        teamName: String = "",
+        permissions: [String] = [],
+        allowedWorkerScopes: [String] = ["all", "managed", "recruited", "team", "uploader"]
     ) {
-        self.appUserId = appUserId
+        self.id = id
+        self.username = username
+        self.fullName = fullName
+        self.role = role
+        self.roleLabel = roleLabel
         self.email = email
-        self.displayName = displayName
-        self.status = status
-        self.roleKeys = roleKeys
-        self.capabilities = capabilities
-        self.scopeKinds = scopeKinds
-        self.teamBucketKeys = teamBucketKeys
-        self.projectIds = projectIds
-        self.recruiterIds = recruiterIds
-        self.selfRecruiterSuggestion = selfRecruiterSuggestion
-        self.isPendingAccess = isPendingAccess
-    }
-
-    private static let nullString: String? = nil
-
-    public var isActive: Bool {
-        status.caseInsensitiveCompare("active") == .orderedSame && !isPendingAccess
-    }
-
-    public func hasCapability(_ key: String) -> Bool {
-        capabilities.contains(key)
-    }
-
-    public func hasScopeKind(_ kind: String) -> Bool {
-        scopeKinds.contains(kind)
-    }
-
-    public var isAdminRole: Bool {
-        roleKeys.contains("system_admin") || roleKeys.contains("admin") ||
-            (hasCapability("admin_access") && hasScopeKind("all"))
-    }
-
-    public var isDirectorRole: Bool {
-        roleKeys.contains("director") || (hasScopeKind("all") && !isAdminRole)
-    }
-
-    public var isLeaderRole: Bool {
-        roleKeys.contains("leader") || roleKeys.contains("team_leader") || hasScopeKind("team")
-    }
-
-    public var canAccessNewWorkerEntry: Bool {
-        hasCapability("submission_create") || hasCapability("entry_admin")
-    }
-
-    public var canViewWorkersScreen: Bool {
-        hasCapability("submission_read") ||
-            hasCapability("submission_create") ||
-            hasCapability("entry_admin") ||
-            hasCapability("change_propose") ||
-            hasCapability("change_review") ||
-            !scopeKinds.isEmpty
-    }
-
-    public var displayRoleLabelVi: String {
-        if roleKeys.contains("system_admin") || roleKeys.contains("admin") { return "Quản trị hệ thống" }
-        if roleKeys.contains("director") { return "Giám đốc / Ban điều hành" }
-        if roleKeys.contains("leader") || roleKeys.contains("team_leader") { return "Trưởng nhóm (Leader)" }
-        if roleKeys.contains("project_manager") { return "Quản lý dự án" }
-        if roleKeys.contains("recruiter") || roleKeys.contains("specialist") { return "Chuyên viên" }
-        if isAdminRole { return "Quản trị hệ thống" }
-        if isDirectorRole { return "Ban điều hành" }
-        if isLeaderRole { return "Trưởng nhóm" }
-        return "Nhân sự vận hành"
-    }
-
-    public var primaryScopeDisplayLabelVi: String {
-        if hasScopeKind("all") { return "Toàn hệ thống" }
-        if hasScopeKind("team") { return "Theo nhóm quản lý" }
-        if hasScopeKind("project") { return "Theo dự án phụ trách" }
-        if hasScopeKind("self_recruiter") { return "Theo hồ sơ tự tuyển" }
-        if hasScopeKind("uploader") { return "Theo đợt tự nhập" }
-        return "Cá nhân"
-    }
-
-    public static func parseFromSessionPayload(_ root: [String: Any]) -> AppActor? {
-        if let authenticated = root["authenticated"] as? Bool, !authenticated {
-            return nil
-        }
-        let actorObj = (root["actor"] as? [String: Any])
-            ?? (root["user"] as? [String: Any])
-            ?? root
-        return parseActorObject(actorObj)
-    }
-
-    public static func parseActorObject(_ obj: [String: Any]) -> AppActor? {
-        let userId = obj.stringValue(forKeys: ["app_user_id", "user_id", "id"]).trimmingCharacters(in: .whitespacesAndNewlines)
-        let email = obj.stringValue(forKeys: ["email", "identifier", "username"]).trimmingCharacters(in: .whitespacesAndNewlines)
-        if userId.isEmpty && email.isEmpty {
-            return nil
-        }
-        let fallbackName = email.split(separator: "@").first.map(String.init) ?? userId
-        let displayName = obj.stringValue(forKeys: ["display_name", "full_name", "name"], default: fallbackName)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        let status = obj.stringValue(forKeys: ["status"], default: "active")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
-        let pendingAccess = (obj["is_pending_access"] as? Bool) ?? (status != "active")
-
-        let roleKeys = parseStringSet(obj["role_keys"] ?? obj["roles"])
-        let capabilities = parseStringSet(obj["capabilities"])
-
-        var scopeKinds = Set<String>()
-        var teamKeys = Set<String>()
-        var projectIds = Set<String>()
-        var recruiterIds = Set<String>()
-
-        if let scopesArr = obj["scopes"] as? [Any] {
-            for item in scopesArr {
-                if let sObj = item as? [String: Any] {
-                    let kind = sObj.stringValue(forKeys: ["scope_kind", "kind"]).trimmingCharacters(in: .whitespacesAndNewlines)
-                    let valStr = sObj.stringValue(forKeys: ["scope_value", "value"]).trimmingCharacters(in: .whitespacesAndNewlines)
-                    if !kind.isEmpty {
-                        scopeKinds.insert(kind)
-                        switch kind {
-                        case "team":
-                            if !valStr.isEmpty { teamKeys.insert(valStr) }
-                        case "project":
-                            if !valStr.isEmpty { projectIds.insert(valStr) }
-                        case "self_recruiter":
-                            if !valStr.isEmpty { recruiterIds.insert(valStr) }
-                        default:
-                            break
-                        }
-                    }
-                } else if let str = item as? String {
-                    let clean = str.trimmingCharacters(in: .whitespacesAndNewlines)
-                    if !clean.isEmpty { scopeKinds.insert(clean) }
-                }
-            }
-        }
-        scopeKinds.formUnion(parseStringSet(obj["scope_kinds"]))
-        teamKeys.formUnion(parseStringSet(obj["team_bucket_keys"]))
-        projectIds.formUnion(parseStringSet(obj["project_ids"]))
-        recruiterIds.formUnion(parseStringSet(obj["recruiter_ids"]))
-
-        let selfRecruiter = obj.optCleanString("self_recruiter_id") ?? recruiterIds.first
-
-        return AppActor(
-            appUserId: userId.isEmpty ? email : userId,
-            email: email,
-            displayName: displayName.isEmpty ? fallbackName : displayName,
-            status: status,
-            roleKeys: roleKeys,
-            capabilities: capabilities,
-            scopeKinds: scopeKinds,
-            teamBucketKeys: teamKeys,
-            projectIds: projectIds,
-            recruiterIds: recruiterIds,
-            selfRecruiterSuggestion: selfRecruiter,
-            isPendingAccess: pendingAccess
-        )
-    }
-
-    private static func parseStringSet(_ raw: Any?) -> Set<String> {
-        guard let arr = raw as? [Any] else { return [] }
-        var out = Set<String>()
-        for el in arr {
-            if let s = el as? String {
-                let clean = s.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !clean.isEmpty { out.insert(clean) }
-            }
-        }
-        return out
+        self.phone = phone
+        self.teamName = teamName
+        self.permissions = permissions
+        self.allowedWorkerScopes = allowedWorkerScopes
     }
 }
 
-// MARK: - Main Navigation Destinations
+// MARK: - Navigation & Tab Enums
 
-public enum MainDestination: String, CaseIterable, Equatable, Sendable {
-    case dashboard = "DASHBOARD"
-    case newEntry = "NEW_ENTRY"
-    case workers = "WORKERS"
-    case attendance = "ATTENDANCE"
-    case workReports = "WORK_REPORTS"
+public enum MiniBiNavDestination: String, CaseIterable, Identifiable, Equatable, Sendable {
+    case dashboard = "dashboard"
+    case newEntry = "new_entry"
+    case workers = "workers"
+    case attendance = "attendance"
+    case workReports = "work_reports"
 
-    public var labelVi: String {
+    public var id: String { rawValue }
+
+    public var titleVi: String {
         switch self {
-        case .dashboard: return "Tổng quan"
-        case .newEntry: return "Cấp mới"
-        case .workers: return "Nhân sự"
-        case .attendance: return "Chấm công"
-        case .workReports: return "Báo cáo"
+        case .dashboard:
+            return "Tổng quan"
+        case .newEntry:
+            return "Cấp mới"
+        case .workers:
+            return "Nhân sự"
+        case .attendance:
+            return "Chấm công"
+        case .workReports:
+            return "Báo cáo CV"
         }
     }
 
-    public var sfSymbolName: String {
+    public var systemIconName: String {
         switch self {
-        case .dashboard: return "chart.bar.xaxis"
-        case .newEntry: return "person.badge.plus"
-        case .workers: return "person.3.fill"
-        case .attendance: return "camera.viewfinder"
-        case .workReports: return "doc.text.fill"
+        case .dashboard:
+            return "chart.bar.xaxis"
+        case .newEntry:
+            return "person.badge.plus"
+        case .workers:
+            return "person.3.fill"
+        case .attendance:
+            return "camera.viewfinder"
+        case .workReports:
+            return "doc.text.fill"
         }
-    }
-
-    public static func allowedDestinations(for actor: AppActor) -> [MainDestination] {
-        var list: [MainDestination] = [.dashboard]
-        if actor.canAccessNewWorkerEntry {
-            list.append(.newEntry)
-        }
-        if actor.canViewWorkersScreen {
-            list.append(.workers)
-        }
-        list.append(.attendance)
-        list.append(.workReports)
-        return list
-    }
-
-    public static func coerceDestination(_ requested: MainDestination, for actor: AppActor?) -> MainDestination {
-        guard let actor = actor else { return .dashboard }
-        let allowed = allowedDestinations(for: actor)
-        return allowed.contains(requested) ? requested : (allowed.first ?? .dashboard)
     }
 }
 
-// MARK: - Dashboard Models
+public enum DashboardSubTab: String, CaseIterable, Identifiable, Equatable, Sendable {
+    case overview = "overview"
+    case deepMetrics = "deep_metrics"
+    case teamReport = "team_report"
+    case duplicateCccd = "duplicate_cccd"
+    case cccdReview = "cccd_review"
 
-public enum DashboardDatePreset: String, CaseIterable, Equatable, Sendable {
-    case allTime = "all"
+    public var id: String { rawValue }
+
+    public var titleVi: String {
+        switch self {
+        case .overview:
+            return "Tổng quát"
+        case .deepMetrics:
+            return "Chuyên sâu"
+        case .teamReport:
+            return "Theo nhóm"
+        case .duplicateCccd:
+            return "CCCD trùng"
+        case .cccdReview:
+            return "Duyệt CCCD"
+        }
+    }
+}
+
+public enum DateFilterPreset: String, CaseIterable, Identifiable, Equatable, Sendable {
+    case all = "all"
     case thisWeek = "this_week"
     case thisMonth = "this_month"
     case lastMonth = "last_month"
 
-    public var key: String { rawValue }
+    public var id: String { rawValue }
 
-    public var label: String {
+    public var titleVi: String {
         switch self {
-        case .allTime: return "Toàn kỳ"
-        case .thisWeek: return "Tuần này"
-        case .thisMonth: return "Tháng này"
-        case .lastMonth: return "Tháng trước"
-        }
-    }
-
-    public func resolveDateRange(referenceDate: Date = Date()) -> (fromIso: String, toIso: String)? {
-        var cal = Calendar(identifier: .gregorian)
-        cal.timeZone = TimeZone(identifier: "Asia/Ho_Chi_Minh") ?? .current
-        cal.firstWeekday = 2 // Monday
-        let fmt = DateFormatter()
-        fmt.calendar = cal
-        fmt.timeZone = cal.timeZone
-        fmt.locale = Locale(identifier: "en_US_POSIX")
-        fmt.dateFormat = "yyyy-MM-dd"
-
-        switch self {
-        case .allTime:
-            return nil
+        case .all:
+            return "Toàn thời gian"
         case .thisWeek:
-            let comps = cal.dateComponents([.yearForWeekOfYear, .weekOfYear], from: referenceDate)
-            guard let monday = cal.date(from: comps) else { return nil }
-            return (fmt.string(from: monday), fmt.string(from: referenceDate))
+            return "Tuần này"
         case .thisMonth:
-            let comps = cal.dateComponents([.year, .month], from: referenceDate)
-            guard let firstDay = cal.date(from: comps) else { return nil }
-            return (fmt.string(from: firstDay), fmt.string(from: referenceDate))
+            return "Tháng này"
         case .lastMonth:
-            let comps = cal.dateComponents([.year, .month], from: referenceDate)
-            guard let firstOfThisMonth = cal.date(from: comps),
-                  let lastOfPrevMonth = cal.date(byAdding: .day, value: -1, to: firstOfThisMonth),
-                  let firstOfPrevMonth = cal.date(from: cal.dateComponents([.year, .month], from: lastOfPrevMonth))
-            else { return nil }
-            return (fmt.string(from: firstOfPrevMonth), fmt.string(from: lastOfPrevMonth))
+            return "Tháng trước"
         }
     }
 }
 
-public struct BiBucketItem: Equatable, Identifiable, Sendable {
-    public var id: String { key.isEmpty ? label : key }
-    public let key: String
-    public let label: String
-    public let subtitle: String?
-    public let totalCount: Int
-    public let onCount: Int
-    public let offCount: Int
-    public let sharePct: Double?
+public enum WorkReportsSubTab: String, CaseIterable, Identifiable, Equatable, Sendable {
+    case actionable = "actionable"
+    case history = "history"
+    case reviewQueue = "review_queue"
+    case analytics = "analytics"
 
-    public init(
-        key: String = "",
-        label: String,
-        subtitle: String? = nil,
-        totalCount: Int,
-        onCount: Int = 0,
-        offCount: Int = 0,
-        sharePct: Double? = nil
-    ) {
-        self.key = key
-        self.label = label
-        self.subtitle = subtitle
-        self.totalCount = totalCount
-        self.onCount = onCount
-        self.offCount = offCount
-        self.sharePct = sharePct
+    public var id: String { rawValue }
+
+    public var titleVi: String {
+        switch self {
+        case .actionable:
+            return "Cần nộp"
+        case .history:
+            return "Lịch sử / Đã lưu / Đã nộp"
+        case .reviewQueue:
+            return "Chờ duyệt"
+        case .analytics:
+            return "Tổng hợp"
+        }
     }
 }
 
-public struct GeneralOverviewSnapshot: Equatable, Sendable {
-    public let audienceKind: String
-    public let asOfDate: String
-    public let scopeDescription: String
-    public let totalWorkers: Int
-    public let activeWorkers: Int
-    public let inactiveWorkers: Int
-    public let unconfirmedWorkers: Int
-    public let retentionRatePct: Double
-    public let projectCount: Int
-    public let recruiterCount: Int
-    public let hrpTotal: Int
-    public let hrpActive: Int
-    public let hrpSharePct: Double
-    public let vendorTotal: Int
-    public let vendorActive: Int
-    public let vendorSharePct: Double
-    public let teamBuckets: [BiBucketItem]
-    public let topProjects: [BiBucketItem]
-    public let topRecruiters: [BiBucketItem]
-    public let managedTotal: Int?
-    public let managedActive: Int?
-    public let recruitedTotal: Int?
-    public let recruitedActive: Int?
-    public let teamTotal: Int?
-    public let teamActive: Int?
-    public let isPeriodFiltered: Bool
-    public let periodFromDate: String?
-    public let periodToDate: String?
-    public let periodNewEpisodes: Int?
-    public let periodOnInflow: Int?
-    public let periodOffInflow: Int?
-    public let periodNetOnChange: Int?
-    public let startActiveCount: Int?
-    public let startInactiveCount: Int?
-    public let endActiveCount: Int?
-    public let endInactiveCount: Int?
-}
+// MARK: - Dashboard & CCCD Review Models
 
-public struct WorkforceDeepMetrics: Equatable, Sendable {
-    public let asOfDate: String
-    public let totalTracked: Int
+public struct GeneralOverviewKpis: Equatable, Sendable {
+    public let totalHeadcount: Int
     public let activeCount: Int
     public let inactiveCount: Int
-    public let unconfirmedCount: Int
-    public let activeRatePct: Double
-    public let genderBuckets: [BiBucketItem]
-    public let ageBuckets: [BiBucketItem]
-    public let tenureBuckets: [BiBucketItem]
-    public let projectScaleBuckets: [BiBucketItem]
-    public let projectsHasMore: Bool
-    public let projectsNextPage: Int
-    public let isPeriodFiltered: Bool
-    public let periodFromDate: String?
-    public let periodToDate: String?
-    public let periodNewEpisodes: Int?
-    public let periodOnInflow: Int?
-    public let periodOffInflow: Int?
-    public let periodNetOnChange: Int?
+    public let interviewCount: Int
+    public let newCount: Int
+    public let resignedInPeriodCount: Int
+    public let retentionRate: Double
+    public let turnoverRate: Double
+
+    public init(
+        totalHeadcount: Int = 0,
+        activeCount: Int = 0,
+        inactiveCount: Int = 0,
+        interviewCount: Int = 0,
+        newCount: Int = 0,
+        resignedInPeriodCount: Int = 0,
+        retentionRate: Double = 0.0,
+        turnoverRate: Double = 0.0
+    ) {
+        self.totalHeadcount = totalHeadcount
+        self.activeCount = activeCount
+        self.inactiveCount = inactiveCount
+        self.interviewCount = interviewCount
+        self.newCount = newCount
+        self.resignedInPeriodCount = resignedInPeriodCount
+        self.retentionRate = retentionRate
+        self.turnoverRate = turnoverRate
+    }
 }
 
-public struct TeamReportSnapshot: Equatable, Sendable {
-    public let bucketKey: String
-    public let bucketDisplay: String
-    public let asOfDate: String
+public struct ProjectBreakdownRow: Identifiable, Equatable, Sendable {
+    public let id: String
+    public let projectName: String
+    public let totalCount: Int
+    public let activeCount: Int
+    public let inactiveCount: Int
+    public let newCount: Int
+    public let activeSharePct: Double
+
+    public init(
+        id: String,
+        projectName: String,
+        totalCount: Int = 0,
+        activeCount: Int = 0,
+        inactiveCount: Int = 0,
+        newCount: Int = 0,
+        activeSharePct: Double = 0.0
+    ) {
+        self.id = id
+        self.projectName = projectName
+        self.totalCount = totalCount
+        self.activeCount = activeCount
+        self.inactiveCount = inactiveCount
+        self.newCount = newCount
+        self.activeSharePct = activeSharePct
+    }
+}
+
+public struct PersonPerformanceRow: Identifiable, Equatable, Sendable {
+    public let id: String
+    public let code: String
+    public let name: String
+    public let totalCount: Int
+    public let activeCount: Int
+    public let inactiveCount: Int
+    public let activeRatePct: Double
+
+    public init(
+        id: String,
+        code: String = "",
+        name: String,
+        totalCount: Int = 0,
+        activeCount: Int = 0,
+        inactiveCount: Int = 0,
+        activeRatePct: Double = 0.0
+    ) {
+        self.id = id
+        self.code = code
+        self.name = name
+        self.totalCount = totalCount
+        self.activeCount = activeCount
+        self.inactiveCount = inactiveCount
+        self.activeRatePct = activeRatePct
+    }
+}
+
+public struct GeneralOverviewData: Equatable, Sendable {
+    public let scope: String
+    public let kpis: GeneralOverviewKpis
+    public let projects: [ProjectBreakdownRow]
+    public let projectsTotal: Int
+    public let projectsPage: Int
+    public let projectsTotalPages: Int
+    public let recruiters: [PersonPerformanceRow]
+    public let managers: [PersonPerformanceRow]
+
+    public init(
+        scope: String = "all",
+        kpis: GeneralOverviewKpis = GeneralOverviewKpis(),
+        projects: [ProjectBreakdownRow] = [],
+        projectsTotal: Int = 0,
+        projectsPage: Int = 1,
+        projectsTotalPages: Int = 1,
+        recruiters: [PersonPerformanceRow] = [],
+        managers: [PersonPerformanceRow] = []
+    ) {
+        self.scope = scope
+        self.kpis = kpis
+        self.projects = projects
+        self.projectsTotal = projectsTotal
+        self.projectsPage = projectsPage
+        self.projectsTotalPages = projectsTotalPages
+        self.recruiters = recruiters
+        self.managers = managers
+    }
+}
+
+public struct DistributionBucket: Identifiable, Equatable, Sendable {
+    public let id: String
+    public let label: String
+    public let count: Int
+    public let percentage: Double
+
+    public init(id: String, label: String, count: Int = 0, percentage: Double = 0.0) {
+        self.id = id
+        self.label = label
+        self.count = count
+        self.percentage = percentage
+    }
+}
+
+public struct WorkforceDeepMetricsData: Equatable, Sendable {
+    public let tenureBuckets: [DistributionBucket]
+    public let ageBuckets: [DistributionBucket]
+    public let genderBuckets: [DistributionBucket]
+    public let contractBuckets: [DistributionBucket]
+    public let resignReasonBuckets: [DistributionBucket]
+
+    public init(
+        tenureBuckets: [DistributionBucket] = [],
+        ageBuckets: [DistributionBucket] = [],
+        genderBuckets: [DistributionBucket] = [],
+        contractBuckets: [DistributionBucket] = [],
+        resignReasonBuckets: [DistributionBucket] = []
+    ) {
+        self.tenureBuckets = tenureBuckets
+        self.ageBuckets = ageBuckets
+        self.genderBuckets = genderBuckets
+        self.contractBuckets = contractBuckets
+        self.resignReasonBuckets = resignReasonBuckets
+    }
+}
+
+public struct TeamSummaryRow: Identifiable, Equatable, Sendable {
+    public let id: String
+    public let teamCode: String
+    public let teamName: String
+    public let leaderName: String
+    public let memberCount: Int
     public let totalWorkers: Int
     public let activeWorkers: Int
     public let inactiveWorkers: Int
-    public let unconfirmedWorkers: Int
-    public let retentionRatePct: Double
-    public let recruiterBreakdown: [BiBucketItem]
-    public let projectBreakdown: [BiBucketItem]
-    public let drillDownPage: Int
-    public let drillDownHasMore: Bool
-    public let isPeriodFiltered: Bool
-    public let periodFromDate: String?
-    public let periodToDate: String?
-    public let periodNewEpisodes: Int?
-    public let periodOnInflow: Int?
-    public let periodOffInflow: Int?
-    public let periodNetOnChange: Int?
-}
-
-public struct DuplicateCccdEpisodeRow: Equatable, Identifiable, Sendable {
-    public var id: String { "\(entryId)_\(employeeCode)" }
-    public let entryId: String
-    public let entryVersion: Int
-    public let employeeCode: String
-    public let displayName: String
-    public let projectDisplay: String
-    public let recruiterDisplay: String
-    public let firstWorkDate: String
-    public let employmentStatus: String
-    public let canSelfWithdraw: Bool
-}
-
-public struct DuplicateCccdGroupItem: Equatable, Identifiable, Sendable {
-    public var id: String { "\(cccdLast4)_\(firstWorkDate)" }
-    public let cccdLast4: String
-    public let firstWorkDate: String
-    public let episodeCount: Int
-    public let episodes: [DuplicateCccdEpisodeRow]
-}
-
-public struct DuplicateCccdReportPage: Equatable, Sendable {
-    public let groups: [DuplicateCccdGroupItem]
-    public let page: Int
-    public let hasMore: Bool
-}
-
-// MARK: - CCCD Review Models
-
-public enum CccdReviewStatusFilter: String, CaseIterable, Equatable, Sendable {
-    case needsReview = "NEEDS_REVIEW"
-    case mismatch = "MISMATCH"
-    case qrUnreadable = "QR_UNREADABLE"
-    case pending = "PENDING"
-    case matchedInitial = "MATCHED_INITIAL"
-    case resolved = "RESOLVED"
-    case all = "ALL"
-
-    public var code: String { rawValue }
-
-    public var label: String {
-        switch self {
-        case .needsReview: return "Cần xử lý"
-        case .mismatch: return "Lệch CCCD"
-        case .qrUnreadable: return "Lỗi đọc QR"
-        case .pending: return "Chờ đọc QR"
-        case .matchedInitial: return "Khớp ban đầu"
-        case .resolved: return "Đã xử lý"
-        case .all: return "Tất cả"
-        }
-    }
-}
-
-public struct CccdReviewSummary: Equatable, Sendable {
-    public let needsReviewCount: Int
-    public let mismatchCount: Int
-    public let qrUnreadableCount: Int
-    public let pendingCount: Int
-    public let matchedInitialCount: Int
-    public let resolvedCount: Int
-    public let totalCount: Int
+    public let newWorkers: Int
+    public let activeRatePct: Double
+    public let members: [PersonPerformanceRow]
 
     public init(
-        needsReviewCount: Int = 0,
-        mismatchCount: Int = 0,
-        qrUnreadableCount: Int = 0,
-        pendingCount: Int = 0,
-        matchedInitialCount: Int = 0,
-        resolvedCount: Int = 0,
-        totalCount: Int = 0
+        id: String,
+        teamCode: String,
+        teamName: String,
+        leaderName: String = "",
+        memberCount: Int = 0,
+        totalWorkers: Int = 0,
+        activeWorkers: Int = 0,
+        inactiveWorkers: Int = 0,
+        newWorkers: Int = 0,
+        activeRatePct: Double = 0.0,
+        members: [PersonPerformanceRow] = []
     ) {
-        self.needsReviewCount = needsReviewCount
-        self.mismatchCount = mismatchCount
-        self.qrUnreadableCount = qrUnreadableCount
-        self.pendingCount = pendingCount
-        self.matchedInitialCount = matchedInitialCount
-        self.resolvedCount = resolvedCount
-        self.totalCount = totalCount
+        self.id = id
+        self.teamCode = teamCode
+        self.teamName = teamName
+        self.leaderName = leaderName
+        self.memberCount = memberCount
+        self.totalWorkers = totalWorkers
+        self.activeWorkers = activeWorkers
+        self.inactiveWorkers = inactiveWorkers
+        self.newWorkers = newWorkers
+        self.activeRatePct = activeRatePct
+        self.members = members
     }
 }
 
-public struct CccdReviewExtractedQr: Equatable, Sendable {
-    public let cccd12: String?
-    public let legacyCmnd9: String?
-    public let fullName: String?
-    public let dateOfBirthUi: String?
-    public let genderUi: String?
-    public let address: String?
-    public let issueDateUi: String?
-    public let rawQrText: String?
+public struct TeamReportData: Equatable, Sendable {
+    public let teams: [TeamSummaryRow]
+
+    public init(teams: [TeamSummaryRow] = []) {
+        self.teams = teams
+    }
 }
 
-public struct CccdReviewComparisonField: Equatable, Identifiable, Sendable {
+public struct DuplicateCccdEpisode: Identifiable, Equatable, Sendable {
+    public let id: String
+    public let episodeId: Int64
+    public let maNld: String
+    public let hoTen: String
+    public let duAn: String
+    public let quanLy: String
+    public let nguoiTuyen: String
+    public let trangThai: String
+    public let ngayVaoLam: String
+    public let canSelfWithdraw: Bool
+
+    public init(
+        id: String,
+        episodeId: Int64,
+        maNld: String = "",
+        hoTen: String = "",
+        duAn: String = "",
+        quanLy: String = "",
+        nguoiTuyen: String = "",
+        trangThai: String = "",
+        ngayVaoLam: String = "",
+        canSelfWithdraw: Bool = false
+    ) {
+        self.id = id
+        self.episodeId = episodeId
+        self.maNld = maNld
+        self.hoTen = hoTen
+        self.duAn = duAn
+        self.quanLy = quanLy
+        self.nguoiTuyen = nguoiTuyen
+        self.trangThai = trangThai
+        self.ngayVaoLam = ngayVaoLam
+        self.canSelfWithdraw = canSelfWithdraw
+    }
+}
+
+public struct DuplicateCccdGroup: Identifiable, Equatable, Sendable {
+    public let id: String
+    public let cccd: String
+    public let workerCount: Int
+    public let activeCount: Int
+    public let episodes: [DuplicateCccdEpisode]
+
+    public init(
+        id: String,
+        cccd: String,
+        workerCount: Int = 0,
+        activeCount: Int = 0,
+        episodes: [DuplicateCccdEpisode] = []
+    ) {
+        self.id = id
+        self.cccd = cccd
+        self.workerCount = workerCount
+        self.activeCount = activeCount
+        self.episodes = episodes
+    }
+}
+
+public struct DuplicateCccdReportData: Equatable, Sendable {
+    public let totalGroups: Int
+    public let groups: [DuplicateCccdGroup]
+    public let page: Int
+    public let totalPages: Int
+
+    public init(
+        totalGroups: Int = 0,
+        groups: [DuplicateCccdGroup] = [],
+        page: Int = 1,
+        totalPages: Int = 1
+    ) {
+        self.totalGroups = totalGroups
+        self.groups = groups
+        self.page = page
+        self.totalPages = totalPages
+    }
+}
+
+public struct CccdComparisonRow: Identifiable, Equatable, Sendable {
     public var id: String { field }
     public let field: String
     public let label: String
-    public let enteredValue: String?
-    public let qrValue: String?
+    public let enteredValue: String
+    public let qrValue: String
     public let status: String
-}
 
-public struct CccdReviewQueueItem: Equatable, Identifiable, Sendable {
-    public var id: String { entryId }
-    public let entryId: String
-    public let entryVersion: Int
-    public let employeeCode: String
-    public let projectId: String
-    public let projectDisplay: String
-    public let recruiterId: String
-    public let recruiterDisplay: String
-    public let firstWorkDate: String
-    public let reconciliationStatus: String
-    public let enteredDisplayName: String
-    public let enteredNationalId: String?
-    public let enteredDateOfBirth: String?
-    public let enteredGender: String?
-    public let enteredAddress: String?
-    public let enteredNationalIdIssuedAt: String?
-    public let qrExtractedPayload: CccdReviewExtractedQr?
-    public let cccdFrontQrStatus: String
-    public let cccdFrontQrError: String?
-    public let cccdFrontPreviewPath: String?
-    public let cccdBackQrStatus: String
-    public let cccdBackQrError: String?
-    public let cccdBackPreviewPath: String?
-    public let comparison: [CccdReviewComparisonField]
-    public let resolvedAt: String?
-    public let resolutionAction: String?
-    public let resolutionNote: String?
-}
-
-public struct CccdReviewQueuePage: Equatable, Sendable {
-    public let rows: [CccdReviewQueueItem]
-    public let totalCount: Int
-    public let limit: Int
-    public let offset: Int
-    public let summary: CccdReviewSummary
-}
-
-// MARK: - Direct Entry & Workers Models
-
-public struct ProjectCatalogOption: Equatable, Identifiable, Sendable {
-    public var id: String { projectId }
-    public let projectId: String
-    public let displayName: String
-}
-
-public struct RecruiterCatalogOption: Equatable, Identifiable, Sendable {
-    public var id: String { recruiterId }
-    public let recruiterId: String
-    public let displayName: String
-    public let providerType: String // "hrp" | "vendor"
-    public let personnelCode: String
-    public let teamDisplayName: String?
-
-    public var label: String {
-        if personnelCode.isEmpty { return displayName }
-        return "\(displayName) (\(personnelCode))"
+    public init(
+        field: String,
+        label: String,
+        enteredValue: String = "",
+        qrValue: String = "",
+        status: String = "MATCH"
+    ) {
+        self.field = field
+        self.label = label
+        self.enteredValue = enteredValue
+        self.qrValue = qrValue
+        self.status = status
     }
 }
 
-public struct BankCatalogOption: Equatable, Identifiable, Sendable {
-    public var id: String { bankId }
-    public let bankId: String
-    public let displayName: String
-}
-
-public struct LaborTypeCatalogOption: Equatable, Identifiable, Sendable {
-    public var id: String { laborTypeKey }
-    public let laborTypeKey: String
-    public let displayName: String
-    public let sortOrder: Int
-}
-
-public struct DirectEntryCatalog: Equatable, Sendable {
-    public let effectiveDate: String
-    public let projects: [ProjectCatalogOption]
-    public let recruiters: [RecruiterCatalogOption]
-    public let banks: [BankCatalogOption]
-    public let laborTypes: [LaborTypeCatalogOption]
-}
-
-public struct StagedDocumentRef: Codable, Equatable, Sendable {
-    public let stageId: String
-    public let documentType: String
-    public let fileName: String
-    public let mimeType: String
-    public let sizeBytes: Int64
-    public let sha256Hex: String
-    public let localFilePath: String?
-    public let pageCount: Int
-    public let sourceImagePaths: [String]
+public struct CccdReviewItem: Identifiable, Equatable, Sendable {
+    public var id: Int64 { entryId }
+    public let entryId: Int64
+    public let maNld: String
+    public let hoTen: String
+    public let duAn: String
+    public let quanLy: String
+    public let nguoiTuyen: String
+    public let reviewStatus: String
+    public let enteredCccd: String
+    public let qrCccd: String
+    public let frontPreviewUrl: String?
+    public let backPreviewUrl: String?
+    public let comparisons: [CccdComparisonRow]
 
     public init(
-        stageId: String = "",
-        documentType: String,
+        entryId: Int64,
+        maNld: String = "",
+        hoTen: String = "",
+        duAn: String = "",
+        quanLy: String = "",
+        nguoiTuyen: String = "",
+        reviewStatus: String = "PENDING_QR",
+        enteredCccd: String = "",
+        qrCccd: String = "",
+        frontPreviewUrl: String? = nil,
+        backPreviewUrl: String? = nil,
+        comparisons: [CccdComparisonRow] = []
+    ) {
+        self.entryId = entryId
+        self.maNld = maNld
+        self.hoTen = hoTen
+        self.duAn = duAn
+        self.quanLy = quanLy
+        self.nguoiTuyen = nguoiTuyen
+        self.reviewStatus = reviewStatus
+        self.enteredCccd = enteredCccd
+        self.qrCccd = qrCccd
+        self.frontPreviewUrl = frontPreviewUrl
+        self.backPreviewUrl = backPreviewUrl
+        self.comparisons = comparisons
+    }
+}
+
+// MARK: - Direct Entry ("Cấp mới") & Workers Models
+
+public struct LocalAttachmentItem: Identifiable, Equatable, Sendable {
+    public let id: String
+    public let fileName: String
+    public let mimeType: String
+    public let data: Data
+
+    public var fileSizeBytes: Int {
+        data.count
+    }
+
+    public var isPdf: Bool {
+        mimeType.lowercased().contains("pdf") || fileName.lowercased().hasSuffix(".pdf")
+    }
+
+    public init(
+        id: String = UUID().uuidString,
         fileName: String,
         mimeType: String,
-        sizeBytes: Int64,
-        sha256Hex: String,
-        localFilePath: String? = nil,
-        pageCount: Int = 1,
-        sourceImagePaths: [String] = []
+        data: Data
     ) {
-        self.stageId = stageId
-        self.documentType = documentType
+        self.id = id
         self.fileName = fileName
         self.mimeType = mimeType
-        self.sizeBytes = sizeBytes
-        self.sha256Hex = sha256Hex
-        self.localFilePath = localFilePath
-        self.pageCount = pageCount
-        self.sourceImagePaths = sourceImagePaths
+        self.data = data
     }
 }
 
-public struct NewWorkerEntryDraft: Equatable, Identifiable, Sendable {
-    public var id: String { localId }
-    public var localId: String
-    public var projectId: String
-    public var projectDisplay: String
-    public var providerType: String // "hrp" | "vendor" | ""
-    public var recruiterId: String
-    public var recruiterDisplay: String
-    public var laborTypeKey: String
-    public var laborTypeDisplay: String
-    public var firstWorkDateUi: String // DD/MM/YYYY
-    public var employmentStatusUi: String // "Đang làm" | "Đang chờ việc"
-    public var cccd: String
-    public var fullName: String
-    public var genderUi: String
-    public var phone: String
-    public var address: String
-    public var birthDateUi: String
-    public var cccdIssueDateUi: String
-    public var bankAccountNumber: String
-    public var bankAccountHolder: String
-    public var bankName: String
-    public var note: String
-    public var portraitStage: StagedDocumentRef?
-    public var cccdFrontStage: StagedDocumentRef?
-    public var cccdBackStage: StagedDocumentRef?
-    public var contractStage: StagedDocumentRef?
-    public var uploadingSlot: String?
-    public var slotError: String?
-    public var isExpanded: Bool
-    public var showOptionalSection: Bool
+public struct NewWorkerEntryDraft: Identifiable, Equatable, Sendable {
+    public var id: String { rowId }
+    public var rowId: String
+    public var hoTen: String
+    public var soCccd: String
+    public var duAn: String
+    public var trangThai: String
+    public var sdt: String
+    public var ngaySinh: String
+    public var gioiTinh: String
+    public var ngayCap: String
+    public var ngayVaoLam: String
+    public var quanLy: String
+    public var nguoiTuyen: String
+    public var nganhNghe: String
+    public var queQuan: String
+    public var ghiChu: String
+    public var soTaiKhoan: String
+    public var nganHang: String
+    public var cccdFrontFile: LocalAttachmentItem?
+    public var cccdBackFile: LocalAttachmentItem?
+    public var contractFiles: [LocalAttachmentItem]
+
+    public var isReadyForSubmit: Bool {
+        !hoTen.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+        !duAn.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+        !trangThai.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
 
     public init(
-        localId: String = UUID().uuidString,
-        projectId: String = "",
-        projectDisplay: String = "",
-        providerType: String = "",
-        recruiterId: String = "",
-        recruiterDisplay: String = "",
-        laborTypeKey: String = "",
-        laborTypeDisplay: String = "",
-        firstWorkDateUi: String = DirectEntryContract.todayUiInHcm(),
-        employmentStatusUi: String = "Đang làm",
-        cccd: String = "",
-        fullName: String = "",
-        genderUi: String = "",
-        phone: String = "",
-        address: String = "",
-        birthDateUi: String = "",
-        cccdIssueDateUi: String = "",
-        bankAccountNumber: String = "",
-        bankAccountHolder: String = "",
-        bankName: String = "",
+        rowId: String = UUID().uuidString,
+        hoTen: String = "",
+        soCccd: String = "",
+        duAn: String = "",
+        trangThai: String = "Đang làm việc",
+        sdt: String = "",
+        ngaySinh: String = "",
+        gioiTinh: String = "",
+        ngayCap: String = "",
+        ngayVaoLam: String = "",
+        quanLy: String = "",
+        nguoiTuyen: String = "",
+        nganhNghe: String = "",
+        queQuan: String = "",
+        ghiChu: String = "",
+        soTaiKhoan: String = "",
+        nganHang: String = "",
+        cccdFrontFile: LocalAttachmentItem? = nil,
+        cccdBackFile: LocalAttachmentItem? = nil,
+        contractFiles: [LocalAttachmentItem] = []
+    ) {
+        self.rowId = rowId
+        self.hoTen = hoTen
+        self.soCccd = soCccd
+        self.duAn = duAn
+        self.trangThai = trangThai
+        self.sdt = sdt
+        self.ngaySinh = ngaySinh
+        self.gioiTinh = gioiTinh
+        self.ngayCap = ngayCap
+        self.ngayVaoLam = ngayVaoLam
+        self.quanLy = quanLy
+        self.nguoiTuyen = nguoiTuyen
+        self.nganhNghe = nganhNghe
+        self.queQuan = queQuan
+        self.ghiChu = ghiChu
+        self.soTaiKhoan = soTaiKhoan
+        self.nganHang = nganHang
+        self.cccdFrontFile = cccdFrontFile
+        self.cccdBackFile = cccdBackFile
+        self.contractFiles = contractFiles
+    }
+}
+
+public struct DirectEntryAssigneeOptions: Equatable, Sendable {
+    public let projects: [String]
+    public let managers: [String]
+    public let recruiters: [String]
+    public let banks: [String]
+
+    public init(
+        projects: [String] = [],
+        managers: [String] = [],
+        recruiters: [String] = [],
+        banks: [String] = []
+    ) {
+        self.projects = projects
+        self.managers = managers
+        self.recruiters = recruiters
+        self.banks = banks
+    }
+}
+
+public struct DirectEntryBatchHistoryItem: Identifiable, Equatable, Sendable {
+    public var id: Int64 { batchId }
+    public let batchId: Int64
+    public let status: String
+    public let totalRows: Int
+    public let approvedRows: Int
+    public let pendingRows: Int
+    public let createdAt: String
+
+    public init(
+        batchId: Int64,
+        status: String = "COMPLETED",
+        totalRows: Int = 0,
+        approvedRows: Int = 0,
+        pendingRows: Int = 0,
+        createdAt: String = ""
+    ) {
+        self.batchId = batchId
+        self.status = status
+        self.totalRows = totalRows
+        self.approvedRows = approvedRows
+        self.pendingRows = pendingRows
+        self.createdAt = createdAt
+    }
+}
+
+public struct DirectEntryDuplicateCandidate: Identifiable, Equatable, Sendable {
+    public let id: String
+    public let cccd: String
+    public let hoTen: String
+    public let duAn: String
+    public let maNld: String
+    public let trangThai: String
+
+    public init(
+        id: String = UUID().uuidString,
+        cccd: String,
+        hoTen: String,
+        duAn: String,
+        maNld: String = "",
+        trangThai: String = ""
+    ) {
+        self.id = id
+        self.cccd = cccd
+        self.hoTen = hoTen
+        self.duAn = duAn
+        self.maNld = maNld
+        self.trangThai = trangThai
+    }
+}
+
+public struct DirectEntryBatchSubmitOutcome: Equatable, Sendable {
+    public let batchId: Int64
+    public let createdCount: Int
+    public let entryIdByRowId: [String: Int64]
+
+    public init(
+        batchId: Int64 = 0,
+        createdCount: Int,
+        entryIdByRowId: [String: Int64] = [:]
+    ) {
+        self.batchId = batchId
+        self.createdCount = createdCount
+        self.entryIdByRowId = entryIdByRowId
+    }
+}
+
+public struct WorkerItem: Identifiable, Equatable, Sendable {
+    public var id: String { maNld }
+    public let maNld: String
+    public let hoTen: String
+    public let duAn: String
+    public let quanLy: String
+    public let nguoiTuyen: String
+    public let ngayVaoLam: String
+    public let ngayNghiViec: String
+    public let trangThai: String
+    public let sdt: String
+    public let soCccd: String
+    public let ngaySinh: String
+    public let gioiTinh: String
+    public let queQuan: String
+    public let ngayCap: String
+    public let nganhNghe: String
+    public let nhom: String
+    public let soTaiKhoan: String
+    public let nganHang: String
+    public let chuTaiKhoan: String
+    public let ghiChu: String
+    public let lyDoNghi: String
+    public let phanLoaiNghi: String
+    public var contractFileUrl: String?
+    public var cccdFrontUrl: String?
+    public var cccdBackUrl: String?
+    public let uploaderCode: String
+
+    public init(
+        maNld: String,
+        hoTen: String = "",
+        duAn: String = "",
+        quanLy: String = "",
+        nguoiTuyen: String = "",
+        ngayVaoLam: String = "",
+        ngayNghiViec: String = "",
+        trangThai: String = "Đang làm việc",
+        sdt: String = "",
+        soCccd: String = "",
+        ngaySinh: String = "",
+        gioiTinh: String = "",
+        queQuan: String = "",
+        ngayCap: String = "",
+        nganhNghe: String = "",
+        nhom: String = "",
+        soTaiKhoan: String = "",
+        nganHang: String = "",
+        chuTaiKhoan: String = "",
+        ghiChu: String = "",
+        lyDoNghi: String = "",
+        phanLoaiNghi: String = "",
+        contractFileUrl: String? = nil,
+        cccdFrontUrl: String? = nil,
+        cccdBackUrl: String? = nil,
+        uploaderCode: String = ""
+    ) {
+        self.maNld = maNld
+        self.hoTen = hoTen
+        self.duAn = duAn
+        self.quanLy = quanLy
+        self.nguoiTuyen = nguoiTuyen
+        self.ngayVaoLam = ngayVaoLam
+        self.ngayNghiViec = ngayNghiViec
+        self.trangThai = trangThai
+        self.sdt = sdt
+        self.soCccd = soCccd
+        self.ngaySinh = ngaySinh
+        self.gioiTinh = gioiTinh
+        self.queQuan = queQuan
+        self.ngayCap = ngayCap
+        self.nganhNghe = nganhNghe
+        self.nhom = nhom
+        self.soTaiKhoan = soTaiKhoan
+        self.nganHang = nganHang
+        self.chuTaiKhoan = chuTaiKhoan
+        self.ghiChu = ghiChu
+        self.lyDoNghi = lyDoNghi
+        self.phanLoaiNghi = phanLoaiNghi
+        self.contractFileUrl = contractFileUrl
+        self.cccdFrontUrl = cccdFrontUrl
+        self.cccdBackUrl = cccdBackUrl
+        self.uploaderCode = uploaderCode
+    }
+}
+
+// MARK: - Attendance Offline Outbox Model
+
+public struct AttendanceOutboxItem: Identifiable, Codable, Equatable, Sendable {
+    public var id: String { localId }
+    public let localId: String
+    public let userKey: String
+    public let idempotencyKey: String
+    public let clientCapturedAt: String
+    public let timeSource: String
+    public var timeToken: String?
+    public var anchorSyncedAtEpochMs: Int64?
+    public var elapsedSinceAnchorMs: Int64?
+    public var deviceClockSkewMs: Int64?
+    public let lat: Double
+    public let lng: Double
+    public let accuracyM: Double?
+    public var locationCapturedAt: String?
+    public var photoLocalPath: String?
+    public let photoSha256: String
+    public let photoSizeBytes: Int64
+    public let mimeType: String
+    public let note: String
+    public var uploadedObjectKey: String?
+    public var status: String
+    public var attemptCount: Int
+    public var lastErrorCode: String?
+    public var lastErrorMessage: String?
+    public var serverRecordId: Int64?
+    public var serverReceivedAt: String?
+    public let createdAtEpochMs: Int64
+
+    public init(
+        localId: String,
+        userKey: String,
+        idempotencyKey: String,
+        clientCapturedAt: String,
+        timeSource: String,
+        timeToken: String? = nil,
+        anchorSyncedAtEpochMs: Int64? = nil,
+        elapsedSinceAnchorMs: Int64? = nil,
+        deviceClockSkewMs: Int64? = nil,
+        lat: Double,
+        lng: Double,
+        accuracyM: Double? = nil,
+        locationCapturedAt: String? = nil,
+        photoLocalPath: String? = nil,
+        photoSha256: String,
+        photoSizeBytes: Int64,
+        mimeType: String = "image/jpeg",
         note: String = "",
-        portraitStage: StagedDocumentRef? = nil,
-        cccdFrontStage: StagedDocumentRef? = nil,
-        cccdBackStage: StagedDocumentRef? = nil,
-        contractStage: StagedDocumentRef? = nil,
-        uploadingSlot: String? = nil,
-        slotError: String? = nil,
-        isExpanded: Bool = true,
-        showOptionalSection: Bool = false
+        uploadedObjectKey: String? = nil,
+        status: String = "PENDING",
+        attemptCount: Int = 0,
+        lastErrorCode: String? = nil,
+        lastErrorMessage: String? = nil,
+        serverRecordId: Int64? = nil,
+        serverReceivedAt: String? = nil,
+        createdAtEpochMs: Int64
     ) {
         self.localId = localId
-        self.projectId = projectId
-        self.projectDisplay = projectDisplay
-        self.providerType = providerType
-        self.recruiterId = recruiterId
-        self.recruiterDisplay = recruiterDisplay
-        self.laborTypeKey = laborTypeKey
-        self.laborTypeDisplay = laborTypeDisplay
-        self.firstWorkDateUi = firstWorkDateUi
-        self.employmentStatusUi = employmentStatusUi
-        self.cccd = cccd
-        self.fullName = fullName
-        self.genderUi = genderUi
-        self.phone = phone
-        self.address = address
-        self.birthDateUi = birthDateUi
-        self.cccdIssueDateUi = cccdIssueDateUi
-        self.bankAccountNumber = bankAccountNumber
-        self.bankAccountHolder = bankAccountHolder
-        self.bankName = bankName
+        self.userKey = userKey
+        self.idempotencyKey = idempotencyKey
+        self.clientCapturedAt = clientCapturedAt
+        self.timeSource = timeSource
+        self.timeToken = timeToken
+        self.anchorSyncedAtEpochMs = anchorSyncedAtEpochMs
+        self.elapsedSinceAnchorMs = elapsedSinceAnchorMs
+        self.deviceClockSkewMs = deviceClockSkewMs
+        self.lat = lat
+        self.lng = lng
+        self.accuracyM = accuracyM
+        self.locationCapturedAt = locationCapturedAt
+        self.photoLocalPath = photoLocalPath
+        self.photoSha256 = photoSha256
+        self.photoSizeBytes = photoSizeBytes
+        self.mimeType = mimeType
         self.note = note
-        self.portraitStage = portraitStage
-        self.cccdFrontStage = cccdFrontStage
-        self.cccdBackStage = cccdBackStage
-        self.contractStage = contractStage
-        self.uploadingSlot = uploadingSlot
-        self.slotError = slotError
-        self.isExpanded = isExpanded
-        self.showOptionalSection = showOptionalSection
-    }
-
-    public var isStarted: Bool {
-        !projectId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
-            !providerType.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
-            !recruiterId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
-            !cccd.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
-            !fullName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
-            !phone.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
-            !address.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
-            portraitStage != nil ||
-            cccdFrontStage != nil ||
-            cccdBackStage != nil ||
-            contractStage != nil
-    }
-
-    public var isValid: Bool {
-        !projectId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
-            !providerType.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
-            !recruiterId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
-            !laborTypeKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
-            DirectEntryContract.isValidUiOrIsoDate(firstWorkDateUi) &&
-            DirectEntryContract.isValidCccd12(cccd) &&
-            DirectEntryContract.isValidFreeDateText(birthDateUi) &&
-            DirectEntryContract.isValidFreeDateText(cccdIssueDateUi) &&
-            uploadingSlot == nil
-    }
-
-    public func allAttachments() -> [StagedDocumentRef] {
-        [portraitStage, cccdFrontStage, cccdBackStage, contractStage].compactMap { $0 }
-    }
-
-    public func localPendingAttachments() -> [StagedDocumentRef] {
-        allAttachments().filter { ($0.localFilePath?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false) }
+        self.uploadedObjectKey = uploadedObjectKey
+        self.status = status
+        self.attemptCount = attemptCount
+        self.lastErrorCode = lastErrorCode
+        self.lastErrorMessage = lastErrorMessage
+        self.serverRecordId = serverRecordId
+        self.serverReceivedAt = serverReceivedAt
+        self.createdAtEpochMs = createdAtEpochMs
     }
 }
 
-public struct PendingEntryAttachmentTask: Equatable, Sendable {
-    public let entryId: String
-    public let workerDisplayName: String
-    public let documentType: String
-    public let fileName: String
-    public let mimeType: String
-    public let localFilePath: String
-    public let idempotencyBaseKey: String
-    public let sourceImagePaths: [String]
-}
+// MARK: - Work Reports & Overdue Models
 
-public struct OwnSubmissionItem: Equatable, Identifiable, Sendable {
-    public var id: String { submissionId }
-    public let submissionId: String
-    public let state: String
-    public let version: Int
-    public let entryCount: Int
-    public let createdAt: String
-    public let updatedAt: String
-    public let submittedAt: String?
-    public let allowedTransitions: [String]
-}
-
-public struct SubmissionBatchResult: Equatable, Sendable {
-    public let submissionId: String
-    public let state: String
-    public let version: Int
-    public let entryIds: [String]
-    public let employeeCodes: [String]
-}
-
-public struct DuplicateCccdConflictItem: Equatable, Sendable {
-    public let nationalIdMasked: String
-    public let existingEmployeeCode: String
-    public let existingDisplayName: String
-    public let existingProjectDisplay: String
-    public let existingFirstWorkDate: String
-
-    public func formatConflictLine() -> String {
-        "• CCCD \(nationalIdMasked): trùng với \(existingDisplayName) (\(existingEmployeeCode)) tại \(existingProjectDisplay) — ngày vào \(DirectEntryContract.isoDateToUiDate(existingFirstWorkDate))"
-    }
-}
-
-public struct DuplicateCccdPreflightResult: Equatable, Sendable {
-    public let submissionId: String
-    public let version: Int
-    public let fingerprint: String
-    public let conflictCount: Int
-    public let conflicts: [DuplicateCccdConflictItem]
-}
-
-public struct PendingDuplicateCccdSubmission: Equatable, Sendable {
-    public let entryCount: Int
-    public let employeeCodes: [String]
-    public let preflight: DuplicateCccdPreflightResult
-    public let navigateToWorkersOnConfirm: Bool
-    public let pendingAttachments: [PendingEntryAttachmentTask]
-}
-
-public struct WorkerAllowedActions: Codable, Equatable, Sendable {
-    public let view: Bool
-    public let proposeChange: Bool
-    public let directEdit: Bool
-
-    public init(view: Bool = true, proposeChange: Bool = false, directEdit: Bool = false) {
-        self.view = view
-        self.proposeChange = proposeChange
-        self.directEdit = directEdit
-    }
-}
-
-public struct WorkerListSummary: Equatable, Sendable {
-    public let totalWorkers: Int
-    public let projectCount: Int
-    public let recruiterCount: Int
-}
-
-public struct WorkerProfileEntity: Codable, Equatable, Identifiable, Sendable {
-    public var id: String { cacheKey }
-    public let cacheKey: String
-    public let scopeKey: String
-    public let entryId: String
-    public let entryVersion: Int
-    public let employeeCode: String
-    public let displayName: String
-    public let projectId: String
-    public let projectDisplay: String
-    public let recruiterId: String
-    public let recruiterDisplay: String
-    public let laborType: String
-    public let laborTypeDisplay: String
-    public let firstWorkDate: String
-    public let employmentStatus: String
-    public let paymentSummary: String
-    public let pendingRequestSummary: String
-    public let lastDecisionSummary: String
-    public let allowedActions: WorkerAllowedActions
-}
-
-public struct EntryDocumentDescriptor: Equatable, Identifiable, Sendable {
-    public var id: String { "\(documentType)_\(fileName)" }
-    public let documentType: String
-    public let uploadStatus: String
-    public let fileName: String
-    public let mimeType: String
-    public let sizeBytes: Int64
-    public let previewPath: String?
-    public let downloadPath: String?
-}
-
-public struct WorkerEntryDetail: Equatable, Sendable {
-    public let entryId: String
-    public let version: Int
-    public let employeeCode: String
-    public let displayName: String
-    public let projectId: String
-    public let projectDisplay: String
-    public let recruiterId: String
-    public let recruiterDisplay: String
-    public let laborType: String
-    public let laborTypeDisplay: String
-    public let firstWorkDate: String
-    public let employmentStatus: String
-    public let employmentEffectiveDate: String
-    public let employmentLeaveReason: String?
-    public let gender: String?
-    public let dateOfBirth: String?
-    public let phone: String?
-    public let nationalId: String?
-    public let nationalIdIssuedAt: String?
-    public let nationalIdIssuedPlace: String?
-    public let address: String?
-    public let bankId: String?
-    public let bankName: String?
-    public let accountNumber: String?
-    public let accountHolderName: String?
-    public let generalNote: String?
-    public let portraitPreviewPath: String?
-    public let documents: [EntryDocumentDescriptor]
-}
-
-public struct ChangeRequestCreated: Equatable, Sendable {
-    public let requestId: String
-    public let state: String
-}
-
-// MARK: - Attendance Models
-
-public enum AttendanceOutboxStatus {
-    public static let QUEUED = "QUEUED"
-    public static let UPLOADING_PHOTO = "UPLOADING_PHOTO"
-    public static let SUBMITTING_CHECKIN = "SUBMITTING_CHECKIN"
-    public static let SYNCED = "SYNCED"
-    public static let RETRYABLE_ERROR = "RETRYABLE_ERROR"
-    public static let TERMINAL_FAILURE = "TERMINAL_FAILURE"
-}
-
-public enum AttendanceTimeSource {
-    public static let SERVER_ANCHORED = "SERVER_ANCHORED"
-    public static let DEVICE_CLOCK_UNVERIFIED = "DEVICE_CLOCK_UNVERIFIED"
-}
-
-public struct ServerTimeAnchor: Codable, Equatable, Sendable {
-    public let appUserId: String
-    public let serverTimeIso: String
-    public let serverEpochMs: Int64
-    public let anchorElapsedRealtimeMs: Int64
-    public let bootCountOrSessionId: String
-    public let timeToken: String
-    public let maxValidSeconds: Int64
-    public let syncedAtDeviceWallMs: Int64
-    public let expiresAtIso: String
-}
-
-public struct CapturedAttendanceTime: Codable, Equatable, Sendable {
-    public let clientCapturedAtIso: String
-    public let timeSource: String
-    public let timeToken: String?
-    public let elapsedSinceAnchorMs: Int64?
-    public let serverAnchorTimeIso: String?
-}
-
-public struct TimeAnchorUiState: Equatable, Sendable {
-    public var hasValidAnchor: Bool
-    public var syncing: Bool
-    public var serverTimeIso: String?
-    public var expiresAtIso: String?
-    public var lastSyncError: String?
-
-    public init(
-        hasValidAnchor: Bool = false,
-        syncing: Bool = false,
-        serverTimeIso: String? = nil,
-        expiresAtIso: String? = nil,
-        lastSyncError: String? = nil
-    ) {
-        self.hasValidAnchor = hasValidAnchor
-        self.syncing = syncing
-        self.serverTimeIso = serverTimeIso
-        self.expiresAtIso = expiresAtIso
-        self.lastSyncError = lastSyncError
-    }
-}
-
-public struct AttendanceEntity: Codable, Equatable, Identifiable, Sendable {
-    public var id: String { idempotencyKey }
-    public var idempotencyKey: String
-    public var appUserId: String
-    public var actorDisplayName: String
-    public var latitude: Double
-    public var longitude: Double
-    public var accuracyMeters: Float
-    public var addressHint: String
-    public var photoLocalPath: String?
-    public var photoSha256: String
-    public var photoObjectId: String?
-    public var note: String
-    public var clientCapturedAtIso: String
-    public var timeSource: String
-    public var timeToken: String?
-    public var elapsedSinceAnchorMs: Int64?
-    public var syncStatus: String
-    public var statusMessage: String
-    public var retryCount: Int
-    public var serverCheckInId: String?
-    public var serverCapturedAtIso: String?
-    public var serverBusinessDate: String?
-}
-
-public struct GpsSnapshot: Equatable, Sendable {
-    public let latitude: Double
-    public let longitude: Double
-    public let accuracyMeters: Float
-    public let addressHint: String
-}
-
-public struct AttendanceSubmitOutcome: Equatable, Sendable {
-    public let isSynced: Bool
-    public let userMessage: String
-    public let record: AttendanceEntity
-}
-
-public struct AttendanceOutboxFlushSummary: Equatable, Sendable {
-    public let processedCount: Int
-    public let syncedCount: Int
-    public let remainingRetryableCount: Int
-    public let terminalFailureCount: Int
-}
-
-// MARK: - Work Reports Models
-
-public struct WorkReportFieldOption: Codable, Equatable, Sendable {
+public struct WorkReportFieldOption: Identifiable, Equatable, Sendable {
+    public var id: String { value }
     public let value: String
     public let label: String
+
+    public init(value: String, label: String) {
+        self.value = value
+        self.label = label
+    }
 }
 
-public struct WorkReportFieldSpec: Codable, Equatable, Identifiable, Sendable {
-    public var id: String { fieldKey }
-    public let fieldKey: String
+public struct WorkReportFieldSchema: Identifiable, Equatable, Sendable {
+    public let id: String
     public let label: String
-    public let fieldType: String // "text" | "textarea" | "integer" | "decimal" | "boolean" | "date" | "single_select" | "multi_select"
+    public let type: String
     public let required: Bool
-    public let description: String?
-    public let defaultValue: String?
+    public let placeholder: String?
     public let options: [WorkReportFieldOption]
-}
+    public let min: Double?
+    public let max: Double?
 
-public struct WorkReportSectionSpec: Codable, Equatable, Identifiable, Sendable {
-    public var id: String { sectionKey }
-    public let sectionKey: String
-    public let label: String
-    public let description: String?
-    public let fields: [WorkReportFieldSpec]
-}
-
-public struct WorkReportTemplateOption: Codable, Equatable, Identifiable, Sendable {
-    public var id: String { templateId }
-    public let templateId: String
-    public let displayName: String
-}
-
-public struct WorkReportObligationEntity: Codable, Equatable, Identifiable, Sendable {
-    public var id: String { obligationId }
-    public let obligationId: String
-    public let templateId: String
-    public let templateName: String
-    public let periodKey: String
-    public let dueAtIso: String
-    public let obligationStatus: String // "ACTIVE" | "CANCELLED"
-    public let submissionState: String // "NOT_STARTED" | "DRAFT" | "SUBMITTED" | "UNDER_REVIEW" | "APPROVED" | "REJECTED"
-    public let submissionVersion: Int
-    public let isOverdue: Bool
-    public let isLate: Bool
-    public let submittedAtIso: String?
-    public let latestReviewReason: String?
-    public let schemaJsonRaw: String
-    public let payloadJsonRaw: String
-
-    public func withOverdue(_ overdue: Bool, payloadJsonRaw: String? = nil) -> WorkReportObligationEntity {
-        WorkReportObligationEntity(
-            obligationId: obligationId,
-            templateId: templateId,
-            templateName: templateName,
-            periodKey: periodKey,
-            dueAtIso: dueAtIso,
-            obligationStatus: obligationStatus,
-            submissionState: submissionState,
-            submissionVersion: submissionVersion,
-            isOverdue: overdue,
-            isLate: isLate,
-            submittedAtIso: submittedAtIso,
-            latestReviewReason: latestReviewReason,
-            schemaJsonRaw: schemaJsonRaw,
-            payloadJsonRaw: payloadJsonRaw ?? self.payloadJsonRaw
-        )
+    public init(
+        id: String,
+        label: String,
+        type: String = "text",
+        required: Bool = false,
+        placeholder: String? = nil,
+        options: [WorkReportFieldOption] = [],
+        min: Double? = nil,
+        max: Double? = nil
+    ) {
+        self.id = id
+        self.label = label
+        self.type = type
+        self.required = required
+        self.placeholder = placeholder
+        self.options = options
+        self.min = min
+        self.max = max
     }
 }
 
-public struct WorkReportReviewItem: Equatable, Identifiable, Sendable {
-    public var id: String { obligationId }
-    public let obligationId: String
-    public let templateId: String
-    public let templateName: String
-    public let periodKey: String
-    public let assigneeUserId: String
-    public let assigneeDisplayName: String
-    public let teamDisplayName: String?
-    public let submittedAt: String
-    public let submissionVersion: Int
-    public let isLate: Bool
-    public let payloadSummary: [(String, String)]
-
-    public static func == (lhs: WorkReportReviewItem, rhs: WorkReportReviewItem) -> Bool {
-        lhs.obligationId == rhs.obligationId &&
-            lhs.submissionVersion == rhs.submissionVersion &&
-            lhs.submittedAt == rhs.submittedAt
-    }
-}
-
-public struct AnalyticsMetricDisplay: Equatable, Identifiable, Sendable {
-    public var id: String { key }
-    public let key: String
-    public let label: String
-    public let valueDisplay: String
-    public let subtitleDisplay: String?
-}
-
-public struct AnalyticsGroupRow: Equatable, Identifiable, Sendable {
-    public var id: String { groupKey }
-    public let groupKey: String
-    public let groupLabel: String
-    public let totalObligations: Int
-    public let submittedCount: Int
-    public let approvedCount: Int
-    public let overdueMissingCount: Int
-    public let complianceRatePct: Double
-}
-
-public struct WorkReportAnalyticsSnapshot: Equatable, Sendable {
-    public let templateId: String
-    public let templateName: String
-    public let finality: String
-    public let groupBy: String
-    public let scopeLabel: String
-    public let totalObligations: Int
-    public let submittedCount: Int
-    public let approvedCount: Int
-    public let pendingReviewCount: Int
-    public let overdueMissingCount: Int
-    public let lateSubmittedCount: Int
-    public let complianceRatePct: Double
-    public let metrics: [AnalyticsMetricDisplay]
-    public let groupRows: [AnalyticsGroupRow]
-}
-
-// MARK: - Real-time Notifications (SSE & REST)
-
-public struct AppNotificationItem: Codable, Equatable, Identifiable, Sendable {
+public struct WorkReportSectionSchema: Identifiable, Equatable, Sendable {
     public let id: String
     public let title: String
-    public let body: String
-    public let category: String
-    public let createdAtIso: String
-    public var isRead: Bool
-    public let targetDestination: String?
-    public let targetEntityId: String?
+    public let description: String?
+    public let fields: [WorkReportFieldSchema]
 
     public init(
         id: String,
         title: String,
-        body: String,
-        category: String = "SYSTEM",
-        createdAtIso: String,
+        description: String? = nil,
+        fields: [WorkReportFieldSchema]
+    ) {
+        self.id = id
+        self.title = title
+        self.description = description
+        self.fields = fields
+    }
+}
+
+public struct WorkReportObligationItem: Identifiable, Equatable, Sendable {
+    public let id: Int64
+    public var submissionId: Int64?
+    public var templateCode: String
+    public var templateName: String
+    public var periodType: String
+    public var periodKey: String
+    public var dueAt: String?
+    public var submissionState: String
+    public var isOverdue: Bool
+    public var version: Int
+    public var submittedAt: String?
+    public var reviewedAt: String?
+    public var reviewerName: String?
+    public var reviewComment: String?
+    public var unitName: String?
+    public var sections: [WorkReportSectionSchema]
+    public var formPayload: [String: String]
+
+    public init(
+        id: Int64,
+        submissionId: Int64? = nil,
+        templateCode: String = "",
+        templateName: String,
+        periodType: String = "WEEKLY",
+        periodKey: String = "",
+        dueAt: String? = nil,
+        submissionState: String = "NOT_STARTED",
+        isOverdue: Bool = false,
+        version: Int = 1,
+        submittedAt: String? = nil,
+        reviewedAt: String? = nil,
+        reviewerName: String? = nil,
+        reviewComment: String? = nil,
+        unitName: String? = nil,
+        sections: [WorkReportSectionSchema] = [],
+        formPayload: [String: String] = [:]
+    ) {
+        self.id = id
+        self.submissionId = submissionId
+        self.templateCode = templateCode
+        self.templateName = templateName
+        self.periodType = periodType
+        self.periodKey = periodKey
+        self.dueAt = dueAt
+        self.submissionState = submissionState
+        self.isOverdue = isOverdue
+        self.version = version
+        self.submittedAt = submittedAt
+        self.reviewedAt = reviewedAt
+        self.reviewerName = reviewerName
+        self.reviewComment = reviewComment
+        self.unitName = unitName
+        self.sections = sections
+        self.formPayload = formPayload
+    }
+}
+
+public struct WorkReportReviewItem: Identifiable, Equatable, Sendable {
+    public let id: Int64
+    public let obligationId: Int64
+    public let templateName: String
+    public let periodType: String
+    public let periodKey: String
+    public let reporterName: String
+    public let reporterCode: String
+    public let unitName: String
+    public let submittedAt: String?
+    public let submissionState: String
+    public let version: Int
+    public let sections: [WorkReportSectionSchema]
+    public let formPayload: [String: String]
+
+    public init(
+        id: Int64,
+        obligationId: Int64,
+        templateName: String,
+        periodType: String = "WEEKLY",
+        periodKey: String = "",
+        reporterName: String = "",
+        reporterCode: String = "",
+        unitName: String = "",
+        submittedAt: String? = nil,
+        submissionState: String = "SUBMITTED",
+        version: Int = 1,
+        sections: [WorkReportSectionSchema] = [],
+        formPayload: [String: String] = [:]
+    ) {
+        self.id = id
+        self.obligationId = obligationId
+        self.templateName = templateName
+        self.periodType = periodType
+        self.periodKey = periodKey
+        self.reporterName = reporterName
+        self.reporterCode = reporterCode
+        self.unitName = unitName
+        self.submittedAt = submittedAt
+        self.submissionState = submissionState
+        self.version = version
+        self.sections = sections
+        self.formPayload = formPayload
+    }
+}
+
+public struct WorkReportTemplateOption: Identifiable, Equatable, Sendable {
+    public var id: String { code }
+    public let code: String
+    public let name: String
+    public let periodType: String
+
+    public init(code: String, name: String, periodType: String = "WEEKLY") {
+        self.code = code
+        self.name = name
+        self.periodType = periodType
+    }
+}
+
+public struct WorkReportAnalyticsKpis: Equatable, Sendable {
+    public let totalObligations: Int
+    public let submittedCount: Int
+    public let approvedCount: Int
+    public let rejectedCount: Int
+    public let overdueCount: Int
+    public let completionRate: Double
+    public let onTimeRate: Double
+
+    public init(
+        totalObligations: Int = 0,
+        submittedCount: Int = 0,
+        approvedCount: Int = 0,
+        rejectedCount: Int = 0,
+        overdueCount: Int = 0,
+        completionRate: Double = 0.0,
+        onTimeRate: Double = 0.0
+    ) {
+        self.totalObligations = totalObligations
+        self.submittedCount = submittedCount
+        self.approvedCount = approvedCount
+        self.rejectedCount = rejectedCount
+        self.overdueCount = overdueCount
+        self.completionRate = completionRate
+        self.onTimeRate = onTimeRate
+    }
+}
+
+public struct WorkReportAnalyticsGroupRow: Identifiable, Equatable, Sendable {
+    public let id: String
+    public let groupLabel: String
+    public let totalObligations: Int
+    public let submittedCount: Int
+    public let approvedCount: Int
+    public let overdueCount: Int
+    public let completionRate: Double
+
+    public init(
+        id: String,
+        groupLabel: String,
+        totalObligations: Int = 0,
+        submittedCount: Int = 0,
+        approvedCount: Int = 0,
+        overdueCount: Int = 0,
+        completionRate: Double = 0.0
+    ) {
+        self.id = id
+        self.groupLabel = groupLabel
+        self.totalObligations = totalObligations
+        self.submittedCount = submittedCount
+        self.approvedCount = approvedCount
+        self.overdueCount = overdueCount
+        self.completionRate = completionRate
+    }
+}
+
+public struct WorkReportsAnalyticsSnapshot: Equatable, Sendable {
+    public let kpis: WorkReportAnalyticsKpis
+    public let byUnit: [WorkReportAnalyticsGroupRow]
+    public let byTemplate: [WorkReportAnalyticsGroupRow]
+
+    public init(
+        kpis: WorkReportAnalyticsKpis = WorkReportAnalyticsKpis(),
+        byUnit: [WorkReportAnalyticsGroupRow] = [],
+        byTemplate: [WorkReportAnalyticsGroupRow] = []
+    ) {
+        self.kpis = kpis
+        self.byUnit = byUnit
+        self.byTemplate = byTemplate
+    }
+}
+
+// MARK: - Real-time & In-App Notification Model
+
+public struct AppNotificationItem: Identifiable, Equatable, Sendable {
+    public let id: Int64
+    public let title: String
+    public let body: String
+    public let type: String
+    public var isRead: Bool
+    public let createdAt: String
+    public let targetRoute: String?
+    public let targetEntityId: String?
+    public let metadata: [String: String]
+
+    public init(
+        id: Int64,
+        title: String,
+        body: String = "",
+        type: String = "GENERAL",
         isRead: Bool = false,
-        targetDestination: String? = nil,
-        targetEntityId: String? = nil
+        createdAt: String = "",
+        targetRoute: String? = nil,
+        targetEntityId: String? = nil,
+        metadata: [String: String] = [:]
     ) {
         self.id = id
         self.title = title
         self.body = body
-        self.category = category
-        self.createdAtIso = createdAtIso
+        self.type = type
         self.isRead = isRead
-        self.targetDestination = targetDestination
+        self.createdAt = createdAt
+        self.targetRoute = targetRoute
         self.targetEntityId = targetEntityId
-    }
-
-    public var resolvedMainDestination: MainDestination {
-        let upper = (targetDestination ?? category).trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
-        if upper.contains("WORK_REPORT") || upper.contains("OBLIGATION") || upper.contains("REPORT") {
-            return .workReports
-        }
-        if upper.contains("ATTENDANCE") || upper.contains("CHECKIN") || upper.contains("CHECK_IN") {
-            return .attendance
-        }
-        if upper.contains("CCCD") || upper.contains("DASHBOARD") || upper.contains("DUPLICATE") {
-            return .dashboard
-        }
-        if upper.contains("NEW_ENTRY") || upper.contains("STAGE") {
-            return .newEntry
-        }
-        if upper.contains("WORKER") || upper.contains("ENTRY") || upper.contains("SUBMISSION") || upper.contains("CHANGE") {
-            return .workers
-        }
-        return .dashboard
+        self.metadata = metadata
     }
 }
 
-// MARK: - JSON Dictionary Parsing Helpers
+// MARK: - Safe Dictionary JSON Extraction Extensions
 
 public extension Dictionary where Key == String, Value == Any {
-    func optCleanString(_ key: String) -> String? {
-        guard let raw = self[key] else { return nil }
-        if raw is NSNull { return nil }
-        if let s = raw as? String {
-            let trimmed = s.trimmingCharacters(in: .whitespacesAndNewlines)
-            if trimmed.isEmpty || trimmed.lowercased() == "null" { return nil }
-            return trimmed
+    func optString(_ keys: String..., defaultValue: String = "") -> String {
+        for key in keys {
+            guard let raw = self[key], !(raw is NSNull) else { continue }
+            if let s = raw as? String {
+                let trimmed = s.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty { return trimmed }
+            } else if let n = raw as? NSNumber {
+                return n.stringValue
+            }
         }
-        if let n = raw as? NSNumber {
-            return n.stringValue
+        return defaultValue
+    }
+
+    func optNullableString(_ keys: String...) -> String? {
+        for key in keys {
+            guard let raw = self[key], !(raw is NSNull) else { continue }
+            if let s = raw as? String {
+                let trimmed = s.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty && trimmed.lowercased() != "null" {
+                    return trimmed
+                }
+            } else if let n = raw as? NSNumber {
+                return n.stringValue
+            }
         }
         return nil
     }
 
-    func stringValue(forKeys keys: [String], default fallback: String = "") -> String {
-        for k in keys {
-            if let v = optCleanString(k) {
-                return v
+    func optInt(_ keys: String..., defaultValue: Int = 0) -> Int {
+        for key in keys {
+            guard let raw = self[key], !(raw is NSNull) else { continue }
+            if let i = raw as? Int { return i }
+            if let n = raw as? NSNumber { return n.intValue }
+            if let s = raw as? String, let parsed = Int(s.trimmingCharacters(in: .whitespacesAndNewlines)) {
+                return parsed
             }
         }
-        return fallback
+        return defaultValue
     }
 
-    func intValue(forKeys keys: [String], default fallback: Int = 0) -> Int {
-        for k in keys {
-            if let v = self[k] {
-                if let i = v as? Int { return i }
-                if let n = v as? NSNumber { return n.intValue }
-                if let s = v as? String, let parsed = Int(s.trimmingCharacters(in: .whitespacesAndNewlines)) {
-                    return parsed
-                }
+    func optInt64(_ keys: String...) -> Int64? {
+        for key in keys {
+            guard let raw = self[key], !(raw is NSNull) else { continue }
+            if let i64 = raw as? Int64 { return i64 }
+            if let i = raw as? Int { return Int64(i) }
+            if let n = raw as? NSNumber { return n.int64Value }
+            if let s = raw as? String, let parsed = Int64(s.trimmingCharacters(in: .whitespacesAndNewlines)) {
+                return parsed
             }
         }
-        return fallback
+        return nil
     }
 
-    func int64Value(forKeys keys: [String], default fallback: Int64 = 0) -> Int64 {
-        for k in keys {
-            if let v = self[k] {
-                if let i = v as? Int64 { return i }
-                if let i = v as? Int { return Int64(i) }
-                if let n = v as? NSNumber { return n.int64Value }
-                if let s = v as? String, let parsed = Int64(s.trimmingCharacters(in: .whitespacesAndNewlines)) {
-                    return parsed
-                }
+    func optDouble(_ keys: String..., defaultValue: Double = 0.0) -> Double {
+        for key in keys {
+            guard let raw = self[key], !(raw is NSNull) else { continue }
+            if let d = raw as? Double { return d }
+            if let n = raw as? NSNumber { return n.doubleValue }
+            if let s = raw as? String, let parsed = Double(s.trimmingCharacters(in: .whitespacesAndNewlines)) {
+                return parsed
             }
         }
-        return fallback
+        return defaultValue
     }
 
-    func doubleValue(forKeys keys: [String], default fallback: Double = 0.0) -> Double {
-        for k in keys {
-            if let v = self[k] {
-                if let d = v as? Double { return d }
-                if let n = v as? NSNumber { return n.doubleValue }
-                if let s = v as? String, let parsed = Double(s.trimmingCharacters(in: .whitespacesAndNewlines)) {
-                    return parsed
-                }
+    func optNullableDouble(_ keys: String...) -> Double? {
+        for key in keys {
+            guard let raw = self[key], !(raw is NSNull) else { continue }
+            if let d = raw as? Double { return d }
+            if let n = raw as? NSNumber { return n.doubleValue }
+            if let s = raw as? String, let parsed = Double(s.trimmingCharacters(in: .whitespacesAndNewlines)) {
+                return parsed
             }
         }
-        return fallback
+        return nil
     }
 
-    func boolValue(forKeys keys: [String], default fallback: Bool = false) -> Bool {
-        for k in keys {
-            if let v = self[k] {
-                if let b = v as? Bool { return b }
-                if let n = v as? NSNumber { return n.boolValue }
-                if let s = v as? String {
-                    let lower = s.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-                    if lower == "true" || lower == "1" { return true }
-                    if lower == "false" || lower == "0" { return false }
-                }
+    func optBool(_ keys: String..., defaultValue: Bool = false) -> Bool {
+        for key in keys {
+            guard let raw = self[key], !(raw is NSNull) else { continue }
+            if let b = raw as? Bool { return b }
+            if let n = raw as? NSNumber { return n.boolValue }
+            if let s = raw as? String {
+                let lower = s.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                if ["true", "1", "yes"].contains(lower) { return true }
+                if ["false", "0", "no"].contains(lower) { return false }
             }
         }
-        return fallback
+        return defaultValue
+    }
+
+    func optStringArray(_ keys: String...) -> [String] {
+        for key in keys {
+            guard let raw = self[key], !(raw is NSNull) else { continue }
+            if let arr = raw as? [String] {
+                return arr.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+            }
+            if let anyArr = raw as? [Any] {
+                let mapped = anyArr.compactMap { elem -> String? in
+                    if let s = elem as? String {
+                        let t = s.trimmingCharacters(in: .whitespacesAndNewlines)
+                        return t.isEmpty ? nil : t
+                    }
+                    if let n = elem as? NSNumber {
+                        return n.stringValue
+                    }
+                    return nil
+                }
+                if !mapped.isEmpty { return mapped }
+            }
+        }
+        return []
+    }
+
+    func optObjectArray(_ keys: String...) -> [[String: Any]] {
+        for key in keys {
+            guard let raw = self[key], !(raw is NSNull) else { continue }
+            if let arr = raw as? [[String: Any]] {
+                return arr
+            }
+            if let anyArr = raw as? [Any] {
+                let dicts = anyArr.compactMap { $0 as? [String: Any] }
+                if !dicts.isEmpty { return dicts }
+            }
+        }
+        return []
     }
 }
