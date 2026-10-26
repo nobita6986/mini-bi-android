@@ -1,0 +1,355 @@
+name: iOS CI & TestFlight Release (HRP BI)
+
+on:
+  push:
+    branches:
+      - main
+      - "feat/**"
+      - "fix/**"
+    tags:
+      - "V1.0.*"
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      version_tag:
+        description: "Tag phiên bản phát hành (ví dụ: V1.0.1.27102026)"
+        required: false
+        default: "V1.0.1.27102026"
+      build_number:
+        description: "Số thứ tự build tăng dần cho TestFlight (CURRENT_PROJECT_VERSION)"
+        required: false
+        default: "1"
+      scheme:
+        description: "Scheme cần đóng gói IPA (HRP-BI hoặc HRP-BI2)"
+        required: false
+        default: "HRP-BI"
+
+permissions:
+  contents: write
+
+jobs:
+  # ============================================================================
+  # CHẾ ĐỘ 1: Build & Test không cần tài khoản Apple Developer (Mọi PR / Push)
+  # ============================================================================
+  ios-build-and-test:
+    name: "Mode 1: Build & Unit Test (Unsigned Simulator & Generic iOS)"
+    runs-on: macos-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Show Xcode & macOS environment
+        run: |
+          sw_vers
+          xcodebuild -version
+
+      - name: Install XcodeGen & generate Xcode project
+        working-directory: ios
+        run: |
+          if ! command -v xcodegen >/dev/null 2>&1; then
+            brew install xcodegen
+          fi
+          xcodegen generate
+          ls -la HRPBI.xcodeproj
+
+      - name: Select available iPhone Simulator
+        id: simulator
+        run: |
+          SIM_UDID=$(xcrun simctl list devices available -j | python3 -c '
+          import json, sys
+          data = json.load(sys.stdin)
+          devices = data.get("devices", {})
+          candidates = []
+          for runtime, dev_list in devices.items():
+              if "iOS" not in runtime:
+                  continue
+              for d in dev_list:
+                  if d.get("isAvailable") and "iPhone" in d.get("name", ""):
+                      candidates.append((runtime, d["udid"], d["name"]))
+          if not candidates:
+              sys.exit(1)
+          candidates.sort(key=lambda x: x[0], reverse=True)
+          print(candidates[0][1])
+          ')
+          echo "Selected Simulator UDID: $SIM_UDID"
+          echo "udid=$SIM_UDID" >> "$GITHUB_OUTPUT"
+
+      - name: Run Unit Tests on iOS Simulator (HRPBTests)
+        working-directory: ios
+        run: |
+          xcodebuild test \
+            -project HRPBI.xcodeproj \
+            -scheme HRP-BI \
+            -destination "platform=iOS Simulator,id=${{ steps.simulator.outputs.udid }}" \
+            -derivedDataPath build/DerivedDataTest \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY=""
+
+      - name: Build HRP-BI (Release - https://bi.hrpartner.vn) Unsigned
+        working-directory: ios
+        run: |
+          xcodebuild build \
+            -project HRPBI.xcodeproj \
+            -scheme HRP-BI \
+            -configuration Release \
+            -destination "generic/platform=iOS" \
+            -derivedDataPath build/DerivedData-HRP-BI \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY=""
+
+      - name: Build HRP-BI2 (Debug/Staging - https://bi2.hrpartner.vn) Unsigned
+        working-directory: ios
+        run: |
+          xcodebuild build \
+            -project HRPBI.xcodeproj \
+            -scheme HRP-BI2 \
+            -configuration Debug \
+            -destination "generic/platform=iOS" \
+            -derivedDataPath build/DerivedData-HRP-BI2 \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY=""
+
+      - name: Package unsigned .app bundles for inspection
+        working-directory: ios
+        run: |
+          mkdir -p build/artifacts
+          APP_RELEASE_PATH="build/DerivedData-HRP-BI/Build/Products/Release-iphoneos/HRPBI.app"
+          APP_DEBUG_PATH="build/DerivedData-HRP-BI2/Build/Products/Debug-iphoneos/HRPBI2.app"
+
+          if [ -d "$APP_RELEASE_PATH" ]; then
+            ditto -c -k --sequesterRsrc --keepParent "$APP_RELEASE_PATH" "build/artifacts/HRP-BI-Release-unsigned.app.zip"
+          fi
+          if [ -d "$APP_DEBUG_PATH" ]; then
+            ditto -c -k --sequesterRsrc --keepParent "$APP_DEBUG_PATH" "build/artifacts/HRP-BI2-Debug-unsigned.app.zip"
+          fi
+          shasum -a 256 build/artifacts/*.zip || true
+
+      - name: Upload unsigned build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-unsigned-builds-${{ github.sha }}
+          path: ios/build/artifacts/*.zip
+          if-no-files-found: error
+
+  # ============================================================================
+  # CHẾ ĐỘ 2: Ký số .ipa & Đẩy thẳng lên TestFlight (Khi có Apple Secrets)
+  # ============================================================================
+  ios-sign-and-testflight:
+    name: "Mode 2: Sign .ipa & Upload to TestFlight (Conditional on Apple Secrets)"
+    needs: ios-build-and-test
+    runs-on: macos-latest
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/V1.0.') || github.ref == 'refs/heads/main'
+    timeout-minutes: 40
+
+    env:
+      APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      APPLE_PROVISIONING_PROFILE_BASE64: ${{ secrets.APPLE_PROVISIONING_PROFILE_BASE64 }}
+      APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+      APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+      APP_STORE_CONNECT_API_KEY_BASE64: ${{ secrets.APP_STORE_CONNECT_API_KEY_BASE64 }}
+
+    steps:
+      - name: Check if Apple Developer Secrets are configured
+        id: check_secrets
+        run: |
+          if [ -n "$APPLE_CERTIFICATE_BASE64" ] && \
+             [ -n "$APPLE_CERTIFICATE_PASSWORD" ] && \
+             [ -n "$APPLE_PROVISIONING_PROFILE_BASE64" ] && \
+             [ -n "$APP_STORE_CONNECT_API_KEY_ID" ] && \
+             [ -n "$APP_STORE_CONNECT_ISSUER_ID" ] && \
+             [ -n "$APP_STORE_CONNECT_API_KEY_BASE64" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+            echo "All 6 Apple Developer Secrets are present. Proceeding with signed .ipa build & TestFlight upload."
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "Notice: Apple Developer Secrets are not yet configured in Repository Secrets. Skipping Mode 2 signed IPA & TestFlight upload."
+          fi
+
+      - name: Checkout repository
+        if: steps.check_secrets.outputs.configured == 'true'
+        uses: actions/checkout@v4
+
+      - name: Resolve Release Version & Build Number
+        if: steps.check_secrets.outputs.configured == 'true'
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ inputs.version_tag }}" ]; then
+            RAW_TAG="${{ inputs.version_tag }}"
+          elif [[ "${{ github.ref }}" == refs/tags/V* ]]; then
+            RAW_TAG="${GITHUB_REF#refs/tags/}"
+          else
+            TODAY=$(TZ=Asia/Ho_Chi_Minh date +"%d%m%Y")
+            RAW_TAG="V1.0.1.${TODAY}"
+          fi
+
+          MARKETING_VER="${RAW_TAG#V}"
+          MARKETING_VER="${MARKETING_VER#v}"
+
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ inputs.build_number }}" ]; then
+            BUILD_NUM="${{ inputs.build_number }}"
+          else
+            BUILD_NUM="${{ github.run_number }}"
+          fi
+
+          SCHEME_NAME="${{ inputs.scheme != '' && inputs.scheme || 'HRP-BI' }}"
+          IPA_FILENAME="HRP-BI-${RAW_TAG}.ipa"
+
+          echo "tag=$RAW_TAG" >> "$GITHUB_OUTPUT"
+          echo "marketing_version=$MARKETING_VER" >> "$GITHUB_OUTPUT"
+          echo "build_number=$BUILD_NUM" >> "$GITHUB_OUTPUT"
+          echo "scheme=$SCHEME_NAME" >> "$GITHUB_OUTPUT"
+          echo "ipa_filename=$IPA_FILENAME" >> "$GITHUB_OUTPUT"
+
+      - name: Install XcodeGen & generate Xcode project
+        if: steps.check_secrets.outputs.configured == 'true'
+        working-directory: ios
+        run: |
+          if ! command -v xcodegen >/dev/null 2>&1; then
+            brew install xcodegen
+          fi
+          xcodegen generate
+
+      - name: Import Apple Distribution Certificate & Provisioning Profile into temporary Keychain
+        if: steps.check_secrets.outputs.configured == 'true'
+        id: signing
+        run: |
+          KEYCHAIN_PATH="$RUNNER_TEMP/hrpbi-signing.keychain-db"
+          KEYCHAIN_PASS="$(uuidgen)"
+          CERT_PATH="$RUNNER_TEMP/dist_cert.p12"
+          PROFILE_PATH="$RUNNER_TEMP/profile.mobileprovision"
+          PROFILE_PLIST="$RUNNER_TEMP/profile.plist"
+
+          echo "$APPLE_CERTIFICATE_BASE64" | base64 --decode > "$CERT_PATH"
+          echo "$APPLE_PROVISIONING_PROFILE_BASE64" | base64 --decode > "$PROFILE_PATH"
+
+          security create-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
+
+          security import "$CERT_PATH" -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH" login.keychain
+
+          security cms -D -i "$PROFILE_PATH" > "$PROFILE_PLIST"
+          PROFILE_UUID=$(/usr/libexec/PlistBuddy -c "Print UUID" "$PROFILE_PLIST")
+          TEAM_ID=$(/usr/libexec/PlistBuddy -c "Print TeamIdentifier:0" "$PROFILE_PLIST")
+          PROFILE_NAME=$(/usr/libexec/PlistBuddy -c "Print Name" "$PROFILE_PLIST")
+          APP_ID=$(/usr/libexec/PlistBuddy -c "Print Entitlements:application-identifier" "$PROFILE_PLIST")
+          BUNDLE_ID="${APP_ID#${TEAM_ID}.}"
+
+          mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
+          cp "$PROFILE_PATH" "$HOME/Library/MobileDevice/Provisioning Profiles/${PROFILE_UUID}.mobileprovision"
+
+          echo "profile_uuid=$PROFILE_UUID" >> "$GITHUB_OUTPUT"
+          echo "profile_name=$PROFILE_NAME" >> "$GITHUB_OUTPUT"
+          echo "team_id=$TEAM_ID" >> "$GITHUB_OUTPUT"
+          echo "bundle_id=$BUNDLE_ID" >> "$GITHUB_OUTPUT"
+
+      - name: Archive & Export signed .ipa
+        if: steps.check_secrets.outputs.configured == 'true'
+        working-directory: ios
+        run: |
+          ARCHIVE_PATH="$RUNNER_TEMP/HRPBI.xcarchive"
+          EXPORT_DIR="$RUNNER_TEMP/export"
+          EXPORT_PLIST="$RUNNER_TEMP/ExportOptions.plist"
+
+          cat > "$EXPORT_PLIST" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>method</key>
+              <string>app-store</string>
+              <key>teamID</key>
+              <string>${{ steps.signing.outputs.team_id }}</string>
+              <key>signingStyle</key>
+              <string>manual</string>
+              <key>uploadSymbols</key>
+              <true/>
+              <key>provisioningProfiles</key>
+              <dict>
+                  <key>${{ steps.signing.outputs.bundle_id }}</key>
+                  <string>${{ steps.signing.outputs.profile_uuid }}</string>
+              </dict>
+          </dict>
+          </plist>
+          EOF
+
+          xcodebuild archive \
+            -project HRPBI.xcodeproj \
+            -scheme "${{ steps.version.outputs.scheme }}" \
+            -configuration Release \
+            -destination "generic/platform=iOS" \
+            -archivePath "$ARCHIVE_PATH" \
+            MARKETING_VERSION="${{ steps.version.outputs.marketing_version }}" \
+            CURRENT_PROJECT_VERSION="${{ steps.version.outputs.build_number }}" \
+            DEVELOPMENT_TEAM="${{ steps.signing.outputs.team_id }}" \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY="Apple Distribution" \
+            PROVISIONING_PROFILE_SPECIFIER="${{ steps.signing.outputs.profile_uuid }}"
+
+          xcodebuild -exportArchive \
+            -archivePath "$ARCHIVE_PATH" \
+            -exportOptionsPlist "$EXPORT_PLIST" \
+            -exportPath "$EXPORT_DIR"
+
+          FOUND_IPA=$(find "$EXPORT_DIR" -name "*.ipa" | head -n 1)
+          cp "$FOUND_IPA" "$RUNNER_TEMP/${{ steps.version.outputs.ipa_filename }}"
+          shasum -a 256 "$RUNNER_TEMP/${{ steps.version.outputs.ipa_filename }}"
+
+      - name: Upload signed .ipa artifact
+        if: steps.check_secrets.outputs.configured == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.version.outputs.ipa_filename }}
+          path: ${{ runner.temp }}/${{ steps.version.outputs.ipa_filename }}
+
+      - name: Create or Update GitHub Release with signed .ipa
+        if: steps.check_secrets.outputs.configured == 'true' && (github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/V1.0.'))
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          IPA_PATH="$RUNNER_TEMP/${{ steps.version.outputs.ipa_filename }}"
+          SHA256_VAL=$(shasum -a 256 "$IPA_PATH" | awk '{print $1}')
+          TAG="${{ steps.version.outputs.tag }}"
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$IPA_PATH" --clobber
+          else
+            gh release create "$TAG" "$IPA_PATH" \
+              --title "HRP BI iOS $TAG (Build ${{ steps.version.outputs.build_number }})" \
+              --notes "### HRP BI iOS Release $TAG
+          - **MARKETING_VERSION**: \`${{ steps.version.outputs.marketing_version }}\`
+          - **CURRENT_PROJECT_VERSION**: \`${{ steps.version.outputs.build_number }}\`
+          - **File IPA**: \`${{ steps.version.outputs.ipa_filename }}\`
+          - **SHA-256**: \`$SHA256_VAL\`"
+          fi
+
+      - name: Upload .ipa to TestFlight (App Store Connect)
+        if: steps.check_secrets.outputs.configured == 'true'
+        run: |
+          mkdir -p "$HOME/.appstoreconnect/private_keys"
+          KEY_FILE="$HOME/.appstoreconnect/private_keys/AuthKey_${APP_STORE_CONNECT_API_KEY_ID}.p8"
+          echo "$APP_STORE_CONNECT_API_KEY_BASE64" | base64 --decode > "$KEY_FILE"
+          chmod 600 "$KEY_FILE"
+
+          xcrun altool --upload-app \
+            --type ios \
+            -f "$RUNNER_TEMP/${{ steps.version.outputs.ipa_filename }}" \
+            --apiKey "$APP_STORE_CONNECT_API_KEY_ID" \
+            --apiIssuer "$APP_STORE_CONNECT_ISSUER_ID"
+
+      - name: Clean up temporary Keychain & API Key
+        if: always() && steps.check_secrets.outputs.configured == 'true'
+        run: |
+          security delete-keychain "$RUNNER_TEMP/hrpbi-signing.keychain-db" || true
+          rm -rf "$HOME/.appstoreconnect/private_keys" || true
+          rm -f "$RUNNER_TEMP/dist_cert.p12" "$RUNNER_TEMP/profile.mobileprovision" || true

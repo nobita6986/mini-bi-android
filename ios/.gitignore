@@ -1,0 +1,9 @@
+# Xcode / XcodeGen generated artifacts
+*.xcodeproj/
+*.xcworkspace/
+build/
+DerivedData/
+*.ipa
+*.dSYM.zip
+*.dSYM
+.DS_Store
