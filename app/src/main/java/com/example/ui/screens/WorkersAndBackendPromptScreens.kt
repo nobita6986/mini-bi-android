@@ -249,10 +249,12 @@ fun DirectEntryNewWorkersScreen(
     var showBatchHistoryDialog by remember { mutableStateOf(false) }
     var scanningQrRowId by remember { mutableStateOf<String?>(null) }
 
-    val draftRows = remember {
-        mutableStateListOf(
-            DirectEntryContract.createDefaultWorkerDraft(catalog = catalog)
-        )
+    val draftRows = remember(viewModel) {
+        viewModel.ensureInitialNewWorkerDraftRow(catalog)
+        viewModel.newWorkerDraftRows
+    }
+    if (draftRows.isEmpty()) {
+        viewModel.ensureInitialNewWorkerDraftRow(catalog)
     }
 
     LaunchedEffect(catalog) {
