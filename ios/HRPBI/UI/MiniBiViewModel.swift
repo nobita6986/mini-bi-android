@@ -13,6 +13,7 @@ public final class MiniBiViewModel: ObservableObject {
     public let attendanceOutboxService: AttendanceOutboxService
     public let timeAnchorManager: AttendanceTimeAnchorManager
     public let notificationService: NotificationService
+    public let leaveService: LeaveService
 
     // MARK: - Environment & Theme
     @Published public var environmentConfig: AppEnvironmentConfig = .current
@@ -87,6 +88,23 @@ public final class MiniBiViewModel: ObservableObject {
     @Published public var isSubmittingAttendance: Bool = false
     @Published public var isSyncingAttendance: Bool = false
 
+    // MARK: - Leave Request ("Xin nghỉ") & Leave Approval ("Duyệt nghỉ") State
+    @Published public var activeAttendanceTab: AttendanceAreaTab = .checkIn
+    @Published public var leaveYear: Int = LeaveContract.currentVietnamLeaveYear()
+    @Published public var myLeaveSummary: LeaveMeSummaryProjection?
+    @Published public var isLoadingMyLeave: Bool = false
+    @Published public var myLeaveError: String?
+    @Published public var myLeaveErrorCode: String?
+    @Published public var leaveDraftDays: [LeaveDraftDayInput] = []
+    @Published public var leaveDraftReason: String = ""
+    @Published public var isMutatingLeave: Bool = false
+    @Published public var leaveMutationError: String?
+    @Published public var leaveInboxStatusFilter: String = "PENDING"
+    @Published public var leaveInboxPage: Int = 1
+    @Published public var leaveApprovalInbox: LeaveApprovalInboxProjection?
+    @Published public var isLoadingLeaveInbox: Bool = false
+    @Published public var leaveInboxError: String?
+
     // MARK: - Work Reports State
     @Published public var selectedWorkReportsSubTab: WorkReportsSubTab = .actionable
     @Published public var workReportObligations: [WorkReportObligationItem] = []
@@ -105,7 +123,8 @@ public final class MiniBiViewModel: ObservableObject {
         workReportsService: WorkReportsAndReportingService = .shared,
         attendanceOutboxService: AttendanceOutboxService = .shared,
         timeAnchorManager: AttendanceTimeAnchorManager = AttendanceTimeAnchorManager(),
-        notificationService: NotificationService = .shared
+        notificationService: NotificationService = .shared,
+        leaveService: LeaveService = .shared
     ) {
         self.repository = repository
         self.directEntryService = directEntryService
@@ -113,6 +132,7 @@ public final class MiniBiViewModel: ObservableObject {
         self.attendanceOutboxService = attendanceOutboxService
         self.timeAnchorManager = timeAnchorManager
         self.notificationService = notificationService
+        self.leaveService = leaveService
         self.attendanceTimeEvaluation = timeAnchorManager.evaluateAnchor()
 
         self.selectedTheme = MiniBiThemes.byId(repository.getSelectedThemeId())
@@ -169,6 +189,12 @@ public final class MiniBiViewModel: ObservableObject {
     public func navigateTo(_ destination: MiniBiNavDestination) {
         // Switching destinations NEVER resets `newWorkerDraftRows`
         currentDestination = destination
+        if destination == .attendance {
+            activeAttendanceTab = .checkIn
+            if isAuthenticated {
+                Task { await refreshMyLeaveSummary(year: leaveYear) }
+            }
+        }
     }
 
     // MARK: - Session Bootstrap, Login & Logout
@@ -284,6 +310,21 @@ public final class MiniBiViewModel: ObservableObject {
         editorFieldValues = [:]
         notifications = []
         unreadNotificationCount = 0
+        activeAttendanceTab = .checkIn
+        leaveYear = LeaveContract.currentVietnamLeaveYear()
+        myLeaveSummary = nil
+        isLoadingMyLeave = false
+        myLeaveError = nil
+        myLeaveErrorCode = nil
+        leaveDraftDays = []
+        leaveDraftReason = ""
+        isMutatingLeave = false
+        leaveMutationError = nil
+        leaveInboxStatusFilter = "PENDING"
+        leaveInboxPage = 1
+        leaveApprovalInbox = nil
+        isLoadingLeaveInbox = false
+        leaveInboxError = nil
         savedAccounts = repository.getSavedLoginAccounts()
     }
 
@@ -330,8 +371,19 @@ public final class MiniBiViewModel: ObservableObject {
             currentDestination = .dashboard
             selectedDashboardSubTab = .cccdReview
             await loadCccdReviewItems()
+        } else if typeUpper.contains("LEAVE") || routeLower.contains("leave") {
+            currentDestination = .attendance
+            await refreshMyLeaveSummary(year: leaveYear)
+            if (typeUpper.contains("APPROV") || routeLower.contains("approv")),
+               let auth = myLeaveSummary?.authority,
+               auth.canApproveRequests && !auth.isSharedNonEmployee {
+                selectAttendanceTab(.leaveApproval)
+            } else if resolveVisibleAttendanceTabs().contains(.leaveRequest) {
+                selectAttendanceTab(.leaveRequest)
+            }
         } else if typeUpper.contains("ATTENDANCE") || routeLower.contains("attendance") {
             currentDestination = .attendance
+            activeAttendanceTab = .checkIn
         } else if typeUpper.contains("WORKER") || routeLower.contains("worker") {
             currentDestination = .workers
             await loadWorkers(resetPage: true)
@@ -742,6 +794,372 @@ public final class MiniBiViewModel: ObservableObject {
             attendanceOutboxItems = attendanceOutboxService.listItemsForUser(userKey: userKey)
         }
         showBanner(syncedCount > 0 ? "Đã gửi bù thành công \(syncedCount) bản ghi chấm công." : "Đã đồng bộ trạng thái chấm công.")
+    }
+
+    // MARK: - Leave Request ("Xin nghỉ") & Leave Approval ("Duyệt nghỉ") Actions
+
+    public static let leaveInboxPageSize: Int = 50
+
+    public var currentLeaveActorAppUserId: String? {
+        if let authId = myLeaveSummary?.authority.appUserId.trimmingCharacters(in: .whitespacesAndNewlines),
+           !authId.isEmpty {
+            return authId
+        }
+        if let userId = currentUser?.id.trimmingCharacters(in: .whitespacesAndNewlines),
+           !userId.isEmpty {
+            return userId
+        }
+        return nil
+    }
+
+    public func resolveVisibleAttendanceTabs() -> [AttendanceAreaTab] {
+        LeaveContract.resolveVisibleAttendanceTabs(
+            authority: myLeaveSummary?.authority,
+            errorCode: myLeaveErrorCode
+        )
+    }
+
+    public func selectAttendanceTab(_ tab: AttendanceAreaTab) {
+        let visibleTabs = resolveVisibleAttendanceTabs()
+        let safeTab = visibleTabs.contains(tab) ? tab : .checkIn
+        activeAttendanceTab = safeTab
+        leaveMutationError = nil
+
+        switch safeTab {
+        case .checkIn:
+            break
+        case .leaveRequest:
+            ensureInitialLeaveDraftDay()
+            if myLeaveSummary == nil && !isLoadingMyLeave {
+                Task { await refreshMyLeaveSummary(year: leaveYear) }
+            }
+        case .leaveApproval:
+            Task {
+                await refreshLeaveApprovalInbox(
+                    statusFilter: leaveInboxStatusFilter,
+                    page: leaveInboxPage
+                )
+            }
+        }
+    }
+
+    public func ensureInitialLeaveDraftDay() {
+        if leaveDraftDays.isEmpty {
+            let asOf = myLeaveSummary?.asOfDate ?? ""
+            let defaultDate = LeaveContract.isValidIsoDate(asOf)
+                ? asOf
+                : LeaveContract.todayVietnamIsoDate()
+            leaveDraftDays = [
+                LeaveDraftDayInput(leaveDate: defaultDate, sessionCode: "FULL")
+            ]
+        }
+    }
+
+    public func addLeaveDraftDay() {
+        if leaveDraftDays.count >= 60 {
+            leaveMutationError = "Mỗi đơn chỉ được đăng ký tối đa 60 ngày nghỉ."
+            return
+        }
+        leaveMutationError = nil
+        let fallbackDate = myLeaveSummary?.asOfDate ?? LeaveContract.todayVietnamIsoDate()
+        if let lastDate = leaveDraftDays.last?.leaveDate {
+            let nextDate = LeaveContract.nextIsoDateAfter(lastDate, fallbackDate: fallbackDate)
+            leaveDraftDays.append(LeaveDraftDayInput(leaveDate: nextDate, sessionCode: "FULL"))
+        } else {
+            let startDate = LeaveContract.isValidIsoDate(fallbackDate) ? fallbackDate : LeaveContract.todayVietnamIsoDate()
+            leaveDraftDays.append(LeaveDraftDayInput(leaveDate: startDate, sessionCode: "FULL"))
+        }
+    }
+
+    public func removeLeaveDraftDay(id: String) {
+        leaveMutationError = nil
+        leaveDraftDays.removeAll(where: { $0.id == id })
+        ensureInitialLeaveDraftDay()
+    }
+
+    public func updateLeaveDraftDayDate(id: String, leaveDate: String) {
+        leaveMutationError = nil
+        guard let idx = leaveDraftDays.firstIndex(where: { $0.id == id }) else { return }
+        leaveDraftDays[idx].leaveDate = leaveDate.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    public func updateLeaveDraftDaySession(id: String, sessionCode: String) {
+        leaveMutationError = nil
+        let normalized = sessionCode.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        guard LeaveContract.sessionCodes.contains(normalized),
+              let idx = leaveDraftDays.firstIndex(where: { $0.id == id }) else {
+            return
+        }
+        leaveDraftDays[idx].sessionCode = normalized
+    }
+
+    public func updateLeaveDraftReason(_ reason: String) {
+        leaveMutationError = nil
+        leaveDraftReason = reason
+    }
+
+    public func clearLeaveMutationError() {
+        leaveMutationError = nil
+    }
+
+    public func setLeaveYear(_ year: Int) {
+        guard (2000...2100).contains(year) else { return }
+        leaveYear = year
+        Task { await refreshMyLeaveSummary(year: year) }
+    }
+
+    public func refreshMyLeaveSummary(year: Int? = nil) async {
+        let targetYear = year ?? leaveYear
+        isLoadingMyLeave = true
+        myLeaveError = nil
+        myLeaveErrorCode = nil
+        let result = await leaveService.fetchMyLeaveSummary(leaveYear: targetYear)
+        isLoadingMyLeave = false
+
+        switch result {
+        case .success(let summary, _):
+            myLeaveSummary = summary
+            leaveYear = summary.leaveYear
+            myLeaveError = nil
+            myLeaveErrorCode = nil
+            ensureInitialLeaveDraftDay()
+
+            let visibleTabs = LeaveContract.resolveVisibleAttendanceTabs(
+                authority: summary.authority,
+                errorCode: nil
+            )
+            if !visibleTabs.contains(activeAttendanceTab) {
+                activeAttendanceTab = .checkIn
+            }
+            if summary.authority.canApproveRequests &&
+                !summary.authority.isSharedNonEmployee &&
+                (activeAttendanceTab == .leaveApproval || leaveApprovalInbox != nil) {
+                await refreshLeaveApprovalInbox(
+                    statusFilter: leaveInboxStatusFilter,
+                    page: leaveInboxPage
+                )
+            }
+
+        case .failure(let message, _, let errorCode, _):
+            myLeaveError = message
+            myLeaveErrorCode = errorCode
+            if errorCode?.uppercased() == "LEAVE_SHARED_ACCOUNT_FORBIDDEN" {
+                myLeaveSummary = nil
+                activeAttendanceTab = .checkIn
+            }
+        }
+    }
+
+    public func submitLeaveRequest(onSuccess: (() -> Void)? = nil) async {
+        guard !isMutatingLeave else { return }
+        let daysSnapshot = leaveDraftDays
+        let reasonSnapshot = leaveDraftReason
+
+        if let validationError = LeaveContract.validateCreateDraftInput(
+            days: daysSnapshot,
+            reason: reasonSnapshot
+        ) {
+            leaveMutationError = validationError
+            showBanner(validationError, isError: true)
+            return
+        }
+
+        isMutatingLeave = true
+        leaveMutationError = nil
+        let result = await leaveService.createLeaveRequest(
+            days: daysSnapshot,
+            reason: reasonSnapshot
+        )
+        isMutatingLeave = false
+
+        switch result {
+        case .success:
+            leaveDraftDays = []
+            ensureInitialLeaveDraftDay()
+            leaveDraftReason = ""
+            showBanner("Đã gửi đơn xin nghỉ phép thành công.")
+            await refreshMyLeaveSummary(year: leaveYear)
+            onSuccess?()
+
+        case .failure(let message, let httpStatus, let errorCode, _):
+            leaveMutationError = message
+            showBanner(message, isError: true)
+            let codeUpper = (errorCode ?? "").uppercased()
+            if httpStatus == 409 ||
+                codeUpper == "LEAVE_ROW_VERSION_CONFLICT" ||
+                codeUpper == "LEAVE_INVALID_STATE_TRANSITION" {
+                await refreshMyLeaveSummary(year: leaveYear)
+            }
+        }
+    }
+
+    public func withdrawLeaveRequest(
+        request: LeaveRequestProjection,
+        reason: String?,
+        onSuccess: (() -> Void)? = nil
+    ) async {
+        guard !isMutatingLeave else { return }
+        let actorId = currentLeaveActorAppUserId
+        guard LeaveContract.canWithdrawOwnLeaveRequest(actorAppUserId: actorId, request: request) else {
+            let msg = "Đơn này không ở trạng thái Chờ duyệt hoặc không thuộc quyền tự rút của bạn."
+            leaveMutationError = msg
+            showBanner(msg, isError: true)
+            return
+        }
+
+        isMutatingLeave = true
+        leaveMutationError = nil
+        let result = await leaveService.withdrawLeaveRequest(
+            requestId: request.requestId,
+            expectedRowVersion: request.rowVersion,
+            reason: reason
+        )
+        isMutatingLeave = false
+
+        switch result {
+        case .success:
+            showBanner("Đã rút đơn xin nghỉ phép.")
+            await refreshMyLeaveSummary(year: leaveYear)
+            onSuccess?()
+
+        case .failure(let message, let httpStatus, let errorCode, _):
+            leaveMutationError = message
+            showBanner(message, isError: true)
+            let codeUpper = (errorCode ?? "").uppercased()
+            if httpStatus == 409 ||
+                codeUpper == "LEAVE_ROW_VERSION_CONFLICT" ||
+                codeUpper == "LEAVE_INVALID_STATE_TRANSITION" {
+                await refreshMyLeaveSummary(year: leaveYear)
+            }
+        }
+    }
+
+    public func setLeaveInboxFilter(_ statusFilter: String) {
+        let clean = statusFilter.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        guard LeaveContract.requestStatusFilters.contains(clean) else { return }
+        leaveInboxStatusFilter = clean
+        leaveInboxPage = 1
+        Task {
+            await refreshLeaveApprovalInbox(statusFilter: clean, page: 1)
+        }
+    }
+
+    public func setLeaveInboxPage(_ page: Int) {
+        let safePage = max(page, 1)
+        leaveInboxPage = safePage
+        Task {
+            await refreshLeaveApprovalInbox(statusFilter: leaveInboxStatusFilter, page: safePage)
+        }
+    }
+
+    public func refreshLeaveApprovalInbox(
+        statusFilter: String? = nil,
+        page: Int? = nil
+    ) async {
+        if let authority = myLeaveSummary?.authority,
+           (!authority.canApproveRequests || authority.isSharedNonEmployee) {
+            leaveApprovalInbox = nil
+            return
+        }
+
+        let effectiveFilter = statusFilter ?? leaveInboxStatusFilter
+        let safePage = max(page ?? leaveInboxPage, 1)
+        let limit = Self.leaveInboxPageSize
+        let offset = (safePage - 1) * limit
+
+        isLoadingLeaveInbox = true
+        leaveInboxError = nil
+        let result = await leaveService.fetchApprovalInbox(
+            statusFilter: effectiveFilter,
+            limit: limit,
+            offset: offset
+        )
+        isLoadingLeaveInbox = false
+
+        switch result {
+        case .success(let inbox, _):
+            leaveApprovalInbox = inbox
+            leaveInboxError = nil
+
+        case .failure(let message, let httpStatus, let errorCode, _):
+            leaveInboxError = message
+            let codeUpper = (errorCode ?? "").uppercased()
+            if httpStatus == 403 || codeUpper == "LEAVE_APPROVAL_FORBIDDEN" {
+                leaveApprovalInbox = nil
+                if activeAttendanceTab == .leaveApproval {
+                    activeAttendanceTab = .checkIn
+                }
+            }
+        }
+    }
+
+    public func decideLeaveRequest(
+        request: LeaveRequestProjection,
+        decision: String,
+        reason: String?,
+        onSuccess: (() -> Void)? = nil
+    ) async {
+        guard !isMutatingLeave else { return }
+        let actorId = currentLeaveActorAppUserId
+        let validation = LeaveContract.validateApproverDecisionInput(
+            actorAppUserId: actorId,
+            request: request,
+            decision: decision,
+            reason: reason ?? ""
+        )
+        guard validation.isValid else {
+            let msg = validation.errorMessage ?? "Quyết định xử lý đơn không hợp lệ."
+            leaveMutationError = msg
+            showBanner(msg, isError: true)
+            return
+        }
+
+        let cleanDecision = decision.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        isMutatingLeave = true
+        leaveMutationError = nil
+        let result = await leaveService.decideLeaveRequest(
+            requestId: request.requestId,
+            decision: cleanDecision,
+            expectedRowVersion: request.rowVersion,
+            reason: reason
+        )
+        isMutatingLeave = false
+
+        switch result {
+        case .success:
+            let successMsg: String
+            switch cleanDecision {
+            case "APPROVE":
+                successMsg = "Đã duyệt đơn nghỉ phép."
+            case "REJECT":
+                successMsg = "Đã từ chối đơn nghỉ phép."
+            case "CANCEL_APPROVED":
+                successMsg = "Đã hủy đơn nghỉ phép đã duyệt và hoàn phép."
+            default:
+                successMsg = "Đã cập nhật quyết định duyệt nghỉ phép."
+            }
+            showBanner(successMsg)
+            await refreshLeaveApprovalInbox(
+                statusFilter: leaveInboxStatusFilter,
+                page: leaveInboxPage
+            )
+            await refreshMyLeaveSummary(year: leaveYear)
+            onSuccess?()
+
+        case .failure(let message, let httpStatus, let errorCode, _):
+            leaveMutationError = message
+            showBanner(message, isError: true)
+            let codeUpper = (errorCode ?? "").uppercased()
+            if httpStatus == 409 ||
+                codeUpper == "LEAVE_ROW_VERSION_CONFLICT" ||
+                codeUpper == "LEAVE_INVALID_STATE_TRANSITION" {
+                await refreshLeaveApprovalInbox(
+                    statusFilter: leaveInboxStatusFilter,
+                    page: leaveInboxPage
+                )
+                await refreshMyLeaveSummary(year: leaveYear)
+            }
+        }
     }
 
     // MARK: - Work Reports Actions (Including `is_overdue` & `WORK_REPORT_DEADLINE_PASSED` Contract)

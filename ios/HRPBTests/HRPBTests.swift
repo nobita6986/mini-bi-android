@@ -326,6 +326,352 @@ final class HRPBTests: XCTestCase {
         XCTAssertEqual(manager.resolveCaptureTime().timeSource, AttendanceTimeContract.sourceDeviceClockUnverified)
     }
 
+    // MARK: - 7. Leave Request ("Xin nghỉ") & Leave Approval ("Duyệt nghỉ") Contract Tests
+
+    @MainActor
+    func testLeaveTabVisibilityByAuthority() throws {
+        // 1. Regular employee (non-approver) -> sees only Check-in and Leave Request, NEVER Leave Approval
+        let employeeAuth = LeaveAuthorityProjection(
+            appUserId: "11111111-2222-4333-8444-555555555555",
+            isSharedNonEmployee: false,
+            canSubmitRequest: true,
+            canApproveRequests: false
+        )
+        XCTAssertEqual(
+            LeaveContract.resolveVisibleAttendanceTabs(authority: employeeAuth, errorCode: nil),
+            [.checkIn, .leaveRequest]
+        )
+
+        // 2. Approver (Team Leader / Department Head / Admin / BoD) -> sees all 3 tabs
+        let approverAuth = LeaveAuthorityProjection(
+            appUserId: "99999999-2222-4333-8444-555555555555",
+            isSharedNonEmployee: false,
+            isTeamLeader: true,
+            canSubmitRequest: true,
+            canApproveRequests: true
+        )
+        XCTAssertEqual(
+            LeaveContract.resolveVisibleAttendanceTabs(authority: approverAuth, errorCode: nil),
+            [.checkIn, .leaveRequest, .leaveApproval]
+        )
+
+        // 3. Shared non-employee account -> sees only Check-in
+        let sharedAuth = LeaveAuthorityProjection(
+            appUserId: "77777777-2222-4333-8444-555555555555",
+            isSharedNonEmployee: true,
+            canSubmitRequest: false,
+            canApproveRequests: false
+        )
+        XCTAssertEqual(
+            LeaveContract.resolveVisibleAttendanceTabs(authority: sharedAuth, errorCode: nil),
+            [.checkIn]
+        )
+        XCTAssertEqual(
+            LeaveContract.resolveVisibleAttendanceTabs(authority: nil, errorCode: "LEAVE_SHARED_ACCOUNT_FORBIDDEN"),
+            [.checkIn]
+        )
+
+        // 4. ViewModel defaults to `.checkIn` and prevents selecting `.leaveApproval` when not authorized
+        let vm = MiniBiViewModel()
+        XCTAssertEqual(vm.activeAttendanceTab, .checkIn)
+        vm.selectAttendanceTab(.leaveApproval)
+        XCTAssertEqual(vm.activeAttendanceTab, .checkIn)
+    }
+
+    func testLeaveSummaryAndApprovalInboxParsingAndUnitFormatting() throws {
+        let userId = "11111111-2222-4333-8444-555555555555"
+        let requestId = "aaaa1111-2222-4333-8444-555555555555"
+        let meJson: [String: Any] = [
+            "ok": true,
+            "data": [
+                "as_of_date": "2026-10-27",
+                "leave_year": 2026,
+                "account": [
+                    "app_user_id": userId,
+                    "display_name": "Nhân sự Thực Địa",
+                    "login_id": "ns01",
+                    "personnel_code": "NV-001",
+                    "recruiter_id": "rec-01",
+                    "account_enabled": true
+                ],
+                "authority": [
+                    "app_user_id": userId,
+                    "is_shared_non_employee": false,
+                    "is_full_admin": false,
+                    "is_bod": false,
+                    "is_hr_operator": false,
+                    "is_hr_report_viewer": false,
+                    "is_team_leader": false,
+                    "is_department_approver": false,
+                    "can_submit_request": true,
+                    "can_approve_requests": false,
+                    "can_view_monthly_report": false,
+                    "can_manage_config": false
+                ],
+                "routing": [
+                    "route_kind": "TEAM_LEADER",
+                    "unit_kind": "RECRUITMENT",
+                    "primary_approver_app_user_id": "99999999-2222-4333-8444-555555555555",
+                    "team_id": "team-uuid-1",
+                    "team_code": "TEAM_NORTH",
+                    "team_name": "Team Miền Bắc",
+                    "profile_configured": true
+                ],
+                "policy": [
+                    "annual_base_units": 24,
+                    "monthly_accrual_units": 2,
+                    "default_seniority_years": 5,
+                    "default_seniority_step_units": 2,
+                    "carry_over_expiry_month": 3,
+                    "carry_over_expiry_day": 31,
+                    "carry_over_expires_after_date": "2026-03-31",
+                    "row_version": 2
+                ],
+                "balance": [
+                    "leave_year": 2026,
+                    "as_of_date": "2026-10-27",
+                    "has_profile": true,
+                    "profile_configured": true,
+                    "employment_status": "OFFICIAL",
+                    "unit_kind": "RECRUITMENT",
+                    "work_start_date": "2025-01-01",
+                    "official_effective_date": "2025-03-01",
+                    "next_seniority_effective_date": "2030-01-01",
+                    "next_seniority_units": 2,
+                    "total_granted_units": 20,
+                    "carry_over_granted_units": 2,
+                    "carry_over_available_units": 0,
+                    "monthly_accrued_units": 18,
+                    "seniority_granted_units": 0,
+                    "opening_or_adjustment_units": 0,
+                    "available_units": 14,
+                    "reserved_units": 2,
+                    "consumed_units": 4,
+                    "expired_units": 0,
+                    "pending_paid_units": 3,
+                    "pending_unpaid_units": 0,
+                    "approved_unpaid_units": 0,
+                    "lots": [
+                        [
+                            "lot_id": "lot-10",
+                            "leave_year": 2026,
+                            "lot_kind": "MONTHLY_ACCRUAL",
+                            "accrual_month": 10,
+                            "granted_units": 2,
+                            "reserved_units": 0,
+                            "consumed_units": 0,
+                            "expired_units": 0,
+                            "available_units": 2,
+                            "usable_from_date": "2026-10-01"
+                        ]
+                    ]
+                ],
+                "requests": [
+                    [
+                        "request_id": requestId,
+                        "app_user_id": userId,
+                        "status": "PENDING",
+                        "pay_treatment": "PAID_LEAVE",
+                        "employment_status_snapshot": "OFFICIAL",
+                        "unit_kind_snapshot": "RECRUITMENT",
+                        "profile_configured_at_submit": true,
+                        "requested_units": 3,
+                        "reason": "Việc gia đình",
+                        "route_kind": "TEAM_LEADER",
+                        "routed_team_name": "Team Miền Bắc",
+                        "submitted_at": "2026-10-27T01:00:00Z",
+                        "row_version": 3,
+                        "days": [
+                            [
+                                "request_day_id": "day-1",
+                                "leave_date": "2026-10-28",
+                                "session_code": "FULL",
+                                "half_day_units": 2,
+                                "is_active": true
+                            ],
+                            [
+                                "request_day_id": "day-2",
+                                "leave_date": "2026-10-29",
+                                "session_code": "AM",
+                                "half_day_units": 1,
+                                "is_active": true
+                            ]
+                        ],
+                        "allocations": []
+                    ]
+                ],
+                "ledger_entries": []
+            ]
+        ]
+
+        let parsedResult = LeaveContract.parseMyLeaveSummary(meJson)
+        guard case .success(let summary, _) = parsedResult else {
+            XCTFail("Expected parseMyLeaveSummary to succeed")
+            return
+        }
+        XCTAssertEqual(summary.leaveYear, 2026)
+        XCTAssertEqual(summary.balance.availableUnits, 14)
+        XCTAssertEqual(LeaveContract.formatHalfDayUnits(summary.balance.availableUnits), "7 ngày")
+        XCTAssertEqual(LeaveContract.formatHalfDayUnits(3), "1,5 ngày")
+        XCTAssertEqual(LeaveContract.formatIsoDateVi("2026-10-28"), "28/10/2026")
+        XCTAssertEqual(summary.balance.lots.first?.accrualMonth, 10)
+        XCTAssertEqual(LeaveContract.leaveLotKindLabel("MONTHLY_ACCRUAL", accrualMonth: 10), "Phép định kỳ tháng 10")
+        XCTAssertEqual(summary.requests.count, 1)
+        let firstReq = try XCTUnwrap(summary.requests.first)
+        XCTAssertTrue(LeaveContract.canWithdrawOwnLeaveRequest(actorAppUserId: userId, request: firstReq))
+        XCTAssertFalse(LeaveContract.canWithdrawOwnLeaveRequest(actorAppUserId: "other-user", request: firstReq))
+
+        // Parse approval inbox
+        let inboxJson: [String: Any] = [
+            "ok": true,
+            "data": [
+                "as_of_date": "2026-10-27",
+                "status_filter": "PENDING",
+                "total": 1,
+                "limit": 50,
+                "offset": 0,
+                "items": summary.requests.map { req in
+                    [
+                        "request_id": req.requestId,
+                        "app_user_id": req.appUserId,
+                        "status": req.status,
+                        "pay_treatment": req.payTreatment,
+                        "requested_units": req.requestedUnits,
+                        "reason": req.reason,
+                        "row_version": req.rowVersion
+                    ]
+                }
+            ]
+        ]
+        guard case .success(let inbox, _) = LeaveContract.parseApprovalInbox(inboxJson) else {
+            XCTFail("Expected parseApprovalInbox to succeed")
+            return
+        }
+        XCTAssertEqual(inbox.total, 1)
+        XCTAssertEqual(inbox.items.first?.requestId, requestId)
+        XCTAssertEqual(inbox.items.first?.rowVersion, 3)
+    }
+
+    func testLeavePayloadBuildersAndValidationRules() throws {
+        // 1. Create request payload (`FULL`, `AM`, `PM`)
+        let days = [
+            LeaveDraftDayInput(leaveDate: "2026-11-02", sessionCode: "FULL"),
+            LeaveDraftDayInput(leaveDate: "2026-11-03", sessionCode: "PM")
+        ]
+        XCTAssertNil(LeaveContract.validateCreateDraftInput(days: days, reason: "Khám sức khỏe"))
+        let createPayload = LeaveContract.buildCreateLeaveRequestPayload(
+            days: days,
+            reason: "  Khám sức khỏe  ",
+            idempotencyKey: "leave-create-key-1"
+        )
+        XCTAssertEqual(createPayload["reason"] as? String, "Khám sức khỏe")
+        XCTAssertEqual(createPayload["idempotency_key"] as? String, "leave-create-key-1")
+        let payloadDays = try XCTUnwrap(createPayload["days"] as? [[String: String]])
+        XCTAssertEqual(payloadDays.count, 2)
+        XCTAssertEqual(payloadDays[0]["leave_date"], "2026-11-02")
+        XCTAssertEqual(payloadDays[0]["session_code"], "FULL")
+        XCTAssertEqual(payloadDays[1]["leave_date"], "2026-11-03")
+        XCTAssertEqual(payloadDays[1]["session_code"], "PM")
+
+        // Duplicate date validation
+        let dupDays = [
+            LeaveDraftDayInput(leaveDate: "2026-11-02", sessionCode: "AM"),
+            LeaveDraftDayInput(leaveDate: "2026-11-02", sessionCode: "PM")
+        ]
+        XCTAssertNotNil(LeaveContract.validateCreateDraftInput(days: dupDays, reason: "Trùng ngày"))
+
+        // 2. Withdraw payload
+        let withdrawPayload = LeaveContract.buildWithdrawLeaveRequestPayload(
+            expectedRowVersion: 3,
+            reason: "Đã thu xếp công việc",
+            idempotencyKey: "leave-withdraw-key-1"
+        )
+        XCTAssertEqual(withdrawPayload["expected_row_version"] as? Int, 3)
+        XCTAssertEqual(withdrawPayload["reason"] as? String, "Đã thu xếp công việc")
+        XCTAssertEqual(withdrawPayload["idempotency_key"] as? String, "leave-withdraw-key-1")
+
+        // 3. Approver decision validation & payload (`APPROVE`, `REJECT`, `CANCEL_APPROVED`)
+        let pendingReq = LeaveRequestProjection(
+            requestId: "bbbb1111-2222-4333-8444-555555555555",
+            appUserId: "11111111-2222-4333-8444-555555555555",
+            status: "PENDING",
+            rowVersion: 2
+        )
+        let approverId = "99999999-2222-4333-8444-555555555555"
+
+        // Self-approval blocked
+        let selfCheck = LeaveContract.validateApproverDecisionInput(
+            actorAppUserId: pendingReq.appUserId,
+            request: pendingReq,
+            decision: "APPROVE",
+            reason: ""
+        )
+        XCTAssertFalse(selfCheck.isValid)
+
+        // REJECT requires non-empty reason
+        let rejectEmpty = LeaveContract.validateApproverDecisionInput(
+            actorAppUserId: approverId,
+            request: pendingReq,
+            decision: "REJECT",
+            reason: "   "
+        )
+        XCTAssertFalse(rejectEmpty.isValid)
+        XCTAssertEqual(rejectEmpty.errorMessage, "Bắt buộc nhập lý do khi từ chối đơn nghỉ phép.")
+
+        let rejectValid = LeaveContract.validateApproverDecisionInput(
+            actorAppUserId: approverId,
+            request: pendingReq,
+            decision: "REJECT",
+            reason: "Thiếu nhân sự trực ca"
+        )
+        XCTAssertTrue(rejectValid.isValid)
+
+        // CANCEL_APPROVED requires APPROVED status and non-empty reason
+        let approvedReq = LeaveRequestProjection(
+            requestId: "bbbb1111-2222-4333-8444-555555555555",
+            appUserId: "11111111-2222-4333-8444-555555555555",
+            status: "APPROVED",
+            rowVersion: 4
+        )
+        let cancelEmpty = LeaveContract.validateApproverDecisionInput(
+            actorAppUserId: approverId,
+            request: approvedReq,
+            decision: "CANCEL_APPROVED",
+            reason: ""
+        )
+        XCTAssertFalse(cancelEmpty.isValid)
+        XCTAssertEqual(cancelEmpty.errorMessage, "Bắt buộc nhập lý do khi hủy đơn nghỉ phép đã duyệt.")
+
+        let cancelValid = LeaveContract.validateApproverDecisionInput(
+            actorAppUserId: approverId,
+            request: approvedReq,
+            decision: "CANCEL_APPROVED",
+            reason: "Nhân sự đi làm lại"
+        )
+        XCTAssertTrue(cancelValid.isValid)
+
+        let decisionPayload = LeaveContract.buildDecideLeaveRequestPayload(
+            decision: "CANCEL_APPROVED",
+            expectedRowVersion: 4,
+            reason: "Nhân sự đi làm lại",
+            idempotencyKey: "leave-decision-key-1"
+        )
+        XCTAssertEqual(decisionPayload["decision"] as? String, "CANCEL_APPROVED")
+        XCTAssertEqual(decisionPayload["expected_row_version"] as? Int, 4)
+        XCTAssertEqual(decisionPayload["reason"] as? String, "Nhân sự đi làm lại")
+        XCTAssertEqual(decisionPayload["idempotency_key"] as? String, "leave-decision-key-1")
+
+        // Error code mapping
+        XCTAssertEqual(
+            LeaveContract.errorMessageForCode("LEAVE_INSUFFICIENT_BALANCE"),
+            "Số dư phép khả dụng tại thời điểm ngày nghỉ không đủ để đáp ứng đơn xin nghỉ có lương."
+        )
+        XCTAssertEqual(
+            BackendHttpClient.codeMessagesVi["LEAVE_ROW_VERSION_CONFLICT"],
+            "Dữ liệu vừa được cập nhật bởi thao tác khác. Hệ thống đã làm mới, vui lòng kiểm tra và thử lại."
+        )
+    }
+
     // MARK: - Helper
 
     private func makeSolidTestJpeg(color: UIColor, size: CGSize) throws -> Data {
