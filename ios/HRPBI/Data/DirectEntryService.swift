@@ -63,13 +63,19 @@ public final class DirectEntryService: @unchecked Sendable {
         page: Int = 1,
         pageSize: Int = 30
     ) async -> MiniBiApiResult<(items: [CccdReviewItem], total: Int)> {
+        let safeLimit = min(max(pageSize, 1), 100)
+        let safeOffset = max(0, (max(page, 1) - 1) * safeLimit)
+        let normalizedStatus: String = {
+            let s = status.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+            if s.isEmpty || s == "ALL" { return "NEEDS_REVIEW" }
+            return s
+        }()
+
         var queryItems: [URLQueryItem] = [
-            URLQueryItem(name: "page", value: String(page)),
-            URLQueryItem(name: "page_size", value: String(pageSize))
+            URLQueryItem(name: "status", value: normalizedStatus),
+            URLQueryItem(name: "limit", value: String(safeLimit)),
+            URLQueryItem(name: "offset", value: String(safeOffset))
         ]
-        if !status.isEmpty && status.uppercased() != "ALL" {
-            queryItems.append(URLQueryItem(name: "status", value: status))
-        }
         if !search.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             queryItems.append(URLQueryItem(name: "search", value: search.trimmingCharacters(in: .whitespacesAndNewlines)))
         }
@@ -79,6 +85,9 @@ public final class DirectEntryService: @unchecked Sendable {
             path: "/api/direct-entry/cccd-review",
             queryItems: queryItems
         )
+        if response.statusCode == 403 || response.statusCode == 404 {
+            return .success((items: [], total: 0), statusCode: response.statusCode)
+        }
         guard response.isSuccess else {
             return .failure(
                 message: response.errorMessage ?? "Không tải được danh sách duyệt CCCD.",
@@ -162,14 +171,46 @@ public final class DirectEntryService: @unchecked Sendable {
     // MARK: - 2. Direct Entry ("Cấp mới") Options, Duplicate Check, Batch Submit & Document Upload
 
     public func fetchAssigneeOptions() async -> MiniBiApiResult<DirectEntryAssigneeOptions> {
-        let response = await httpClient.request(method: "GET", path: "/api/direct-entry/options")
+        let effectiveDate = LeaveContract.todayVietnamIsoDate()
+        let response = await httpClient.request(
+            method: "GET",
+            path: "/api/direct-entry/catalog",
+            queryItems: [URLQueryItem(name: "effective_date", value: effectiveDate)]
+        )
         if response.isSuccess, let root = response.jsonObject {
-            let dataObj = (root["data"] as? [String: Any]) ?? root
+            let dataObj = (root["catalog"] as? [String: Any])
+                ?? (root["data"] as? [String: Any])
+                ?? root
+
+            var projects = dataObj.optStringArray("projects", "du_an")
+            if projects.isEmpty, let projObjs = dataObj["projects"] as? [[String: Any]] {
+                projects = projObjs.compactMap { p in
+                    let label = p.optString("display_name", "name", "project_display", "project_id")
+                    return label.isEmpty ? nil : label
+                }
+            }
+
+            var recruiters = dataObj.optStringArray("recruiters", "nguoi_tuyen")
+            if recruiters.isEmpty, let recObjs = dataObj["recruiters"] as? [[String: Any]] {
+                recruiters = recObjs.compactMap { r in
+                    let label = r.optString("display_name", "name", "recruiter_display", "recruiter_id")
+                    return label.isEmpty ? nil : label
+                }
+            }
+
+            var managers = dataObj.optStringArray("managers", "quan_ly")
+            if managers.isEmpty, let mgrObjs = dataObj["managers"] as? [[String: Any]] {
+                managers = mgrObjs.compactMap { m in
+                    let label = m.optString("display_name", "name", "manager_display", "manager_id")
+                    return label.isEmpty ? nil : label
+                }
+            }
+
             return .success(
                 DirectEntryAssigneeOptions(
-                    projects: dataObj.optStringArray("projects", "du_an"),
-                    managers: dataObj.optStringArray("managers", "quan_ly"),
-                    recruiters: dataObj.optStringArray("recruiters", "nguoi_tuyen"),
+                    projects: projects,
+                    managers: managers,
+                    recruiters: recruiters,
                     banks: dataObj.optStringArray("banks", "ngan_hang")
                 ),
                 statusCode: response.statusCode
@@ -179,7 +220,14 @@ public final class DirectEntryService: @unchecked Sendable {
     }
 
     public func fetchBatchHistory() async -> MiniBiApiResult<[DirectEntryBatchHistoryItem]> {
-        let response = await httpClient.request(method: "GET", path: "/api/direct-entry/batches")
+        let response = await httpClient.request(
+            method: "GET",
+            path: "/api/direct-entry/submissions",
+            queryItems: [URLQueryItem(name: "page_size", value: "20")]
+        )
+        if response.statusCode == 403 || response.statusCode == 404 {
+            return .success([], statusCode: response.statusCode)
+        }
         guard response.isSuccess else {
             return .failure(
                 message: response.errorMessage ?? "Không tải được lịch sử lô cấp mới.",
@@ -190,17 +238,18 @@ public final class DirectEntryService: @unchecked Sendable {
 
         let root = response.jsonObject ?? [:]
         let dataObj = (root["data"] as? [String: Any]) ?? root
-        let rawList = dataObj.optObjectArray("batches")
-            .ifEmpty(dataObj.optObjectArray("items"))
+        let rawList = dataObj.optObjectArray("items")
+            .ifEmpty(dataObj.optObjectArray("submissions"))
+            .ifEmpty(dataObj.optObjectArray("batches"))
 
         let items = rawList.enumerated().map { idx, obj in
             DirectEntryBatchHistoryItem(
                 batchId: obj.optInt64("batch_id", "id") ?? Int64(idx + 1),
-                status: obj.optString("status", "state", defaultValue: "COMPLETED"),
-                totalRows: obj.optInt("total_rows", "entry_count", "total"),
-                approvedRows: obj.optInt("approved_rows", "approved_count"),
-                pendingRows: obj.optInt("pending_rows", "pending_count"),
-                createdAt: obj.optString("created_at", "submitted_at")
+                status: obj.optString("state", "status", defaultValue: "SUBMITTED"),
+                totalRows: obj.optInt("entry_count", "total_rows", "total"),
+                approvedRows: obj.optInt("submitted_count", "approved_rows", "approved_count"),
+                pendingRows: obj.optInt("draft_count", "pending_rows", "pending_count"),
+                createdAt: obj.optString("submitted_at", "created_at", "updated_at")
             )
         }
         return .success(items, statusCode: response.statusCode)

@@ -24,6 +24,9 @@ public final class NotificationService {
             path: "/api/notifications",
             queryItems: queryItems
         )
+        if response.statusCode == 404 {
+            return .success((items: [], unreadCount: 0), statusCode: 200)
+        }
         guard response.isSuccess else {
             return .failure(
                 message: response.errorMessage ?? "Không tải được danh sách thông báo.",
@@ -104,8 +107,14 @@ public final class NotificationService {
                         break
                     }
                     let (bytes, response) = try await self.httpClient.sseSession.bytes(for: request)
-                    guard let httpResponse = response as? HTTPURLResponse,
-                          (200...299).contains(httpResponse.statusCode) else {
+                    guard let httpResponse = response as? HTTPURLResponse else {
+                        break
+                    }
+                    if httpResponse.statusCode == 404 || httpResponse.statusCode == 401 || httpResponse.statusCode == 403 {
+                        // Endpoint not enabled or unauthenticated; stop polling SSE
+                        break
+                    }
+                    guard (200...299).contains(httpResponse.statusCode) else {
                         try? await Task.sleep(nanoseconds: retryDelayNs)
                         retryDelayNs = min(retryDelayNs * 2, 30_000_000_000)
                         continue
@@ -274,9 +283,8 @@ public final class MiniBiRepository {
 
     public func login(identifier: String, password: String) async -> MiniBiApiResult<MiniBiUser> {
         let trimmedId = identifier.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Strictly send only "email" and "password" (2 keys) per backend `projectCredentials` contract
         let body: [String: Any] = [
-            "username": trimmedId,
-            "identifier": trimmedId,
             "email": trimmedId,
             "password": password
         ]
@@ -295,21 +303,21 @@ public final class MiniBiRepository {
         }
 
         let root = response.jsonObject ?? [:]
-        let userObj = (root["user"] as? [String: Any])
+        let userObj = (root["actor"] as? [String: Any])
+            ?? (root["user"] as? [String: Any])
             ?? (root["data"] as? [String: Any])
             ?? root
 
-        let user = Self.parseUser(userObj, fallbackRoot: root)
-        if !user.username.isEmpty || !user.fullName.isEmpty {
+        let user = Self.parseUser(userObj, fallbackRoot: root, fallbackIdentifier: trimmedId)
+        if !user.username.isEmpty || !user.fullName.isEmpty || !user.id.isEmpty {
             return .success(user, statusCode: response.statusCode)
         }
 
-        // If login succeeded via cookie and didn't inline user object, fetch `/api/auth/me`
         return await fetchCurrentUser()
     }
 
     public func fetchCurrentUser() async -> MiniBiApiResult<MiniBiUser> {
-        let response = await httpClient.request(method: "GET", path: "/api/auth/me")
+        let response = await httpClient.request(method: "GET", path: "/api/auth/session")
         guard response.isSuccess else {
             return .failure(
                 message: response.errorMessage ?? "Phiên đăng nhập đã hết hạn.",
@@ -318,7 +326,8 @@ public final class MiniBiRepository {
             )
         }
         let root = response.jsonObject ?? [:]
-        let userObj = (root["user"] as? [String: Any])
+        let userObj = (root["actor"] as? [String: Any])
+            ?? (root["user"] as? [String: Any])
             ?? (root["data"] as? [String: Any])
             ?? root
         let user = Self.parseUser(userObj, fallbackRoot: root)
@@ -326,7 +335,7 @@ public final class MiniBiRepository {
     }
 
     public func logout() async {
-        _ = await httpClient.request(method: "POST", path: "/api/auth/logout", jsonBody: [:])
+        _ = await httpClient.request(method: "POST", path: "/api/auth/logout", jsonBody: nil)
         httpClient.cookieStore.clearAll()
     }
 
@@ -342,54 +351,73 @@ public final class MiniBiRepository {
         page: Int = 1,
         pageSize: Int = 30
     ) async -> MiniBiApiResult<(items: [WorkerItem], total: Int, totalPages: Int)> {
-        var queryItems: [URLQueryItem] = [
-            URLQueryItem(name: "scope", value: scope),
-            URLQueryItem(name: "page", value: String(page)),
-            URLQueryItem(name: "page_size", value: String(pageSize))
-        ]
-        if !search.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            queryItems.append(URLQueryItem(name: "search", value: search.trimmingCharacters(in: .whitespacesAndNewlines)))
-        }
-        if !project.isEmpty {
-            queryItems.append(URLQueryItem(name: "du_an", value: project))
-        }
-        if !status.isEmpty {
-            queryItems.append(URLQueryItem(name: "trang_thai", value: status))
-        }
-        if !manager.isEmpty {
-            queryItems.append(URLQueryItem(name: "quan_ly", value: manager))
-        }
-        if !recruiter.isEmpty {
-            queryItems.append(URLQueryItem(name: "nguoi_tuyen", value: recruiter))
-        }
+        let normalizedScope: String = {
+            let s = scope.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            switch s {
+            case "recruited", "managed", "team", "all": return s
+            default: return "all"
+            }
+        }()
 
-        let response = await httpClient.request(
-            method: "GET",
-            path: "/api/workers",
-            queryItems: queryItems
-        )
-        guard response.isSuccess else {
-            return .failure(
-                message: response.errorMessage ?? "Không tải được danh sách người lao động.",
-                httpStatus: response.statusCode,
-                errorCode: response.errorCode
+        // Try requested scope first; if "all" returns 403 WORKER_DIRECTORY_DENIED, fallback to narrower allowed scopes
+        let candidateScopes: [String] = normalizedScope == "all"
+            ? ["all", "team", "managed", "recruited"]
+            : [normalizedScope]
+
+        var lastResponse: BackendHttpResponse?
+        for candidateScope in candidateScopes {
+            var queryItems: [URLQueryItem] = [
+                URLQueryItem(name: "scope", value: candidateScope),
+                URLQueryItem(name: "page_size", value: String(min(max(pageSize, 1), 100)))
+            ]
+            let cleanSearch = search.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !cleanSearch.isEmpty {
+                queryItems.append(URLQueryItem(name: "search", value: cleanSearch))
+            }
+            let cleanProject = project.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !cleanProject.isEmpty {
+                queryItems.append(URLQueryItem(name: "project_id", value: cleanProject))
+            }
+            let cleanStatus = status.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+            if ["ON", "OFF", "UNCONFIRMED"].contains(cleanStatus) {
+                queryItems.append(URLQueryItem(name: "employment_status", value: cleanStatus))
+            }
+
+            let response = await httpClient.request(
+                method: "GET",
+                path: "/api/direct-entry/workers",
+                queryItems: queryItems
             )
+            lastResponse = response
+            if response.isSuccess {
+                let root = response.jsonObject ?? [:]
+                let dataObj = (root["data"] as? [String: Any]) ?? root
+                let rawList = dataObj.optObjectArray("items")
+                    .ifEmpty(dataObj.optObjectArray("workers"))
+
+                let items = rawList.map { Self.parseWorkerItem($0) }
+                let summaryObj = dataObj["summary"] as? [String: Any]
+                let total = summaryObj?.optInt("total_workers", defaultValue: items.count)
+                    ?? dataObj.optInt("total", "total_count", defaultValue: items.count)
+                let totalPages = max(1, dataObj.optInt("total_pages", defaultValue: (total + pageSize - 1) / max(1, pageSize)))
+                return .success((items: items, total: total, totalPages: totalPages), statusCode: response.statusCode)
+            }
+            if response.statusCode != 403 {
+                break
+            }
         }
 
-        let root = response.jsonObject ?? [:]
-        let dataObj = (root["data"] as? [String: Any]) ?? root
-        let rawList = dataObj.optObjectArray("workers")
-            .ifEmpty(dataObj.optObjectArray("items"))
-
-        let items = rawList.map { Self.parseWorkerItem($0) }
-        let total = dataObj.optInt("total", "total_count", defaultValue: items.count)
-        let totalPages = max(1, dataObj.optInt("total_pages", defaultValue: (total + pageSize - 1) / max(1, pageSize)))
-        return .success((items: items, total: total, totalPages: totalPages), statusCode: response.statusCode)
+        let failedResponse = lastResponse
+        return .failure(
+            message: failedResponse?.errorMessage ?? "Không tải được danh sách người lao động.",
+            httpStatus: failedResponse?.statusCode,
+            errorCode: failedResponse?.errorCode
+        )
     }
 
     public func fetchWorkerDetail(maNld: String) async -> MiniBiApiResult<WorkerItem> {
         let encoded = maNld.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? maNld
-        let response = await httpClient.request(method: "GET", path: "/api/workers/\(encoded)")
+        let response = await httpClient.request(method: "GET", path: "/api/direct-entry/entries/\(encoded)")
         guard response.isSuccess else {
             return .failure(
                 message: response.errorMessage ?? "Không tải được chi tiết hồ sơ NLĐ.",
@@ -398,13 +426,14 @@ public final class MiniBiRepository {
             )
         }
         let root = response.jsonObject ?? [:]
-        let obj = (root["worker"] as? [String: Any])
+        let obj = (root["entry"] as? [String: Any])
+            ?? (root["worker"] as? [String: Any])
             ?? (root["data"] as? [String: Any])
             ?? root
         return .success(Self.parseWorkerItem(obj), statusCode: response.statusCode)
     }
 
-    /// Uploads contract file (single file or merged PDF from multiple images) to `POST /api/workers/{ma_nld}/contract-file`
+    /// Uploads contract file (single file or merged PDF from multiple images) to `POST /api/direct-entry/entries/{entryId}/documents`
     public func uploadWorkerContractAttachments(
         maNld: String,
         attachments: [LocalAttachmentItem]
@@ -422,7 +451,8 @@ public final class MiniBiRepository {
 
         let encoded = maNld.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? maNld
         let response = await httpClient.uploadMultipart(
-            path: "/api/workers/\(encoded)/contract-file",
+            path: "/api/direct-entry/entries/\(encoded)/documents",
+            fields: ["doc_type": DirectEntryContract.docTypeSafetyCard],
             fieldName: "file",
             fileName: preparedPayload.fileName,
             mimeType: preparedPayload.mimeType,
@@ -437,7 +467,8 @@ public final class MiniBiRepository {
         }
 
         let root = response.jsonObject ?? [:]
-        let fileUrl = root.optString("contract_file_url", "file_url", "url", defaultValue: preparedPayload.fileName)
+        let docObj = (root["document"] as? [String: Any]) ?? root
+        let fileUrl = docObj.optString("contract_file_url", "file_url", "url", "id", defaultValue: preparedPayload.fileName)
         return .success(fileUrl, statusCode: response.statusCode)
     }
 
@@ -448,13 +479,12 @@ public final class MiniBiRepository {
     ) async -> MiniBiApiResult<Bool> {
         let encoded = maNld.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? maNld
         let body: [String: Any] = [
-            "ma_nld": maNld,
             "changes": changes,
             "reason": reason
         ]
         let response = await httpClient.request(
             method: "POST",
-            path: "/api/workers/\(encoded)/propose-change",
+            path: "/api/direct-entry/workers/\(encoded)/change-requests",
             jsonBody: body
         )
         guard response.isSuccess else {
@@ -473,8 +503,8 @@ public final class MiniBiRepository {
     ) async -> MiniBiApiResult<WorkerItem> {
         let encoded = maNld.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? maNld
         let response = await httpClient.request(
-            method: "PUT",
-            path: "/api/workers/\(encoded)",
+            method: "POST",
+            path: "/api/direct-entry/workers/\(encoded)/direct-edit",
             jsonBody: updates
         )
         guard response.isSuccess else {
@@ -485,21 +515,31 @@ public final class MiniBiRepository {
             )
         }
         let root = response.jsonObject ?? [:]
-        let obj = (root["worker"] as? [String: Any])
+        let obj = (root["entry"] as? [String: Any])
+            ?? (root["worker"] as? [String: Any])
             ?? (root["data"] as? [String: Any])
             ?? root
         return .success(Self.parseWorkerItem(obj), statusCode: response.statusCode)
     }
 
     public func exportWorkersExcel(scope: String = "all", search: String = "", project: String = "") async -> MiniBiApiResult<URL> {
-        var queryItems = [URLQueryItem(name: "scope", value: scope)]
-        if !search.isEmpty { queryItems.append(URLQueryItem(name: "search", value: search)) }
-        if !project.isEmpty { queryItems.append(URLQueryItem(name: "du_an", value: project)) }
+        let validScope: String = {
+            let s = scope.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            return ["recruited", "managed", "team", "all"].contains(s) ? s : "all"
+        }()
+        let cleanProject = project.trimmingCharacters(in: .whitespacesAndNewlines)
+        let body: [String: Any] = [
+            "scope": validScope,
+            "project_id": cleanProject.isEmpty ? NSNull() : cleanProject,
+            "recruiter_id": NSNull(),
+            "employment_status": NSNull(),
+            "reason": NSNull()
+        ]
 
         let response = await httpClient.request(
-            method: "GET",
-            path: "/api/workers/export",
-            queryItems: queryItems
+            method: "POST",
+            path: "/api/direct-entry/workers/export",
+            jsonBody: body
         )
         guard response.isSuccess && !response.rawData.isEmpty else {
             return .failure(
@@ -521,68 +561,133 @@ public final class MiniBiRepository {
 
     // MARK: - Parsers
 
-    public static func parseUser(_ obj: [String: Any], fallbackRoot: [String: Any]? = nil) -> MiniBiUser {
-        let id = obj.optString("id", "user_id", "username")
-        let username = obj.optString("username", "user_code", "code")
-        let fullName = obj.optString("full_name", "name", "display_name", defaultValue: username)
-        let role = obj.optString("role", "role_code", defaultValue: "USER")
-        let roleLabel = obj.optString("role_label", "role_name", defaultValue: role)
-        let email = obj.optString("email")
+    public static func parseUser(
+        _ obj: [String: Any],
+        fallbackRoot: [String: Any]? = nil,
+        fallbackIdentifier: String = ""
+    ) -> MiniBiUser {
+        let id = obj.optString("app_user_id", "id", "user_id", "username", defaultValue: fallbackIdentifier)
+        let username = obj.optString("username", "login_id", "email", "app_user_id", "user_code", "code", defaultValue: fallbackIdentifier.isEmpty ? id : fallbackIdentifier)
+        let fullName = obj.optString("display_name", "full_name", "name", defaultValue: username)
+
+        var capabilities = obj.optStringArray("capabilities")
+        if capabilities.isEmpty {
+            capabilities = obj.optStringArray("permissions")
+        }
+        if capabilities.isEmpty, let rootPerms = fallbackRoot?.optStringArray("capabilities"), !rootPerms.isEmpty {
+            capabilities = rootPerms
+        }
+        if capabilities.isEmpty, let rootPerms = fallbackRoot?.optStringArray("permissions"), !rootPerms.isEmpty {
+            capabilities = rootPerms
+        }
+
+        // Extract scope kinds from `scopes` array of objects (`[{"kind": "all"|"team"|"own", ...}]`) or string array
+        var rawScopeKinds: [String] = []
+        if let scopeDicts = obj["scopes"] as? [[String: Any]] {
+            for s in scopeDicts {
+                let kind = s.optString("kind").lowercased()
+                if !kind.isEmpty { rawScopeKinds.append(kind) }
+            }
+        } else {
+            rawScopeKinds = obj.optStringArray("scopes").map { $0.lowercased() }
+        }
+
+        var allowedWorkerScopes = obj.optStringArray("allowed_worker_scopes")
+        if allowedWorkerScopes.isEmpty {
+            if rawScopeKinds.contains("all") {
+                allowedWorkerScopes = ["all", "team", "managed", "recruited"]
+            } else if rawScopeKinds.contains("team") {
+                allowedWorkerScopes = ["team", "managed", "recruited"]
+            } else if !rawScopeKinds.isEmpty {
+                allowedWorkerScopes = ["managed", "recruited"]
+            } else {
+                allowedWorkerScopes = ["managed", "recruited", "team", "all"]
+            }
+        }
+
+        let derivedRole: String = {
+            let explicit = obj.optString("role", "role_code")
+            if !explicit.isEmpty { return explicit }
+            if capabilities.contains("entry_admin") && rawScopeKinds.contains("all") {
+                return "ADMIN"
+            }
+            if rawScopeKinds.contains("team") {
+                return "TEAM_LEADER"
+            }
+            return "USER"
+        }()
+
+        let derivedRoleLabel: String = {
+            let explicit = obj.optString("role_label", "role_name")
+            if !explicit.isEmpty { return explicit }
+            switch derivedRole {
+            case "ADMIN": return "Quản trị viên"
+            case "TEAM_LEADER": return "Quản lý nhóm"
+            default: return "Nhân sự"
+            }
+        }()
+
+        let email = obj.optString("email", defaultValue: fallbackIdentifier.contains("@") ? fallbackIdentifier : "")
         let phone = obj.optString("phone", "sdt")
         let teamName = obj.optString("team_name", "department", "unit_name")
-
-        var permissions = obj.optStringArray("permissions")
-        if permissions.isEmpty, let rootPerms = fallbackRoot?.optStringArray("permissions"), !rootPerms.isEmpty {
-            permissions = rootPerms
-        }
-
-        var scopes = obj.optStringArray("allowed_worker_scopes")
-        if scopes.isEmpty {
-            scopes = ["managed", "recruited", "team", "uploader", "all"]
-        }
 
         return MiniBiUser(
             id: id.isEmpty ? username : id,
             username: username,
             fullName: fullName,
-            role: role,
-            roleLabel: roleLabel,
+            role: derivedRole,
+            roleLabel: derivedRoleLabel,
             email: email,
             phone: phone,
             teamName: teamName,
-            permissions: permissions,
-            allowedWorkerScopes: scopes
+            permissions: capabilities,
+            allowedWorkerScopes: allowedWorkerScopes
         )
     }
 
     public static func parseWorkerItem(_ obj: [String: Any]) -> WorkerItem {
-        WorkerItem(
-            maNld: obj.optString("ma_nld", "worker_code", "id"),
-            hoTen: obj.optString("ho_ten", "full_name", "name"),
-            duAn: obj.optString("du_an", "project_name", "project"),
+        let employmentStatusRaw = obj.optString("employment_status", "trang_thai", "status").uppercased()
+        let trangThaiDisplay: String = {
+            switch employmentStatusRaw {
+            case "ON": return "Đang làm việc"
+            case "OFF": return "Nghỉ việc"
+            case "UNCONFIRMED": return "Chưa xác nhận"
+            default:
+                let raw = obj.optString("trang_thai", "status")
+                return raw.isEmpty ? "Đang làm việc" : raw
+            }
+        }()
+
+        let paymentObj = obj["payment"] as? [String: Any]
+        let piiObj = obj["pii"] as? [String: Any]
+
+        return WorkerItem(
+            maNld: obj.optString("entry_id", "employee_code", "ma_nld", "worker_code", "id"),
+            hoTen: obj.optString("display_name", "ho_ten", "full_name", "name"),
+            duAn: obj.optString("project_display", "du_an", "project_name", "project", "project_id"),
             quanLy: obj.optString("quan_ly", "manager_name", "manager"),
-            nguoiTuyen: obj.optString("nguoi_tuyen", "recruiter_name", "recruiter"),
-            ngayVaoLam: obj.optString("ngay_vao_lam", "start_date"),
-            ngayNghiViec: obj.optString("ngay_nghi_viec", "resign_date"),
-            trangThai: obj.optString("trang_thai", "status", defaultValue: "Đang làm việc"),
-            sdt: obj.optString("sdt", "so_dien_thoai", "phone"),
-            soCccd: obj.optString("so_cccd", "cccd", "id_number"),
-            ngaySinh: obj.optString("ngay_sinh", "dob"),
+            nguoiTuyen: obj.optString("recruiter_display", "nguoi_tuyen", "recruiter_name", "recruiter", "recruiter_id"),
+            ngayVaoLam: obj.optString("first_work_date", "ngay_vao_lam", "start_date"),
+            ngayNghiViec: obj.optString("ngay_nghi_viec", "resign_date", "off_date"),
+            trangThai: trangThaiDisplay,
+            sdt: obj.optString("phone_number", "sdt", "so_dien_thoai", "phone"),
+            soCccd: piiObj?.optString("national_id", "so_cccd") ?? obj.optString("national_id", "so_cccd", "cccd", "id_number"),
+            ngaySinh: piiObj?.optString("birth_date", "ngay_sinh") ?? obj.optString("birth_date", "ngay_sinh", "dob"),
             gioiTinh: obj.optString("gioi_tinh", "gender"),
-            queQuan: obj.optString("que_quan", "dia_chi", "hometown"),
-            ngayCap: obj.optString("ngay_cap", "issue_date"),
-            nganhNghe: obj.optString("nganh_nghe", "job_title"),
+            queQuan: piiObj?.optString("permanent_address", "que_quan") ?? obj.optString("permanent_address", "que_quan", "dia_chi", "hometown"),
+            ngayCap: piiObj?.optString("id_issue_date", "ngay_cap") ?? obj.optString("id_issue_date", "ngay_cap", "issue_date"),
+            nganhNghe: obj.optString("labor_type_display", "labor_type", "nganh_nghe", "job_title"),
             nhom: obj.optString("nhom", "team_name"),
-            soTaiKhoan: obj.optString("so_tai_khoan", "stk", "bank_account"),
-            nganHang: obj.optString("ngan_hang", "bank_name"),
-            chuTaiKhoan: obj.optString("chu_tai_khoan", "bank_holder"),
-            ghiChu: obj.optString("ghi_chu", "note"),
+            soTaiKhoan: paymentObj?.optString("account_number", "so_tai_khoan") ?? obj.optString("account_number", "so_tai_khoan", "stk", "bank_account"),
+            nganHang: paymentObj?.optString("bank_id", "ngan_hang") ?? obj.optString("bank_id", "ngan_hang", "bank_name"),
+            chuTaiKhoan: paymentObj?.optString("account_holder_name", "chu_tai_khoan") ?? obj.optString("account_holder_name", "chu_tai_khoan", "bank_holder"),
+            ghiChu: obj.optString("note", "ghi_chu"),
             lyDoNghi: obj.optString("ly_do_nghi", "resign_reason"),
             phanLoaiNghi: obj.optString("phan_loai_nghi", "resign_category"),
             contractFileUrl: obj.optNullableString("contract_file_url", "hop_dong_url", "contract_file"),
             cccdFrontUrl: obj.optNullableString("cccd_front_url", "mat_truoc_cccd_url"),
             cccdBackUrl: obj.optNullableString("cccd_back_url", "mat_sau_cccd_url"),
-            uploaderCode: obj.optString("uploader_code", "created_by")
+            uploaderCode: obj.optString("employee_code", "uploader_code", "created_by")
         )
     }
 }

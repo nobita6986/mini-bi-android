@@ -131,7 +131,7 @@ public final class AttendanceOutboxService {
         captureTimestampOverride: CapturedAttendanceTimestamp? = nil
     ) async -> (item: AttendanceOutboxItem, apiResult: MiniBiApiResult<AttendanceOutboxItem>) {
         let localId = UUID().uuidString.lowercased()
-        let idempotencyKey = "att-\(localId)"
+        let idempotencyKey = localId
         let capturedTime = captureTimestampOverride ?? timeAnchorManager.resolveCaptureTime()
         let photoSha256 = AttendanceContract.computeSha256Hex(photoData)
 
@@ -201,78 +201,66 @@ public final class AttendanceOutboxService {
         item.attemptCount += 1
         upsertItem(item)
 
-        // Step 1: Ensure photo is uploaded if we don't have uploadedObjectKey yet
-        if item.uploadedObjectKey == nil || item.uploadedObjectKey?.isEmpty == true {
-            guard let localPath = item.photoLocalPath,
-                  let photoData = try? Data(contentsOf: URL(fileURLWithPath: localPath)),
-                  !photoData.isEmpty else {
-                item.status = AttendanceContract.statusFailedPermanent
-                item.lastErrorMessage = "Không tìm thấy tệp ảnh gốc để tải lên. Vui lòng chụp lại."
-                upsertItem(item)
-                return .failure(message: item.lastErrorMessage ?? "Thiếu tệp ảnh.", errorCode: "MISSING_LOCAL_PHOTO")
-            }
-
-            let uploadResult = await uploadAttendancePhoto(item: item, photoData: photoData)
-            switch uploadResult {
-            case .success(let objectKey, _):
-                item.uploadedObjectKey = objectKey
-                upsertItem(item)
-            case .failure(let message, let httpStatus, let errorCode, _):
-                let isPermanent = isPermanentError(httpStatus: httpStatus, errorCode: errorCode)
-                item.status = isPermanent ? AttendanceContract.statusFailedPermanent : AttendanceContract.statusFailedRetryable
-                item.lastErrorCode = errorCode
-                item.lastErrorMessage = message
-                upsertItem(item)
-                return .failure(message: message, httpStatus: httpStatus, errorCode: errorCode)
-            }
+        guard let localPath = item.photoLocalPath,
+              let photoData = try? Data(contentsOf: URL(fileURLWithPath: localPath)),
+              !photoData.isEmpty else {
+            item.status = AttendanceContract.statusFailedPermanent
+            item.lastErrorMessage = "Không tìm thấy tệp ảnh gốc để tải lên. Vui lòng chụp lại."
+            upsertItem(item)
+            return .failure(message: item.lastErrorMessage ?? "Thiếu tệp ảnh.", errorCode: "MISSING_LOCAL_PHOTO")
         }
 
-        // Step 2: Submit check-in metadata with frozen idempotency_key & timestamp
-        var payload: [String: Any] = [
-            "idempotency_key": item.idempotencyKey,
+        // Normalize idempotencyKey to pure UUID if any legacy item had "att-" prefix
+        let cleanIdempotencyKey: String = {
+            if item.idempotencyKey.hasPrefix("att-") {
+                return String(item.idempotencyKey.dropFirst(4))
+            }
+            return item.idempotencyKey
+        }()
+
+        // Build canonical `metadata` JSON object per `check-in-contract.ts` (ALLOWED_METADATA_KEYS)
+        var metadataObj: [String: Any] = [
+            "latitude": item.lat,
+            "longitude": item.lng,
+            "accuracy_meters": item.accuracyM ?? NSNull(),
+            "address_hint": NSNull(),
             "client_captured_at": item.clientCapturedAt,
-            "time_source": item.timeSource,
-            "lat": item.lat,
-            "lng": item.lng,
+            "note": item.note.isEmpty ? NSNull() : item.note,
+            "idempotency_key": cleanIdempotencyKey,
             "photo_sha256": item.photoSha256,
-            "photo_size_bytes": item.photoSizeBytes,
-            "mime_type": item.mimeType
+            "time_source": item.timeSource
         ]
-        if let timeToken = item.timeToken, !timeToken.isEmpty {
-            payload["time_token"] = timeToken
-        }
-        if let anchorSync = item.anchorSyncedAtEpochMs {
-            payload["anchor_synced_at_epoch_ms"] = anchorSync
-        }
-        if let elapsed = item.elapsedSinceAnchorMs {
-            payload["elapsed_since_anchor_ms"] = elapsed
-        }
-        if let skew = item.deviceClockSkewMs {
-            payload["device_clock_skew_ms"] = skew
-        }
-        if let acc = item.accuracyM {
-            payload["accuracy_m"] = acc
-        }
-        if let locTime = item.locationCapturedAt {
-            payload["location_captured_at"] = locTime
-        }
-        if let objectKey = item.uploadedObjectKey, !objectKey.isEmpty {
-            payload["photo_object_key"] = objectKey
-            payload["object_key"] = objectKey
-        }
-        if !item.note.isEmpty {
-            payload["note"] = item.note
+        if item.timeSource == AttendanceTimeContract.sourceServerAnchored,
+           let token = item.timeToken, !token.isEmpty,
+           let elapsed = item.elapsedSinceAnchorMs, elapsed >= 0 {
+            metadataObj["time_token"] = token
+            metadataObj["elapsed_since_anchor_ms"] = elapsed
+        } else {
+            metadataObj["time_token"] = NSNull()
+            metadataObj["elapsed_since_anchor_ms"] = NSNull()
         }
 
-        let response = await httpClient.request(
-            method: "POST",
-            path: "/api/attendance/check-ins",
-            jsonBody: payload,
-            additionalHeaders: ["Idempotency-Key": item.idempotencyKey]
+        guard let metadataJsonData = try? JSONSerialization.data(withJSONObject: metadataObj),
+              let metadataJsonString = String(data: metadataJsonData, encoding: .utf8) else {
+            item.status = AttendanceContract.statusFailedPermanent
+            item.lastErrorMessage = "Không thể đóng gói dữ liệu chấm công."
+            upsertItem(item)
+            return .failure(message: "Không thể đóng gói dữ liệu chấm công.")
+        }
+
+        let response = await httpClient.uploadMultipart(
+            path: "/api/attendance/check-in",
+            fields: ["metadata": metadataJsonString],
+            fieldName: "photo",
+            fileName: "\(item.localId).jpg",
+            mimeType: item.mimeType,
+            fileData: photoData,
+            additionalHeaders: ["Idempotency-Key": cleanIdempotencyKey]
         )
 
-        if response.isSuccess || response.statusCode == 409 && isAlreadyProcessedConflict(response) {
-            let recordObj = (response.jsonObject?["check_in"] as? [String: Any])
+        if response.isSuccess || (response.statusCode == 409 && isAlreadyProcessedConflict(response)) {
+            let recordObj = (response.jsonObject?["checkin"] as? [String: Any])
+                ?? (response.jsonObject?["check_in"] as? [String: Any])
                 ?? (response.jsonObject?["item"] as? [String: Any])
                 ?? (response.jsonObject?["data"] as? [String: Any])
                 ?? response.jsonObject
@@ -308,10 +296,26 @@ public final class AttendanceOutboxService {
     // MARK: - Server History Sync & Report Export
 
     public func syncServerHistoryForUser(userKey: String, days: Int = 30) async -> MiniBiApiResult<(items: [AttendanceOutboxItem], todayCount: Int)> {
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone(identifier: "Asia/Ho_Chi_Minh") ?? .current
+        let now = Date()
+        let fromDate = cal.date(byAdding: .day, value: -max(days, 1), to: now) ?? now
+        let df = DateFormatter()
+        df.locale = Locale(identifier: "en_US_POSIX")
+        df.timeZone = cal.timeZone
+        df.dateFormat = "yyyy-MM-dd"
+
+        let queryItems: [URLQueryItem] = [
+            URLQueryItem(name: "from_date", value: df.string(from: fromDate)),
+            URLQueryItem(name: "to_date", value: df.string(from: now)),
+            URLQueryItem(name: "page", value: "1"),
+            URLQueryItem(name: "page_size", value: "100")
+        ]
+
         let response = await httpClient.request(
             method: "GET",
-            path: "/api/attendance/check-ins",
-            queryItems: [URLQueryItem(name: "days", value: String(days))]
+            path: "/api/attendance/history",
+            queryItems: queryItems
         )
         guard response.isSuccess else {
             return .failure(
@@ -322,9 +326,12 @@ public final class AttendanceOutboxService {
         }
 
         let root = response.jsonObject ?? [:]
-        let rawItems = root.optObjectArray("items")
+        let reportObj = (root["report"] as? [String: Any])
+            ?? (root["data"] as? [String: Any])
+            ?? root
+        let rawItems = reportObj.optObjectArray("items")
+            .ifEmpty(root.optObjectArray("items"))
             .ifEmpty(root.optObjectArray("check_ins"))
-            .ifEmpty((root["data"] as? [String: Any])?.optObjectArray("items") ?? [])
 
         let todayServerCount = root.optInt("today_count", "today_check_in_count", defaultValue: -1)
         let normalizedKey = userKey.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()

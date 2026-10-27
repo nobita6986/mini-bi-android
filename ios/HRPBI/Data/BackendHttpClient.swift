@@ -48,6 +48,11 @@ public final class BackendHttpClient: @unchecked Sendable {
 
     public static let codeMessagesVi: [String: String] = [
         "UNAUTHENTICATED": "Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.",
+        "AUTH_UNAUTHENTICATED": "Phiên đăng nhập không hợp lệ hoặc đã hết hạn.",
+        "AUTH_REQUEST_INVALID": "Vui lòng nhập đầy đủ tài khoản (email) và mật khẩu hợp lệ.",
+        "AUTH_INVALID_CREDENTIALS": "Sai thông tin đăng nhập. Vui lòng kiểm tra lại tài khoản và mật khẩu.",
+        "ACCOUNT_NOT_AVAILABLE": "Tài khoản hiện không khả dụng trên hệ thống.",
+        "AUTH_UNAVAILABLE": "Hệ thống xác thực tạm thời không khả dụng. Vui lòng thử lại sau.",
         "SESSION_EXPIRED": "Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.",
         "ACTOR_NOT_AVAILABLE": "Tài khoản hiện không khả dụng hoặc chưa được kích hoạt.",
         "CSRF_ORIGIN_MISMATCH": "Yêu cầu bị từ chối do không hợp lệ nguồn gốc phiên. Vui lòng tải lại.",
@@ -64,6 +69,37 @@ public final class BackendHttpClient: @unchecked Sendable {
         "WORK_REPORT_DEADLINE_PASSED": "Đã quá hạn nộp báo cáo.",
         "DUPLICATE_CCCD_CONFIRMATION_REQUIRED": "Phát hiện CCCD đã tồn tại trên hệ thống. Vui lòng xác nhận trước khi gửi chính thức.",
         "INVALID_NATIONAL_ID": "Số CCCD phải gồm đúng 12 chữ số hợp lệ.",
+        "NATIONAL_ID_INVALID": "Số CCCD/CMND phải gồm đúng 9 hoặc 12 chữ số.",
+        "NATIONAL_ID_DUPLICATE": "Số CCCD/CMND bị trùng trong cùng nhóm dòng nhập.",
+        "WORKER_ACTIVE_EPISODE_EXISTS": "CCCD đã có hồ sơ làm việc đang hoạt động. Hãy kết thúc hồ sơ cũ trước khi tạo đợt làm việc mới.",
+        "WORKER_EPISODE_REOPEN_FORBIDDEN": "Không thể mở lại hồ sơ đã kết thúc. Hãy tạo một đợt làm việc mới.",
+        "PORTRAIT_PROMOTION_PENDING": "Tệp đính kèm đang được máy chủ đồng bộ hoàn tất. Hãy bấm Lưu lại một lần nữa (không tạo trùng hồ sơ).",
+        "RECRUITER_MEMBERSHIP_INVALID": "Người tuyển chưa có nhóm/nguồn tuyển hợp lệ cho ngày bắt đầu làm việc.",
+        "PROJECT_NOT_ACTIVE": "Dự án đã chọn không còn hoạt động trong danh mục máy chủ.",
+        "RECRUITER_NOT_ACTIVE": "Người tuyển đã chọn không còn hoạt động trong danh mục máy chủ.",
+        "BANK_NOT_ACTIVE": "Ngân hàng đã chọn không còn hoạt động trong danh mục máy chủ.",
+        "OFF_REQUIRES_DATE_AND_REASON": "Trạng thái Đã nghỉ bắt buộc có ngày nghỉ và lý do nghỉ việc.",
+        "GENDER_VOCABULARY_INVALID": "Giới tính không thuộc danh mục cho phép.",
+        "BATCH_INVALID": "Máy chủ từ chối dữ liệu hồ sơ. Vui lòng kiểm tra lại các trường bắt buộc và danh mục.",
+        "PHOTO_INVALID": "Ảnh chụp từ camera chưa đúng chuẩn hệ thống. Vui lòng bấm Chấm công để chụp lại ảnh và thử lại.",
+        "PHOTO_HASH_MISMATCH": "Ảnh chấm công bị lỗi dữ liệu khi gửi qua mạng. Vui lòng chụp lại ảnh và bấm chấm công thử lại.",
+        "BODY_TOO_LARGE": "Ảnh chấm công có dung lượng quá lớn. Vui lòng chụp lại ảnh và bấm chấm công thử lại.",
+        "CAPTURED_AT_FUTURE": "Giờ ghi nhận trên máy đang nhanh hơn giờ máy chủ. Vui lòng bấm làm mới giờ chuẩn rồi chấm công thử lại.",
+        "CAPTURED_AT_INVALID": "Thời điểm chụp ảnh chưa hợp lệ. Vui lòng chụp lại ảnh và bấm chấm công thử lại.",
+        "ATTENDANCE_TIME_TOKEN_INVALID": "Mốc giờ chuẩn cần được làm mới. Vui lòng bấm làm mới giờ chuẩn phía trên rồi chấm công thử lại.",
+        "ATTENDANCE_TIME_TOKEN_EXPIRED": "Mốc giờ chuẩn đã hết hạn. Vui lòng bấm làm mới giờ chuẩn phía trên rồi chấm công thử lại.",
+        "ATTENDANCE_TIME_TOKEN_ACTOR_MISMATCH": "Phiên giờ chuẩn không khớp tài khoản hiện tại. Vui lòng bấm làm mới giờ chuẩn rồi chấm công thử lại.",
+        "ATTENDANCE_TIME_ELAPSED_INVALID": "Ảnh chụp đã để chờ quá 24 giờ chưa gửi. Vui lòng chụp ảnh mới và bấm chấm công thử lại.",
+        "ATTENDANCE_TIME_MISMATCH": "Đồng hồ thiết bị lệch so với giờ chuẩn máy chủ. Vui lòng bấm làm mới giờ chuẩn rồi chấm công thử lại.",
+        "ATTENDANCE_SYNC_WINDOW_EXPIRED": "Lượt chấm công ngoại tuyến này đã quá hạn 7 ngày đồng bộ. Vui lòng chấm công lượt mới và thử lại.",
+        "GPS_COORDINATES_INVALID": "Tín hiệu vị trí GPS chưa ổn định. Vui lòng bấm làm mới GPS rồi chấm công thử lại.",
+        "GPS_ACCURACY_INVALID": "Độ chính xác GPS chưa đạt yêu cầu. Vui lòng bấm làm mới GPS ở nơi thoáng sóng rồi thử lại.",
+        "IDEMPOTENCY_KEY_INVALID": "Mã phiên gửi chấm công không hợp lệ. Vui lòng chụp lại ảnh và bấm chấm công thử lại.",
+        "IDEMPOTENCY_CONFLICT": "Phiên gửi bị trùng mã cũ. Vui lòng bấm Chấm công để chụp mới và thử lại.",
+        "CONTENT_TYPE_INVALID": "Dữ liệu ảnh gửi lên bị gián đoạn. Vui lòng chụp lại ảnh và bấm chấm công thử lại.",
+        "ATTENDANCE_REQUEST_INVALID": "Dữ liệu chấm công gửi lên chưa đầy đủ. Vui lòng chụp lại ảnh, kiểm tra GPS và thử lại.",
+        "ATTENDANCE_CONFIG_REQUIRED": "Hệ thống chấm công trên máy chủ đang bảo trì cấu hình. Vui lòng thử lại sau ít phút.",
+        "ATTENDANCE_UNAVAILABLE": "Hệ thống chấm công đang bận tạm thời. Vui lòng thử lại sau ít phút.",
         "FILE_TOO_LARGE": "Tệp đính kèm vượt quá dung lượng tối đa 10 MB.",
         "UNSUPPORTED_MEDIA_TYPE": "Định dạng tệp không được hỗ trợ (chỉ nhận JPG, PNG, WEBP hoặc PDF).",
         "LEAVE_SHARED_ACCOUNT_FORBIDDEN": "Tài khoản dùng chung (như tài khoản Marketing chung) không thuộc đối tượng quản lý nghỉ phép cá nhân.",
@@ -267,7 +303,8 @@ public final class BackendHttpClient: @unchecked Sendable {
         fileName: String,
         mimeType: String,
         fileData: Data,
-        extraFields: [String: String] = [:]
+        extraFields: [String: String] = [:],
+        additionalHeaders: [String: String] = [:]
     ) async -> BackendHttpResponse {
         guard let url = buildUrl(path: path, queryItems: []) else {
             return BackendHttpResponse(
@@ -288,6 +325,9 @@ public final class BackendHttpClient: @unchecked Sendable {
         }
         if let cookieHeader = cookieStore.cookieHeader(for: url) {
             req.setValue(cookieHeader, forHTTPHeaderField: "Cookie")
+        }
+        for (k, v) in additionalHeaders {
+            req.setValue(v, forHTTPHeaderField: k)
         }
 
         var body = Data()

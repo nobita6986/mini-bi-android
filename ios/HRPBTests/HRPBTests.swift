@@ -670,6 +670,64 @@ final class HRPBTests: XCTestCase {
             BackendHttpClient.codeMessagesVi["LEAVE_ROW_VERSION_CONFLICT"],
             "Dữ liệu vừa được cập nhật bởi thao tác khác. Hệ thống đã làm mới, vui lòng kiểm tra và thử lại."
         )
+        XCTAssertEqual(
+            BackendHttpClient.codeMessagesVi["AUTH_INVALID_CREDENTIALS"],
+            "Email hoặc mật khẩu không đúng."
+        )
+        XCTAssertEqual(
+            BackendHttpClient.codeMessagesVi["AUTH_REQUEST_INVALID"],
+            "Vui lòng nhập đúng định dạng email và mật khẩu."
+        )
+    }
+
+    func testAuthActorParsingAndWorkerDirectoryRowParsing() throws {
+        let actorJson: [String: Any] = [
+            "app_user_id": "11111111-2222-4333-8444-555555555555",
+            "display_name": "Phạm Thị Sâm",
+            "capabilities": ["entry_create", "entry_submit", "entry_read"],
+            "scopes": [
+                ["kind": "team", "project_id": NSNull(), "team_id": "team-1"]
+            ]
+        ]
+        let parsedUser = MiniBiRepository.parseUser(
+            actorJson,
+            fallbackRoot: ["ok": true, "actor": actorJson],
+            fallbackIdentifier: "sampt.td@hrpartner.vn"
+        )
+        XCTAssertEqual(parsedUser.id, "11111111-2222-4333-8444-555555555555")
+        XCTAssertEqual(parsedUser.fullName, "Phạm Thị Sâm")
+        XCTAssertEqual(parsedUser.role, "TEAM_LEADER")
+        XCTAssertEqual(parsedUser.roleLabel, "Quản lý nhóm")
+        XCTAssertEqual(parsedUser.allowedWorkerScopes, ["team", "managed", "recruited"])
+
+        let workerRowJson: [String: Any] = [
+            "entry_id": "aaaa1111-2222-4333-8444-555555555555",
+            "employee_code": "hrp-2026-000123",
+            "display_name": "Nguyễn Văn Công",
+            "project_id": "LUXSHARE-BG",
+            "project_display": "Luxshare Bắc Giang",
+            "first_work_date": "2026-10-01",
+            "labor_type": "SEASONAL",
+            "labor_type_display": "Thời vụ",
+            "employment_status": "ON",
+            "recruiter_id": "11111111-2222-4333-8444-555555555555",
+            "recruiter_display": "Phạm Thị Sâm",
+            "payment": [
+                "state": "provided",
+                "account_number": "190366778899",
+                "bank_id": "TECHCOMBANK",
+                "account_holder_name": "NGUYEN VAN CONG",
+                "version": 1
+            ]
+        ]
+        let parsedWorker = MiniBiRepository.parseWorkerItem(workerRowJson)
+        XCTAssertEqual(parsedWorker.maNld, "aaaa1111-2222-4333-8444-555555555555")
+        XCTAssertEqual(parsedWorker.hoTen, "Nguyễn Văn Công")
+        XCTAssertEqual(parsedWorker.duAn, "Luxshare Bắc Giang")
+        XCTAssertEqual(parsedWorker.nguoiTuyen, "Phạm Thị Sâm")
+        XCTAssertEqual(parsedWorker.trangThai, "Đang làm việc")
+        XCTAssertEqual(parsedWorker.soTaiKhoan, "190366778899")
+        XCTAssertEqual(parsedWorker.nganHang, "TECHCOMBANK")
     }
 
     // MARK: - Helper

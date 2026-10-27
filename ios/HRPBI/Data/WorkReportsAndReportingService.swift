@@ -261,7 +261,8 @@ public final class WorkReportsAndReportingService {
         }
 
         let root = response.jsonObject ?? [:]
-        let itemsArr = root.optObjectArray("obligations")
+        let itemsArr = root.optObjectArray("data")
+            .ifEmpty(root.optObjectArray("obligations"))
             .ifEmpty(root.optObjectArray("items"))
             .ifEmpty((root["data"] as? [String: Any])?.optObjectArray("obligations") ?? [])
             .ifEmpty((root["data"] as? [String: Any])?.optObjectArray("items") ?? [])
@@ -405,6 +406,9 @@ public final class WorkReportsAndReportingService {
             path: "/api/work-reports/reviews",
             queryItems: [URLQueryItem(name: "status", value: status)]
         )
+        if response.statusCode == 403 || response.statusCode == 404 {
+            return .success([], statusCode: response.statusCode)
+        }
         guard response.isSuccess else {
             return .failure(
                 message: response.errorMessage ?? "Không tải được danh sách báo cáo chờ duyệt.",
@@ -414,7 +418,8 @@ public final class WorkReportsAndReportingService {
         }
 
         let root = response.jsonObject ?? [:]
-        let rawList = root.optObjectArray("reviews")
+        let rawList = root.optObjectArray("data")
+            .ifEmpty(root.optObjectArray("reviews"))
             .ifEmpty(root.optObjectArray("items"))
             .ifEmpty((root["data"] as? [String: Any])?.optObjectArray("reviews") ?? [])
             .ifEmpty((root["data"] as? [String: Any])?.optObjectArray("items") ?? [])
@@ -452,6 +457,9 @@ public final class WorkReportsAndReportingService {
 
     public func fetchSelectableTemplates() async -> MiniBiApiResult<[WorkReportTemplateOption]> {
         let response = await httpClient.request(method: "GET", path: "/api/work-reports/templates")
+        if response.statusCode == 403 || response.statusCode == 404 {
+            return .success([], statusCode: response.statusCode)
+        }
         guard response.isSuccess else {
             return .failure(
                 message: response.errorMessage ?? "Không tải được danh sách biểu mẫu báo cáo.",
@@ -460,7 +468,8 @@ public final class WorkReportsAndReportingService {
             )
         }
         let root = response.jsonObject ?? [:]
-        let rawList = root.optObjectArray("templates")
+        let rawList = root.optObjectArray("data")
+            .ifEmpty(root.optObjectArray("templates"))
             .ifEmpty(root.optObjectArray("items"))
             .ifEmpty((root["data"] as? [String: Any])?.optObjectArray("templates") ?? [])
 
@@ -495,6 +504,9 @@ public final class WorkReportsAndReportingService {
             path: "/api/work-reports/analytics/summary",
             queryItems: queryItems
         )
+        if response.statusCode == 403 || response.statusCode == 404 {
+            return .success(WorkReportsAnalyticsSnapshot(), statusCode: response.statusCode)
+        }
         guard response.isSuccess else {
             return .failure(
                 message: response.errorMessage ?? "Không tải được thống kê tổng hợp báo cáo công việc.",
@@ -568,101 +580,199 @@ public final class WorkReportsAndReportingService {
         projectsPage: Int = 1,
         projectsPageSize: Int = 20
     ) async -> MiniBiApiResult<GeneralOverviewData> {
-        var queryItems: [URLQueryItem] = [
-            URLQueryItem(name: "scope", value: scope),
-            URLQueryItem(name: "project_filter", value: projectFilter),
-            URLQueryItem(name: "projects_page", value: String(projectsPage)),
-            URLQueryItem(name: "projects_page_size", value: String(projectsPageSize))
-        ]
-        if let startDate, !startDate.isEmpty {
-            queryItems.append(URLQueryItem(name: "start_date", value: startDate))
-        }
-        if let endDate, !endDate.isEmpty {
-            queryItems.append(URLQueryItem(name: "end_date", value: endDate))
-        }
-        if !projectSearch.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            queryItems.append(URLQueryItem(name: "project_search", value: projectSearch.trimmingCharacters(in: .whitespacesAndNewlines)))
+        var queryItems: [URLQueryItem] = [URLQueryItem(name: "mode", value: "deep")]
+        let cleanStart = (startDate ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanEnd = (endDate ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if !cleanStart.isEmpty && !cleanEnd.isEmpty {
+            queryItems.append(URLQueryItem(name: "from", value: cleanStart))
+            queryItems.append(URLQueryItem(name: "to", value: cleanEnd))
+        } else {
+            queryItems.append(URLQueryItem(name: "range", value: "all"))
         }
 
         let response = await httpClient.request(
             method: "GET",
-            path: "/api/reports/general-overview",
+            path: "/api/reporting/workforce-deep",
             queryItems: queryItems
         )
-        guard response.isSuccess else {
-            return .failure(
-                message: response.errorMessage ?? "Không tải được báo cáo tổng quát.",
-                httpStatus: response.statusCode,
-                errorCode: response.errorCode
+
+        if response.isSuccess, let root = response.jsonObject {
+            let reportObj = (root["report"] as? [String: Any])
+                ?? (root["data"] as? [String: Any])
+                ?? root
+            let kpisObj = (reportObj["kpis"] as? [String: Any])
+                ?? (reportObj["summary"] as? [String: Any])
+                ?? reportObj
+
+            let totalWorkers = kpisObj.optInt("total_workers", "total_headcount", "total")
+            let activeCount = kpisObj.optInt("on_count", "active_count", "working_count", "active")
+            let inactiveCount = kpisObj.optInt("off_count", "inactive_count", "resigned_count", "inactive")
+            let unconfirmedCount = kpisObj.optInt("unconfirmed_count", "interview_count", "interview")
+            let newCount = kpisObj.optInt("new_in_period_count", "new_count", "new_workers")
+            let resignedInPeriodCount = kpisObj.optInt("off_in_period_count", "resigned_in_period_count", "resigned_period")
+            let retentionRate = totalWorkers > 0
+                ? (Double(activeCount) * 100.0 / Double(totalWorkers))
+                : kpisObj.optDouble("retention_rate", "active_rate")
+            let turnoverRate = totalWorkers > 0
+                ? (Double(inactiveCount) * 100.0 / Double(totalWorkers))
+                : kpisObj.optDouble("turnover_rate")
+
+            let kpis = GeneralOverviewKpis(
+                totalHeadcount: totalWorkers,
+                activeCount: activeCount,
+                inactiveCount: inactiveCount,
+                interviewCount: unconfirmedCount,
+                newCount: newCount,
+                resignedInPeriodCount: resignedInPeriodCount,
+                retentionRate: retentionRate,
+                turnoverRate: turnoverRate
+            )
+
+            let projectsRaw = reportObj.optObjectArray("by_project").ifEmpty(reportObj.optObjectArray("projects"))
+            let projects: [ProjectBreakdownRow] = projectsRaw.enumerated().map { idx, p in
+                let name = p.optString("project_display", "du_an", "project_name", "name", "project_id", defaultValue: "Dự án #\(idx + 1)")
+                let pTotal = p.optInt("total_workers", "total_count", "total")
+                let pActive = p.optInt("on_count", "active_count", "active")
+                let pInactive = p.optInt("off_count", "inactive_count", "inactive")
+                let pNew = p.optInt("new_count", "new")
+                let share = totalWorkers > 0 ? (Double(pActive) * 100.0 / Double(max(activeCount, 1))) : p.optDouble("active_share_pct", "active_rate")
+                return ProjectBreakdownRow(
+                    id: "\(name)_\(idx)",
+                    projectName: name,
+                    totalCount: pTotal,
+                    activeCount: pActive,
+                    inactiveCount: pInactive,
+                    newCount: pNew,
+                    activeSharePct: share
+                )
+            }
+
+            let recruitersRaw = reportObj.optObjectArray("by_recruiter").ifEmpty(reportObj.optObjectArray("recruiters"))
+            let recruiters: [PersonPerformanceRow] = recruitersRaw.enumerated().map { idx, r in
+                let rTotal = r.optInt("total_workers", "total_count", "total")
+                let rActive = r.optInt("on_count", "active_count", "active")
+                let rInactive = r.optInt("off_count", "inactive_count", "inactive")
+                let rate = rTotal > 0 ? (Double(rActive) * 100.0 / Double(rTotal)) : r.optDouble("active_rate_pct", "active_rate")
+                return PersonPerformanceRow(
+                    id: r.optString("recruiter_id", "code", "username", defaultValue: "rec_\(idx)"),
+                    code: r.optString("recruiter_id", "code", "username"),
+                    name: r.optString("recruiter_display", "name", "full_name", "nguoi_tuyen", defaultValue: "NV #\(idx + 1)"),
+                    totalCount: rTotal,
+                    activeCount: rActive,
+                    inactiveCount: rInactive,
+                    activeRatePct: rate
+                )
+            }
+
+            let managersRaw = reportObj.optObjectArray("by_manager").ifEmpty(reportObj.optObjectArray("managers"))
+            let managers: [PersonPerformanceRow] = managersRaw.enumerated().map { idx, m in
+                let mTotal = m.optInt("total_workers", "total_count", "total")
+                let mActive = m.optInt("on_count", "active_count", "active")
+                let mInactive = m.optInt("off_count", "inactive_count", "inactive")
+                let rate = mTotal > 0 ? (Double(mActive) * 100.0 / Double(mTotal)) : m.optDouble("active_rate_pct", "active_rate")
+                return PersonPerformanceRow(
+                    id: m.optString("manager_id", "code", "username", defaultValue: "mgr_\(idx)"),
+                    code: m.optString("manager_id", "code", "username"),
+                    name: m.optString("manager_display", "name", "full_name", "quan_ly", defaultValue: "QL #\(idx + 1)"),
+                    totalCount: mTotal,
+                    activeCount: mActive,
+                    inactiveCount: mInactive,
+                    activeRatePct: rate
+                )
+            }
+
+            let overview = GeneralOverviewData(
+                scope: scope,
+                kpis: kpis,
+                projects: projects,
+                projectsTotal: projects.count,
+                projectsPage: projectsPage,
+                projectsTotalPages: 1,
+                recruiters: recruiters,
+                managers: managers
+            )
+            return .success(overview, statusCode: response.statusCode)
+        }
+
+        // Fallback for non-`all` scope users (HTTP 403/404 on `/api/reporting/workforce-deep`): aggregate from `/api/direct-entry/workers`
+        let workersRes = await MiniBiRepository.shared.fetchWorkers(scope: scope, pageSize: 100)
+        if case .success(let wData, let statusCode) = workersRes {
+            let items = wData.items
+            let total = max(wData.total, items.count)
+            let active = items.filter { $0.isWorking }.count
+            let inactive = items.filter { $0.trangThai.lowercased().contains("nghỉ") }.count
+            let interview = max(0, items.count - active - inactive)
+            let retention = items.isEmpty ? 0.0 : (Double(active) * 100.0 / Double(items.count))
+            let turnover = items.isEmpty ? 0.0 : (Double(inactive) * 100.0 / Double(items.count))
+
+            var byProject: [String: (total: Int, active: Int, inactive: Int)] = [:]
+            var byRecruiter: [String: (total: Int, active: Int, inactive: Int)] = [:]
+            for w in items {
+                let pName = w.duAn.isEmpty ? "Chưa phân dự án" : w.duAn
+                var pCur = byProject[pName] ?? (0, 0, 0)
+                pCur.total += 1
+                if w.isWorking { pCur.active += 1 } else { pCur.inactive += 1 }
+                byProject[pName] = pCur
+
+                let rName = w.nguoiTuyen.isEmpty ? "Chưa gán người tuyển" : w.nguoiTuyen
+                var rCur = byRecruiter[rName] ?? (0, 0, 0)
+                rCur.total += 1
+                if w.isWorking { rCur.active += 1 } else { rCur.inactive += 1 }
+                byRecruiter[rName] = rCur
+            }
+
+            let projects = byProject.sorted { $0.value.total > $1.value.total }.enumerated().map { idx, kv in
+                ProjectBreakdownRow(
+                    id: "proj_\(idx)",
+                    projectName: kv.key,
+                    totalCount: kv.value.total,
+                    activeCount: kv.value.active,
+                    inactiveCount: kv.value.inactive,
+                    newCount: 0,
+                    activeSharePct: active > 0 ? (Double(kv.value.active) * 100.0 / Double(active)) : 0.0
+                )
+            }
+            let recruiters = byRecruiter.sorted { $0.value.total > $1.value.total }.enumerated().map { idx, kv in
+                PersonPerformanceRow(
+                    id: "rec_\(idx)",
+                    code: kv.key,
+                    name: kv.key,
+                    totalCount: kv.value.total,
+                    activeCount: kv.value.active,
+                    inactiveCount: kv.value.inactive,
+                    activeRatePct: kv.value.total > 0 ? (Double(kv.value.active) * 100.0 / Double(kv.value.total)) : 0.0
+                )
+            }
+
+            return .success(
+                GeneralOverviewData(
+                    scope: scope,
+                    kpis: GeneralOverviewKpis(
+                        totalHeadcount: total,
+                        activeCount: active,
+                        inactiveCount: inactive,
+                        interviewCount: interview,
+                        newCount: 0,
+                        resignedInPeriodCount: 0,
+                        retentionRate: retention,
+                        turnoverRate: turnover
+                    ),
+                    projects: projects,
+                    projectsTotal: projects.count,
+                    projectsPage: 1,
+                    projectsTotalPages: 1,
+                    recruiters: recruiters,
+                    managers: []
+                ),
+                statusCode: statusCode
             )
         }
 
-        let root = response.jsonObject ?? [:]
-        let dataObj = (root["data"] as? [String: Any]) ?? root
-        let kpisObj = (dataObj["kpis"] as? [String: Any]) ?? (dataObj["summary"] as? [String: Any]) ?? dataObj
-
-        let kpis = GeneralOverviewKpis(
-            totalHeadcount: kpisObj.optInt("total_headcount", "total_workers", "total"),
-            activeCount: kpisObj.optInt("active_count", "working_count", "active"),
-            inactiveCount: kpisObj.optInt("inactive_count", "resigned_count", "inactive"),
-            interviewCount: kpisObj.optInt("interview_count", "interview"),
-            newCount: kpisObj.optInt("new_count", "new_workers"),
-            resignedInPeriodCount: kpisObj.optInt("resigned_in_period_count", "resigned_period"),
-            retentionRate: kpisObj.optDouble("retention_rate", "active_rate"),
-            turnoverRate: kpisObj.optDouble("turnover_rate")
+        return .failure(
+            message: response.errorMessage ?? "Không tải được báo cáo tổng quát.",
+            httpStatus: response.statusCode,
+            errorCode: response.errorCode
         )
-
-        let projectsRaw = dataObj.optObjectArray("projects").ifEmpty(dataObj.optObjectArray("by_project"))
-        let projects: [ProjectBreakdownRow] = projectsRaw.enumerated().map { idx, p in
-            let name = p.optString("du_an", "project_name", "name", defaultValue: "Dự án #\(idx + 1)")
-            return ProjectBreakdownRow(
-                id: "\(name)_\(idx)",
-                projectName: name,
-                totalCount: p.optInt("total_count", "total"),
-                activeCount: p.optInt("active_count", "active"),
-                inactiveCount: p.optInt("inactive_count", "inactive"),
-                newCount: p.optInt("new_count", "new"),
-                activeSharePct: p.optDouble("active_share_pct", "active_rate")
-            )
-        }
-
-        let recruitersRaw = dataObj.optObjectArray("recruiters").ifEmpty(dataObj.optObjectArray("by_recruiter"))
-        let recruiters: [PersonPerformanceRow] = recruitersRaw.enumerated().map { idx, r in
-            PersonPerformanceRow(
-                id: r.optString("code", "username", defaultValue: "rec_\(idx)"),
-                code: r.optString("code", "username"),
-                name: r.optString("name", "full_name", "nguoi_tuyen", defaultValue: "NV #\(idx + 1)"),
-                totalCount: r.optInt("total_count", "total"),
-                activeCount: r.optInt("active_count", "active"),
-                inactiveCount: r.optInt("inactive_count", "inactive"),
-                activeRatePct: r.optDouble("active_rate_pct", "active_rate")
-            )
-        }
-
-        let managersRaw = dataObj.optObjectArray("managers").ifEmpty(dataObj.optObjectArray("by_manager"))
-        let managers: [PersonPerformanceRow] = managersRaw.enumerated().map { idx, m in
-            PersonPerformanceRow(
-                id: m.optString("code", "username", defaultValue: "mgr_\(idx)"),
-                code: m.optString("code", "username"),
-                name: m.optString("name", "full_name", "quan_ly", defaultValue: "QL #\(idx + 1)"),
-                totalCount: m.optInt("total_count", "total"),
-                activeCount: m.optInt("active_count", "active"),
-                inactiveCount: m.optInt("inactive_count", "inactive"),
-                activeRatePct: m.optDouble("active_rate_pct", "active_rate")
-            )
-        }
-
-        let overview = GeneralOverviewData(
-            scope: dataObj.optString("scope", defaultValue: scope),
-            kpis: kpis,
-            projects: projects,
-            projectsTotal: dataObj.optInt("projects_total", defaultValue: projects.count),
-            projectsPage: dataObj.optInt("projects_page", defaultValue: projectsPage),
-            projectsTotalPages: max(1, dataObj.optInt("projects_total_pages", defaultValue: 1)),
-            recruiters: recruiters,
-            managers: managers
-        )
-        return .success(overview, statusCode: response.statusCode)
     }
 
     public func fetchWorkforceDeepMetrics(
@@ -670,19 +780,24 @@ public final class WorkReportsAndReportingService {
         startDate: String? = nil,
         endDate: String? = nil
     ) async -> MiniBiApiResult<WorkforceDeepMetricsData> {
-        var queryItems: [URLQueryItem] = [URLQueryItem(name: "scope", value: scope)]
-        if let startDate, !startDate.isEmpty {
-            queryItems.append(URLQueryItem(name: "start_date", value: startDate))
-        }
-        if let endDate, !endDate.isEmpty {
-            queryItems.append(URLQueryItem(name: "end_date", value: endDate))
+        var queryItems: [URLQueryItem] = [URLQueryItem(name: "mode", value: "deep")]
+        let cleanStart = (startDate ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanEnd = (endDate ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if !cleanStart.isEmpty && !cleanEnd.isEmpty {
+            queryItems.append(URLQueryItem(name: "from", value: cleanStart))
+            queryItems.append(URLQueryItem(name: "to", value: cleanEnd))
+        } else {
+            queryItems.append(URLQueryItem(name: "range", value: "all"))
         }
 
         let response = await httpClient.request(
             method: "GET",
-            path: "/api/reports/workforce-deep-metrics",
+            path: "/api/reporting/workforce-deep",
             queryItems: queryItems
         )
+        if response.statusCode == 403 || response.statusCode == 404 {
+            return .success(WorkforceDeepMetricsData(), statusCode: response.statusCode)
+        }
         guard response.isSuccess else {
             return .failure(
                 message: response.errorMessage ?? "Không tải được báo cáo chuyên sâu.",
@@ -692,25 +807,27 @@ public final class WorkReportsAndReportingService {
         }
 
         let root = response.jsonObject ?? [:]
-        let dataObj = (root["data"] as? [String: Any]) ?? root
+        let dataObj = (root["report"] as? [String: Any])
+            ?? (root["data"] as? [String: Any])
+            ?? root
 
         func parseBuckets(_ key: String) -> [DistributionBucket] {
             let arr = dataObj.optObjectArray(key)
             return arr.enumerated().map { idx, b in
                 DistributionBucket(
                     id: "\(key)_\(idx)",
-                    label: b.optString("label", "name", "bucket", defaultValue: "Nhóm \(idx + 1)"),
-                    count: b.optInt("count", "value", "total"),
+                    label: b.optString("label", "name", "bucket", "labor_type_display", "project_display", defaultValue: "Nhóm \(idx + 1)"),
+                    count: b.optInt("count", "value", "total", "total_workers"),
                     percentage: b.optDouble("percentage", "pct", "share")
                 )
             }
         }
 
         let deepData = WorkforceDeepMetricsData(
-            tenureBuckets: parseBuckets("tenure_buckets").ifEmpty(parseBuckets("tenure")),
-            ageBuckets: parseBuckets("age_buckets").ifEmpty(parseBuckets("age")),
-            genderBuckets: parseBuckets("gender_buckets").ifEmpty(parseBuckets("gender")),
-            contractBuckets: parseBuckets("contract_buckets").ifEmpty(parseBuckets("contract_status")),
+            tenureBuckets: parseBuckets("tenure_buckets").ifEmpty(parseBuckets("tenure")).ifEmpty(parseBuckets("by_tenure")),
+            ageBuckets: parseBuckets("age_buckets").ifEmpty(parseBuckets("age")).ifEmpty(parseBuckets("by_age")),
+            genderBuckets: parseBuckets("gender_buckets").ifEmpty(parseBuckets("gender")).ifEmpty(parseBuckets("by_labor_type")),
+            contractBuckets: parseBuckets("contract_buckets").ifEmpty(parseBuckets("contract_status")).ifEmpty(parseBuckets("by_status")),
             resignReasonBuckets: parseBuckets("resign_reason_buckets").ifEmpty(parseBuckets("resign_reasons"))
         )
         return .success(deepData, statusCode: response.statusCode)
@@ -721,22 +838,13 @@ public final class WorkReportsAndReportingService {
         endDate: String? = nil,
         teamCode: String? = nil
     ) async -> MiniBiApiResult<TeamReportData> {
-        var queryItems: [URLQueryItem] = []
-        if let startDate, !startDate.isEmpty {
-            queryItems.append(URLQueryItem(name: "start_date", value: startDate))
-        }
-        if let endDate, !endDate.isEmpty {
-            queryItems.append(URLQueryItem(name: "end_date", value: endDate))
-        }
-        if let teamCode, !teamCode.isEmpty {
-            queryItems.append(URLQueryItem(name: "team_code", value: teamCode))
-        }
-
         let response = await httpClient.request(
             method: "GET",
-            path: "/api/reports/team-summary",
-            queryItems: queryItems
+            path: "/api/reporting/team-report"
         )
+        if response.statusCode == 403 || response.statusCode == 404 {
+            return .success(TeamReportData(teams: []), statusCode: response.statusCode)
+        }
         guard response.isSuccess else {
             return .failure(
                 message: response.errorMessage ?? "Không tải được báo cáo theo nhóm.",
@@ -746,34 +854,44 @@ public final class WorkReportsAndReportingService {
         }
 
         let root = response.jsonObject ?? [:]
-        let dataObj = (root["data"] as? [String: Any]) ?? root
+        let dataObj = (root["report"] as? [String: Any])
+            ?? (root["data"] as? [String: Any])
+            ?? root
         let teamsRaw = dataObj.optObjectArray("teams").ifEmpty(dataObj.optObjectArray("items"))
 
         let teams: [TeamSummaryRow] = teamsRaw.enumerated().map { idx, t in
-            let code = t.optString("team_code", "code", "id", defaultValue: "team_\(idx)")
-            let membersRaw = t.optObjectArray("members")
+            let code = t.optString("team_code", "team_id", "code", "id", defaultValue: "team_\(idx)")
+            let membersRaw = t.optObjectArray("members").ifEmpty(t.optObjectArray("recruiters"))
             let members: [PersonPerformanceRow] = membersRaw.enumerated().map { mIdx, m in
-                PersonPerformanceRow(
-                    id: m.optString("code", "username", defaultValue: "\(code)_m_\(mIdx)"),
-                    code: m.optString("code", "username"),
-                    name: m.optString("name", "full_name", defaultValue: "Thành viên \(mIdx + 1)"),
-                    totalCount: m.optInt("total_count", "total"),
-                    activeCount: m.optInt("active_count", "active"),
-                    inactiveCount: m.optInt("inactive_count", "inactive"),
-                    activeRatePct: m.optDouble("active_rate_pct", "active_rate")
+                let mTotal = m.optInt("total_workers", "total_count", "total")
+                let mActive = m.optInt("on_count", "active_count", "active")
+                let mInactive = m.optInt("off_count", "inactive_count", "inactive")
+                let rate = mTotal > 0 ? (Double(mActive) * 100.0 / Double(mTotal)) : m.optDouble("active_rate_pct", "active_rate")
+                return PersonPerformanceRow(
+                    id: m.optString("recruiter_id", "code", "username", defaultValue: "\(code)_m_\(mIdx)"),
+                    code: m.optString("recruiter_id", "code", "username"),
+                    name: m.optString("recruiter_display", "display_name", "name", "full_name", defaultValue: "Thành viên \(mIdx + 1)"),
+                    totalCount: mTotal,
+                    activeCount: mActive,
+                    inactiveCount: mInactive,
+                    activeRatePct: rate
                 )
             }
+            let tTotal = t.optInt("total_workers", "total_count", "total")
+            let tActive = t.optInt("on_count", "active_workers", "active_count", "active")
+            let tInactive = t.optInt("off_count", "inactive_workers", "inactive_count", "inactive")
+            let tRate = tTotal > 0 ? (Double(tActive) * 100.0 / Double(tTotal)) : t.optDouble("active_rate_pct", "active_rate")
             return TeamSummaryRow(
                 id: code,
                 teamCode: code,
                 teamName: t.optString("team_name", "name", defaultValue: code),
-                leaderName: t.optString("leader_name", "leader"),
+                leaderName: t.optString("leader_display", "leader_name", "leader"),
                 memberCount: t.optInt("member_count", defaultValue: members.count),
-                totalWorkers: t.optInt("total_workers", "total_count", "total"),
-                activeWorkers: t.optInt("active_workers", "active_count", "active"),
-                inactiveWorkers: t.optInt("inactive_workers", "inactive_count", "inactive"),
+                totalWorkers: tTotal,
+                activeWorkers: tActive,
+                inactiveWorkers: tInactive,
                 newWorkers: t.optInt("new_workers", "new_count"),
-                activeRatePct: t.optDouble("active_rate_pct", "active_rate"),
+                activeRatePct: tRate,
                 members: members
             )
         }
@@ -787,18 +905,23 @@ public final class WorkReportsAndReportingService {
         pageSize: Int = 20
     ) async -> MiniBiApiResult<DuplicateCccdReportData> {
         var queryItems: [URLQueryItem] = [
-            URLQueryItem(name: "page", value: String(page)),
-            URLQueryItem(name: "page_size", value: String(pageSize))
+            URLQueryItem(name: "page", value: String(max(page, 1))),
+            URLQueryItem(name: "page_size", value: String(min(max(pageSize, 1), 100))),
+            URLQueryItem(name: "managed_only", value: "false")
         ]
-        if !search.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            queryItems.append(URLQueryItem(name: "search", value: search.trimmingCharacters(in: .whitespacesAndNewlines)))
+        let cleanSearch = search.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !cleanSearch.isEmpty {
+            queryItems.append(URLQueryItem(name: "search", value: cleanSearch))
         }
 
         let response = await httpClient.request(
             method: "GET",
-            path: "/api/reports/duplicate-cccd",
+            path: "/api/direct-entry/duplicate-cccd-report",
             queryItems: queryItems
         )
+        if response.statusCode == 403 || response.statusCode == 404 {
+            return .success(DuplicateCccdReportData(), statusCode: response.statusCode)
+        }
         guard response.isSuccess else {
             return .failure(
                 message: response.errorMessage ?? "Không tải được báo cáo CCCD trùng.",
@@ -808,24 +931,26 @@ public final class WorkReportsAndReportingService {
         }
 
         let root = response.jsonObject ?? [:]
-        let dataObj = (root["data"] as? [String: Any]) ?? root
+        let dataObj = (root["report"] as? [String: Any])
+            ?? (root["data"] as? [String: Any])
+            ?? root
         let groupsRaw = dataObj.optObjectArray("groups").ifEmpty(dataObj.optObjectArray("items"))
 
         let groups: [DuplicateCccdGroup] = groupsRaw.enumerated().map { idx, g in
-            let cccd = g.optString("cccd", "so_cccd", defaultValue: "group_\(idx)")
-            let epsRaw = g.optObjectArray("episodes").ifEmpty(g.optObjectArray("records"))
+            let cccd = g.optString("national_id", "cccd", "so_cccd", defaultValue: "group_\(idx)")
+            let epsRaw = g.optObjectArray("episodes").ifEmpty(g.optObjectArray("records")).ifEmpty(g.optObjectArray("entries"))
             let episodes: [DuplicateCccdEpisode] = epsRaw.enumerated().map { eIdx, e in
                 let epId = e.optInt64("episode_id", "id") ?? Int64(idx * 1000 + eIdx)
                 return DuplicateCccdEpisode(
                     id: "\(cccd)_\(epId)",
                     episodeId: epId,
-                    maNld: e.optString("ma_nld", "worker_code"),
-                    hoTen: e.optString("ho_ten", "full_name"),
-                    duAn: e.optString("du_an", "project_name"),
+                    maNld: e.optString("entry_id", "employee_code", "ma_nld", "worker_code"),
+                    hoTen: e.optString("display_name", "ho_ten", "full_name"),
+                    duAn: e.optString("project_display", "du_an", "project_name"),
                     quanLy: e.optString("quan_ly", "manager_name"),
-                    nguoiTuyen: e.optString("nguoi_tuyen", "recruiter_name"),
-                    trangThai: e.optString("trang_thai", "status"),
-                    ngayVaoLam: e.optString("ngay_vao_lam", "start_date"),
+                    nguoiTuyen: e.optString("recruiter_display", "nguoi_tuyen", "recruiter_name"),
+                    trangThai: e.optString("employment_status", "trang_thai", "status"),
+                    ngayVaoLam: e.optString("first_work_date", "ngay_vao_lam", "start_date"),
                     canSelfWithdraw: e.optBool("can_self_withdraw", "allow_withdraw", defaultValue: false)
                 )
             }
@@ -833,7 +958,7 @@ public final class WorkReportsAndReportingService {
                 id: cccd,
                 cccd: cccd,
                 workerCount: g.optInt("worker_count", "count", defaultValue: episodes.count),
-                activeCount: g.optInt("active_count", "active"),
+                activeCount: g.optInt("active_count", "on_count", "active"),
                 episodes: episodes
             )
         }
@@ -859,13 +984,14 @@ public final class WorkReportsAndReportingService {
         maNld: String
     ) async -> MiniBiApiResult<Bool> {
         let body: [String: Any] = [
+            "entry_id": maNld,
             "episode_id": episodeId,
             "cccd": cccd,
             "ma_nld": maNld
         ]
         let response = await httpClient.request(
             method: "POST",
-            path: "/api/reports/duplicate-cccd/self-withdraw",
+            path: "/api/direct-entry/duplicate-cccd-report/self-withdraw",
             jsonBody: body
         )
         guard response.isSuccess else {
