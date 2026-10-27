@@ -273,30 +273,27 @@ jobs:
           EXPORT_DIR="$RUNNER_TEMP/export"
           EXPORT_PLIST="$RUNNER_TEMP/ExportOptions.plist"
 
-          cat > "$EXPORT_PLIST" <<'EOF'
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>method</key>
-    <string>app-store</string>
-    <key>teamID</key>
-    <string>__TEAM_ID__</string>
-    <key>signingStyle</key>
-    <string>manual</string>
-    <key>uploadSymbols</key>
-    <true/>
-    <key>provisioningProfiles</key>
-    <dict>
-        <key>__BUNDLE_ID__</key>
-        <string>__PROFILE_UUID__</string>
-    </dict>
-</dict>
-</plist>
-EOF
-          sed -i '' "s|__TEAM_ID__|${{ steps.signing.outputs.team_id }}|g" "$EXPORT_PLIST"
-          sed -i '' "s|__BUNDLE_ID__|${{ steps.signing.outputs.bundle_id }}|g" "$EXPORT_PLIST"
-          sed -i '' "s|__PROFILE_UUID__|${{ steps.signing.outputs.profile_uuid }}|g" "$EXPORT_PLIST"
+          cat > "$EXPORT_PLIST" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>method</key>
+              <string>app-store</string>
+              <key>teamID</key>
+              <string>${{ steps.signing.outputs.team_id }}</string>
+              <key>signingStyle</key>
+              <string>manual</string>
+              <key>uploadSymbols</key>
+              <true/>
+              <key>provisioningProfiles</key>
+              <dict>
+                  <key>${{ steps.signing.outputs.bundle_id }}</key>
+                  <string>${{ steps.signing.outputs.profile_uuid }}</string>
+              </dict>
+          </dict>
+          </plist>
+          EOF
 
           xcodebuild archive \
             -project HRPBI.xcodeproj \
