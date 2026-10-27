@@ -501,6 +501,8 @@ public struct TeamReportData: Equatable, Sendable {
 public struct DuplicateCccdEpisode: Identifiable, Equatable, Sendable {
     public let id: String
     public let episodeId: Int64
+    public let entryIdUuid: String
+    public let entryVersion: Int
     public let maNld: String
     public let hoTen: String
     public let duAn: String
@@ -513,6 +515,8 @@ public struct DuplicateCccdEpisode: Identifiable, Equatable, Sendable {
     public init(
         id: String,
         episodeId: Int64,
+        entryIdUuid: String = "",
+        entryVersion: Int = 1,
         maNld: String = "",
         hoTen: String = "",
         duAn: String = "",
@@ -524,6 +528,8 @@ public struct DuplicateCccdEpisode: Identifiable, Equatable, Sendable {
     ) {
         self.id = id
         self.episodeId = episodeId
+        self.entryIdUuid = entryIdUuid.isEmpty ? id : entryIdUuid
+        self.entryVersion = entryVersion
         self.maNld = maNld
         self.hoTen = hoTen
         self.duAn = duAn
@@ -602,6 +608,8 @@ public struct CccdComparisonRow: Identifiable, Equatable, Sendable {
 public struct CccdReviewItem: Identifiable, Equatable, Sendable {
     public var id: Int64 { entryId }
     public let entryId: Int64
+    public let entryIdUuid: String
+    public let entryVersion: Int
     public let maNld: String
     public let hoTen: String
     public let duAn: String
@@ -616,6 +624,8 @@ public struct CccdReviewItem: Identifiable, Equatable, Sendable {
 
     public init(
         entryId: Int64,
+        entryIdUuid: String = "",
+        entryVersion: Int = 1,
         maNld: String = "",
         hoTen: String = "",
         duAn: String = "",
@@ -629,6 +639,8 @@ public struct CccdReviewItem: Identifiable, Equatable, Sendable {
         comparisons: [CccdComparisonRow] = []
     ) {
         self.entryId = entryId
+        self.entryIdUuid = entryIdUuid.isEmpty ? String(entryId) : entryIdUuid
+        self.entryVersion = entryVersion
         self.maNld = maNld
         self.hoTen = hoTen
         self.duAn = duAn
@@ -644,6 +656,79 @@ public struct CccdReviewItem: Identifiable, Equatable, Sendable {
 }
 
 // MARK: - Direct Entry ("Cấp mới") & Workers Models
+
+public struct DirectEntryCatalogProject: Identifiable, Equatable, Sendable {
+    public var id: String { projectId }
+    public let projectId: String
+    public let displayName: String
+
+    public init(projectId: String, displayName: String) {
+        self.projectId = projectId
+        self.displayName = displayName
+    }
+}
+
+public struct DirectEntryCatalogRecruiter: Identifiable, Equatable, Sendable {
+    public var id: String { recruiterId }
+    public let recruiterId: String
+    public let displayName: String
+    public let personnelCode: String
+    public let providerType: String
+    public let vendorId: String?
+    public let teamId: String?
+    public let teamDisplayName: String?
+    public let label: String
+
+    public init(
+        recruiterId: String,
+        displayName: String,
+        personnelCode: String = "",
+        providerType: String = "hrp",
+        vendorId: String? = nil,
+        teamId: String? = nil,
+        teamDisplayName: String? = nil,
+        label: String = ""
+    ) {
+        self.recruiterId = recruiterId
+        self.displayName = displayName
+        self.personnelCode = personnelCode
+        self.providerType = providerType.lowercased() == "vendor" ? "vendor" : "hrp"
+        self.vendorId = vendorId
+        self.teamId = teamId
+        self.teamDisplayName = teamDisplayName
+        if !label.isEmpty {
+            self.label = label
+        } else if !personnelCode.isEmpty {
+            self.label = "\(displayName) (\(personnelCode))"
+        } else {
+            self.label = displayName
+        }
+    }
+}
+
+public struct DirectEntryCatalogBank: Identifiable, Equatable, Sendable {
+    public var id: String { bankId }
+    public let bankId: String
+    public let displayName: String
+
+    public init(bankId: String, displayName: String) {
+        self.bankId = bankId
+        self.displayName = displayName
+    }
+}
+
+public struct DirectEntryCatalogLaborType: Identifiable, Equatable, Sendable {
+    public var id: String { laborTypeKey }
+    public let laborTypeKey: String
+    public let displayName: String
+    public let sortOrder: Int
+
+    public init(laborTypeKey: String, displayName: String, sortOrder: Int = 100) {
+        self.laborTypeKey = laborTypeKey
+        self.displayName = displayName
+        self.sortOrder = sortOrder
+    }
+}
 
 public struct LocalAttachmentItem: Identifiable, Equatable, Sendable {
     public let id: String
@@ -675,71 +760,120 @@ public struct LocalAttachmentItem: Identifiable, Equatable, Sendable {
 public struct NewWorkerEntryDraft: Identifiable, Equatable, Sendable {
     public var id: String { rowId }
     public var rowId: String
-    public var hoTen: String
-    public var soCccd: String
-    public var duAn: String
-    public var trangThai: String
-    public var sdt: String
-    public var ngaySinh: String
-    public var gioiTinh: String
-    public var ngayCap: String
-    public var ngayVaoLam: String
-    public var quanLy: String
-    public var nguoiTuyen: String
-    public var nganhNghe: String
-    public var queQuan: String
-    public var ghiChu: String
-    public var soTaiKhoan: String
-    public var nganHang: String
+
+    // Canonical Android fields + backward-compatible iOS properties
+    public var projectId: String
+    public var duAn: String // projectDisplay
+    public var providerType: String // "hrp" | "vendor"
+    public var recruiterId: String
+    public var nguoiTuyen: String // recruiterDisplay
+    public var laborTypeKey: String
+    public var nganhNghe: String // laborTypeDisplay
+    public var ngayVaoLam: String // firstWorkDateUi (dd/MM/yyyy)
+    public var trangThai: String // employmentStatusUi ("Đang làm" | "Đang chờ việc")
+    public var soCccd: String // cccd (12 digits)
+    public var hoTen: String // fullName
+    public var gioiTinh: String // genderUi ("" | "Nam" | "Nữ")
+    public var sdt: String // phone
+    public var queQuan: String // address
+    public var ngaySinh: String // birthDateUi (dd/MM/yyyy)
+    public var ngayCap: String // cccdIssueDateUi (dd/MM/yyyy)
+    public var soTaiKhoan: String // bankAccountNumber
+    public var bankAccountHolder: String // bankAccountHolder
+    public var nganHang: String // bankName
+    public var ghiChu: String // note
+    public var quanLy: String // legacy/optional manager display
+    public var portraitFile: LocalAttachmentItem?
     public var cccdFrontFile: LocalAttachmentItem?
     public var cccdBackFile: LocalAttachmentItem?
     public var contractFiles: [LocalAttachmentItem]
 
+    public static func defaultTodayDateUi() -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "Asia/Ho_Chi_Minh") ?? .current
+        formatter.dateFormat = "dd/MM/yyyy"
+        return formatter.string(from: Date())
+    }
+
     public var isReadyForSubmit: Bool {
-        !hoTen.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
-        !duAn.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
-        !trangThai.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let hasProject = !duAn.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !projectId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let cccdDigits = soCccd.filter(\.isNumber)
+        let hasIdentity = cccdDigits.count == 12 || !hoTen.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        return hasProject && hasIdentity && !trangThai.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    public func validateAndroidContractError() -> String? {
+        if duAn.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && projectId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return "Vui lòng chọn Dự án."
+        }
+        if nguoiTuyen.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && recruiterId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return "Vui lòng chọn Người tuyển / Vendor."
+        }
+        if nganhNghe.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && laborTypeKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return "Vui lòng chọn Loại hình lao động."
+        }
+        if ngayVaoLam.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return "Vui lòng chọn Ngày bắt đầu làm việc."
+        }
+        let cccdDigits = soCccd.filter(\.isNumber)
+        if cccdDigits.count != 12 {
+            return "Số CCCD bắt buộc gồm đúng 12 chữ số."
+        }
+        return nil
     }
 
     public init(
         rowId: String = UUID().uuidString,
+        projectId: String = "",
         hoTen: String = "",
         soCccd: String = "",
         duAn: String = "",
-        trangThai: String = "Đang làm việc",
+        providerType: String = "hrp",
+        recruiterId: String = "",
+        laborTypeKey: String = "SEASONAL",
+        trangThai: String = "Đang làm",
         sdt: String = "",
         ngaySinh: String = "",
         gioiTinh: String = "",
         ngayCap: String = "",
-        ngayVaoLam: String = "",
+        ngayVaoLam: String = NewWorkerEntryDraft.defaultTodayDateUi(),
         quanLy: String = "",
         nguoiTuyen: String = "",
-        nganhNghe: String = "",
+        nganhNghe: String = "Thời vụ",
         queQuan: String = "",
         ghiChu: String = "",
         soTaiKhoan: String = "",
+        bankAccountHolder: String = "",
         nganHang: String = "",
+        portraitFile: LocalAttachmentItem? = nil,
         cccdFrontFile: LocalAttachmentItem? = nil,
         cccdBackFile: LocalAttachmentItem? = nil,
         contractFiles: [LocalAttachmentItem] = []
     ) {
         self.rowId = rowId
+        self.projectId = projectId
         self.hoTen = hoTen
         self.soCccd = soCccd
         self.duAn = duAn
+        self.providerType = providerType.lowercased() == "vendor" ? "vendor" : "hrp"
+        self.recruiterId = recruiterId
+        self.laborTypeKey = laborTypeKey.isEmpty ? "SEASONAL" : laborTypeKey
         self.trangThai = trangThai
         self.sdt = sdt
         self.ngaySinh = ngaySinh
         self.gioiTinh = gioiTinh
         self.ngayCap = ngayCap
-        self.ngayVaoLam = ngayVaoLam
+        self.ngayVaoLam = ngayVaoLam.isEmpty ? Self.defaultTodayDateUi() : ngayVaoLam
         self.quanLy = quanLy
         self.nguoiTuyen = nguoiTuyen
-        self.nganhNghe = nganhNghe
+        self.nganhNghe = nganhNghe.isEmpty ? "Thời vụ" : nganhNghe
         self.queQuan = queQuan
         self.ghiChu = ghiChu
         self.soTaiKhoan = soTaiKhoan
+        self.bankAccountHolder = bankAccountHolder
         self.nganHang = nganHang
+        self.portraitFile = portraitFile
         self.cccdFrontFile = cccdFrontFile
         self.cccdBackFile = cccdBackFile
         self.contractFiles = contractFiles
@@ -751,23 +885,41 @@ public struct DirectEntryAssigneeOptions: Equatable, Sendable {
     public let managers: [String]
     public let recruiters: [String]
     public let banks: [String]
+    public let catalogProjects: [DirectEntryCatalogProject]
+    public let catalogRecruiters: [DirectEntryCatalogRecruiter]
+    public let catalogBanks: [DirectEntryCatalogBank]
+    public let catalogLaborTypes: [DirectEntryCatalogLaborType]
+
+    public static let fallbackLaborTypes: [DirectEntryCatalogLaborType] = [
+        DirectEntryCatalogLaborType(laborTypeKey: "SEASONAL", displayName: "Thời vụ", sortOrder: 10),
+        DirectEntryCatalogLaborType(laborTypeKey: "OFFICIAL", displayName: "Chính thức", sortOrder: 20)
+    ]
 
     public init(
         projects: [String] = [],
         managers: [String] = [],
         recruiters: [String] = [],
-        banks: [String] = []
+        banks: [String] = [],
+        catalogProjects: [DirectEntryCatalogProject] = [],
+        catalogRecruiters: [DirectEntryCatalogRecruiter] = [],
+        catalogBanks: [DirectEntryCatalogBank] = [],
+        catalogLaborTypes: [DirectEntryCatalogLaborType] = DirectEntryAssigneeOptions.fallbackLaborTypes
     ) {
         self.projects = projects
         self.managers = managers
         self.recruiters = recruiters
         self.banks = banks
+        self.catalogProjects = catalogProjects
+        self.catalogRecruiters = catalogRecruiters
+        self.catalogBanks = catalogBanks
+        self.catalogLaborTypes = catalogLaborTypes.isEmpty ? Self.fallbackLaborTypes : catalogLaborTypes
     }
 }
 
 public struct DirectEntryBatchHistoryItem: Identifiable, Equatable, Sendable {
     public var id: Int64 { batchId }
     public let batchId: Int64
+    public let submissionIdUuid: String
     public let status: String
     public let totalRows: Int
     public let approvedRows: Int
@@ -776,6 +928,7 @@ public struct DirectEntryBatchHistoryItem: Identifiable, Equatable, Sendable {
 
     public init(
         batchId: Int64,
+        submissionIdUuid: String = "",
         status: String = "COMPLETED",
         totalRows: Int = 0,
         approvedRows: Int = 0,
@@ -783,6 +936,7 @@ public struct DirectEntryBatchHistoryItem: Identifiable, Equatable, Sendable {
         createdAt: String = ""
     ) {
         self.batchId = batchId
+        self.submissionIdUuid = submissionIdUuid
         self.status = status
         self.totalRows = totalRows
         self.approvedRows = approvedRows
@@ -818,23 +972,31 @@ public struct DirectEntryDuplicateCandidate: Identifiable, Equatable, Sendable {
 
 public struct DirectEntryBatchSubmitOutcome: Equatable, Sendable {
     public let batchId: Int64
+    public let submissionIdUuid: String
     public let createdCount: Int
     public let entryIdByRowId: [String: Int64]
+    public let entryIdUuidByRowId: [String: String]
 
     public init(
         batchId: Int64 = 0,
+        submissionIdUuid: String = "",
         createdCount: Int,
-        entryIdByRowId: [String: Int64] = [:]
+        entryIdByRowId: [String: Int64] = [:],
+        entryIdUuidByRowId: [String: String] = [:]
     ) {
         self.batchId = batchId
+        self.submissionIdUuid = submissionIdUuid
         self.createdCount = createdCount
         self.entryIdByRowId = entryIdByRowId
+        self.entryIdUuidByRowId = entryIdUuidByRowId
     }
 }
 
 public struct WorkerItem: Identifiable, Equatable, Sendable {
     public var id: String { maNld }
     public let maNld: String
+    public let employeeCode: String
+    public let entryVersion: Int
     public let hoTen: String
     public let duAn: String
     public let quanLy: String
@@ -861,8 +1023,30 @@ public struct WorkerItem: Identifiable, Equatable, Sendable {
     public var cccdBackUrl: String?
     public let uploaderCode: String
 
+    public static func isUuidLike(_ value: String) -> Bool {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.count == 36 && trimmed.filter({ $0 == "-" }).count == 4 {
+            return true
+        }
+        return UUID(uuidString: trimmed) != nil
+    }
+
+    public var displayEmployeeCode: String {
+        let cleanEmp = employeeCode.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !cleanEmp.isEmpty && !Self.isUuidLike(cleanEmp) {
+            return cleanEmp
+        }
+        let cleanMa = maNld.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !cleanMa.isEmpty && !Self.isUuidLike(cleanMa) {
+            return cleanMa
+        }
+        return ""
+    }
+
     public init(
         maNld: String,
+        employeeCode: String = "",
+        entryVersion: Int = 1,
         hoTen: String = "",
         duAn: String = "",
         quanLy: String = "",
@@ -890,6 +1074,8 @@ public struct WorkerItem: Identifiable, Equatable, Sendable {
         uploaderCode: String = ""
     ) {
         self.maNld = maNld
+        self.employeeCode = employeeCode
+        self.entryVersion = entryVersion
         self.hoTen = hoTen
         self.duAn = duAn
         self.quanLy = quanLy
@@ -1071,7 +1257,10 @@ public struct WorkReportSectionSchema: Identifiable, Equatable, Sendable {
 
 public struct WorkReportObligationItem: Identifiable, Equatable, Sendable {
     public let id: Int64
+    public var obligationIdUuid: String
     public var submissionId: Int64?
+    public var submissionIdUuid: String?
+    public var submissionVersion: Int?
     public var templateCode: String
     public var templateName: String
     public var periodType: String
@@ -1090,7 +1279,10 @@ public struct WorkReportObligationItem: Identifiable, Equatable, Sendable {
 
     public init(
         id: Int64,
+        obligationIdUuid: String = "",
         submissionId: Int64? = nil,
+        submissionIdUuid: String? = nil,
+        submissionVersion: Int? = nil,
         templateCode: String = "",
         templateName: String,
         periodType: String = "WEEKLY",
@@ -1108,7 +1300,10 @@ public struct WorkReportObligationItem: Identifiable, Equatable, Sendable {
         formPayload: [String: String] = [:]
     ) {
         self.id = id
+        self.obligationIdUuid = obligationIdUuid.isEmpty ? String(id) : obligationIdUuid
         self.submissionId = submissionId
+        self.submissionIdUuid = submissionIdUuid
+        self.submissionVersion = submissionVersion
         self.templateCode = templateCode
         self.templateName = templateName
         self.periodType = periodType
@@ -1129,7 +1324,9 @@ public struct WorkReportObligationItem: Identifiable, Equatable, Sendable {
 
 public struct WorkReportReviewItem: Identifiable, Equatable, Sendable {
     public let id: Int64
+    public let submissionIdUuid: String
     public let obligationId: Int64
+    public let obligationIdUuid: String
     public let templateName: String
     public let periodType: String
     public let periodKey: String
@@ -1144,7 +1341,9 @@ public struct WorkReportReviewItem: Identifiable, Equatable, Sendable {
 
     public init(
         id: Int64,
+        submissionIdUuid: String = "",
         obligationId: Int64,
+        obligationIdUuid: String = "",
         templateName: String,
         periodType: String = "WEEKLY",
         periodKey: String = "",
@@ -1158,7 +1357,9 @@ public struct WorkReportReviewItem: Identifiable, Equatable, Sendable {
         formPayload: [String: String] = [:]
     ) {
         self.id = id
+        self.submissionIdUuid = submissionIdUuid.isEmpty ? String(id) : submissionIdUuid
         self.obligationId = obligationId
+        self.obligationIdUuid = obligationIdUuid.isEmpty ? String(obligationId) : obligationIdUuid
         self.templateName = templateName
         self.periodType = periodType
         self.periodKey = periodKey
@@ -1343,8 +1544,20 @@ public extension Dictionary where Key == String, Value == Any {
             if let i64 = raw as? Int64 { return i64 }
             if let i = raw as? Int { return Int64(i) }
             if let n = raw as? NSNumber { return n.int64Value }
-            if let s = raw as? String, let parsed = Int64(s.trimmingCharacters(in: .whitespacesAndNewlines)) {
-                return parsed
+            if let s = raw as? String {
+                let trimmed = s.trimmingCharacters(in: .whitespacesAndNewlines)
+                if let parsed = Int64(trimmed) {
+                    return parsed
+                }
+                if !trimmed.isEmpty && trimmed.lowercased() != "null" {
+                    var hash: UInt64 = 14695981039346656037
+                    for byte in trimmed.utf8 {
+                        hash ^= UInt64(byte)
+                        hash = hash &* 1099511628211
+                    }
+                    let positive = Int64(hash & 0x3FFFFFFFFFFFFFFF)
+                    return positive == 0 ? 1 : positive
+                }
             }
         }
         return nil

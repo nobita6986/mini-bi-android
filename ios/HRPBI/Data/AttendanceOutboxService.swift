@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 import CryptoKit
 import Network
 
@@ -37,6 +38,36 @@ public enum AttendanceContract {
     public static func computeSha256Hex(_ data: Data) -> String {
         let digest = SHA256.hash(data: data)
         return digest.map { String(format: "%02x", $0) }.joined()
+    }
+
+    public static func normalizeCameraJpeg(_ rawData: Data, maxDimensionPx: CGFloat = 1600, compressionQuality: CGFloat = 0.82) -> Data {
+        guard let image = UIImage(data: rawData),
+              image.size.width > 0,
+              image.size.height > 0 else {
+            return rawData
+        }
+        let maxSide = max(image.size.width, image.size.height)
+        let targetSize: CGSize
+        if maxSide > maxDimensionPx {
+            let ratio = maxDimensionPx / maxSide
+            targetSize = CGSize(
+                width: max(1, floor(image.size.width * ratio)),
+                height: max(1, floor(image.size.height * ratio))
+            )
+        } else {
+            targetSize = image.size
+        }
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1.0
+        format.opaque = true
+        let renderer = UIGraphicsImageRenderer(size: targetSize, format: format)
+        let rendered = renderer.image { _ in
+            image.draw(in: CGRect(origin: .zero, size: targetSize))
+        }
+        if let jpeg = rendered.jpegData(compressionQuality: compressionQuality), !jpeg.isEmpty {
+            return jpeg
+        }
+        return rawData
     }
 }
 
@@ -133,11 +164,19 @@ public final class AttendanceOutboxService {
         let localId = UUID().uuidString.lowercased()
         let idempotencyKey = localId
         let capturedTime = captureTimestampOverride ?? timeAnchorManager.resolveCaptureTime()
-        let photoSha256 = AttendanceContract.computeSha256Hex(photoData)
+        let normalizedPhotoData = AttendanceContract.normalizeCameraJpeg(photoData)
+        let photoSha256 = AttendanceContract.computeSha256Hex(normalizedPhotoData)
 
-        let ext = mimeType.lowercased().contains("png") ? "png" : "jpg"
+        let ext = "jpg"
         let photoFileUrl = photosDirectory.appendingPathComponent("\(localId).\(ext)")
-        try? photoData.write(to: photoFileUrl, options: .atomic)
+        try? normalizedPhotoData.write(to: photoFileUrl, options: .atomic)
+
+        let safeAccuracy: Double = {
+            if let acc = accuracyM, acc.isFinite && acc >= 0 {
+                return acc
+            }
+            return 15.0
+        }()
 
         let initialItem = AttendanceOutboxItem(
             localId: localId,
@@ -151,12 +190,12 @@ public final class AttendanceOutboxService {
             deviceClockSkewMs: capturedTime.deviceClockSkewMs,
             lat: lat,
             lng: lng,
-            accuracyM: accuracyM,
+            accuracyM: safeAccuracy,
             locationCapturedAt: locationCapturedAt ?? capturedTime.capturedAtIso,
             photoLocalPath: photoFileUrl.path,
             photoSha256: photoSha256,
-            photoSizeBytes: Int64(photoData.count),
-            mimeType: mimeType,
+            photoSizeBytes: Int64(normalizedPhotoData.count),
+            mimeType: "image/jpeg",
             note: note.trimmingCharacters(in: .whitespacesAndNewlines),
             status: AttendanceContract.statusPending,
             attemptCount: 0,
@@ -219,13 +258,22 @@ public final class AttendanceOutboxService {
         }()
 
         // Build canonical `metadata` JSON object per `check-in-contract.ts` (ALLOWED_METADATA_KEYS)
+        // Mirrors Android's `AttendanceOutboxService.buildMetadataJson` 100%:
+        // accuracy_meters is always a finite non-negative Double, address_hint & note are non-null Strings,
+        // and time_token / elapsed_since_anchor_ms are only included when SERVER_ANCHORED.
+        let safeAccuracy: Double = {
+            if let acc = item.accuracyM, acc.isFinite && acc >= 0 {
+                return acc
+            }
+            return 15.0
+        }()
         var metadataObj: [String: Any] = [
             "latitude": item.lat,
             "longitude": item.lng,
-            "accuracy_meters": item.accuracyM ?? NSNull(),
-            "address_hint": NSNull(),
+            "accuracy_meters": safeAccuracy,
+            "address_hint": "",
             "client_captured_at": item.clientCapturedAt,
-            "note": item.note.isEmpty ? NSNull() : item.note,
+            "note": item.note,
             "idempotency_key": cleanIdempotencyKey,
             "photo_sha256": item.photoSha256,
             "time_source": item.timeSource
@@ -235,9 +283,6 @@ public final class AttendanceOutboxService {
            let elapsed = item.elapsedSinceAnchorMs, elapsed >= 0 {
             metadataObj["time_token"] = token
             metadataObj["elapsed_since_anchor_ms"] = elapsed
-        } else {
-            metadataObj["time_token"] = NSNull()
-            metadataObj["elapsed_since_anchor_ms"] = NSNull()
         }
 
         guard let metadataJsonData = try? JSONSerialization.data(withJSONObject: metadataObj),

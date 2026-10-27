@@ -140,7 +140,7 @@ public final class MiniBiViewModel: ObservableObject {
         if let firstAccount = savedAccounts.first {
             self.loginIdentifierInput = firstAccount.identifier
         }
-        applyDatePreset(.thisMonth, reload: false)
+        applyDatePreset(.all, reload: false)
 
         self.attendanceOutboxService.onOutboxChanged = { [weak self] in
             Task { @MainActor [weak self] in
@@ -171,7 +171,13 @@ public final class MiniBiViewModel: ObservableObject {
     // MARK: - Banner & Theme Helpers
 
     public func showBanner(_ message: String, isError: Bool = false) {
-        bannerMessage = message
+        let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              !trimmed.lowercased().contains("(cancelled)"),
+              trimmed.uppercased() != "REQUEST_CANCELLED" else {
+            return
+        }
+        bannerMessage = trimmed
         bannerIsError = isError
     }
 
@@ -492,8 +498,15 @@ public final class MiniBiViewModel: ObservableObject {
         correctedCccd: String? = nil,
         note: String = ""
     ) async {
+        let targetUuid = selectedCccdReviewItem?.entryId == entryId
+            ? selectedCccdReviewItem?.entryIdUuid ?? String(entryId)
+            : (cccdReviewItems.first(where: { $0.entryId == entryId })?.entryIdUuid ?? String(entryId))
+        let targetVer = selectedCccdReviewItem?.entryId == entryId
+            ? selectedCccdReviewItem?.entryVersion ?? 1
+            : (cccdReviewItems.first(where: { $0.entryId == entryId })?.entryVersion ?? 1)
         let res = await directEntryService.resolveCccdReview(
-            entryId: entryId,
+            entryIdUuid: targetUuid,
+            expectedEntryVersion: targetVer,
             action: action,
             correctedCccd: correctedCccd,
             note: note
@@ -509,7 +522,10 @@ public final class MiniBiViewModel: ObservableObject {
     }
 
     public func retryCccdQrExtraction(entryId: Int64) async {
-        let res = await directEntryService.retryCccdQrExtraction(entryId: entryId)
+        let targetUuid = selectedCccdReviewItem?.entryId == entryId
+            ? selectedCccdReviewItem?.entryIdUuid ?? String(entryId)
+            : (cccdReviewItems.first(where: { $0.entryId == entryId })?.entryIdUuid ?? String(entryId))
+        let res = await directEntryService.retryCccdQrExtraction(entryIdUuid: targetUuid)
         switch res {
         case .success(let updated, _):
             selectedCccdReviewItem = updated
@@ -524,7 +540,8 @@ public final class MiniBiViewModel: ObservableObject {
         let res = await workReportsService.selfWithdrawDuplicateEpisode(
             episodeId: episode.episodeId,
             cccd: cccd,
-            maNld: episode.maNld
+            maNld: episode.entryIdUuid.isEmpty ? episode.maNld : episode.entryIdUuid,
+            entryVersion: episode.entryVersion
         )
         switch res {
         case .success:
@@ -542,10 +559,17 @@ public final class MiniBiViewModel: ObservableObject {
 
     public func addNewWorkerDraftRow() {
         var newDraft = NewWorkerEntryDraft()
-        if let first = newWorkerDraftRows.first {
-            newDraft.duAn = first.duAn
-            newDraft.quanLy = first.quanLy
-            newDraft.nguoiTuyen = first.nguoiTuyen
+        if let prev = newWorkerDraftRows.last ?? newWorkerDraftRows.first {
+            newDraft.projectId = prev.projectId
+            newDraft.duAn = prev.duAn
+            newDraft.providerType = prev.providerType
+            newDraft.recruiterId = prev.recruiterId
+            newDraft.nguoiTuyen = prev.nguoiTuyen
+            newDraft.laborTypeKey = prev.laborTypeKey
+            newDraft.nganhNghe = prev.nganhNghe
+            newDraft.ngayVaoLam = prev.ngayVaoLam
+            newDraft.trangThai = prev.trangThai
+            newDraft.quanLy = prev.quanLy
         }
         newWorkerDraftRows.append(newDraft)
     }
@@ -582,6 +606,8 @@ public final class MiniBiViewModel: ObservableObject {
     ) {
         updateNewWorkerDraftRow(rowId: rowId) { draft in
             switch docType {
+            case DirectEntryContract.docTypeWorkerPortrait:
+                draft.portraitFile = attachment
             case DirectEntryContract.docTypeCccdFront:
                 draft.cccdFrontFile = attachment
             case DirectEntryContract.docTypeCccdBack:
@@ -616,8 +642,12 @@ public final class MiniBiViewModel: ObservableObject {
     /// (automatically merging 2+ contract images into 1 PDF), and removes ONLY the rows that succeeded!
     public func submitNewWorkerDraftBatch(confirmedDuplicates: Bool = false) async {
         let validRows = newWorkerDraftRows.filter { $0.isReadyForSubmit }
-        guard !validRows.isEmpty else {
-            showBanner("Vui lòng nhập ít nhất 1 dòng có Họ tên, Dự án và Trạng thái.", isError: true)
+        if validRows.isEmpty {
+            if let firstRow = newWorkerDraftRows.first, let err = firstRow.validateAndroidContractError() {
+                showBanner(err, isError: true)
+            } else {
+                showBanner("Vui lòng chọn Dự án, Người tuyển / Vendor, Loại hình LĐ và nhập Số CCCD (12 chữ số).", isError: true)
+            }
             return
         }
 
@@ -643,27 +673,36 @@ public final class MiniBiViewModel: ObservableObject {
 
         switch submitRes {
         case .success(let outcome, _):
-            // Upload staged documents (CCCD front/back + multi-image merged PDF contract) for each created entry
+            // Upload staged documents (Portrait + CCCD front/back + multi-image merged PDF contract) for each created entry
             for row in validRows {
-                if let entryId = outcome.entryIdByRowId[row.rowId] {
+                let entryIdUuid = outcome.entryIdUuidByRowId[row.rowId]
+                    ?? outcome.entryIdByRowId[row.rowId].map { String($0) }
+                if let entryIdUuid, !entryIdUuid.isEmpty {
+                    if let portrait = row.portraitFile {
+                        _ = await directEntryService.uploadEntryDocumentAttachments(
+                            entryIdUuid: entryIdUuid,
+                            docType: DirectEntryContract.docTypeWorkerPortrait,
+                            attachments: [portrait]
+                        )
+                    }
                     if let front = row.cccdFrontFile {
                         _ = await directEntryService.uploadEntryDocumentAttachments(
-                            entryId: entryId,
+                            entryIdUuid: entryIdUuid,
                             docType: DirectEntryContract.docTypeCccdFront,
                             attachments: [front]
                         )
                     }
                     if let back = row.cccdBackFile {
                         _ = await directEntryService.uploadEntryDocumentAttachments(
-                            entryId: entryId,
+                            entryIdUuid: entryIdUuid,
                             docType: DirectEntryContract.docTypeCccdBack,
                             attachments: [back]
                         )
                     }
                     if !row.contractFiles.isEmpty {
                         _ = await directEntryService.uploadEntryDocumentAttachments(
-                            entryId: entryId,
-                            docType: DirectEntryContract.docTypeSafetyCard,
+                            entryIdUuid: entryIdUuid,
+                            docType: DirectEntryContract.docTypeEmploymentContract,
                             attachments: row.contractFiles
                         )
                     }
@@ -1199,12 +1238,12 @@ public final class MiniBiViewModel: ObservableObject {
         selectedObligationEditor = obligation
         editorFieldValues = obligation.formPayload
 
-        // Fetch full detail to ensure latest schema, payload, version, and `is_overdue`
-        let detailRes = await workReportsService.fetchObligationDetail(obligationId: obligation.id)
+        // Fetch full detail to ensure latest schema_json, payload_json, submission_version, and `is_overdue`
+        let detailRes = await workReportsService.fetchObligationDetail(obligationIdUuid: obligation.obligationIdUuid)
         if case .success(let detail, _) = detailRes {
             selectedObligationEditor = detail
             editorFieldValues = detail.formPayload
-            if let idx = workReportObligations.firstIndex(where: { $0.id == detail.id }) {
+            if let idx = workReportObligations.firstIndex(where: { $0.id == detail.id || $0.obligationIdUuid == detail.obligationIdUuid }) {
                 workReportObligations[idx] = detail
             }
         }
@@ -1222,12 +1261,12 @@ public final class MiniBiViewModel: ObservableObject {
             return
         }
 
-        let submissionId = editor.submissionId ?? editor.id
         isSavingWorkReport = true
         let result = await workReportsService.saveDraft(
-            submissionId: submissionId,
-            version: editor.version,
-            formPayload: editorFieldValues
+            obligationIdUuid: editor.obligationIdUuid,
+            expectedVersion: editor.submissionVersion,
+            formPayload: editorFieldValues,
+            sections: editor.sections
         )
         isSavingWorkReport = false
 
@@ -1252,12 +1291,12 @@ public final class MiniBiViewModel: ObservableObject {
             }
         }
 
-        let submissionId = editor.submissionId ?? editor.id
         isSavingWorkReport = true
         let result = await workReportsService.submitReport(
-            submissionId: submissionId,
-            version: editor.version,
-            formPayload: editorFieldValues
+            obligationIdUuid: editor.obligationIdUuid,
+            expectedVersion: editor.submissionVersion,
+            formPayload: editorFieldValues,
+            sections: editor.sections
         )
         isSavingWorkReport = false
 
@@ -1273,14 +1312,16 @@ public final class MiniBiViewModel: ObservableObject {
         case .success(let updated, _):
             var merged = updated
             if merged.id == 0 { merged = currentEditor }
-            merged.formPayload = editorFieldValues
+            if merged.sections.isEmpty { merged.sections = currentEditor.sections }
+            if merged.formPayload.isEmpty { merged.formPayload = editorFieldValues }
             if isFinalSubmit {
                 merged.submissionState = WorkReportsContract.stateSubmitted
             } else if merged.submissionState == WorkReportsContract.stateNotStarted {
                 merged.submissionState = WorkReportsContract.stateDraft
             }
             selectedObligationEditor = merged
-            if let idx = workReportObligations.firstIndex(where: { $0.id == currentEditor.id }) {
+            editorFieldValues = merged.formPayload
+            if let idx = workReportObligations.firstIndex(where: { $0.id == currentEditor.id || $0.obligationIdUuid == currentEditor.obligationIdUuid }) {
                 workReportObligations[idx] = merged
             }
             showBanner(isFinalSubmit ? "Đã nộp báo cáo công việc thành công." : "Đã lưu bản nháp báo cáo.")
@@ -1297,18 +1338,18 @@ public final class MiniBiViewModel: ObservableObject {
                 lockedEditor.isOverdue = true
                 selectedObligationEditor = lockedEditor
                 // 3. Move item in obligations list to History tab and reload from server
-                if let idx = workReportObligations.firstIndex(where: { $0.id == currentEditor.id }) {
+                if let idx = workReportObligations.firstIndex(where: { $0.id == currentEditor.id || $0.obligationIdUuid == currentEditor.obligationIdUuid }) {
                     workReportObligations[idx].isOverdue = true
                 }
                 await loadWorkReportObligations()
             } else if httpStatus == 409 {
                 // Version conflict (NOT deadline passed): reload latest version without locking as overdue
                 showBanner(message, isError: true)
-                let detailRes = await workReportsService.fetchObligationDetail(obligationId: currentEditor.id)
+                let detailRes = await workReportsService.fetchObligationDetail(obligationIdUuid: currentEditor.obligationIdUuid)
                 if case .success(let refreshed, _) = detailRes {
                     selectedObligationEditor = refreshed
                     editorFieldValues = refreshed.formPayload
-                    if let idx = workReportObligations.firstIndex(where: { $0.id == refreshed.id }) {
+                    if let idx = workReportObligations.firstIndex(where: { $0.id == refreshed.id || $0.obligationIdUuid == refreshed.obligationIdUuid }) {
                         workReportObligations[idx] = refreshed
                     }
                 }
@@ -1324,7 +1365,7 @@ public final class MiniBiViewModel: ObservableObject {
         comment: String
     ) async {
         let res = await workReportsService.decideReview(
-            submissionId: review.id,
+            submissionIdUuid: review.submissionIdUuid,
             decision: decision,
             comment: comment,
             expectedVersion: review.version

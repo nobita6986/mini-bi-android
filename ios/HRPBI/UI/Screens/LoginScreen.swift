@@ -144,6 +144,8 @@ public struct LoginScreen: View {
                                 TextField("Nhập email hoặc mã ID", text: $viewModel.loginIdentifierInput)
                                     .textInputAutocapitalization(.never)
                                     .autocorrectionDisabled(true)
+                                    .foregroundColor(SemanticColors.textPrimary)
+                                    .tint(theme.primary)
                             }
                             .padding(12)
                             .background(Color.white)
@@ -167,9 +169,13 @@ public struct LoginScreen: View {
                                     TextField("Nhập mật khẩu", text: $viewModel.loginPasswordInput)
                                         .textInputAutocapitalization(.never)
                                         .autocorrectionDisabled(true)
+                                        .foregroundColor(SemanticColors.textPrimary)
+                                        .tint(theme.primary)
                                 } else {
                                     SecureField("Nhập mật khẩu", text: $viewModel.loginPasswordInput)
                                         .textInputAutocapitalization(.never)
+                                        .foregroundColor(SemanticColors.textPrimary)
+                                        .tint(theme.primary)
                                 }
                                 Button {
                                     isPasswordVisible.toggle()

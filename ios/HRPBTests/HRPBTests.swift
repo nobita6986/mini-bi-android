@@ -722,12 +722,82 @@ final class HRPBTests: XCTestCase {
         ]
         let parsedWorker = MiniBiRepository.parseWorkerItem(workerRowJson)
         XCTAssertEqual(parsedWorker.maNld, "aaaa1111-2222-4333-8444-555555555555")
+        XCTAssertEqual(parsedWorker.employeeCode, "hrp-2026-000123")
+        XCTAssertEqual(parsedWorker.displayEmployeeCode, "hrp-2026-000123")
         XCTAssertEqual(parsedWorker.hoTen, "Nguyễn Văn Công")
         XCTAssertEqual(parsedWorker.duAn, "Luxshare Bắc Giang")
         XCTAssertEqual(parsedWorker.nguoiTuyen, "Phạm Thị Sâm")
         XCTAssertEqual(parsedWorker.trangThai, "Đang làm việc")
         XCTAssertEqual(parsedWorker.soTaiKhoan, "190366778899")
         XCTAssertEqual(parsedWorker.nganHang, "TECHCOMBANK")
+
+        // When worker row has UUID entry_id and no employee_code, displayEmployeeCode must be empty (never show UUID)
+        let uuidOnlyWorker = MiniBiRepository.parseWorkerItem([
+            "entry_id": "23850c6b-7e11-4db3-b97d-63c4b7ff64d9",
+            "display_name": "Lý Minh Khôi",
+            "employment_status": "ON"
+        ])
+        XCTAssertEqual(uuidOnlyWorker.maNld, "23850c6b-7e11-4db3-b97d-63c4b7ff64d9")
+        XCTAssertEqual(uuidOnlyWorker.displayEmployeeCode, "")
+
+        // Production schema_json parsing (top-level `sections` + `fields` with `field_key`, `section_key`, `options`)
+        let prodSchema: [String: Any] = [
+            "sections": [
+                ["section_key": "general", "label": "Thông tin chung", "sort_order": 1]
+            ],
+            "fields": [
+                [
+                    "field_key": "interview_count",
+                    "section_key": "general",
+                    "label": "Số lượng phỏng vấn",
+                    "field_type": "number",
+                    "required": true,
+                    "sort_order": 1
+                ],
+                [
+                    "field_key": "shift_type",
+                    "section_key": "general",
+                    "label": "Ca làm việc",
+                    "field_type": "single_select",
+                    "required": true,
+                    "sort_order": 2,
+                    "options": [
+                        ["option_key": "DAY", "label": "Ca ngày"],
+                        ["option_key": "NIGHT", "label": "Ca đêm"]
+                    ]
+                ],
+                [
+                    "field_key": "has_issue",
+                    "section_key": "general",
+                    "label": "Có phát sinh sự cố",
+                    "field_type": "boolean",
+                    "required": false,
+                    "sort_order": 3
+                ]
+            ]
+        ]
+        let parsedSections = WorkReportsContract.parseDynamicSections(schemaJson: prodSchema)
+        XCTAssertEqual(parsedSections.count, 1)
+        XCTAssertEqual(parsedSections[0].title, "Thông tin chung")
+        XCTAssertEqual(parsedSections[0].fields.map(\.key), ["interview_count", "shift_type", "has_issue"])
+        XCTAssertEqual(parsedSections[0].fields[1].options.map(\.key), ["DAY", "NIGHT"])
+        XCTAssertEqual(parsedSections[0].fields[1].options.map(\.label), ["Ca ngày", "Ca đêm"])
+
+        // Empty schema must NOT fabricate fake fields
+        XCTAssertTrue(WorkReportsContract.parseDynamicSections(schemaJson: nil).isEmpty)
+
+        // Typed payload builder converts string values according to field types
+        let typedPayload = WorkReportsContract.buildTypedPayloadJson(
+            sections: parsedSections,
+            answers: [
+                "interview_count": "15",
+                "shift_type": "DAY",
+                "has_issue": "true"
+            ]
+        )
+        XCTAssertEqual(typedPayload["interview_count"] as? Int64, 15)
+        XCTAssertEqual(typedPayload["shift_type"] as? String, "DAY")
+        XCTAssertEqual(typedPayload["has_issue"] as? Bool, true)
     }
 
     // MARK: - Helper

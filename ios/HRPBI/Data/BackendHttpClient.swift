@@ -460,6 +460,16 @@ public final class BackendHttpClient: @unchecked Sendable {
                 errorMessage: errMsg
             )
         } catch {
+            let nsError = error as NSError
+            if (error as? URLError)?.code == .cancelled
+                || error is CancellationError
+                || (nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled) {
+                return BackendHttpResponse(
+                    statusCode: 0,
+                    errorCode: "REQUEST_CANCELLED",
+                    errorMessage: nil
+                )
+            }
             return BackendHttpResponse(
                 statusCode: 0,
                 errorCode: "NETWORK_ERROR",

@@ -1,11 +1,14 @@
 import Foundation
+import CryptoKit
 
 // MARK: - Direct Entry ("Cấp mới") & CCCD Review Service
 // Mirrors Android's `data/DirectEntryService.kt` 100%
 
 public enum DirectEntryContract {
+    public static let docTypeWorkerPortrait = "WORKER_PORTRAIT"
     public static let docTypeCccdFront = "CCCD_FRONT"
     public static let docTypeCccdBack = "CCCD_BACK"
+    public static let docTypeEmploymentContract = "EMPLOYMENT_CONTRACT"
     public static let docTypeSafetyCard = "SAFETY_CARD"
 
     public static let reviewStatusMatched = "MATCHED"
@@ -28,6 +31,36 @@ public enum DirectEntryContract {
         return true
     }
 
+    public static func uiDateToIsoDate(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "" }
+        if trimmed.contains("/") {
+            let parts = trimmed.split(separator: "/")
+            if parts.count == 3 {
+                let d = String(parts[0]).paddingLeftZeros(count: 2)
+                let m = String(parts[1]).paddingLeftZeros(count: 2)
+                let y = String(parts[2])
+                if y.count == 4 {
+                    return "\(y)-\(m)-\(d)"
+                }
+            }
+        }
+        if trimmed.contains("-") {
+            let parts = trimmed.split(separator: "-")
+            if parts.count == 3 {
+                if parts[0].count == 4 {
+                    return trimmed
+                }
+                if parts[2].count == 4 {
+                    let d = String(parts[0]).paddingLeftZeros(count: 2)
+                    let m = String(parts[1]).paddingLeftZeros(count: 2)
+                    return "\(parts[2])-\(m)-\(d)"
+                }
+            }
+        }
+        return trimmed
+    }
+
     public static func reviewStatusDisplayLabel(_ status: String) -> String {
         switch status.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() {
         case reviewStatusMatched, "MATCHED_INITIAL", "RESOLVED":
@@ -46,10 +79,18 @@ public enum DirectEntryContract {
     }
 }
 
+private extension String {
+    func paddingLeftZeros(count: Int) -> String {
+        if self.count >= count { return self }
+        return String(repeating: "0", count: count - self.count) + self
+    }
+}
+
 public final class DirectEntryService: @unchecked Sendable {
     public static let shared = DirectEntryService()
 
     private let httpClient: BackendHttpClient
+    private var lastLoadedCatalog: DirectEntryAssigneeOptions = DirectEntryAssigneeOptions()
 
     public init(httpClient: BackendHttpClient = .shared) {
         self.httpClient = httpClient
@@ -115,21 +156,48 @@ public final class DirectEntryService: @unchecked Sendable {
         correctedCccd: String? = nil,
         note: String = ""
     ) async -> MiniBiApiResult<CccdReviewItem> {
+        await resolveCccdReview(
+            entryIdUuid: String(entryId),
+            expectedEntryVersion: 1,
+            action: action,
+            correctedCccd: correctedCccd,
+            note: note
+        )
+    }
+
+    public func resolveCccdReview(
+        entryIdUuid: String,
+        expectedEntryVersion: Int = 1,
+        action: String,
+        correctedCccd: String? = nil,
+        note: String = ""
+    ) async -> MiniBiApiResult<CccdReviewItem> {
         var body: [String: Any] = [
             "action": action,
+            "expected_entry_version": max(1, expectedEntryVersion),
             "note": note,
             "resolution_note": note
         ]
         if let correctedCccd, !correctedCccd.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            body["corrected_cccd"] = correctedCccd.trimmingCharacters(in: .whitespacesAndNewlines)
-            body["national_id"] = correctedCccd.trimmingCharacters(in: .whitespacesAndNewlines)
+            let clean = correctedCccd.trimmingCharacters(in: .whitespacesAndNewlines)
+            body["corrected_cccd"] = clean
+            body["entered_national_id"] = clean
+            body["national_id"] = clean
         }
 
-        let response = await httpClient.request(
+        let encoded = entryIdUuid.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? entryIdUuid
+        var response = await httpClient.request(
             method: "POST",
-            path: "/api/direct-entry/cccd-review/\(entryId)/resolve",
+            path: "/api/direct-entry/entries/\(encoded)/cccd-review/resolve",
             jsonBody: body
         )
+        if response.statusCode == 404 {
+            response = await httpClient.request(
+                method: "POST",
+                path: "/api/direct-entry/cccd-review/\(encoded)/resolve",
+                jsonBody: body
+            )
+        }
         guard response.isSuccess else {
             return .failure(
                 message: response.errorMessage ?? "Không thể cập nhật kết quả duyệt CCCD.",
@@ -143,15 +211,27 @@ public final class DirectEntryService: @unchecked Sendable {
             ?? (root["entry"] as? [String: Any])
             ?? (root["data"] as? [String: Any])
             ?? root
-        return .success(Self.parseCccdReviewItem(obj, fallbackIndex: Int(entryId)), statusCode: response.statusCode)
+        return .success(Self.parseCccdReviewItem(obj, fallbackIndex: 0), statusCode: response.statusCode)
     }
 
     public func retryCccdQrExtraction(entryId: Int64) async -> MiniBiApiResult<CccdReviewItem> {
-        let response = await httpClient.request(
+        await retryCccdQrExtraction(entryIdUuid: String(entryId))
+    }
+
+    public func retryCccdQrExtraction(entryIdUuid: String) async -> MiniBiApiResult<CccdReviewItem> {
+        let encoded = entryIdUuid.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? entryIdUuid
+        var response = await httpClient.request(
             method: "POST",
-            path: "/api/direct-entry/cccd-review/\(entryId)/retry-qr",
+            path: "/api/direct-entry/entries/\(encoded)/cccd-review/retry-qr",
             jsonBody: [:]
         )
+        if response.statusCode == 404 {
+            response = await httpClient.request(
+                method: "POST",
+                path: "/api/direct-entry/cccd-review/\(encoded)/retry-qr",
+                jsonBody: [:]
+            )
+        }
         guard response.isSuccess else {
             return .failure(
                 message: response.errorMessage ?? "Không thể trích xuất lại mã QR CCCD.",
@@ -165,7 +245,7 @@ public final class DirectEntryService: @unchecked Sendable {
             ?? (root["entry"] as? [String: Any])
             ?? (root["data"] as? [String: Any])
             ?? root
-        return .success(Self.parseCccdReviewItem(obj, fallbackIndex: Int(entryId)), statusCode: response.statusCode)
+        return .success(Self.parseCccdReviewItem(obj, fallbackIndex: 0), statusCode: response.statusCode)
     }
 
     // MARK: - 2. Direct Entry ("Cấp mới") Options, Duplicate Check, Batch Submit & Document Upload
@@ -182,20 +262,89 @@ public final class DirectEntryService: @unchecked Sendable {
                 ?? (root["data"] as? [String: Any])
                 ?? root
 
-            var projects = dataObj.optStringArray("projects", "du_an")
-            if projects.isEmpty, let projObjs = dataObj["projects"] as? [[String: Any]] {
-                projects = projObjs.compactMap { p in
-                    let label = p.optString("display_name", "name", "project_display", "project_id")
-                    return label.isEmpty ? nil : label
+            var catalogProjects: [DirectEntryCatalogProject] = []
+            if let projObjs = dataObj["projects"] as? [[String: Any]] {
+                for p in projObjs {
+                    if p.keys.contains("is_active") && !p.optBool("is_active", defaultValue: true) { continue }
+                    let pid = p.optString("project_id", "id", "code")
+                    let name = p.optString("display_name", "name", "project_display", defaultValue: pid)
+                    if !pid.isEmpty && !name.isEmpty {
+                        catalogProjects.append(DirectEntryCatalogProject(projectId: pid, displayName: name))
+                    }
                 }
             }
+            catalogProjects.sort { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
 
-            var recruiters = dataObj.optStringArray("recruiters", "nguoi_tuyen")
-            if recruiters.isEmpty, let recObjs = dataObj["recruiters"] as? [[String: Any]] {
-                recruiters = recObjs.compactMap { r in
-                    let label = r.optString("display_name", "name", "recruiter_display", "recruiter_id")
-                    return label.isEmpty ? nil : label
+            var catalogRecruiters: [DirectEntryCatalogRecruiter] = []
+            if let recObjs = dataObj["recruiters"] as? [[String: Any]] {
+                for r in recObjs {
+                    if r.keys.contains("is_active") && !r.optBool("is_active", defaultValue: true) { continue }
+                    let rid = r.optString("recruiter_id", "id", "code")
+                    let name = r.optString("display_name", "name", "recruiter_display", defaultValue: rid)
+                    let pCode = r.optString("personnel_code", "employee_code", "code")
+                    let pType = r.optString("provider_type", defaultValue: "hrp").lowercased() == "vendor" ? "vendor" : "hrp"
+                    let vendorId = r.optNullableString("vendor_id")
+                    let teamId = r.optNullableString("team_id")
+                    let teamDisplay = r.optNullableString("team_display_name", "team_name")
+                    if !rid.isEmpty && !name.isEmpty {
+                        catalogRecruiters.append(
+                            DirectEntryCatalogRecruiter(
+                                recruiterId: rid,
+                                displayName: name,
+                                personnelCode: pCode,
+                                providerType: pType,
+                                vendorId: vendorId,
+                                teamId: teamId,
+                                teamDisplayName: teamDisplay
+                            )
+                        )
+                    }
                 }
+            }
+            catalogRecruiters.sort { $0.label.localizedCaseInsensitiveCompare($1.label) == .orderedAscending }
+
+            var catalogBanks: [DirectEntryCatalogBank] = []
+            if let bankObjs = dataObj["banks"] as? [[String: Any]] {
+                for b in bankObjs {
+                    let bid = b.optString("bank_id", "id", "code")
+                    let name = b.optString("display_name", "name", "bank_name", defaultValue: bid)
+                    if !bid.isEmpty && !name.isEmpty {
+                        catalogBanks.append(DirectEntryCatalogBank(bankId: bid, displayName: name))
+                    }
+                }
+            }
+            catalogBanks.sort { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
+
+            var catalogLaborTypes: [DirectEntryCatalogLaborType] = []
+            if let ltObjs = dataObj["labor_types"] as? [[String: Any]] {
+                for lt in ltObjs {
+                    if lt.keys.contains("is_active") && !lt.optBool("is_active", defaultValue: true) { continue }
+                    let key = lt.optString("labor_type_key", "key", "code")
+                    let name = lt.optString("display_name", "name", "label", defaultValue: key)
+                    let order = lt.optInt("sort_order", defaultValue: 100)
+                    if !key.isEmpty && !name.isEmpty {
+                        catalogLaborTypes.append(DirectEntryCatalogLaborType(laborTypeKey: key, displayName: name, sortOrder: order))
+                    }
+                }
+            }
+            catalogLaborTypes.sort { $0.sortOrder < $1.sortOrder }
+            if catalogLaborTypes.isEmpty {
+                catalogLaborTypes = DirectEntryAssigneeOptions.fallbackLaborTypes
+            }
+
+            var projects = catalogProjects.map(\.displayName)
+            if projects.isEmpty {
+                projects = dataObj.optStringArray("projects", "du_an")
+            }
+
+            var recruiters = catalogRecruiters.map(\.label)
+            if recruiters.isEmpty {
+                recruiters = dataObj.optStringArray("recruiters", "nguoi_tuyen")
+            }
+
+            var banks = catalogBanks.map(\.displayName)
+            if banks.isEmpty {
+                banks = dataObj.optStringArray("banks", "ngan_hang")
             }
 
             var managers = dataObj.optStringArray("managers", "quan_ly")
@@ -206,17 +355,20 @@ public final class DirectEntryService: @unchecked Sendable {
                 }
             }
 
-            return .success(
-                DirectEntryAssigneeOptions(
-                    projects: projects,
-                    managers: managers,
-                    recruiters: recruiters,
-                    banks: dataObj.optStringArray("banks", "ngan_hang")
-                ),
-                statusCode: response.statusCode
+            let options = DirectEntryAssigneeOptions(
+                projects: projects,
+                managers: managers,
+                recruiters: recruiters,
+                banks: banks,
+                catalogProjects: catalogProjects,
+                catalogRecruiters: catalogRecruiters,
+                catalogBanks: catalogBanks,
+                catalogLaborTypes: catalogLaborTypes
             )
+            self.lastLoadedCatalog = options
+            return .success(options, statusCode: response.statusCode)
         }
-        return .success(DirectEntryAssigneeOptions())
+        return .success(lastLoadedCatalog)
     }
 
     public func fetchBatchHistory() async -> MiniBiApiResult<[DirectEntryBatchHistoryItem]> {
@@ -243,8 +395,10 @@ public final class DirectEntryService: @unchecked Sendable {
             .ifEmpty(dataObj.optObjectArray("batches"))
 
         let items = rawList.enumerated().map { idx, obj in
-            DirectEntryBatchHistoryItem(
-                batchId: obj.optInt64("batch_id", "id") ?? Int64(idx + 1),
+            let subUuid = obj.optString("submission_id", "batch_id", "id")
+            return DirectEntryBatchHistoryItem(
+                batchId: obj.optInt64("submission_id", "batch_id", "id") ?? Int64(idx + 1),
+                submissionIdUuid: subUuid,
                 status: obj.optString("state", "status", defaultValue: "SUBMITTED"),
                 totalRows: obj.optInt("entry_count", "total_rows", "total"),
                 approvedRows: obj.optInt("submitted_count", "approved_rows", "approved_count"),
@@ -256,7 +410,7 @@ public final class DirectEntryService: @unchecked Sendable {
     }
 
     public func checkDuplicates(drafts: [NewWorkerEntryDraft]) async -> MiniBiApiResult<[DirectEntryDuplicateCandidate]> {
-        let cccds = drafts.map { $0.soCccd.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+        let cccds = drafts.map { $0.soCccd.filter(\.isNumber) }.filter { $0.count == 12 }
         guard !cccds.isEmpty else {
             return .success([])
         }
@@ -290,43 +444,166 @@ public final class DirectEntryService: @unchecked Sendable {
         return .success(items, statusCode: response.statusCode)
     }
 
+    private func buildFullProfileEntryPayload(_ d: NewWorkerEntryDraft) -> [String: Any] {
+        let catalog = self.lastLoadedCatalog
+
+        let resolvedProjectId: String = {
+            let explicit = d.projectId.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !explicit.isEmpty { return explicit }
+            let disp = d.duAn.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let matched = catalog.catalogProjects.first(where: { $0.displayName.caseInsensitiveCompare(disp) == .orderedSame || $0.projectId == disp }) {
+                return matched.projectId
+            }
+            return disp
+        }()
+
+        let resolvedRecruiterId: String = {
+            let explicit = d.recruiterId.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !explicit.isEmpty { return explicit }
+            let disp = d.nguoiTuyen.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let matched = catalog.catalogRecruiters.first(where: {
+                $0.label.caseInsensitiveCompare(disp) == .orderedSame ||
+                $0.displayName.caseInsensitiveCompare(disp) == .orderedSame ||
+                $0.recruiterId == disp
+            }) {
+                return matched.recruiterId
+            }
+            return disp
+        }()
+
+        let resolvedLaborType: String = {
+            let explicit = d.laborTypeKey.trimmingCharacters(in: .whitespacesAndNewlines)
+            let disp = d.nganhNghe.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let matched = catalog.catalogLaborTypes.first(where: {
+                $0.displayName.caseInsensitiveCompare(disp) == .orderedSame ||
+                $0.laborTypeKey.caseInsensitiveCompare(explicit) == .orderedSame
+            }) {
+                return matched.laborTypeKey
+            }
+            if disp.lowercased().contains("chính thức") || explicit.uppercased() == "OFFICIAL" {
+                return "OFFICIAL"
+            }
+            return "SEASONAL"
+        }()
+
+        let firstWorkDateIso: String = {
+            let iso = DirectEntryContract.uiDateToIsoDate(d.ngayVaoLam)
+            return iso.isEmpty ? LeaveContract.todayVietnamIsoDate() : iso
+        }()
+
+        let statusUpper: String = {
+            let st = d.trangThai.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if st.contains("chờ") || st.contains("unconfirmed") || st.contains("phỏng vấn") {
+                return "UNCONFIRMED"
+            }
+            return "ON"
+        }()
+
+        func fieldState(_ value: String) -> [String: Any] {
+            let clean = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            return clean.isEmpty ? ["state": "missing"] : ["state": "provided", "value": clean]
+        }
+
+        let cccdDigits = d.soCccd.filter(\.isNumber)
+        let genderApiValue: String = {
+            let g = d.gioiTinh.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if g == "nam" || g == "male" { return "male" }
+            if g == "nữ" || g == "nu" || g == "female" { return "female" }
+            return ""
+        }()
+        let dobIso = DirectEntryContract.uiDateToIsoDate(d.ngaySinh)
+        let issueIso = DirectEntryContract.uiDateToIsoDate(d.ngayCap)
+        let phoneDigits = d.sdt.filter(\.isNumber)
+
+        let workerDetails: [String: Any] = [
+            "national_id": fieldState(cccdDigits),
+            "display_name": fieldState(d.hoTen),
+            "gender": fieldState(genderApiValue),
+            "date_of_birth": fieldState(dobIso),
+            "national_id_issued_at": fieldState(issueIso),
+            "address": fieldState(d.queQuan),
+            "phone": fieldState(phoneDigits),
+            "note": fieldState(d.ghiChu)
+        ]
+
+        let bankDisp = d.nganHang.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedBankValue: String = {
+            if let matched = catalog.catalogBanks.first(where: {
+                $0.displayName.caseInsensitiveCompare(bankDisp) == .orderedSame ||
+                $0.bankId.caseInsensitiveCompare(bankDisp) == .orderedSame
+            }) {
+                return matched.bankId
+            }
+            return bankDisp
+        }()
+        let accNum = d.soTaiKhoan.trimmingCharacters(in: .whitespacesAndNewlines)
+        let holderName = d.bankAccountHolder.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        let paymentObj: [String: Any] = {
+            if resolvedBankValue.isEmpty && accNum.isEmpty && holderName.isEmpty {
+                return ["state": "missing"]
+            }
+            return [
+                "state": "provided",
+                "bank_id": fieldState(resolvedBankValue),
+                "account_number": fieldState(accNum),
+                "account_holder_name": fieldState(holderName)
+            ]
+        }()
+
+        return [
+            "client_row_id": d.rowId,
+            "project_id": resolvedProjectId,
+            "recruiter_id": resolvedRecruiterId,
+            "labor_type": resolvedLaborType,
+            "first_work_date": firstWorkDateIso,
+            "employment_status": [
+                "status": statusUpper,
+                "effective_date": firstWorkDateIso
+            ],
+            "worker_details": workerDetails,
+            "payment": paymentObj
+        ]
+    }
+
     public func submitBatch(
         drafts: [NewWorkerEntryDraft],
         confirmDuplicates: Bool = false
     ) async -> MiniBiApiResult<DirectEntryBatchSubmitOutcome> {
-        let rowsPayload: [[String: Any]] = drafts.map { d in
-            [
-                "row_id": d.rowId,
-                "ho_ten": d.hoTen.trimmingCharacters(in: .whitespacesAndNewlines),
-                "so_cccd": d.soCccd.trimmingCharacters(in: .whitespacesAndNewlines),
-                "du_an": d.duAn.trimmingCharacters(in: .whitespacesAndNewlines),
-                "trang_thai": d.trangThai.trimmingCharacters(in: .whitespacesAndNewlines),
-                "sdt": d.sdt.trimmingCharacters(in: .whitespacesAndNewlines),
-                "ngay_sinh": d.ngaySinh.trimmingCharacters(in: .whitespacesAndNewlines),
-                "gioi_tinh": d.gioiTinh.trimmingCharacters(in: .whitespacesAndNewlines),
-                "ngay_cap": d.ngayCap.trimmingCharacters(in: .whitespacesAndNewlines),
-                "ngay_vao_lam": d.ngayVaoLam.trimmingCharacters(in: .whitespacesAndNewlines),
-                "quan_ly": d.quanLy.trimmingCharacters(in: .whitespacesAndNewlines),
-                "nguoi_tuyen": d.nguoiTuyen.trimmingCharacters(in: .whitespacesAndNewlines),
-                "nganh_nghe": d.nganhNghe.trimmingCharacters(in: .whitespacesAndNewlines),
-                "que_quan": d.queQuan.trimmingCharacters(in: .whitespacesAndNewlines),
-                "ghi_chu": d.ghiChu.trimmingCharacters(in: .whitespacesAndNewlines),
-                "so_tai_khoan": d.soTaiKhoan.trimmingCharacters(in: .whitespacesAndNewlines),
-                "ngan_hang": d.nganHang.trimmingCharacters(in: .whitespacesAndNewlines)
-            ]
-        }
-
-        let body: [String: Any] = [
-            "rows": rowsPayload,
-            "entries": rowsPayload,
-            "confirm_duplicates": confirmDuplicates
+        let fullProfileEntries = drafts.map { buildFullProfileEntryPayload($0) }
+        let fullProfileBody: [String: Any] = [
+            "schema_version": "worker-profile/1.2",
+            "entries": fullProfileEntries
         ]
 
-        let response = await httpClient.request(
+        var response = await httpClient.request(
             method: "POST",
-            path: "/api/direct-entry/batches",
-            jsonBody: body
+            path: "/api/direct-entry/batches/full-profile",
+            jsonBody: fullProfileBody
         )
+
+        // Fallback to `/api/direct-entry/batches` if mock/legacy server returns 404
+        if response.statusCode == 404 {
+            let legacyRows: [[String: Any]] = drafts.map { d in
+                [
+                    "row_id": d.rowId,
+                    "ho_ten": d.hoTen.trimmingCharacters(in: .whitespacesAndNewlines),
+                    "so_cccd": d.soCccd.trimmingCharacters(in: .whitespacesAndNewlines),
+                    "du_an": d.duAn.trimmingCharacters(in: .whitespacesAndNewlines),
+                    "trang_thai": d.trangThai.trimmingCharacters(in: .whitespacesAndNewlines)
+                ]
+            }
+            response = await httpClient.request(
+                method: "POST",
+                path: "/api/direct-entry/batches",
+                jsonBody: [
+                    "rows": legacyRows,
+                    "entries": legacyRows,
+                    "confirm_duplicates": confirmDuplicates
+                ]
+            )
+        }
+
         guard response.isSuccess else {
             return .failure(
                 message: response.errorMessage ?? "Lưu lô cấp mới thất bại.",
@@ -336,32 +613,98 @@ public final class DirectEntryService: @unchecked Sendable {
         }
 
         let root = response.jsonObject ?? [:]
-        let dataObj = (root["data"] as? [String: Any]) ?? root
-        let batchId = dataObj.optInt64("batch_id", "id") ?? 0
-        let createdEntries = dataObj.optObjectArray("entries").ifEmpty(dataObj.optObjectArray("rows"))
+        let dataObj = (root["submission"] as? [String: Any])
+            ?? (root["data"] as? [String: Any])
+            ?? root
+        let submissionIdUuid = dataObj.optString("submission_id", "batch_id", "id")
+            .ifEmpty(root.optString("submission_id", "batch_id", "id"))
+        let batchId = dataObj.optInt64("submission_id", "batch_id", "id")
+            ?? root.optInt64("submission_id", "batch_id", "id")
+            ?? 0
+        let submissionVersion = max(1, dataObj.optInt("version", "submission_version", defaultValue: root.optInt("version", defaultValue: 1)))
+
+        let createdEntries = root.optObjectArray("entries")
+            .ifEmpty(dataObj.optObjectArray("entries"))
+            .ifEmpty(dataObj.optObjectArray("rows"))
 
         var entryIdByRowId: [String: Int64] = [:]
+        var entryIdUuidByRowId: [String: String] = [:]
         for (idx, entryObj) in createdEntries.enumerated() {
-            let entryId = entryObj.optInt64("entry_id", "id") ?? Int64(idx + 1)
+            let entryIdInt = entryObj.optInt64("entry_id", "id") ?? Int64(idx + 1)
+            let entryUuid = entryObj.optString("entry_id", "id", defaultValue: String(entryIdInt))
             let rowId = entryObj.optString(
+                "client_row_id",
                 "row_id",
                 defaultValue: idx < drafts.count ? drafts[idx].rowId : ""
             )
             if !rowId.isEmpty {
-                entryIdByRowId[rowId] = entryId
+                entryIdByRowId[rowId] = entryIdInt
+                entryIdUuidByRowId[rowId] = entryUuid
+            }
+        }
+
+        // Transition submission from DRAFT -> SUBMITTED (mirrors `DirectEntryService.kt:submitSubmission`)
+        if !submissionIdUuid.isEmpty {
+            let encodedSub = submissionIdUuid.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? submissionIdUuid
+            var needsDuplicateConfirmation = confirmDuplicates
+
+            let preflightRes = await httpClient.request(
+                method: "GET",
+                path: "/api/direct-entry/submissions/\(encodedSub)/duplicate-cccd-preflight"
+            )
+            if preflightRes.isSuccess, let pfRoot = preflightRes.jsonObject {
+                let pfObj = (pfRoot["preflight"] as? [String: Any]) ?? pfRoot
+                if pfObj.optBool("requires_confirmation", defaultValue: false) {
+                    needsDuplicateConfirmation = true
+                }
+            }
+
+            var transitionBody: [String: Any] = [
+                "target_state": "SUBMITTED",
+                "expected_submission_version": submissionVersion
+            ]
+            if needsDuplicateConfirmation {
+                transitionBody["duplicate_cccd_confirmation"] = ["confirmed": true]
+            }
+
+            let transitionRes = await httpClient.request(
+                method: "POST",
+                path: "/api/direct-entry/submissions/\(encodedSub)/transition",
+                jsonBody: transitionBody
+            )
+            if !transitionRes.isSuccess && transitionRes.statusCode != 404 {
+                return .failure(
+                    message: transitionRes.errorMessage ?? "Chuyển trạng thái gửi duyệt lô cấp mới thất bại.",
+                    httpStatus: transitionRes.statusCode,
+                    errorCode: transitionRes.errorCode
+                )
             }
         }
 
         let outcome = DirectEntryBatchSubmitOutcome(
             batchId: batchId,
+            submissionIdUuid: submissionIdUuid,
             createdCount: max(drafts.count, createdEntries.count),
-            entryIdByRowId: entryIdByRowId
+            entryIdByRowId: entryIdByRowId,
+            entryIdUuidByRowId: entryIdUuidByRowId
         )
         return .success(outcome, statusCode: response.statusCode)
     }
 
     public func uploadEntryDocumentAttachments(
         entryId: Int64,
+        docType: String,
+        attachments: [LocalAttachmentItem]
+    ) async -> MiniBiApiResult<String> {
+        await uploadEntryDocumentAttachments(
+            entryIdUuid: String(entryId),
+            docType: docType,
+            attachments: attachments
+        )
+    }
+
+    public func uploadEntryDocumentAttachments(
+        entryIdUuid: String,
         docType: String,
         attachments: [LocalAttachmentItem]
     ) async -> MiniBiApiResult<String> {
@@ -376,8 +719,77 @@ public final class DirectEntryService: @unchecked Sendable {
             return .failure(message: error.localizedDescription)
         }
 
+        let sha256Digest = SHA256.hash(data: prepared.data)
+        let sha256Hex = sha256Digest.map { String(format: "%02x", $0) }.joined()
+        let encodedEntryId = entryIdUuid.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? entryIdUuid
+
+        // Step 1: Request R2 presigned upload slot (`POST /api/direct-entry/entries/{entryId}/documents`)
+        let initBody: [String: Any] = [
+            "doc_type": docType,
+            "file_name": prepared.fileName,
+            "content_type": prepared.mimeType,
+            "size_bytes": prepared.data.count,
+            "sha256_hex": sha256Hex
+        ]
+        let initRes = await httpClient.request(
+            method: "POST",
+            path: "/api/direct-entry/entries/\(encodedEntryId)/documents",
+            jsonBody: initBody
+        )
+
+        if initRes.isSuccess, let root = initRes.jsonObject {
+            let docObj = (root["document"] as? [String: Any]) ?? root
+            let docId = docObj.optString("doc_id", "id")
+            let uploadObj = (root["upload"] as? [String: Any]) ?? (docObj["upload"] as? [String: Any])
+            let uploadUrl = uploadObj?.optString("url", "upload_url") ?? ""
+
+            if !docId.isEmpty && !uploadUrl.isEmpty {
+                var extraHeaders: [String: String] = [:]
+                if let headersDict = uploadObj?["headers"] as? [String: Any] {
+                    for (k, v) in headersDict {
+                        if let s = v as? String { extraHeaders[k] = s }
+                    }
+                }
+                let putRes = await httpClient.putRawData(
+                    urlOrPath: uploadUrl,
+                    contentType: prepared.mimeType,
+                    data: prepared.data,
+                    extraHeaders: extraHeaders
+                )
+                guard putRes.isSuccess else {
+                    return .failure(
+                        message: putRes.errorMessage ?? "Tải tệp lên kho lưu trữ thất bại.",
+                        httpStatus: putRes.statusCode,
+                        errorCode: putRes.errorCode
+                    )
+                }
+
+                let encodedDocId = docId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? docId
+                let finalizeRes = await httpClient.request(
+                    method: "POST",
+                    path: "/api/direct-entry/entries/\(encodedEntryId)/documents/\(encodedDocId)/finalize",
+                    jsonBody: [
+                        "size_bytes": prepared.data.count,
+                        "sha256_hex": sha256Hex
+                    ]
+                )
+                guard finalizeRes.isSuccess else {
+                    return .failure(
+                        message: finalizeRes.errorMessage ?? "Xác nhận tệp đính kèm thất bại.",
+                        httpStatus: finalizeRes.statusCode,
+                        errorCode: finalizeRes.errorCode
+                    )
+                }
+                return .success(docId, statusCode: finalizeRes.statusCode)
+            }
+
+            let fileUrl = docObj.optString("file_url", "url", "doc_id", defaultValue: prepared.fileName)
+            return .success(fileUrl, statusCode: initRes.statusCode)
+        }
+
+        // Fallback to multipart upload for legacy/test servers
         let response = await httpClient.uploadMultipart(
-            path: "/api/direct-entry/entries/\(entryId)/documents",
+            path: "/api/direct-entry/entries/\(encodedEntryId)/documents",
             fieldName: "file",
             fileName: prepared.fileName,
             mimeType: prepared.mimeType,
@@ -386,9 +798,9 @@ public final class DirectEntryService: @unchecked Sendable {
         )
         guard response.isSuccess else {
             return .failure(
-                message: response.errorMessage ?? "Tải tệp hồ sơ cấp mới thất bại.",
+                message: response.errorMessage ?? initRes.errorMessage ?? "Tải tệp hồ sơ cấp mới thất bại.",
                 httpStatus: response.statusCode,
-                errorCode: response.errorCode
+                errorCode: response.errorCode ?? initRes.errorCode
             )
         }
 
@@ -399,8 +811,11 @@ public final class DirectEntryService: @unchecked Sendable {
     // MARK: - Parser
 
     public static func parseCccdReviewItem(_ obj: [String: Any], fallbackIndex: Int) -> CccdReviewItem {
+        let entryIdUuid = obj.optString("entry_id", "id")
         let entryId = obj.optInt64("entry_id", "id") ?? Int64(fallbackIndex + 1)
-        let maNld = obj.optString("ma_nld", "employee_code", "worker_code")
+        let entryVersion = obj.optInt("entry_version", "version", defaultValue: 1)
+        let rawEmp = obj.optString("employee_code", "ma_nld", "worker_code")
+        let maNld = WorkerItem.isUuidLike(rawEmp) ? "" : rawEmp
         let hoTen = obj.optString("ho_ten", "entered_display_name", "display_name", "full_name")
         let duAn = obj.optString("du_an", "project_display", "project_name")
         let quanLy = obj.optString("quan_ly", "manager_name")
@@ -444,6 +859,8 @@ public final class DirectEntryService: @unchecked Sendable {
 
         return CccdReviewItem(
             entryId: entryId,
+            entryIdUuid: entryIdUuid.isEmpty ? String(entryId) : entryIdUuid,
+            entryVersion: entryVersion,
             maNld: maNld,
             hoTen: hoTen,
             duAn: duAn,
@@ -456,6 +873,12 @@ public final class DirectEntryService: @unchecked Sendable {
             backPreviewUrl: backUrl,
             comparisons: comparisons
         )
+    }
+}
+
+private extension String {
+    func ifEmpty(_ fallback: @autoclosure () -> String) -> String {
+        isEmpty ? fallback() : self
     }
 }
 

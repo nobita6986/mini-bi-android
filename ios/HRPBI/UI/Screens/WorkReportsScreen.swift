@@ -443,6 +443,19 @@ public struct WorkReportEditorSheet: View {
                     .cornerRadius(14)
 
                     // Dynamic Sections & Fields
+                    if currentOb.sections.isEmpty {
+                        HStack(spacing: 10) {
+                            ProgressView()
+                            Text("Đang tải biểu mẫu báo cáo từ máy chủ...")
+                                .font(.caption)
+                                .foregroundColor(SemanticColors.textSecondary)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(16)
+                        .background(Color.white)
+                        .cornerRadius(14)
+                    }
+
                     ForEach(currentOb.sections) { section in
                         VStack(alignment: .leading, spacing: 12) {
                             Text(section.title)
@@ -468,6 +481,12 @@ public struct WorkReportEditorSheet: View {
                                         }
                                     }
 
+                                    if let hint = field.placeholder, !hint.isEmpty, field.type != "text" && field.type != "number" {
+                                        Text(hint)
+                                            .font(.caption2)
+                                            .foregroundColor(SemanticColors.textMuted)
+                                    }
+
                                     let binding = Binding<String>(
                                         get: { viewModel.editorFieldValues[field.id] ?? "" },
                                         set: { newVal in
@@ -476,9 +495,12 @@ public struct WorkReportEditorSheet: View {
                                         }
                                     )
 
-                                    if field.type == "textarea" {
+                                    switch field.type.lowercased() {
+                                    case "textarea", "multiline", "long_text":
                                         TextEditor(text: binding)
                                             .disabled(isReadOnly)
+                                            .foregroundColor(SemanticColors.textPrimary)
+                                            .scrollContentBackground(.hidden)
                                             .frame(minHeight: 88)
                                             .padding(6)
                                             .background(isReadOnly ? Color(hex: 0xF1F5F9) : Color(hex: 0xF8FAFC))
@@ -487,9 +509,125 @@ public struct WorkReportEditorSheet: View {
                                                 RoundedRectangle(cornerRadius: 8)
                                                     .stroke(SemanticColors.borderSubtle, lineWidth: 1)
                                             )
-                                    } else {
+
+                                    case "boolean", "bool", "checkbox", "switch":
+                                        let isChecked = ["true", "1", "yes", "có"].contains(binding.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+                                        Toggle(isOn: Binding<Bool>(
+                                            get: { isChecked },
+                                            set: { newBool in
+                                                guard !isReadOnly else { return }
+                                                viewModel.editorFieldValues[field.id] = newBool ? "true" : "false"
+                                            }
+                                        )) {
+                                            Text(isChecked ? "Có / Đạt" : "Không")
+                                                .font(.subheadline)
+                                                .foregroundColor(SemanticColors.textPrimary)
+                                        }
+                                        .disabled(isReadOnly)
+                                        .tint(theme.primary)
+                                        .padding(10)
+                                        .background(isReadOnly ? Color(hex: 0xF1F5F9) : Color(hex: 0xF8FAFC))
+                                        .cornerRadius(8)
+
+                                    case "single_select", "select", "dropdown", "radio":
+                                        if !field.options.isEmpty {
+                                            Menu {
+                                                if !field.required {
+                                                    Button("— Để trống —") {
+                                                        if !isReadOnly { viewModel.editorFieldValues[field.id] = "" }
+                                                    }
+                                                }
+                                                ForEach(field.options) { opt in
+                                                    Button(opt.label) {
+                                                        if !isReadOnly { viewModel.editorFieldValues[field.id] = opt.value }
+                                                    }
+                                                }
+                                            } label: {
+                                                let currentVal = binding.wrappedValue
+                                                let currentLabel = field.options.first(where: { $0.value == currentVal })?.label
+                                                    ?? (currentVal.isEmpty ? "— Chọn \(field.label) —" : currentVal)
+                                                HStack {
+                                                    Text(currentLabel)
+                                                        .font(.subheadline)
+                                                        .foregroundColor(currentVal.isEmpty ? SemanticColors.textMuted : SemanticColors.textPrimary)
+                                                    Spacer()
+                                                    Image(systemName: "chevron.up.chevron.down")
+                                                        .font(.caption)
+                                                        .foregroundColor(SemanticColors.textMuted)
+                                                }
+                                                .padding(10)
+                                                .background(isReadOnly ? Color(hex: 0xF1F5F9) : Color(hex: 0xF8FAFC))
+                                                .cornerRadius(8)
+                                                .overlay(
+                                                    RoundedRectangle(cornerRadius: 8)
+                                                        .stroke(SemanticColors.borderSubtle, lineWidth: 1)
+                                                )
+                                            }
+                                            .disabled(isReadOnly)
+                                        } else {
+                                            TextField(field.placeholder ?? "Nhập nội dung...", text: binding)
+                                                .disabled(isReadOnly)
+                                                .foregroundColor(SemanticColors.textPrimary)
+                                                .padding(10)
+                                                .background(isReadOnly ? Color(hex: 0xF1F5F9) : Color(hex: 0xF8FAFC))
+                                                .cornerRadius(8)
+                                                .overlay(
+                                                    RoundedRectangle(cornerRadius: 8)
+                                                        .stroke(SemanticColors.borderSubtle, lineWidth: 1)
+                                                )
+                                        }
+
+                                    case "multi_select", "multiselect":
+                                        let selectedSet = Set(
+                                            binding.wrappedValue
+                                                .split(separator: ",")
+                                                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                                                .filter { !$0.isEmpty }
+                                        )
+                                        VStack(alignment: .leading, spacing: 6) {
+                                            ForEach(field.options) { opt in
+                                                let isSel = selectedSet.contains(opt.value)
+                                                Button {
+                                                    guard !isReadOnly else { return }
+                                                    var next = selectedSet
+                                                    if isSel { next.remove(opt.value) } else { next.insert(opt.value) }
+                                                    let ordered = field.options.map(\.value).filter { next.contains($0) }
+                                                    viewModel.editorFieldValues[field.id] = ordered.joined(separator: ",")
+                                                } label: {
+                                                    HStack(spacing: 8) {
+                                                        Image(systemName: isSel ? "checkmark.square.fill" : "square")
+                                                            .foregroundColor(isSel ? theme.primary : SemanticColors.textMuted)
+                                                        Text(opt.label)
+                                                            .font(.subheadline)
+                                                            .foregroundColor(SemanticColors.textPrimary)
+                                                        Spacer()
+                                                    }
+                                                    .padding(.vertical, 6)
+                                                    .padding(.horizontal, 10)
+                                                    .background(isSel ? theme.primaryLight.opacity(0.4) : Color(hex: 0xF8FAFC))
+                                                    .cornerRadius(8)
+                                                }
+                                                .buttonStyle(.plain)
+                                                .disabled(isReadOnly)
+                                            }
+                                        }
+
+                                    case "date":
+                                        TextField(field.placeholder ?? "YYYY-MM-DD hoặc DD/MM/YYYY", text: binding)
+                                            .disabled(isReadOnly)
+                                            .foregroundColor(SemanticColors.textPrimary)
+                                            .padding(10)
+                                            .background(isReadOnly ? Color(hex: 0xF1F5F9) : Color(hex: 0xF8FAFC))
+                                            .cornerRadius(8)
+                                            .overlay(
+                                                RoundedRectangle(cornerRadius: 8)
+                                                    .stroke(SemanticColors.borderSubtle, lineWidth: 1)
+                                            )
+
+                                    default:
                                         TextField(field.placeholder ?? "Nhập nội dung...", text: binding)
                                             .disabled(isReadOnly)
+                                            .foregroundColor(SemanticColors.textPrimary)
                                             .keyboardType(field.type == "number" ? .decimalPad : .default)
                                             .padding(10)
                                             .background(isReadOnly ? Color(hex: 0xF1F5F9) : Color(hex: 0xF8FAFC))

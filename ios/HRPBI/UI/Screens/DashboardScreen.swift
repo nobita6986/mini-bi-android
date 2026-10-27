@@ -345,6 +345,7 @@ public struct DashboardScreen: View {
                 Image(systemName: "magnifyingglass")
                     .foregroundColor(SemanticColors.textMuted)
                 TextField("Tìm theo số CCCD hoặc họ tên...", text: $viewModel.duplicateSearchQuery)
+                    .foregroundColor(SemanticColors.textPrimary)
                     .onSubmit {
                         Task { await viewModel.loadDashboardData() }
                     }
@@ -390,8 +391,9 @@ public struct DashboardScreen: View {
                         ForEach(group.episodes) { ep in
                             HStack(alignment: .top) {
                                 VStack(alignment: .leading, spacing: 3) {
-                                    Text("\(ep.hoTen) (\(ep.maNld))")
+                                    Text(WorkerItem.isUuidLike(ep.maNld) || ep.maNld.isEmpty ? ep.hoTen : "\(ep.hoTen) (\(ep.maNld))")
                                         .font(.caption.weight(.semibold))
+                                        .foregroundColor(SemanticColors.textPrimary)
                                     Text("Dự án: \(ep.duAn) · QL: \(ep.quanLy) · Tuyển: \(ep.nguoiTuyen)")
                                         .font(.caption2)
                                         .foregroundColor(SemanticColors.textSecondary)
@@ -568,6 +570,7 @@ public struct CccdReviewSectionView: View {
                 Image(systemName: "magnifyingglass")
                     .foregroundColor(SemanticColors.textMuted)
                 TextField("Tìm mã NLĐ, họ tên, số CCCD...", text: $viewModel.cccdReviewSearchQuery)
+                    .foregroundColor(SemanticColors.textPrimary)
                     .onSubmit {
                         Task { await viewModel.loadCccdReviewItems() }
                     }
@@ -600,7 +603,7 @@ public struct CccdReviewSectionView: View {
                     } label: {
                         VStack(alignment: .leading, spacing: 8) {
                             HStack {
-                                Text("\(item.hoTen) (\(item.maNld.isEmpty ? "#\(item.entryId)" : item.maNld))")
+                                Text(WorkerItem.isUuidLike(item.maNld) || item.maNld.isEmpty ? item.hoTen : "\(item.hoTen) (\(item.maNld))")
                                     .font(.subheadline.weight(.bold))
                                     .foregroundColor(SemanticColors.textPrimary)
                                 Spacer()
@@ -677,8 +680,9 @@ public struct CccdReviewDetailSheet: View {
                 VStack(alignment: .leading, spacing: 16) {
                     // Header info
                     VStack(alignment: .leading, spacing: 6) {
-                        Text("\(item.hoTen) (\(item.maNld.isEmpty ? "#\(item.entryId)" : item.maNld))")
+                        Text(WorkerItem.isUuidLike(item.maNld) || item.maNld.isEmpty ? item.hoTen : "\(item.hoTen) (\(item.maNld))")
                             .font(.title3.weight(.bold))
+                            .foregroundColor(SemanticColors.textPrimary)
                         Text("Dự án: \(item.duAn) · Quản lý: \(item.quanLy) · Tuyển: \(item.nguoiTuyen)")
                             .font(.caption)
                             .foregroundColor(SemanticColors.textSecondary)
@@ -775,12 +779,14 @@ public struct CccdReviewDetailSheet: View {
                             .font(.subheadline.weight(.bold))
 
                         TextField("Số CCCD chuẩn (12 chữ số)...", text: $correctedCccdInput)
+                            .foregroundColor(SemanticColors.textPrimary)
                             .keyboardType(.numberPad)
                             .padding(10)
                             .background(Color(hex: 0xF8FAFC))
                             .cornerRadius(8)
 
                         TextField("Ghi chú duyệt / lý do...", text: $reviewNoteInput)
+                            .foregroundColor(SemanticColors.textPrimary)
                             .padding(10)
                             .background(Color(hex: 0xF8FAFC))
                             .cornerRadius(8)

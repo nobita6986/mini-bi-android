@@ -110,6 +110,11 @@ public struct DirectEntryNewWorkersScreen: View {
             }
         }
         .background(theme.background)
+        .onAppear {
+            if viewModel.directEntryOptions.catalogProjects.isEmpty {
+                Task { await viewModel.loadDirectEntryAssigneeOptions() }
+            }
+        }
         .sheet(isPresented: Binding(
             get: { activeQrScannerRowId != nil },
             set: { if !$0 { activeQrScannerRowId = nil } }
@@ -142,7 +147,7 @@ public struct DirectEntryNewWorkersScreen: View {
     }
 }
 
-// MARK: - Single Draft Row Card
+// MARK: - Single Draft Row Card (Mirrors Android's `WorkerMultiEntryCard` 100%)
 
 struct NewWorkerDraftRowCard: View {
     let index: Int
@@ -150,18 +155,26 @@ struct NewWorkerDraftRowCard: View {
     @ObservedObject var viewModel: MiniBiViewModel
     let onScanQrTap: () -> Void
 
-    @State private var isExpandedDetails: Bool = true
+    @State private var isExpandedExtraDetails: Bool = false
+    @State private var portraitPhotoPickerItem: PhotosPickerItem?
     @State private var frontPhotoPickerItem: PhotosPickerItem?
     @State private var backPhotoPickerItem: PhotosPickerItem?
+    @State private var showProjectSearchSheet: Bool = false
+    @State private var showRecruiterSearchSheet: Bool = false
+    @State private var showBankSearchSheet: Bool = false
 
     var body: some View {
         let theme = viewModel.selectedTheme
+        let options = viewModel.directEntryOptions
+        let filteredRecruiters = options.catalogRecruiters.filter {
+            $0.providerType.lowercased() == draft.providerType.lowercased()
+        }
 
         VStack(alignment: .leading, spacing: 12) {
             // Card Header
             HStack {
                 HStack(spacing: 6) {
-                    Text("Dòng #\(index + 1)")
+                    Text("Người lao động #\(index + 1)")
                         .font(.subheadline.weight(.bold))
                         .foregroundColor(theme.primary)
                     if draft.isReadyForSubmit {
@@ -173,6 +186,212 @@ struct NewWorkerDraftRowCard: View {
 
                 Spacer()
 
+                if viewModel.newWorkerDraftRows.count > 1 {
+                    Button {
+                        viewModel.removeNewWorkerDraftRow(rowId: draft.rowId)
+                    } label: {
+                        HStack(spacing: 3) {
+                            Image(systemName: "trash")
+                            Text("Xóa")
+                        }
+                        .font(.caption.weight(.semibold))
+                        .foregroundColor(SemanticColors.dangerText)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 5)
+                        .background(SemanticColors.dangerBg)
+                        .cornerRadius(8)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+
+            // 1. Dự án *
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Dự án *")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundColor(SemanticColors.textSecondary)
+                Button {
+                    showProjectSearchSheet = true
+                } label: {
+                    HStack {
+                        Text(draft.duAn.isEmpty ? "— Chọn Dự án —" : draft.duAn)
+                            .font(.caption)
+                            .foregroundColor(draft.duAn.isEmpty ? SemanticColors.textMuted : SemanticColors.textPrimary)
+                            .lineLimit(1)
+                        Spacer()
+                        Image(systemName: "chevron.down")
+                            .font(.caption2)
+                            .foregroundColor(SemanticColors.textMuted)
+                    }
+                    .padding(10)
+                    .background(Color(hex: 0xF8FAFC))
+                    .cornerRadius(8)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8)
+                            .stroke(SemanticColors.borderSubtle, lineWidth: 1)
+                    )
+                }
+                .buttonStyle(.plain)
+            }
+
+            // 2. HRP/Vendor * & Người tuyển / Vendor *
+            HStack(spacing: 10) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("HRP/Vendor *")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundColor(SemanticColors.textSecondary)
+                    Menu {
+                        Button("HRP") {
+                            viewModel.updateNewWorkerDraftRow(rowId: draft.rowId) { row in
+                                if row.providerType != "hrp" {
+                                    row.providerType = "hrp"
+                                    row.recruiterId = ""
+                                    row.nguoiTuyen = ""
+                                }
+                            }
+                        }
+                        Button("Vendor") {
+                            viewModel.updateNewWorkerDraftRow(rowId: draft.rowId) { row in
+                                if row.providerType != "vendor" {
+                                    row.providerType = "vendor"
+                                    row.recruiterId = ""
+                                    row.nguoiTuyen = ""
+                                }
+                            }
+                        }
+                    } label: {
+                        HStack {
+                            Text(draft.providerType == "vendor" ? "Vendor" : "HRP")
+                                .font(.caption.weight(.semibold))
+                                .foregroundColor(SemanticColors.textPrimary)
+                            Spacer()
+                            Image(systemName: "chevron.down")
+                                .font(.caption2)
+                                .foregroundColor(SemanticColors.textMuted)
+                        }
+                        .padding(10)
+                        .background(Color(hex: 0xF8FAFC))
+                        .cornerRadius(8)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8)
+                                .stroke(SemanticColors.borderSubtle, lineWidth: 1)
+                        )
+                    }
+                }
+                .frame(width: 112)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(draft.providerType == "vendor" ? "Nhà cung cấp (Vendor) *" : "Người tuyển *")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundColor(SemanticColors.textSecondary)
+                    Button {
+                        showRecruiterSearchSheet = true
+                    } label: {
+                        HStack {
+                            Text(draft.nguoiTuyen.isEmpty ? "— Chọn Người tuyển / Vendor —" : draft.nguoiTuyen)
+                                .font(.caption)
+                                .foregroundColor(draft.nguoiTuyen.isEmpty ? SemanticColors.textMuted : SemanticColors.textPrimary)
+                                .lineLimit(1)
+                            Spacer()
+                            Image(systemName: "chevron.down")
+                                .font(.caption2)
+                                .foregroundColor(SemanticColors.textMuted)
+                        }
+                        .padding(10)
+                        .background(Color(hex: 0xF8FAFC))
+                        .cornerRadius(8)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8)
+                                .stroke(SemanticColors.borderSubtle, lineWidth: 1)
+                        )
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+
+            // 3. Loại hình LĐ * & Ngày bắt đầu làm việc *
+            HStack(spacing: 10) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Loại hình LĐ *")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundColor(SemanticColors.textSecondary)
+                    Menu {
+                        ForEach(options.catalogLaborTypes) { lt in
+                            Button(lt.displayName) {
+                                viewModel.updateNewWorkerDraftRow(rowId: draft.rowId) { row in
+                                    row.laborTypeKey = lt.laborTypeKey
+                                    row.nganhNghe = lt.displayName
+                                }
+                            }
+                        }
+                    } label: {
+                        HStack {
+                            Text(draft.nganhNghe.isEmpty ? "Thời vụ" : draft.nganhNghe)
+                                .font(.caption)
+                                .foregroundColor(SemanticColors.textPrimary)
+                            Spacer()
+                            Image(systemName: "chevron.down")
+                                .font(.caption2)
+                                .foregroundColor(SemanticColors.textMuted)
+                        }
+                        .padding(10)
+                        .background(Color(hex: 0xF8FAFC))
+                        .cornerRadius(8)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8)
+                                .stroke(SemanticColors.borderSubtle, lineWidth: 1)
+                        )
+                    }
+                }
+
+                draftTextField(
+                    label: "Ngày bắt đầu làm việc *",
+                    placeholder: "dd/MM/yyyy",
+                    value: draft.ngayVaoLam
+                ) { val in
+                    viewModel.updateNewWorkerDraftRow(rowId: draft.rowId) { $0.ngayVaoLam = val }
+                }
+            }
+
+            // 4. Trạng thái làm việc ("Đang làm" | "Đang chờ việc")
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Trạng thái làm việc")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundColor(SemanticColors.textSecondary)
+                Menu {
+                    ForEach(["Đang làm", "Đang chờ việc"], id: \.self) { st in
+                        Button(st) {
+                            viewModel.updateNewWorkerDraftRow(rowId: draft.rowId) { $0.trangThai = st }
+                        }
+                    }
+                } label: {
+                    HStack {
+                        Text(draft.trangThai.isEmpty ? "Đang làm" : draft.trangThai)
+                            .font(.caption)
+                            .foregroundColor(SemanticColors.textPrimary)
+                        Spacer()
+                        Image(systemName: "chevron.down")
+                            .font(.caption2)
+                            .foregroundColor(SemanticColors.textMuted)
+                    }
+                    .padding(10)
+                    .background(Color(hex: 0xF8FAFC))
+                    .cornerRadius(8)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8)
+                            .stroke(SemanticColors.borderSubtle, lineWidth: 1)
+                    )
+                }
+            }
+
+            Divider()
+
+            // 5. Thông tin CCCD & cá nhân + Quét QR CCCD
+            HStack {
+                Text("Thông tin CCCD & cá nhân")
+                    .font(.caption.weight(.bold))
+                    .foregroundColor(SemanticColors.textPrimary)
+                Spacer()
                 Button(action: onScanQrTap) {
                     HStack(spacing: 4) {
                         Image(systemName: "qrcode.viewfinder")
@@ -186,51 +405,52 @@ struct NewWorkerDraftRowCard: View {
                     .cornerRadius(8)
                 }
                 .buttonStyle(.plain)
-
-                if viewModel.newWorkerDraftRows.count > 1 {
-                    Button {
-                        viewModel.removeNewWorkerDraftRow(rowId: draft.rowId)
-                    } label: {
-                        Image(systemName: "trash")
-                            .foregroundColor(SemanticColors.dangerText)
-                            .padding(6)
-                    }
-                    .buttonStyle(.plain)
-                }
             }
 
-            // Primary Fields (`Họ tên *`, `Số CCCD`, `Dự án *`, `Trạng thái *`)
-            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
-                draftTextField(label: "Họ và tên *", placeholder: "Nguyễn Văn A", value: draft.hoTen) { val in
-                    viewModel.updateNewWorkerDraftRow(rowId: draft.rowId) { $0.hoTen = val }
-                }
-                draftTextField(label: "Số CCCD (12 số)", placeholder: "034098...", value: draft.soCccd, keyboard: .numberPad) { val in
-                    viewModel.updateNewWorkerDraftRow(rowId: draft.rowId) { $0.soCccd = val }
-                }
-                draftTextField(label: "Dự án *", placeholder: "Nhập tên dự án", value: draft.duAn) { val in
-                    viewModel.updateNewWorkerDraftRow(rowId: draft.rowId) { $0.duAn = val }
-                }
+            draftTextField(
+                label: "Số CCCD (12 chữ số) *",
+                placeholder: "Nhập đủ 12 chữ số CCCD",
+                value: draft.soCccd,
+                keyboard: .numberPad
+            ) { val in
+                let digitsOnly = String(val.filter(\.isNumber).prefix(12))
+                viewModel.updateNewWorkerDraftRow(rowId: draft.rowId) { $0.soCccd = digitsOnly }
+            }
+
+            draftTextField(
+                label: "Họ và tên",
+                placeholder: "Nguyễn Văn A (có thể bổ sung sau)",
+                value: draft.hoTen
+            ) { val in
+                viewModel.updateNewWorkerDraftRow(rowId: draft.rowId) { $0.hoTen = val }
+            }
+
+            HStack(spacing: 10) {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Trạng thái *")
+                    Text("Giới tính")
                         .font(.caption2.weight(.semibold))
                         .foregroundColor(SemanticColors.textSecondary)
                     Menu {
-                        ForEach(["Đang làm việc", "Phỏng vấn", "Đã nghỉ việc"], id: \.self) { st in
-                            Button(st) {
-                                viewModel.updateNewWorkerDraftRow(rowId: draft.rowId) { $0.trangThai = st }
-                            }
+                        Button("— Để trống —") {
+                            viewModel.updateNewWorkerDraftRow(rowId: draft.rowId) { $0.gioiTinh = "" }
+                        }
+                        Button("Nam") {
+                            viewModel.updateNewWorkerDraftRow(rowId: draft.rowId) { $0.gioiTinh = "Nam" }
+                        }
+                        Button("Nữ") {
+                            viewModel.updateNewWorkerDraftRow(rowId: draft.rowId) { $0.gioiTinh = "Nữ" }
                         }
                     } label: {
                         HStack {
-                            Text(draft.trangThai.isEmpty ? "Chọn trạng thái" : draft.trangThai)
+                            Text(draft.gioiTinh.isEmpty ? "— Để trống —" : draft.gioiTinh)
                                 .font(.caption)
-                                .foregroundColor(SemanticColors.textPrimary)
+                                .foregroundColor(draft.gioiTinh.isEmpty ? SemanticColors.textMuted : SemanticColors.textPrimary)
                             Spacer()
                             Image(systemName: "chevron.down")
                                 .font(.caption2)
                                 .foregroundColor(SemanticColors.textMuted)
                         }
-                        .padding(9)
+                        .padding(10)
                         .background(Color(hex: 0xF8FAFC))
                         .cornerRadius(8)
                         .overlay(
@@ -239,66 +459,61 @@ struct NewWorkerDraftRowCard: View {
                         )
                     }
                 }
-            }
 
-            // Expandable Personal & Assignment Fields
-            DisclosureGroup(isExpanded: $isExpandedDetails) {
-                VStack(spacing: 10) {
-                    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
-                        draftTextField(label: "Số điện thoại", placeholder: "09...", value: draft.sdt, keyboard: .phonePad) { val in
-                            viewModel.updateNewWorkerDraftRow(rowId: draft.rowId) { $0.sdt = val }
-                        }
-                        draftTextField(label: "Ngày sinh", placeholder: "dd/MM/yyyy", value: draft.ngaySinh) { val in
-                            viewModel.updateNewWorkerDraftRow(rowId: draft.rowId) { $0.ngaySinh = val }
-                        }
-                        draftTextField(label: "Giới tính", placeholder: "Nam / Nữ", value: draft.gioiTinh) { val in
-                            viewModel.updateNewWorkerDraftRow(rowId: draft.rowId) { $0.gioiTinh = val }
-                        }
-                        draftTextField(label: "Ngày cấp CCCD", placeholder: "dd/MM/yyyy", value: draft.ngayCap) { val in
-                            viewModel.updateNewWorkerDraftRow(rowId: draft.rowId) { $0.ngayCap = val }
-                        }
-                        draftTextField(label: "Ngày vào làm", placeholder: "dd/MM/yyyy", value: draft.ngayVaoLam) { val in
-                            viewModel.updateNewWorkerDraftRow(rowId: draft.rowId) { $0.ngayVaoLam = val }
-                        }
-                        draftTextField(label: "Quản lý", placeholder: "Mã/Tên quản lý", value: draft.quanLy) { val in
-                            viewModel.updateNewWorkerDraftRow(rowId: draft.rowId) { $0.quanLy = val }
-                        }
-                        draftTextField(label: "Người tuyển", placeholder: "Mã/Tên người tuyển", value: draft.nguoiTuyen) { val in
-                            viewModel.updateNewWorkerDraftRow(rowId: draft.rowId) { $0.nguoiTuyen = val }
-                        }
-                        draftTextField(label: "Ngành nghề", placeholder: "Công nhân / Kỹ thuật...", value: draft.nganhNghe) { val in
-                            viewModel.updateNewWorkerDraftRow(rowId: draft.rowId) { $0.nganhNghe = val }
-                        }
-                        draftTextField(label: "Số tài khoản", placeholder: "STK ngân hàng", value: draft.soTaiKhoan) { val in
-                            viewModel.updateNewWorkerDraftRow(rowId: draft.rowId) { $0.soTaiKhoan = val }
-                        }
-                        draftTextField(label: "Ngân hàng", placeholder: "Vietcombank, MB...", value: draft.nganHang) { val in
-                            viewModel.updateNewWorkerDraftRow(rowId: draft.rowId) { $0.nganHang = val }
-                        }
-                    }
-
-                    draftTextField(label: "Quê quán / Địa chỉ thường trú", placeholder: "Nhập địa chỉ...", value: draft.queQuan) { val in
-                        viewModel.updateNewWorkerDraftRow(rowId: draft.rowId) { $0.queQuan = val }
-                    }
-                    draftTextField(label: "Ghi chú", placeholder: "Ghi chú thêm...", value: draft.ghiChu) { val in
-                        viewModel.updateNewWorkerDraftRow(rowId: draft.rowId) { $0.ghiChu = val }
-                    }
+                draftTextField(
+                    label: "Số điện thoại",
+                    placeholder: "09...",
+                    value: draft.sdt,
+                    keyboard: .phonePad
+                ) { val in
+                    viewModel.updateNewWorkerDraftRow(rowId: draft.rowId) { $0.sdt = val }
                 }
-                .padding(.top, 8)
-            } label: {
-                Text("Thông tin cá nhân, Quản lý & Ngân hàng")
-                    .font(.caption.weight(.semibold))
-                    .foregroundColor(SemanticColors.textSecondary)
             }
 
             Divider()
 
-            // CCCD Front / Back Pickers
-            HStack(spacing: 10) {
+            // 6. Ảnh & giấy tờ đính kèm (Portrait + CCCD Front + CCCD Back + Contract)
+            Text("Ảnh & giấy tờ đính kèm")
+                .font(.caption.weight(.bold))
+                .foregroundColor(SemanticColors.textPrimary)
+
+            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
+                PhotosPicker(selection: $portraitPhotoPickerItem, matching: .images) {
+                    VStack(spacing: 4) {
+                        Image(systemName: draft.portraitFile != nil ? "checkmark.circle.fill" : "person.crop.rectangle")
+                        Text(draft.portraitFile != nil ? "Đã có chân dung" : "Ảnh chân dung")
+                            .lineLimit(1)
+                    }
+                    .font(.caption2.weight(.semibold))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 8)
+                    .background(draft.portraitFile != nil ? SemanticColors.successBg : Color(hex: 0xF1F5F9))
+                    .foregroundColor(draft.portraitFile != nil ? SemanticColors.successText : SemanticColors.textPrimary)
+                    .cornerRadius(8)
+                }
+                .onChange(of: portraitPhotoPickerItem) { item in
+                    guard let item else { return }
+                    Task {
+                        if let data = try? await item.loadTransferable(type: Data.self) {
+                            let att = LocalAttachmentItem(
+                                fileName: "chan-dung-\(Int(Date().timeIntervalSince1970)).jpg",
+                                mimeType: "image/jpeg",
+                                data: data
+                            )
+                            viewModel.addAttachmentToDraftRow(
+                                rowId: draft.rowId,
+                                docType: DirectEntryContract.docTypeWorkerPortrait,
+                                attachment: att
+                            )
+                        }
+                    }
+                }
+
                 PhotosPicker(selection: $frontPhotoPickerItem, matching: .images) {
-                    HStack(spacing: 4) {
+                    VStack(spacing: 4) {
                         Image(systemName: draft.cccdFrontFile != nil ? "checkmark.circle.fill" : "creditcard")
-                        Text(draft.cccdFrontFile != nil ? "Đã chọn CCCD trước" : "Ảnh CCCD trước")
+                        Text(draft.cccdFrontFile != nil ? "Đã chọn CCCD trước" : "CCCD mặt trước")
+                            .lineLimit(1)
                     }
                     .font(.caption2.weight(.semibold))
                     .frame(maxWidth: .infinity)
@@ -321,7 +536,6 @@ struct NewWorkerDraftRowCard: View {
                                 docType: DirectEntryContract.docTypeCccdFront,
                                 attachment: att
                             )
-                            // Also try auto-decoding QR from front CCCD photo if CCCD is still blank!
                             if draft.soCccd.isEmpty, let qrRaw = CccdQrScannerSheet.detectQrFromImageData(data) {
                                 _ = viewModel.applyScannedCccdQr(rowId: draft.rowId, rawQr: qrRaw)
                             }
@@ -330,9 +544,10 @@ struct NewWorkerDraftRowCard: View {
                 }
 
                 PhotosPicker(selection: $backPhotoPickerItem, matching: .images) {
-                    HStack(spacing: 4) {
+                    VStack(spacing: 4) {
                         Image(systemName: draft.cccdBackFile != nil ? "checkmark.circle.fill" : "creditcard.fill")
-                        Text(draft.cccdBackFile != nil ? "Đã chọn CCCD sau" : "Ảnh CCCD sau")
+                        Text(draft.cccdBackFile != nil ? "Đã chọn CCCD sau" : "CCCD mặt sau")
+                            .lineLimit(1)
                     }
                     .font(.caption2.weight(.semibold))
                     .frame(maxWidth: .infinity)
@@ -360,15 +575,14 @@ struct NewWorkerDraftRowCard: View {
                 }
             }
 
-            // Multi-Image / PDF Contract Attachment Section (merges 2+ images into 1 PDF)
             ContractMultiAttachmentPickerView(
-                title: "Hồ sơ Hợp đồng / Thẻ an toàn",
+                title: "Hợp đồng lao động / Hồ sơ",
                 attachments: draft.contractFiles,
                 onAddAttachments: { newItems in
                     for att in newItems {
                         viewModel.addAttachmentToDraftRow(
                             rowId: draft.rowId,
-                            docType: DirectEntryContract.docTypeSafetyCard,
+                            docType: DirectEntryContract.docTypeEmploymentContract,
                             attachment: att
                         )
                     }
@@ -377,6 +591,75 @@ struct NewWorkerDraftRowCard: View {
                     viewModel.removeContractAttachmentFromDraftRow(rowId: draft.rowId, attachmentId: attId)
                 }
             )
+
+            Divider()
+
+            // 7. Collapsible Extra Details (matching Android's "Thông tin thêm: địa chỉ, ngày sinh, ngày cấp CCCD, tài khoản ngân hàng và ghi chú")
+            DisclosureGroup(isExpanded: $isExpandedExtraDetails) {
+                VStack(spacing: 10) {
+                    draftTextField(
+                        label: "Địa chỉ thường trú / quê quán",
+                        placeholder: "Nhập địa chỉ...",
+                        value: draft.queQuan
+                    ) { val in
+                        viewModel.updateNewWorkerDraftRow(rowId: draft.rowId) { $0.queQuan = val }
+                    }
+
+                    HStack(spacing: 10) {
+                        draftTextField(label: "Ngày sinh", placeholder: "dd/MM/yyyy", value: draft.ngaySinh) { val in
+                            viewModel.updateNewWorkerDraftRow(rowId: draft.rowId) { $0.ngaySinh = val }
+                        }
+                        draftTextField(label: "Ngày cấp CCCD", placeholder: "dd/MM/yyyy", value: draft.ngayCap) { val in
+                            viewModel.updateNewWorkerDraftRow(rowId: draft.rowId) { $0.ngayCap = val }
+                        }
+                    }
+
+                    HStack(spacing: 10) {
+                        draftTextField(label: "STK (Số tài khoản)", placeholder: "Nhập STK", value: draft.soTaiKhoan) { val in
+                            viewModel.updateNewWorkerDraftRow(rowId: draft.rowId) { $0.soTaiKhoan = val }
+                        }
+                        draftTextField(label: "Tên chủ tài khoản", placeholder: "NGUYEN VAN A", value: draft.bankAccountHolder) { val in
+                            viewModel.updateNewWorkerDraftRow(rowId: draft.rowId) { $0.bankAccountHolder = val }
+                        }
+                    }
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Ngân hàng")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundColor(SemanticColors.textSecondary)
+                        Button {
+                            showBankSearchSheet = true
+                        } label: {
+                            HStack {
+                                Text(draft.nganHang.isEmpty ? "— Chọn Ngân hàng —" : draft.nganHang)
+                                    .font(.caption)
+                                    .foregroundColor(draft.nganHang.isEmpty ? SemanticColors.textMuted : SemanticColors.textPrimary)
+                                Spacer()
+                                Image(systemName: "chevron.down")
+                                    .font(.caption2)
+                                    .foregroundColor(SemanticColors.textMuted)
+                            }
+                            .padding(10)
+                            .background(Color(hex: 0xF8FAFC))
+                            .cornerRadius(8)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .stroke(SemanticColors.borderSubtle, lineWidth: 1)
+                            )
+                        }
+                        .buttonStyle(.plain)
+                    }
+
+                    draftTextField(label: "Ghi chú", placeholder: "Ghi chú thêm...", value: draft.ghiChu) { val in
+                        viewModel.updateNewWorkerDraftRow(rowId: draft.rowId) { $0.ghiChu = val }
+                    }
+                }
+                .padding(.top, 8)
+            } label: {
+                Text("Thông tin thêm: địa chỉ, ngày sinh, ngày cấp CCCD, tài khoản ngân hàng và ghi chú")
+                    .font(.caption.weight(.semibold))
+                    .foregroundColor(theme.primary)
+            }
         }
         .padding(14)
         .background(Color.white)
@@ -385,6 +668,53 @@ struct NewWorkerDraftRowCard: View {
             RoundedRectangle(cornerRadius: 14)
                 .stroke(SemanticColors.borderSubtle, lineWidth: 1)
         )
+        .sheet(isPresented: $showProjectSearchSheet) {
+            DirectEntrySearchablePickerSheet(
+                title: "Chọn Dự án",
+                placeholder: "Tìm tên dự án...",
+                items: options.catalogProjects.isEmpty
+                    ? options.projects.map { (id: $0, label: $0) }
+                    : options.catalogProjects.map { (id: $0.projectId, label: $0.displayName) },
+                allowCustomInput: true,
+                onSelect: { id, label in
+                    viewModel.updateNewWorkerDraftRow(rowId: draft.rowId) { row in
+                        row.projectId = id
+                        row.duAn = label
+                    }
+                }
+            )
+        }
+        .sheet(isPresented: $showRecruiterSearchSheet) {
+            DirectEntrySearchablePickerSheet(
+                title: draft.providerType == "vendor" ? "Chọn Nhà cung cấp (Vendor)" : "Chọn Người tuyển (HRP)",
+                placeholder: "Tìm tên hoặc mã nhân sự...",
+                items: filteredRecruiters.isEmpty
+                    ? options.catalogRecruiters.map { (id: $0.recruiterId, label: $0.label) }
+                    : filteredRecruiters.map { (id: $0.recruiterId, label: $0.label) },
+                allowCustomInput: true,
+                onSelect: { id, label in
+                    viewModel.updateNewWorkerDraftRow(rowId: draft.rowId) { row in
+                        row.recruiterId = id
+                        row.nguoiTuyen = label
+                    }
+                }
+            )
+        }
+        .sheet(isPresented: $showBankSearchSheet) {
+            DirectEntrySearchablePickerSheet(
+                title: "Chọn Ngân hàng",
+                placeholder: "Tìm tên ngân hàng (VCB, MB, Techcombank...)",
+                items: options.catalogBanks.isEmpty
+                    ? options.banks.map { (id: $0, label: $0) }
+                    : options.catalogBanks.map { (id: $0.bankId, label: $0.displayName) },
+                allowCustomInput: true,
+                onSelect: { _, label in
+                    viewModel.updateNewWorkerDraftRow(rowId: draft.rowId) { row in
+                        row.nganHang = label
+                    }
+                }
+            )
+        }
     }
 
     private func draftTextField(
@@ -404,6 +734,7 @@ struct NewWorkerDraftRowCard: View {
             )
             .keyboardType(keyboard)
             .font(.caption)
+            .foregroundColor(SemanticColors.textPrimary)
             .padding(9)
             .background(Color(hex: 0xF8FAFC))
             .cornerRadius(8)
@@ -411,6 +742,78 @@ struct NewWorkerDraftRowCard: View {
                 RoundedRectangle(cornerRadius: 8)
                     .stroke(SemanticColors.borderSubtle, lineWidth: 1)
             )
+        }
+    }
+}
+
+struct DirectEntrySearchablePickerSheet: View {
+    let title: String
+    let placeholder: String
+    let items: [(id: String, label: String)]
+    let allowCustomInput: Bool
+    let onSelect: (String, String) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var searchText: String = ""
+
+    var body: some View {
+        let filtered = searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? items
+            : items.filter {
+                $0.label.localizedCaseInsensitiveContains(searchText) ||
+                $0.id.localizedCaseInsensitiveContains(searchText)
+            }
+
+        NavigationStack {
+            VStack(spacing: 0) {
+                HStack {
+                    Image(systemName: "magnifyingglass")
+                        .foregroundColor(SemanticColors.textMuted)
+                    TextField(placeholder, text: $searchText)
+                        .font(.subheadline)
+                        .foregroundColor(SemanticColors.textPrimary)
+                }
+                .padding(10)
+                .background(Color(hex: 0xF8FAFC))
+                .cornerRadius(10)
+                .padding(12)
+
+                List {
+                    if allowCustomInput && !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && filtered.isEmpty {
+                        Button {
+                            let val = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+                            onSelect(val, val)
+                            dismiss()
+                        } label: {
+                            Text("Sử dụng giá trị: \"\(searchText.trimmingCharacters(in: .whitespacesAndNewlines))\"")
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundColor(SemanticColors.textPrimary)
+                        }
+                    }
+
+                    ForEach(Array(filtered.enumerated()), id: \.offset) { _, item in
+                        Button {
+                            onSelect(item.id, item.label)
+                            dismiss()
+                        } label: {
+                            HStack {
+                                Text(item.label)
+                                    .font(.subheadline)
+                                    .foregroundColor(SemanticColors.textPrimary)
+                                Spacer()
+                            }
+                        }
+                    }
+                }
+                .listStyle(.plain)
+            }
+            .navigationTitle(title)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Đóng") { dismiss() }
+                }
+            }
         }
     }
 }
@@ -738,6 +1141,7 @@ public struct WorkersScreen: View {
                         .foregroundColor(SemanticColors.textMuted)
                     TextField("Tìm họ tên, mã NLĐ, CCCD, SĐT...", text: $viewModel.workerSearchQuery)
                         .font(.caption)
+                        .foregroundColor(SemanticColors.textPrimary)
                         .onSubmit {
                             Task { await viewModel.loadWorkers(resetPage: true) }
                         }
@@ -802,7 +1206,7 @@ public struct WorkersScreen: View {
                             } label: {
                                 VStack(alignment: .leading, spacing: 6) {
                                     HStack {
-                                        Text("\(worker.hoTen) (\(worker.maNld))")
+                                        Text(worker.displayEmployeeCode.isEmpty ? worker.hoTen : "\(worker.hoTen) (\(worker.displayEmployeeCode))")
                                             .font(.subheadline.weight(.bold))
                                             .foregroundColor(SemanticColors.textPrimary)
                                         Spacer()
@@ -889,8 +1293,9 @@ struct WorkerDetailSheet: View {
                 VStack(alignment: .leading, spacing: 14) {
                     // Profile Summary
                     VStack(alignment: .leading, spacing: 6) {
-                        Text("\(worker.hoTen) (\(worker.maNld))")
+                        Text(worker.displayEmployeeCode.isEmpty ? worker.hoTen : "\(worker.hoTen) (\(worker.displayEmployeeCode))")
                             .font(.title3.weight(.bold))
+                            .foregroundColor(SemanticColors.textPrimary)
                         Text("Dự án: \(worker.duAn) · Trạng thái: \(worker.trangThai)")
                             .font(.subheadline)
                             .foregroundColor(SemanticColors.textSecondary)
@@ -978,21 +1383,25 @@ struct WorkerDetailSheet: View {
                             .font(.headline)
 
                         TextField("Số điện thoại", text: $editedPhone)
+                            .foregroundColor(SemanticColors.textPrimary)
                             .padding(9)
                             .background(Color(hex: 0xF8FAFC))
                             .cornerRadius(8)
 
                         TextField("Dự án", text: $editedProject)
+                            .foregroundColor(SemanticColors.textPrimary)
                             .padding(9)
                             .background(Color(hex: 0xF8FAFC))
                             .cornerRadius(8)
 
                         TextField("Trạng thái", text: $editedStatus)
+                            .foregroundColor(SemanticColors.textPrimary)
                             .padding(9)
                             .background(Color(hex: 0xF8FAFC))
                             .cornerRadius(8)
 
                         TextField("Lý do đề xuất chỉnh sửa...", text: $proposeReason)
+                            .foregroundColor(SemanticColors.textPrimary)
                             .padding(9)
                             .background(Color(hex: 0xF8FAFC))
                             .cornerRadius(8)
@@ -1011,7 +1420,7 @@ struct WorkerDetailSheet: View {
                                     )
                                     switch res {
                                     case .success:
-                                        viewModel.showBanner("Đã gửi đề xuất chỉnh sửa hồ sơ \(worker.maNld).")
+                                        viewModel.showBanner("Đã gửi đề xuất chỉnh sửa hồ sơ \(worker.hoTen).")
                                         dismiss()
                                     case .failure(let msg, _, _, _):
                                         viewModel.showBanner(msg, isError: true)
@@ -1039,7 +1448,7 @@ struct WorkerDetailSheet: View {
                                     )
                                     switch res {
                                     case .success:
-                                        viewModel.showBanner("Đã cập nhật trực tiếp hồ sơ \(worker.maNld).")
+                                        viewModel.showBanner("Đã cập nhật trực tiếp hồ sơ \(worker.hoTen).")
                                         await viewModel.loadWorkers(resetPage: false)
                                         dismiss()
                                     case .failure(let msg, _, _, _):
@@ -1075,6 +1484,17 @@ struct WorkerDetailSheet: View {
                 editedPhone = worker.sdt
                 editedProject = worker.duAn
                 editedStatus = worker.trangThai
+                if worker.soCccd.isEmpty && !worker.maNld.isEmpty {
+                    Task {
+                        let detailRes = await viewModel.repository.fetchWorkerDetail(maNld: worker.maNld)
+                        if case .success(let detailed, _) = detailRes {
+                            viewModel.selectedWorkerDetail = detailed
+                            editedPhone = detailed.sdt
+                            editedProject = detailed.duAn
+                            editedStatus = detailed.trangThai
+                        }
+                    }
+                }
             }
         }
     }

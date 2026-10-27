@@ -128,99 +128,192 @@ public enum WorkReportsContract {
             dict = nil
         }
 
-        let sectionsArray: [[String: Any]]
-        if let dict {
-            sectionsArray = dict.optObjectArray("sections")
-                .ifEmpty(dict.optObjectArray("groups"))
-                .ifEmpty(dict["fields"] != nil ? [dict] : [])
-        } else if let arr = schemaRaw as? [[String: Any]] {
-            sectionsArray = [["id": "default", "title": "Nội dung báo cáo", "fields": arr]]
-        } else {
-            sectionsArray = []
+        func parseFieldObject(_ fObj: [String: Any], fallbackIndex: Int) -> (sectionKey: String, sortOrder: Int, field: WorkReportFieldSchema)? {
+            let fieldId = fObj.optString("field_key", "id", "key", "name", "field_id")
+            guard !fieldId.isEmpty else { return nil }
+            let sectionKey = fObj.optString("section_key", "section_id", "group_key", defaultValue: "default")
+            let sortOrder = fObj.optInt("sort_order", "order", defaultValue: (fallbackIndex + 1) * 10)
+            let label = fObj.optString("label", "title", "name", defaultValue: fieldId)
+            let type = fObj.optString("field_type", "type", defaultValue: "text").lowercased()
+            let required = fObj.optBool("required", "is_required", defaultValue: false)
+            let placeholder = fObj.optNullableString("description", "placeholder", "hint", "help_text")
+            var options: [WorkReportFieldOption] = []
+            if let optObjs = fObj["options"] as? [[String: Any]] {
+                options = optObjs.compactMap { o in
+                    let val = o.optString("option_key", "value", "id", "code", "key", "label")
+                    guard !val.isEmpty else { return nil }
+                    let lbl = o.optString("label", "name", "title", "value", defaultValue: val)
+                    return WorkReportFieldOption(value: val, label: lbl)
+                }
+            } else if let optStrs = fObj["options"] as? [String] {
+                options = optStrs.map { WorkReportFieldOption(value: $0, label: $0) }
+            }
+            let schema = WorkReportFieldSchema(
+                id: fieldId,
+                label: label,
+                type: type,
+                required: required,
+                placeholder: placeholder,
+                options: options,
+                min: fObj.optNullableDouble("min", "min_value"),
+                max: fObj.optNullableDouble("max", "max_value")
+            )
+            return (sectionKey, sortOrder, schema)
         }
 
-        var result: [WorkReportSectionSchema] = []
-        for (secIdx, secObj) in sectionsArray.enumerated() {
-            let secId = secObj.optString("id", "section_id", "key", defaultValue: "sec_\(secIdx)")
-            let secTitle = secObj.optString("title", "label", "name", defaultValue: "Phần \(secIdx + 1)")
-            let secDesc = secObj.optNullableString("description", "subtitle")
-            let rawFields = secObj.optObjectArray("fields").ifEmpty(secObj.optObjectArray("items"))
+        if let dict {
+            let rawSections = dict.optObjectArray("sections").ifEmpty(dict.optObjectArray("groups"))
+            let topLevelFieldsRaw = dict.optObjectArray("fields").ifEmpty(dict.optObjectArray("items"))
 
-            let fields: [WorkReportFieldSchema] = rawFields.enumerated().compactMap { fIdx, fObj in
-                let fieldId = fObj.optString("id", "key", "name", "field_id")
-                guard !fieldId.isEmpty else { return nil }
-                let label = fObj.optString("label", "title", defaultValue: fieldId)
-                let type = fObj.optString("type", "field_type", defaultValue: "text").lowercased()
-                let required = fObj.optBool("required", "is_required", defaultValue: false)
-                let placeholder = fObj.optNullableString("placeholder", "hint")
-                var options: [WorkReportFieldOption] = []
-                if let optObjs = fObj["options"] as? [[String: Any]] {
-                    options = optObjs.compactMap { o in
-                        let val = o.optString("value", "id", "code", "label")
-                        guard !val.isEmpty else { return nil }
-                        let lbl = o.optString("label", "name", "title", defaultValue: val)
-                        return WorkReportFieldOption(value: val, label: lbl)
-                    }
-                } else if let optStrs = fObj["options"] as? [String] {
-                    options = optStrs.map { WorkReportFieldOption(value: $0, label: $0) }
+            var parsedTopFields: [(sectionKey: String, sortOrder: Int, field: WorkReportFieldSchema)] = []
+            for (idx, fObj) in topLevelFieldsRaw.enumerated() {
+                if let item = parseFieldObject(fObj, fallbackIndex: idx) {
+                    parsedTopFields.append(item)
                 }
-                return WorkReportFieldSchema(
-                    id: fieldId.isEmpty ? "field_\(fIdx)" : fieldId,
-                    label: label,
-                    type: type,
-                    required: required,
-                    placeholder: placeholder,
-                    options: options,
-                    min: fObj.optNullableDouble("min", "min_value"),
-                    max: fObj.optNullableDouble("max", "max_value")
-                )
             }
 
+            var result: [WorkReportSectionSchema] = []
+            var consumedFieldIds: Set<String> = []
+
+            let sortedSections = rawSections.enumerated().sorted { lhs, rhs in
+                let lOrder = lhs.element.optInt("sort_order", "order", defaultValue: (lhs.offset + 1) * 10)
+                let rOrder = rhs.element.optInt("sort_order", "order", defaultValue: (rhs.offset + 1) * 10)
+                return lOrder == rOrder ? lhs.offset < rhs.offset : lOrder < rOrder
+            }
+
+            for (secIdx, secObj) in sortedSections {
+                let secId = secObj.optString("section_key", "id", "section_id", "key", defaultValue: "sec_\(secIdx)")
+                let secTitle = secObj.optString("label", "title", "name", defaultValue: "Phần \(secIdx + 1)")
+                let secDesc = secObj.optNullableString("description", "subtitle")
+
+                var secFieldsWithOrder: [(sortOrder: Int, field: WorkReportFieldSchema)] = []
+                let nestedRaw = secObj.optObjectArray("fields").ifEmpty(secObj.optObjectArray("items"))
+                for (fIdx, fObj) in nestedRaw.enumerated() {
+                    if let parsed = parseFieldObject(fObj, fallbackIndex: fIdx) {
+                        secFieldsWithOrder.append((parsed.sortOrder, parsed.field))
+                        consumedFieldIds.insert(parsed.field.id)
+                    }
+                }
+
+                for topField in parsedTopFields where topField.sectionKey == secId && !consumedFieldIds.contains(topField.field.id) {
+                    secFieldsWithOrder.append((topField.sortOrder, topField.field))
+                    consumedFieldIds.insert(topField.field.id)
+                }
+
+                let orderedFields = secFieldsWithOrder.sorted { $0.sortOrder < $1.sortOrder }.map(\.field)
+                if !orderedFields.isEmpty {
+                    result.append(
+                        WorkReportSectionSchema(
+                            id: secId,
+                            title: secTitle,
+                            description: secDesc,
+                            fields: orderedFields
+                        )
+                    )
+                }
+            }
+
+            let remainingFields = parsedTopFields
+                .filter { !consumedFieldIds.contains($0.field.id) }
+                .sorted { $0.sortOrder < $1.sortOrder }
+                .map(\.field)
+
+            if !remainingFields.isEmpty {
+                if result.count == 1 && rawSections.count == 1 {
+                    let only = result[0]
+                    result[0] = WorkReportSectionSchema(
+                        id: only.id,
+                        title: only.title,
+                        description: only.description,
+                        fields: only.fields + remainingFields
+                    )
+                } else {
+                    result.append(
+                        WorkReportSectionSchema(
+                            id: "default",
+                            title: "Nội dung báo cáo",
+                            description: nil,
+                            fields: remainingFields
+                        )
+                    )
+                }
+            }
+
+            return result
+        }
+
+        if let arr = schemaRaw as? [[String: Any]] {
+            let fields = arr.enumerated().compactMap { idx, fObj in
+                parseFieldObject(fObj, fallbackIndex: idx)?.field
+            }
             if !fields.isEmpty {
-                result.append(
+                return [
                     WorkReportSectionSchema(
-                        id: secId,
-                        title: secTitle,
-                        description: secDesc,
+                        id: "default",
+                        title: "Nội dung báo cáo",
+                        description: nil,
                         fields: fields
                     )
-                )
+                ]
             }
         }
 
-        if result.isEmpty {
-            result.append(
-                WorkReportSectionSchema(
-                    id: "default",
-                    title: "Nội dung báo cáo",
-                    description: nil,
-                    fields: [
-                        WorkReportFieldSchema(
-                            id: "summary",
-                            label: "Tóm tắt công việc đã thực hiện",
-                            type: "textarea",
-                            required: true,
-                            placeholder: "Nhập kết quả công việc trong kỳ..."
-                        ),
-                        WorkReportFieldSchema(
-                            id: "issues",
-                            label: "Khó khăn / Vướng mắc",
-                            type: "textarea",
-                            required: false,
-                            placeholder: "Nhập khó khăn cần hỗ trợ (nếu có)..."
-                        ),
-                        WorkReportFieldSchema(
-                            id: "next_plan",
-                            label: "Kế hoạch kỳ tiếp theo",
-                            type: "textarea",
-                            required: false,
-                            placeholder: "Nhập kế hoạch tiếp theo..."
-                        )
-                    ]
-                )
-            )
+        return []
+    }
+
+    public static func buildTypedPayloadJson(
+        formPayload: [String: String],
+        sections: [WorkReportSectionSchema]
+    ) -> [String: Any] {
+        var fieldTypeById: [String: String] = [:]
+        for sec in sections {
+            for field in sec.fields {
+                fieldTypeById[field.id] = field.type.lowercased()
+            }
         }
-        return result
+
+        var payloadJson: [String: Any] = [:]
+        for (key, rawVal) in formPayload {
+            let trimmed = rawVal.trimmingCharacters(in: .whitespacesAndNewlines)
+            let fieldType = fieldTypeById[key] ?? "text"
+            switch fieldType {
+            case "number", "numeric", "integer", "decimal", "float":
+                if trimmed.isEmpty { continue }
+                let normalized = trimmed.replacingOccurrences(of: ",", with: ".")
+                if let intVal = Int64(normalized), !normalized.contains(".") {
+                    payloadJson[key] = intVal
+                } else if let dblVal = Double(normalized), dblVal.isFinite {
+                    payloadJson[key] = dblVal
+                }
+            case "boolean", "bool", "checkbox", "switch":
+                if trimmed.isEmpty { continue }
+                let lower = trimmed.lowercased()
+                if ["true", "1", "yes", "có"].contains(lower) {
+                    payloadJson[key] = true
+                } else if ["false", "0", "no", "không"].contains(lower) {
+                    payloadJson[key] = false
+                }
+            case "multi_select", "multiselect":
+                if trimmed.isEmpty {
+                    payloadJson[key] = [String]()
+                } else if trimmed.hasPrefix("["),
+                          let data = trimmed.data(using: .utf8),
+                          let arr = try? JSONSerialization.jsonObject(with: data) as? [String] {
+                    payloadJson[key] = arr.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+                } else {
+                    let parts = trimmed
+                        .split(separator: ",")
+                        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                        .filter { !$0.isEmpty }
+                    payloadJson[key] = parts
+                }
+            default:
+                if !trimmed.isEmpty {
+                    payloadJson[key] = trimmed
+                }
+            }
+        }
+        return payloadJson
     }
 }
 
@@ -272,9 +365,14 @@ public final class WorkReportsAndReportingService {
     }
 
     public func fetchObligationDetail(obligationId: Int64) async -> MiniBiApiResult<WorkReportObligationItem> {
+        await fetchObligationDetail(obligationIdUuid: String(obligationId))
+    }
+
+    public func fetchObligationDetail(obligationIdUuid: String) async -> MiniBiApiResult<WorkReportObligationItem> {
+        let encoded = obligationIdUuid.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? obligationIdUuid
         let response = await httpClient.request(
             method: "GET",
-            path: "/api/work-reports/obligations/\(obligationId)"
+            path: "/api/work-reports/obligations/\(encoded)"
         )
         guard response.isSuccess else {
             return .failure(
@@ -301,16 +399,34 @@ public final class WorkReportsAndReportingService {
         version: Int,
         formPayload: [String: String]
     ) async -> MiniBiApiResult<WorkReportObligationItem> {
+        await saveDraft(
+            obligationIdUuid: String(submissionId),
+            expectedVersion: version > 0 ? version : nil,
+            formPayload: formPayload,
+            sections: []
+        )
+    }
+
+    public func saveDraft(
+        obligationIdUuid: String,
+        expectedVersion: Int?,
+        formPayload: [String: String],
+        sections: [WorkReportSectionSchema] = []
+    ) async -> MiniBiApiResult<WorkReportObligationItem> {
+        let typedPayload = WorkReportsContract.buildTypedPayloadJson(formPayload: formPayload, sections: sections)
         let body: [String: Any] = [
-            "version": version,
+            "payload_json": typedPayload,
+            "expected_version": expectedVersion ?? NSNull(),
+            "idempotency_key": UUID().uuidString.lowercased(),
+            "version": expectedVersion ?? 1,
             "payload": formPayload,
-            "form_payload": formPayload,
-            "answers": formPayload
+            "form_payload": formPayload
         ]
 
+        let encoded = obligationIdUuid.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? obligationIdUuid
         let response = await httpClient.request(
             method: "POST",
-            path: "/api/work-reports/submissions/\(submissionId)/draft",
+            path: "/api/work-reports/submissions/\(encoded)/draft",
             jsonBody: body
         )
 
@@ -326,12 +442,22 @@ public final class WorkReportsAndReportingService {
             )
         }
 
+        if case .success(let refreshed, _) = await fetchObligationDetail(obligationIdUuid: obligationIdUuid) {
+            return .success(refreshed, statusCode: response.statusCode)
+        }
+
         let root = response.jsonObject ?? [:]
         let obj = (root["submission"] as? [String: Any])
             ?? (root["obligation"] as? [String: Any])
             ?? (root["data"] as? [String: Any])
             ?? root
-        let item = Self.parseObligationItem(obj, fallbackRoot: root)
+        var item = Self.parseObligationItem(obj, fallbackRoot: root)
+        if item.sections.isEmpty && !sections.isEmpty {
+            item.sections = sections
+        }
+        if item.formPayload.isEmpty {
+            item.formPayload = formPayload
+        }
         return .success(item, statusCode: response.statusCode)
     }
 
@@ -340,16 +466,34 @@ public final class WorkReportsAndReportingService {
         version: Int,
         formPayload: [String: String]
     ) async -> MiniBiApiResult<WorkReportObligationItem> {
+        await submitReport(
+            obligationIdUuid: String(submissionId),
+            expectedVersion: version > 0 ? version : nil,
+            formPayload: formPayload,
+            sections: []
+        )
+    }
+
+    public func submitReport(
+        obligationIdUuid: String,
+        expectedVersion: Int?,
+        formPayload: [String: String],
+        sections: [WorkReportSectionSchema] = []
+    ) async -> MiniBiApiResult<WorkReportObligationItem> {
+        let typedPayload = WorkReportsContract.buildTypedPayloadJson(formPayload: formPayload, sections: sections)
         let body: [String: Any] = [
-            "version": version,
+            "payload_json": typedPayload,
+            "expected_version": expectedVersion ?? NSNull(),
+            "idempotency_key": UUID().uuidString.lowercased(),
+            "version": expectedVersion ?? 1,
             "payload": formPayload,
-            "form_payload": formPayload,
-            "answers": formPayload
+            "form_payload": formPayload
         ]
 
+        let encoded = obligationIdUuid.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? obligationIdUuid
         let response = await httpClient.request(
             method: "POST",
-            path: "/api/work-reports/submissions/\(submissionId)/submit",
+            path: "/api/work-reports/submissions/\(encoded)/submit",
             jsonBody: body
         )
 
@@ -365,12 +509,22 @@ public final class WorkReportsAndReportingService {
             )
         }
 
+        if case .success(let refreshed, _) = await fetchObligationDetail(obligationIdUuid: obligationIdUuid) {
+            return .success(refreshed, statusCode: response.statusCode)
+        }
+
         let root = response.jsonObject ?? [:]
         let obj = (root["submission"] as? [String: Any])
             ?? (root["obligation"] as? [String: Any])
             ?? (root["data"] as? [String: Any])
             ?? root
-        let item = Self.parseObligationItem(obj, fallbackRoot: root)
+        var item = Self.parseObligationItem(obj, fallbackRoot: root)
+        if item.sections.isEmpty && !sections.isEmpty {
+            item.sections = sections
+        }
+        if item.formPayload.isEmpty {
+            item.formPayload = formPayload
+        }
         return .success(item, statusCode: response.statusCode)
     }
 
@@ -400,11 +554,16 @@ public final class WorkReportsAndReportingService {
 
     // MARK: - 3. Reviews & Templates & Analytics
 
-    public func fetchPendingReviews(status: String = "PENDING") async -> MiniBiApiResult<[WorkReportReviewItem]> {
+    public func fetchPendingReviews(status: String = "SUBMITTED") async -> MiniBiApiResult<[WorkReportReviewItem]> {
+        let resolvedState = status.uppercased() == "PENDING" ? "SUBMITTED" : status.uppercased()
         let response = await httpClient.request(
             method: "GET",
             path: "/api/work-reports/reviews",
-            queryItems: [URLQueryItem(name: "status", value: status)]
+            queryItems: [
+                URLQueryItem(name: "state", value: resolvedState),
+                URLQueryItem(name: "page", value: "1"),
+                URLQueryItem(name: "page_size", value: "50")
+            ]
         )
         if response.statusCode == 403 || response.statusCode == 404 {
             return .success([], statusCode: response.statusCode)
@@ -418,9 +577,9 @@ public final class WorkReportsAndReportingService {
         }
 
         let root = response.jsonObject ?? [:]
-        let rawList = root.optObjectArray("data")
+        let rawList = root.optObjectArray("items")
+            .ifEmpty(root.optObjectArray("data"))
             .ifEmpty(root.optObjectArray("reviews"))
-            .ifEmpty(root.optObjectArray("items"))
             .ifEmpty((root["data"] as? [String: Any])?.optObjectArray("reviews") ?? [])
             .ifEmpty((root["data"] as? [String: Any])?.optObjectArray("items") ?? [])
 
@@ -434,15 +593,41 @@ public final class WorkReportsAndReportingService {
         comment: String,
         expectedVersion: Int
     ) async -> MiniBiApiResult<Bool> {
-        let body: [String: Any] = [
-            "decision": decision,
-            "comment": comment,
-            "review_comment": comment,
-            "version": expectedVersion
+        await decideReview(
+            submissionIdUuid: String(submissionId),
+            decision: decision,
+            comment: comment,
+            expectedVersion: expectedVersion
+        )
+    }
+
+    public func decideReview(
+        submissionIdUuid: String,
+        decision: String,
+        comment: String,
+        expectedVersion: Int
+    ) async -> MiniBiApiResult<Bool> {
+        let normalizedDecision: String = {
+            let upper = decision.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+            if upper == "APPROVE" || upper == "APPROVED" { return "approve" }
+            if upper == "REJECT" || upper == "REJECTED" { return "reject" }
+            return decision.lowercased()
+        }()
+        let cleanComment = comment.trimmingCharacters(in: .whitespacesAndNewlines)
+        var body: [String: Any] = [
+            "decision": normalizedDecision,
+            "expected_version": max(1, expectedVersion),
+            "version": max(1, expectedVersion)
         ]
+        if !cleanComment.isEmpty {
+            body["review_note"] = cleanComment
+            body["comment"] = cleanComment
+            body["review_comment"] = cleanComment
+        }
+        let encoded = submissionIdUuid.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? submissionIdUuid
         let response = await httpClient.request(
             method: "POST",
-            path: "/api/work-reports/submissions/\(submissionId)/review",
+            path: "/api/work-reports/submissions/\(encoded)/review",
             jsonBody: body
         )
         guard response.isSuccess else {
@@ -456,7 +641,10 @@ public final class WorkReportsAndReportingService {
     }
 
     public func fetchSelectableTemplates() async -> MiniBiApiResult<[WorkReportTemplateOption]> {
-        let response = await httpClient.request(method: "GET", path: "/api/work-reports/templates")
+        var response = await httpClient.request(method: "GET", path: "/api/work-reports/templates/selectable")
+        if response.statusCode == 404 {
+            response = await httpClient.request(method: "GET", path: "/api/work-reports/templates")
+        }
         if response.statusCode == 403 || response.statusCode == 404 {
             return .success([], statusCode: response.statusCode)
         }
@@ -468,13 +656,13 @@ public final class WorkReportsAndReportingService {
             )
         }
         let root = response.jsonObject ?? [:]
-        let rawList = root.optObjectArray("data")
+        let rawList = root.optObjectArray("items")
+            .ifEmpty(root.optObjectArray("data"))
             .ifEmpty(root.optObjectArray("templates"))
-            .ifEmpty(root.optObjectArray("items"))
             .ifEmpty((root["data"] as? [String: Any])?.optObjectArray("templates") ?? [])
 
         let items = rawList.compactMap { obj -> WorkReportTemplateOption? in
-            let code = obj.optString("code", "template_code", "id")
+            let code = obj.optString("code", "template_code", "template_id", "id")
             guard !code.isEmpty else { return nil }
             let name = obj.optString("name", "template_name", "title", defaultValue: code)
             let periodType = obj.optString("period_type", defaultValue: "WEEKLY")
@@ -499,11 +687,18 @@ public final class WorkReportsAndReportingService {
             queryItems.append(URLQueryItem(name: "period_key", value: periodKey))
         }
 
-        let response = await httpClient.request(
+        var response = await httpClient.request(
             method: "GET",
-            path: "/api/work-reports/analytics/summary",
+            path: "/api/work-reports/analytics/overview",
             queryItems: queryItems
         )
+        if response.statusCode == 404 {
+            response = await httpClient.request(
+                method: "GET",
+                path: "/api/work-reports/analytics/summary",
+                queryItems: queryItems
+            )
+        }
         if response.statusCode == 403 || response.statusCode == 404 {
             return .success(WorkReportsAnalyticsSnapshot(), statusCode: response.statusCode)
         }
@@ -516,23 +711,23 @@ public final class WorkReportsAndReportingService {
         }
 
         let root = response.jsonObject ?? [:]
-        let dataObj = (root["data"] as? [String: Any]) ?? (root["summary"] as? [String: Any]) ?? root
+        let dataObj = (root["data"] as? [String: Any]) ?? root
+        let kpiObj = (dataObj["summary"] as? [String: Any]) ?? (dataObj["kpis"] as? [String: Any]) ?? dataObj
 
-        let kpiObj = (dataObj["kpis"] as? [String: Any]) ?? dataObj
-        let totalOb = kpiObj.optInt("total_obligations", "total")
+        let totalOb = kpiObj.optInt("expected_count", "total_obligations", "total")
         let submittedCount = kpiObj.optInt("submitted_count", "submitted")
         let approvedCount = kpiObj.optInt("approved_count", "approved")
         let rejectedCount = kpiObj.optInt("rejected_count", "rejected")
         let overdueCount = kpiObj.optInt("overdue_count", "overdue")
         let completionRate = kpiObj.optDouble("completion_rate", "submitted_rate")
-        let onTimeRate = kpiObj.optDouble("on_time_rate", "ontime_rate")
+        let onTimeRate = kpiObj.optDouble("approval_rate", "on_time_rate", "ontime_rate")
 
         let byUnitRaw = dataObj.optObjectArray("by_unit").ifEmpty(dataObj.optObjectArray("units"))
         let byUnit: [WorkReportAnalyticsGroupRow] = byUnitRaw.enumerated().map { idx, u in
             WorkReportAnalyticsGroupRow(
-                id: u.optString("unit_code", "id", defaultValue: "unit_\(idx)"),
+                id: u.optString("org_unit_id", "unit_code", "id", defaultValue: "unit_\(idx)"),
                 groupLabel: u.optString("unit_name", "label", "name", defaultValue: "Đơn vị \(idx + 1)"),
-                totalObligations: u.optInt("total_obligations", "total"),
+                totalObligations: u.optInt("expected_count", "total_obligations", "total"),
                 submittedCount: u.optInt("submitted_count", "submitted"),
                 approvedCount: u.optInt("approved_count", "approved"),
                 overdueCount: u.optInt("overdue_count", "overdue"),
@@ -545,7 +740,7 @@ public final class WorkReportsAndReportingService {
             WorkReportAnalyticsGroupRow(
                 id: t.optString("template_code", "id", defaultValue: "tpl_\(idx)"),
                 groupLabel: t.optString("template_name", "label", "name", defaultValue: "Mẫu \(idx + 1)"),
-                totalObligations: t.optInt("total_obligations", "total"),
+                totalObligations: t.optInt("expected_count", "total_obligations", "total"),
                 submittedCount: t.optInt("submitted_count", "submitted"),
                 approvedCount: t.optInt("approved_count", "approved"),
                 overdueCount: t.optInt("overdue_count", "overdue"),
@@ -571,6 +766,45 @@ public final class WorkReportsAndReportingService {
 
     // MARK: - 4. Dashboard Overview & Workforce Deep Metrics & Team & Duplicate CCCD
 
+    private func buildWorkforceDeepQueryItems(startDate: String?, endDate: String?) -> [URLQueryItem] {
+        var queryItems: [URLQueryItem] = [URLQueryItem(name: "mode", value: "deep")]
+        let cleanStart = (startDate ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanEnd = (endDate ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if !cleanStart.isEmpty && !cleanEnd.isEmpty {
+            queryItems.append(URLQueryItem(name: "from_date", value: cleanStart))
+            queryItems.append(URLQueryItem(name: "to_date", value: cleanEnd))
+        }
+        return queryItems
+    }
+
+    private func fetchMergedWorkersForScopedFallback(preferredScope: String) async -> (items: [WorkerItem], total: Int, statusCode: Int)? {
+        let scopesToTry: [String] = {
+            let norm = preferredScope.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if !norm.isEmpty && norm != "all" {
+                return [norm, "team", "managed", "recruited"]
+            }
+            return ["team", "managed", "recruited"]
+        }()
+
+        var seenIds: Set<String> = []
+        var merged: [WorkerItem] = []
+        var anySuccessStatus: Int?
+
+        for sc in scopesToTry {
+            let res = await MiniBiRepository.shared.fetchWorkers(scope: sc, pageSize: 100)
+            if case .success(let wData, let status) = res {
+                anySuccessStatus = status
+                for item in wData.items where !seenIds.contains(item.maNld) {
+                    seenIds.insert(item.maNld)
+                    merged.append(item)
+                }
+            }
+        }
+
+        guard let statusCode = anySuccessStatus else { return nil }
+        return (merged, merged.count, statusCode)
+    }
+
     public func fetchGeneralOverview(
         scope: String = "all",
         startDate: String? = nil,
@@ -580,131 +814,230 @@ public final class WorkReportsAndReportingService {
         projectsPage: Int = 1,
         projectsPageSize: Int = 20
     ) async -> MiniBiApiResult<GeneralOverviewData> {
-        var queryItems: [URLQueryItem] = [URLQueryItem(name: "mode", value: "deep")]
-        let cleanStart = (startDate ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        let cleanEnd = (endDate ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        if !cleanStart.isEmpty && !cleanEnd.isEmpty {
-            queryItems.append(URLQueryItem(name: "from", value: cleanStart))
-            queryItems.append(URLQueryItem(name: "to", value: cleanEnd))
-        } else {
-            queryItems.append(URLQueryItem(name: "range", value: "all"))
-        }
+        let normalizedScope = scope.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let queryItems = buildWorkforceDeepQueryItems(startDate: startDate, endDate: endDate)
 
-        let response = await httpClient.request(
-            method: "GET",
-            path: "/api/reporting/workforce-deep",
-            queryItems: queryItems
-        )
-
-        if response.isSuccess, let root = response.jsonObject {
-            let reportObj = (root["report"] as? [String: Any])
-                ?? (root["data"] as? [String: Any])
-                ?? root
-            let kpisObj = (reportObj["kpis"] as? [String: Any])
-                ?? (reportObj["summary"] as? [String: Any])
-                ?? reportObj
-
-            let totalWorkers = kpisObj.optInt("total_workers", "total_headcount", "total")
-            let activeCount = kpisObj.optInt("on_count", "active_count", "working_count", "active")
-            let inactiveCount = kpisObj.optInt("off_count", "inactive_count", "resigned_count", "inactive")
-            let unconfirmedCount = kpisObj.optInt("unconfirmed_count", "interview_count", "interview")
-            let newCount = kpisObj.optInt("new_in_period_count", "new_count", "new_workers")
-            let resignedInPeriodCount = kpisObj.optInt("off_in_period_count", "resigned_in_period_count", "resigned_period")
-            let retentionRate = totalWorkers > 0
-                ? (Double(activeCount) * 100.0 / Double(totalWorkers))
-                : kpisObj.optDouble("retention_rate", "active_rate")
-            let turnoverRate = totalWorkers > 0
-                ? (Double(inactiveCount) * 100.0 / Double(totalWorkers))
-                : kpisObj.optDouble("turnover_rate")
-
-            let kpis = GeneralOverviewKpis(
-                totalHeadcount: totalWorkers,
-                activeCount: activeCount,
-                inactiveCount: inactiveCount,
-                interviewCount: unconfirmedCount,
-                newCount: newCount,
-                resignedInPeriodCount: resignedInPeriodCount,
-                retentionRate: retentionRate,
-                turnoverRate: turnoverRate
+        if normalizedScope == "all" || normalizedScope.isEmpty {
+            let response = await httpClient.request(
+                method: "GET",
+                path: "/api/reporting/workforce-deep",
+                queryItems: queryItems
             )
 
-            let projectsRaw = reportObj.optObjectArray("by_project").ifEmpty(reportObj.optObjectArray("projects"))
-            let projects: [ProjectBreakdownRow] = projectsRaw.enumerated().map { idx, p in
-                let name = p.optString("project_display", "du_an", "project_name", "name", "project_id", defaultValue: "Dự án #\(idx + 1)")
-                let pTotal = p.optInt("total_workers", "total_count", "total")
-                let pActive = p.optInt("on_count", "active_count", "active")
-                let pInactive = p.optInt("off_count", "inactive_count", "inactive")
-                let pNew = p.optInt("new_count", "new")
-                let share = totalWorkers > 0 ? (Double(pActive) * 100.0 / Double(max(activeCount, 1))) : p.optDouble("active_share_pct", "active_rate")
-                return ProjectBreakdownRow(
-                    id: "\(name)_\(idx)",
-                    projectName: name,
-                    totalCount: pTotal,
-                    activeCount: pActive,
-                    inactiveCount: pInactive,
-                    newCount: pNew,
-                    activeSharePct: share
-                )
-            }
+            if response.isSuccess, let root = response.jsonObject {
+                if let wfObj = root["workforce"] as? [String: Any] {
+                    let snapshotObj = (wfObj["snapshot"] as? [String: Any]) ?? [:]
+                    let balanceObj = (wfObj["balance"] as? [String: Any]) ?? [:]
+                    let newEpObj = (balanceObj["new_episodes_in_period"] as? [String: Any])
+                        ?? (balanceObj["newEpisodesInPeriod"] as? [String: Any]) ?? [:]
+                    let byStatusObj = (balanceObj["by_status"] as? [String: Any])
+                        ?? (balanceObj["byStatus"] as? [String: Any]) ?? [:]
+                    let offFlowObj = (byStatusObj["off"] as? [String: Any]) ?? [:]
+                    let retentionObj = (wfObj["retention"] as? [String: Any]) ?? [:]
+                    let checkpointsObj = (retentionObj["checkpoints"] as? [String: Any]) ?? [:]
+                    let d30Obj = (checkpointsObj["d30"] as? [String: Any]) ?? [:]
 
-            let recruitersRaw = reportObj.optObjectArray("by_recruiter").ifEmpty(reportObj.optObjectArray("recruiters"))
-            let recruiters: [PersonPerformanceRow] = recruitersRaw.enumerated().map { idx, r in
-                let rTotal = r.optInt("total_workers", "total_count", "total")
-                let rActive = r.optInt("on_count", "active_count", "active")
-                let rInactive = r.optInt("off_count", "inactive_count", "inactive")
-                let rate = rTotal > 0 ? (Double(rActive) * 100.0 / Double(rTotal)) : r.optDouble("active_rate_pct", "active_rate")
-                return PersonPerformanceRow(
-                    id: r.optString("recruiter_id", "code", "username", defaultValue: "rec_\(idx)"),
-                    code: r.optString("recruiter_id", "code", "username"),
-                    name: r.optString("recruiter_display", "name", "full_name", "nguoi_tuyen", defaultValue: "NV #\(idx + 1)"),
-                    totalCount: rTotal,
-                    activeCount: rActive,
-                    inactiveCount: rInactive,
-                    activeRatePct: rate
-                )
-            }
+                    let totalWorkers = snapshotObj.optInt("eligible_episode_total", "eligibleEpisodeTotal", "total")
+                    let activeCount = snapshotObj.optInt("on_count", "onCount", "active_count")
+                    let inactiveCount = snapshotObj.optInt("off_count", "offCount", "inactive_count")
+                    let unconfirmedCount = snapshotObj.optInt("unconfirmed_count", "unconfirmedCount", "interview_count")
+                    let newCount = newEpObj.optInt("total", "count")
+                    let resignedInPeriodCount = offFlowObj.optInt("total_inflow_count", "totalInflowCount", "count")
 
-            let managersRaw = reportObj.optObjectArray("by_manager").ifEmpty(reportObj.optObjectArray("managers"))
-            let managers: [PersonPerformanceRow] = managersRaw.enumerated().map { idx, m in
-                let mTotal = m.optInt("total_workers", "total_count", "total")
-                let mActive = m.optInt("on_count", "active_count", "active")
-                let mInactive = m.optInt("off_count", "inactive_count", "inactive")
-                let rate = mTotal > 0 ? (Double(mActive) * 100.0 / Double(mTotal)) : m.optDouble("active_rate_pct", "active_rate")
-                return PersonPerformanceRow(
-                    id: m.optString("manager_id", "code", "username", defaultValue: "mgr_\(idx)"),
-                    code: m.optString("manager_id", "code", "username"),
-                    name: m.optString("manager_display", "name", "full_name", "quan_ly", defaultValue: "QL #\(idx + 1)"),
-                    totalCount: mTotal,
-                    activeCount: mActive,
-                    inactiveCount: mInactive,
-                    activeRatePct: rate
-                )
-            }
+                    let d30RetentionRatio = d30Obj.optNullableDouble("retention_rate", "retentionRate")
+                    let retentionRate: Double = {
+                        if let r = d30RetentionRatio {
+                            return r <= 1.0 && r > 0.0 ? r * 100.0 : r
+                        }
+                        return totalWorkers > 0 ? (Double(activeCount) * 100.0 / Double(totalWorkers)) : 0.0
+                    }()
+                    let turnoverRate = totalWorkers > 0
+                        ? (Double(inactiveCount) * 100.0 / Double(totalWorkers))
+                        : 0.0
 
-            let overview = GeneralOverviewData(
-                scope: scope,
-                kpis: kpis,
-                projects: projects,
-                projectsTotal: projects.count,
-                projectsPage: projectsPage,
-                projectsTotalPages: 1,
-                recruiters: recruiters,
-                managers: managers
-            )
-            return .success(overview, statusCode: response.statusCode)
+                    let kpis = GeneralOverviewKpis(
+                        totalHeadcount: totalWorkers,
+                        activeCount: activeCount,
+                        inactiveCount: inactiveCount,
+                        interviewCount: unconfirmedCount,
+                        newCount: newCount,
+                        resignedInPeriodCount: resignedInPeriodCount,
+                        retentionRate: retentionRate,
+                        turnoverRate: turnoverRate
+                    )
+
+                    let dimsObj = (wfObj["dimensions"] as? [String: Any]) ?? [:]
+                    let byProjectObj = (dimsObj["by_project"] as? [String: Any])
+                        ?? (dimsObj["byProject"] as? [String: Any]) ?? [:]
+                    let projectsBuckets = byProjectObj.optObjectArray("buckets")
+
+                    let projects: [ProjectBreakdownRow] = projectsBuckets.enumerated().map { idx, p in
+                        let name = p.optString("display", "project_display", "du_an", "project_name", "name", "key", defaultValue: "Dự án #\(idx + 1)")
+                        let pTotal = p.optInt("eligible_episode_count", "eligibleEpisodeCount", "total_workers", "total")
+                        let pActive = p.optInt("on_count", "onCount", "active_count")
+                        let pInactive = p.optInt("off_count", "offCount", "inactive_count")
+                        let pNew = p.optInt("unconfirmed_count", "unconfirmedCount", "new_count")
+                        let share = pTotal > 0 ? (Double(pActive) * 100.0 / Double(pTotal)) : 0.0
+                        return ProjectBreakdownRow(
+                            id: p.optString("key", defaultValue: "\(name)_\(idx)"),
+                            projectName: name,
+                            totalCount: pTotal,
+                            activeCount: pActive,
+                            inactiveCount: pInactive,
+                            newCount: pNew,
+                            activeSharePct: share
+                        )
+                    }
+
+                    let byRecruiterObj = (dimsObj["by_recruiter"] as? [String: Any])
+                        ?? (dimsObj["byRecruiter"] as? [String: Any]) ?? [:]
+                    let recruitersBuckets = byRecruiterObj.optObjectArray("buckets")
+                    let recruiters: [PersonPerformanceRow] = recruitersBuckets.enumerated().map { idx, r in
+                        let rTotal = r.optInt("eligible_episode_count", "eligibleEpisodeCount", "total_workers", "total")
+                        let rActive = r.optInt("on_count", "onCount", "active_count")
+                        let rInactive = r.optInt("off_count", "offCount", "inactive_count")
+                        let rate = rTotal > 0 ? (Double(rActive) * 100.0 / Double(rTotal)) : 0.0
+                        let key = r.optString("key", "recruiter_id", "code", defaultValue: "rec_\(idx)")
+                        return PersonPerformanceRow(
+                            id: key,
+                            code: key,
+                            name: r.optString("display", "recruiter_display", "name", "full_name", defaultValue: "NV #\(idx + 1)"),
+                            totalCount: rTotal,
+                            activeCount: rActive,
+                            inactiveCount: rInactive,
+                            activeRatePct: rate
+                        )
+                    }
+
+                    let byTeamObj = (dimsObj["by_team"] as? [String: Any])
+                        ?? (dimsObj["byTeam"] as? [String: Any]) ?? [:]
+                    let teamBuckets = byTeamObj.optObjectArray("buckets")
+                    let managers: [PersonPerformanceRow] = teamBuckets.enumerated().map { idx, m in
+                        let mTotal = m.optInt("eligible_episode_count", "eligibleEpisodeCount", "total_workers", "total")
+                        let mActive = m.optInt("on_count", "onCount", "active_count")
+                        let mInactive = m.optInt("off_count", "offCount", "inactive_count")
+                        let rate = mTotal > 0 ? (Double(mActive) * 100.0 / Double(mTotal)) : 0.0
+                        let key = m.optString("key", "team_id", "code", defaultValue: "team_\(idx)")
+                        return PersonPerformanceRow(
+                            id: key,
+                            code: key,
+                            name: m.optString("display", "team_display", "name", defaultValue: "Nhóm #\(idx + 1)"),
+                            totalCount: mTotal,
+                            activeCount: mActive,
+                            inactiveCount: mInactive,
+                            activeRatePct: rate
+                        )
+                    }
+
+                    return .success(
+                        GeneralOverviewData(
+                            scope: scope,
+                            kpis: kpis,
+                            projects: projects,
+                            projectsTotal: projects.count,
+                            projectsPage: projectsPage,
+                            projectsTotalPages: 1,
+                            recruiters: recruiters,
+                            managers: managers
+                        ),
+                        statusCode: response.statusCode
+                    )
+                }
+
+                // Legacy/unit-test fallback format (`root["report"]` / `root["kpis"]`)
+                let reportObj = (root["report"] as? [String: Any])
+                    ?? (root["data"] as? [String: Any])
+                    ?? root
+                let kpisObj = (reportObj["kpis"] as? [String: Any])
+                    ?? (reportObj["summary"] as? [String: Any])
+                    ?? reportObj
+
+                let totalWorkers = kpisObj.optInt("total_workers", "total_headcount", "total")
+                let activeCount = kpisObj.optInt("on_count", "active_count", "working_count", "active")
+                let inactiveCount = kpisObj.optInt("off_count", "inactive_count", "resigned_count", "inactive")
+                let unconfirmedCount = kpisObj.optInt("unconfirmed_count", "interview_count", "interview")
+                let newCount = kpisObj.optInt("new_in_period_count", "new_count", "new_workers")
+                let resignedInPeriodCount = kpisObj.optInt("off_in_period_count", "resigned_in_period_count", "resigned_period")
+                let retentionRate = totalWorkers > 0
+                    ? (Double(activeCount) * 100.0 / Double(totalWorkers))
+                    : kpisObj.optDouble("retention_rate", "active_rate")
+                let turnoverRate = totalWorkers > 0
+                    ? (Double(inactiveCount) * 100.0 / Double(totalWorkers))
+                    : kpisObj.optDouble("turnover_rate")
+
+                let projectsRaw = reportObj.optObjectArray("by_project").ifEmpty(reportObj.optObjectArray("projects"))
+                let projects: [ProjectBreakdownRow] = projectsRaw.enumerated().map { idx, p in
+                    let name = p.optString("project_display", "du_an", "project_name", "name", "project_id", defaultValue: "Dự án #\(idx + 1)")
+                    let pTotal = p.optInt("total_workers", "total_count", "total")
+                    let pActive = p.optInt("on_count", "active_count", "active")
+                    let pInactive = p.optInt("off_count", "inactive_count", "inactive")
+                    let pNew = p.optInt("new_count", "new")
+                    let share = pTotal > 0 ? (Double(pActive) * 100.0 / Double(pTotal)) : p.optDouble("active_share_pct", "active_rate")
+                    return ProjectBreakdownRow(
+                        id: "\(name)_\(idx)",
+                        projectName: name,
+                        totalCount: pTotal,
+                        activeCount: pActive,
+                        inactiveCount: pInactive,
+                        newCount: pNew,
+                        activeSharePct: share
+                    )
+                }
+
+                let recruitersRaw = reportObj.optObjectArray("by_recruiter").ifEmpty(reportObj.optObjectArray("recruiters"))
+                let recruiters: [PersonPerformanceRow] = recruitersRaw.enumerated().map { idx, r in
+                    let rTotal = r.optInt("total_workers", "total_count", "total")
+                    let rActive = r.optInt("on_count", "active_count", "active")
+                    let rInactive = r.optInt("off_count", "inactive_count", "inactive")
+                    let rate = rTotal > 0 ? (Double(rActive) * 100.0 / Double(rTotal)) : r.optDouble("active_rate_pct", "active_rate")
+                    return PersonPerformanceRow(
+                        id: r.optString("recruiter_id", "code", "username", defaultValue: "rec_\(idx)"),
+                        code: r.optString("recruiter_id", "code", "username"),
+                        name: r.optString("recruiter_display", "name", "full_name", "nguoi_tuyen", defaultValue: "NV #\(idx + 1)"),
+                        totalCount: rTotal,
+                        activeCount: rActive,
+                        inactiveCount: rInactive,
+                        activeRatePct: rate
+                    )
+                }
+
+                let overview = GeneralOverviewData(
+                    scope: scope,
+                    kpis: GeneralOverviewKpis(
+                        totalHeadcount: totalWorkers,
+                        activeCount: activeCount,
+                        inactiveCount: inactiveCount,
+                        interviewCount: unconfirmedCount,
+                        newCount: newCount,
+                        resignedInPeriodCount: resignedInPeriodCount,
+                        retentionRate: retentionRate,
+                        turnoverRate: turnoverRate
+                    ),
+                    projects: projects,
+                    projectsTotal: projects.count,
+                    projectsPage: projectsPage,
+                    projectsTotalPages: 1,
+                    recruiters: recruiters,
+                    managers: []
+                )
+                return .success(overview, statusCode: response.statusCode)
+            }
         }
 
-        // Fallback for non-`all` scope users (HTTP 403/404 on `/api/reporting/workforce-deep`): aggregate from `/api/direct-entry/workers`
-        let workersRes = await MiniBiRepository.shared.fetchWorkers(scope: scope, pageSize: 100)
-        if case .success(let wData, let statusCode) = workersRes {
-            let items = wData.items
+        // Scoped or non-Admin fallback: aggregate from `/api/direct-entry/workers`
+        if let fallbackData = await fetchMergedWorkersForScopedFallback(preferredScope: scope) {
+            let items = fallbackData.items
             let isWorking: (WorkerItem) -> Bool = { w in
                 let st = w.trangThai.lowercased()
                 return !st.contains("nghỉ") && !st.contains("off") && !st.contains("chưa")
             }
-            let total = max(wData.total, items.count)
+            let isOff: (WorkerItem) -> Bool = { w in
+                let st = w.trangThai.lowercased()
+                return st.contains("nghỉ") || st == "off"
+            }
+            let total = max(fallbackData.total, items.count)
             let active = items.filter { isWorking($0) }.count
-            let inactive = items.filter { $0.trangThai.lowercased().contains("nghỉ") || $0.trangThai.lowercased() == "off" }.count
+            let inactive = items.filter { isOff($0) }.count
             let interview = max(0, items.count - active - inactive)
             let retention = items.isEmpty ? 0.0 : (Double(active) * 100.0 / Double(items.count))
             let turnover = items.isEmpty ? 0.0 : (Double(inactive) * 100.0 / Double(items.count))
@@ -715,13 +1048,13 @@ public final class WorkReportsAndReportingService {
                 let pName = w.duAn.isEmpty ? "Chưa phân dự án" : w.duAn
                 var pCur = byProject[pName] ?? (0, 0, 0)
                 pCur.total += 1
-                if isWorking(w) { pCur.active += 1 } else { pCur.inactive += 1 }
+                if isWorking(w) { pCur.active += 1 } else if isOff(w) { pCur.inactive += 1 }
                 byProject[pName] = pCur
 
                 let rName = w.nguoiTuyen.isEmpty ? "Chưa gán người tuyển" : w.nguoiTuyen
                 var rCur = byRecruiter[rName] ?? (0, 0, 0)
                 rCur.total += 1
-                if isWorking(w) { rCur.active += 1 } else { rCur.inactive += 1 }
+                if isWorking(w) { rCur.active += 1 } else if isOff(w) { rCur.inactive += 1 }
                 byRecruiter[rName] = rCur
             }
 
@@ -733,7 +1066,7 @@ public final class WorkReportsAndReportingService {
                     activeCount: kv.value.active,
                     inactiveCount: kv.value.inactive,
                     newCount: 0,
-                    activeSharePct: active > 0 ? (Double(kv.value.active) * 100.0 / Double(active)) : 0.0
+                    activeSharePct: kv.value.total > 0 ? (Double(kv.value.active) * 100.0 / Double(kv.value.total)) : 0.0
                 )
             }
             let recruiters = byRecruiter.sorted { $0.value.total > $1.value.total }.enumerated().map { idx, kv in
@@ -768,15 +1101,11 @@ public final class WorkReportsAndReportingService {
                     recruiters: recruiters,
                     managers: []
                 ),
-                statusCode: statusCode
+                statusCode: fallbackData.statusCode
             )
         }
 
-        return .failure(
-            message: response.errorMessage ?? "Không tải được báo cáo tổng quát.",
-            httpStatus: response.statusCode,
-            errorCode: response.errorCode
-        )
+        return .failure(message: "Không tải được báo cáo tổng quát.")
     }
 
     public func fetchWorkforceDeepMetrics(
@@ -784,57 +1113,148 @@ public final class WorkReportsAndReportingService {
         startDate: String? = nil,
         endDate: String? = nil
     ) async -> MiniBiApiResult<WorkforceDeepMetricsData> {
-        var queryItems: [URLQueryItem] = [URLQueryItem(name: "mode", value: "deep")]
-        let cleanStart = (startDate ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        let cleanEnd = (endDate ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        if !cleanStart.isEmpty && !cleanEnd.isEmpty {
-            queryItems.append(URLQueryItem(name: "from", value: cleanStart))
-            queryItems.append(URLQueryItem(name: "to", value: cleanEnd))
-        } else {
-            queryItems.append(URLQueryItem(name: "range", value: "all"))
-        }
+        let queryItems = buildWorkforceDeepQueryItems(startDate: startDate, endDate: endDate)
 
         let response = await httpClient.request(
             method: "GET",
             path: "/api/reporting/workforce-deep",
             queryItems: queryItems
         )
-        if response.statusCode == 403 || response.statusCode == 404 {
-            return .success(WorkforceDeepMetricsData(), statusCode: response.statusCode)
+
+        if response.isSuccess, let root = response.jsonObject {
+            if let wfObj = root["workforce"] as? [String: Any] {
+                let snapshotObj = (wfObj["snapshot"] as? [String: Any]) ?? [:]
+                let totalEp = max(1, snapshotObj.optInt("eligible_episode_total", "eligibleEpisodeTotal", defaultValue: 1))
+                let onCount = snapshotObj.optInt("on_count", "onCount")
+                let offCount = snapshotObj.optInt("off_count", "offCount")
+                let unconfirmedCount = snapshotObj.optInt("unconfirmed_count", "unconfirmedCount")
+
+                let retentionObj = (wfObj["retention"] as? [String: Any]) ?? [:]
+                let checkpointsObj = (retentionObj["checkpoints"] as? [String: Any]) ?? [:]
+                var tenureBuckets: [DistributionBucket] = []
+                for (key, title) in [("d7", "Giữ chân sau 7 ngày (D7)"), ("d30", "Giữ chân sau 30 ngày (D30)"), ("d90", "Giữ chân sau 90 ngày (D90)")] {
+                    if let cp = checkpointsObj[key] as? [String: Any] {
+                        let retained = cp.optInt("retained_count", "retainedCount")
+                        let rawRate = cp.optDouble("retention_rate", "retentionRate")
+                        let pct = rawRate <= 1.0 && rawRate > 0.0 ? rawRate * 100.0 : rawRate
+                        tenureBuckets.append(DistributionBucket(id: key, label: title, count: retained, percentage: pct))
+                    }
+                }
+
+                let dimsObj = (wfObj["dimensions"] as? [String: Any]) ?? [:]
+                let byProviderObj = (dimsObj["by_provider"] as? [String: Any]) ?? (dimsObj["byProvider"] as? [String: Any]) ?? [:]
+                let providerBucketsRaw = byProviderObj.optObjectArray("buckets")
+                let providerBuckets: [DistributionBucket] = providerBucketsRaw.enumerated().map { idx, b in
+                    let cnt = b.optInt("eligible_episode_count", "eligibleEpisodeCount", "on_count")
+                    let pct = Double(cnt) * 100.0 / Double(totalEp)
+                    return DistributionBucket(
+                        id: b.optString("key", defaultValue: "prov_\(idx)"),
+                        label: b.optString("display", "label", "key", defaultValue: "Nguồn \(idx + 1)"),
+                        count: cnt,
+                        percentage: pct
+                    )
+                }
+
+                let byTeamObj = (dimsObj["by_team"] as? [String: Any]) ?? (dimsObj["byTeam"] as? [String: Any]) ?? [:]
+                let teamBucketsRaw = byTeamObj.optObjectArray("buckets")
+                let teamBuckets: [DistributionBucket] = teamBucketsRaw.enumerated().map { idx, b in
+                    let cnt = b.optInt("eligible_episode_count", "eligibleEpisodeCount", "on_count")
+                    let pct = Double(cnt) * 100.0 / Double(totalEp)
+                    return DistributionBucket(
+                        id: b.optString("key", defaultValue: "team_\(idx)"),
+                        label: b.optString("display", "label", "key", defaultValue: "Nhóm \(idx + 1)"),
+                        count: cnt,
+                        percentage: pct
+                    )
+                }
+
+                let statusBuckets: [DistributionBucket] = [
+                    DistributionBucket(id: "ON", label: "Đang làm việc (ON)", count: onCount, percentage: Double(onCount) * 100.0 / Double(totalEp)),
+                    DistributionBucket(id: "UNCONFIRMED", label: "Chờ nhận việc (UNCONFIRMED)", count: unconfirmedCount, percentage: Double(unconfirmedCount) * 100.0 / Double(totalEp)),
+                    DistributionBucket(id: "OFF", label: "Đã nghỉ việc (OFF)", count: offCount, percentage: Double(offCount) * 100.0 / Double(totalEp))
+                ]
+
+                let leaveReasonsObj = (wfObj["leave_reasons"] as? [String: Any]) ?? (wfObj["leaveReasons"] as? [String: Any]) ?? [:]
+                let leaveCatsRaw = leaveReasonsObj.optObjectArray("by_category").ifEmpty(leaveReasonsObj.optObjectArray("byCategory"))
+                let resignBuckets: [DistributionBucket] = leaveCatsRaw.enumerated().map { idx, c in
+                    let cnt = c.optInt("episode_count", "episodeCount", "count")
+                    let rawShare = c.optDouble("share_of_off_rate", "shareOfOffRate", "percentage")
+                    let pct = rawShare <= 1.0 && rawShare > 0.0 ? rawShare * 100.0 : rawShare
+                    return DistributionBucket(
+                        id: c.optString("key", defaultValue: "leave_\(idx)"),
+                        label: c.optString("label", "display", "key", defaultValue: "Lý do \(idx + 1)"),
+                        count: cnt,
+                        percentage: pct
+                    )
+                }
+
+                return .success(
+                    WorkforceDeepMetricsData(
+                        tenureBuckets: tenureBuckets,
+                        ageBuckets: teamBuckets,
+                        genderBuckets: providerBuckets,
+                        contractBuckets: statusBuckets,
+                        resignReasonBuckets: resignBuckets
+                    ),
+                    statusCode: response.statusCode
+                )
+            }
+
+            let dataObj = (root["report"] as? [String: Any])
+                ?? (root["data"] as? [String: Any])
+                ?? root
+
+            func parseBuckets(_ key: String) -> [DistributionBucket] {
+                let arr = dataObj.optObjectArray(key)
+                return arr.enumerated().map { idx, b in
+                    DistributionBucket(
+                        id: "\(key)_\(idx)",
+                        label: b.optString("label", "name", "bucket", "labor_type_display", "project_display", defaultValue: "Nhóm \(idx + 1)"),
+                        count: b.optInt("count", "value", "total", "total_workers"),
+                        percentage: b.optDouble("percentage", "pct", "share")
+                    )
+                }
+            }
+
+            let deepData = WorkforceDeepMetricsData(
+                tenureBuckets: parseBuckets("tenure_buckets").ifEmpty(parseBuckets("tenure")).ifEmpty(parseBuckets("by_tenure")),
+                ageBuckets: parseBuckets("age_buckets").ifEmpty(parseBuckets("age")).ifEmpty(parseBuckets("by_age")),
+                genderBuckets: parseBuckets("gender_buckets").ifEmpty(parseBuckets("gender")).ifEmpty(parseBuckets("by_labor_type")),
+                contractBuckets: parseBuckets("contract_buckets").ifEmpty(parseBuckets("contract_status")).ifEmpty(parseBuckets("by_status")),
+                resignReasonBuckets: parseBuckets("resign_reason_buckets").ifEmpty(parseBuckets("resign_reasons"))
+            )
+            return .success(deepData, statusCode: response.statusCode)
         }
-        guard response.isSuccess else {
-            return .failure(
-                message: response.errorMessage ?? "Không tải được báo cáo chuyên sâu.",
-                httpStatus: response.statusCode,
-                errorCode: response.errorCode
+
+        if let fallbackData = await fetchMergedWorkersForScopedFallback(preferredScope: scope) {
+            let items = fallbackData.items
+            let total = max(1, items.count)
+            var byStatus: [String: Int] = [:]
+            var byLaborType: [String: Int] = [:]
+            for w in items {
+                byStatus[w.trangThai, default: 0] += 1
+                let lt = w.nganhNghe.isEmpty ? "Thời vụ" : w.nganhNghe
+                byLaborType[lt, default: 0] += 1
+            }
+            let contractBuckets = byStatus.sorted { $0.value > $1.value }.enumerated().map { idx, kv in
+                DistributionBucket(id: "st_\(idx)", label: kv.key, count: kv.value, percentage: Double(kv.value) * 100.0 / Double(total))
+            }
+            let genderBuckets = byLaborType.sorted { $0.value > $1.value }.enumerated().map { idx, kv in
+                DistributionBucket(id: "lt_\(idx)", label: kv.key, count: kv.value, percentage: Double(kv.value) * 100.0 / Double(total))
+            }
+            return .success(
+                WorkforceDeepMetricsData(
+                    tenureBuckets: [],
+                    ageBuckets: [],
+                    genderBuckets: genderBuckets,
+                    contractBuckets: contractBuckets,
+                    resignReasonBuckets: []
+                ),
+                statusCode: fallbackData.statusCode
             )
         }
 
-        let root = response.jsonObject ?? [:]
-        let dataObj = (root["report"] as? [String: Any])
-            ?? (root["data"] as? [String: Any])
-            ?? root
-
-        func parseBuckets(_ key: String) -> [DistributionBucket] {
-            let arr = dataObj.optObjectArray(key)
-            return arr.enumerated().map { idx, b in
-                DistributionBucket(
-                    id: "\(key)_\(idx)",
-                    label: b.optString("label", "name", "bucket", "labor_type_display", "project_display", defaultValue: "Nhóm \(idx + 1)"),
-                    count: b.optInt("count", "value", "total", "total_workers"),
-                    percentage: b.optDouble("percentage", "pct", "share")
-                )
-            }
-        }
-
-        let deepData = WorkforceDeepMetricsData(
-            tenureBuckets: parseBuckets("tenure_buckets").ifEmpty(parseBuckets("tenure")).ifEmpty(parseBuckets("by_tenure")),
-            ageBuckets: parseBuckets("age_buckets").ifEmpty(parseBuckets("age")).ifEmpty(parseBuckets("by_age")),
-            genderBuckets: parseBuckets("gender_buckets").ifEmpty(parseBuckets("gender")).ifEmpty(parseBuckets("by_labor_type")),
-            contractBuckets: parseBuckets("contract_buckets").ifEmpty(parseBuckets("contract_status")).ifEmpty(parseBuckets("by_status")),
-            resignReasonBuckets: parseBuckets("resign_reason_buckets").ifEmpty(parseBuckets("resign_reasons"))
-        )
-        return .success(deepData, statusCode: response.statusCode)
+        return .success(WorkforceDeepMetricsData(), statusCode: response.statusCode)
     }
 
     public func fetchTeamReport(
@@ -842,71 +1262,99 @@ public final class WorkReportsAndReportingService {
         endDate: String? = nil,
         teamCode: String? = nil
     ) async -> MiniBiApiResult<TeamReportData> {
-        let response = await httpClient.request(
+        let queryItems = buildWorkforceDeepQueryItems(startDate: startDate, endDate: endDate)
+        let deepResponse = await httpClient.request(
             method: "GET",
-            path: "/api/reporting/team-report"
+            path: "/api/reporting/workforce-deep",
+            queryItems: queryItems
         )
-        if response.statusCode == 403 || response.statusCode == 404 {
-            return .success(TeamReportData(teams: []), statusCode: response.statusCode)
-        }
-        guard response.isSuccess else {
-            return .failure(
-                message: response.errorMessage ?? "Không tải được báo cáo theo nhóm.",
-                httpStatus: response.statusCode,
-                errorCode: response.errorCode
-            )
-        }
 
-        let root = response.jsonObject ?? [:]
-        let dataObj = (root["report"] as? [String: Any])
-            ?? (root["data"] as? [String: Any])
-            ?? root
-        let teamsRaw = dataObj.optObjectArray("teams").ifEmpty(dataObj.optObjectArray("items"))
+        if deepResponse.isSuccess,
+           let root = deepResponse.jsonObject,
+           let wfObj = root["workforce"] as? [String: Any],
+           let dimsObj = wfObj["dimensions"] as? [String: Any] {
+            let byTeamObj = (dimsObj["by_team"] as? [String: Any]) ?? (dimsObj["byTeam"] as? [String: Any]) ?? [:]
+            let teamBuckets = byTeamObj.optObjectArray("buckets")
 
-        let teams: [TeamSummaryRow] = teamsRaw.enumerated().map { idx, t in
-            let code = t.optString("team_code", "team_id", "code", "id", defaultValue: "team_\(idx)")
-            let membersRaw = t.optObjectArray("members").ifEmpty(t.optObjectArray("recruiters"))
-            let members: [PersonPerformanceRow] = membersRaw.enumerated().map { mIdx, m in
-                let mTotal = m.optInt("total_workers", "total_count", "total")
-                let mActive = m.optInt("on_count", "active_count", "active")
-                let mInactive = m.optInt("off_count", "inactive_count", "inactive")
-                let rate = mTotal > 0 ? (Double(mActive) * 100.0 / Double(mTotal)) : m.optDouble("active_rate_pct", "active_rate")
-                return PersonPerformanceRow(
-                    id: m.optString("recruiter_id", "code", "username", defaultValue: "\(code)_m_\(mIdx)"),
-                    code: m.optString("recruiter_id", "code", "username"),
-                    name: m.optString("recruiter_display", "display_name", "name", "full_name", defaultValue: "Thành viên \(mIdx + 1)"),
-                    totalCount: mTotal,
-                    activeCount: mActive,
-                    inactiveCount: mInactive,
-                    activeRatePct: rate
+            let teams: [TeamSummaryRow] = teamBuckets.enumerated().map { idx, b in
+                let key = b.optString("key", "team_id", defaultValue: "team_\(idx)")
+                let name = b.optString("display", "team_name", "name", defaultValue: key)
+                let tTotal = b.optInt("eligible_episode_count", "eligibleEpisodeCount", "total")
+                let tActive = b.optInt("on_count", "onCount", "active")
+                let tInactive = b.optInt("off_count", "offCount", "inactive")
+                let tNew = b.optInt("unconfirmed_count", "unconfirmedCount")
+                let tRate = tTotal > 0 ? (Double(tActive) * 100.0 / Double(tTotal)) : 0.0
+                return TeamSummaryRow(
+                    id: key,
+                    teamCode: key,
+                    teamName: name,
+                    leaderName: "",
+                    memberCount: 0,
+                    totalWorkers: tTotal,
+                    activeWorkers: tActive,
+                    inactiveWorkers: tInactive,
+                    newWorkers: tNew,
+                    activeRatePct: tRate,
+                    members: []
                 )
             }
-            let tTotal = t.optInt("total_workers", "total_count", "total")
-            let tActive = t.optInt("on_count", "active_workers", "active_count", "active")
-            let tInactive = t.optInt("off_count", "inactive_workers", "inactive_count", "inactive")
-            let tRate = tTotal > 0 ? (Double(tActive) * 100.0 / Double(tTotal)) : t.optDouble("active_rate_pct", "active_rate")
-            return TeamSummaryRow(
-                id: code,
-                teamCode: code,
-                teamName: t.optString("team_name", "name", defaultValue: code),
-                leaderName: t.optString("leader_display", "leader_name", "leader"),
-                memberCount: t.optInt("member_count", defaultValue: members.count),
-                totalWorkers: tTotal,
-                activeWorkers: tActive,
-                inactiveWorkers: tInactive,
-                newWorkers: t.optInt("new_workers", "new_count"),
-                activeRatePct: tRate,
-                members: members
-            )
+            if !teams.isEmpty {
+                return .success(TeamReportData(teams: teams), statusCode: deepResponse.statusCode)
+            }
         }
 
-        return .success(TeamReportData(teams: teams), statusCode: response.statusCode)
+        // Fallback for Team Leader / Scoped accounts: build team summary from `team` scope workers
+        if let fallbackData = await fetchMergedWorkersForScopedFallback(preferredScope: "team"), !fallbackData.items.isEmpty {
+            let items = fallbackData.items
+            var byRecruiter: [String: (total: Int, active: Int, inactive: Int)] = [:]
+            var activeTotal = 0
+            var inactiveTotal = 0
+            for w in items {
+                let st = w.trangThai.lowercased()
+                let isWork = !st.contains("nghỉ") && !st.contains("off") && !st.contains("chưa")
+                let isOff = st.contains("nghỉ") || st == "off"
+                if isWork { activeTotal += 1 } else if isOff { inactiveTotal += 1 }
+                let rec = w.nguoiTuyen.isEmpty ? "Chưa gán người tuyển" : w.nguoiTuyen
+                var cur = byRecruiter[rec] ?? (0, 0, 0)
+                cur.total += 1
+                if isWork { cur.active += 1 } else if isOff { cur.inactive += 1 }
+                byRecruiter[rec] = cur
+            }
+            let members = byRecruiter.sorted { $0.value.total > $1.value.total }.enumerated().map { idx, kv in
+                PersonPerformanceRow(
+                    id: "mem_\(idx)",
+                    code: kv.key,
+                    name: kv.key,
+                    totalCount: kv.value.total,
+                    activeCount: kv.value.active,
+                    inactiveCount: kv.value.inactive,
+                    activeRatePct: kv.value.total > 0 ? (Double(kv.value.active) * 100.0 / Double(kv.value.total)) : 0.0
+                )
+            }
+            let total = items.count
+            let teamRow = TeamSummaryRow(
+                id: "my_team",
+                teamCode: "TEAM",
+                teamName: "Nhóm phụ trách",
+                leaderName: "",
+                memberCount: members.count,
+                totalWorkers: total,
+                activeWorkers: activeTotal,
+                inactiveWorkers: inactiveTotal,
+                newWorkers: max(0, total - activeTotal - inactiveTotal),
+                activeRatePct: total > 0 ? (Double(activeTotal) * 100.0 / Double(total)) : 0.0,
+                members: members
+            )
+            return .success(TeamReportData(teams: [teamRow]), statusCode: fallbackData.statusCode)
+        }
+
+        return .success(TeamReportData(teams: []), statusCode: 200)
     }
 
     public func fetchDuplicateCccdReport(
         search: String = "",
         page: Int = 1,
-        pageSize: Int = 20
+        pageSize: Int = 25
     ) async -> MiniBiApiResult<DuplicateCccdReportData> {
         var queryItems: [URLQueryItem] = [
             URLQueryItem(name: "page", value: String(max(page, 1))),
@@ -938,31 +1386,37 @@ public final class WorkReportsAndReportingService {
         let dataObj = (root["report"] as? [String: Any])
             ?? (root["data"] as? [String: Any])
             ?? root
-        let groupsRaw = dataObj.optObjectArray("groups").ifEmpty(dataObj.optObjectArray("items"))
+        let groupsRaw = dataObj.optObjectArray("items").ifEmpty(dataObj.optObjectArray("groups"))
 
         let groups: [DuplicateCccdGroup] = groupsRaw.enumerated().map { idx, g in
-            let cccd = g.optString("national_id", "cccd", "so_cccd", defaultValue: "group_\(idx)")
+            let last4 = g.optString("cccd_last4")
+            let cccd = g.optString("national_id", "cccd", "so_cccd", defaultValue: last4.isEmpty ? "group_\(idx)" : "••••••••\(last4)")
             let epsRaw = g.optObjectArray("episodes").ifEmpty(g.optObjectArray("records")).ifEmpty(g.optObjectArray("entries"))
             let episodes: [DuplicateCccdEpisode] = epsRaw.enumerated().map { eIdx, e in
-                let epId = e.optInt64("episode_id", "id") ?? Int64(idx * 1000 + eIdx)
+                let entryIdUuid = e.optString("entry_id", "id")
+                let epId = e.optInt64("episode_id", "entry_id", "id") ?? Int64(idx * 1000 + eIdx + 1)
+                let entryVer = e.optInt("entry_version", "version", defaultValue: 1)
+                let empCode = e.optString("employee_code", "ma_nld", "worker_code")
                 return DuplicateCccdEpisode(
-                    id: "\(cccd)_\(epId)",
+                    id: entryIdUuid.isEmpty ? "\(cccd)_\(epId)" : entryIdUuid,
                     episodeId: epId,
-                    maNld: e.optString("entry_id", "employee_code", "ma_nld", "worker_code"),
+                    entryIdUuid: entryIdUuid,
+                    entryVersion: entryVer,
+                    maNld: empCode.isEmpty ? entryIdUuid : empCode,
                     hoTen: e.optString("display_name", "ho_ten", "full_name"),
                     duAn: e.optString("project_display", "du_an", "project_name"),
                     quanLy: e.optString("quan_ly", "manager_name"),
                     nguoiTuyen: e.optString("recruiter_display", "nguoi_tuyen", "recruiter_name"),
-                    trangThai: e.optString("employment_status", "trang_thai", "status"),
+                    trangThai: e.optString("latest_status", "employment_status", "trang_thai", "status"),
                     ngayVaoLam: e.optString("first_work_date", "ngay_vao_lam", "start_date"),
                     canSelfWithdraw: e.optBool("can_self_withdraw", "allow_withdraw", defaultValue: false)
                 )
             }
             return DuplicateCccdGroup(
-                id: cccd,
+                id: "\(cccd)_\(idx)",
                 cccd: cccd,
-                workerCount: g.optInt("worker_count", "count", defaultValue: episodes.count),
-                activeCount: g.optInt("active_count", "on_count", "active"),
+                workerCount: g.optInt("profile_count", "worker_count", "count", defaultValue: episodes.count),
+                activeCount: g.optInt("active_profile_count", "active_count", "on_count", "active"),
                 episodes: episodes
             )
         }
@@ -985,17 +1439,17 @@ public final class WorkReportsAndReportingService {
     public func selfWithdrawDuplicateEpisode(
         episodeId: Int64,
         cccd: String,
-        maNld: String
+        maNld: String,
+        entryVersion: Int = 1
     ) async -> MiniBiApiResult<Bool> {
+        let encoded = maNld.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? maNld
         let body: [String: Any] = [
-            "entry_id": maNld,
-            "episode_id": episodeId,
-            "cccd": cccd,
-            "ma_nld": maNld
+            "expected_entry_version": max(1, entryVersion),
+            "reason": NSNull()
         ]
         let response = await httpClient.request(
             method: "POST",
-            path: "/api/direct-entry/duplicate-cccd-report/self-withdraw",
+            path: "/api/direct-entry/entries/\(encoded)/duplicate-cccd/self-withdraw",
             jsonBody: body
         )
         guard response.isSuccess else {
@@ -1010,19 +1464,51 @@ public final class WorkReportsAndReportingService {
 
     // MARK: - Parsers
 
+    private static func extractFormPayloadStrings(_ rawDict: [String: Any]) -> [String: String] {
+        var formPayload: [String: String] = [:]
+        for (k, v) in rawDict {
+            guard !(v is NSNull) else { continue }
+            if let s = v as? String {
+                formPayload[k] = s
+            } else if let b = v as? Bool {
+                formPayload[k] = b ? "true" : "false"
+            } else if let n = v as? NSNumber {
+                if CFGetTypeID(n) == CFBooleanGetTypeID() {
+                    formPayload[k] = n.boolValue ? "true" : "false"
+                } else {
+                    formPayload[k] = n.stringValue
+                }
+            } else if let arr = v as? [Any] {
+                let strs = arr.compactMap { elem -> String? in
+                    if let s = elem as? String { return s }
+                    if let n = elem as? NSNumber { return n.stringValue }
+                    return nil
+                }
+                formPayload[k] = strs.joined(separator: ",")
+            }
+        }
+        return formPayload
+    }
+
     public static func parseObligationItem(
         _ obj: [String: Any],
         fallbackRoot: [String: Any]? = nil
     ) -> WorkReportObligationItem {
+        let obligationIdUuid = obj.optString("obligation_id", "id")
+            .ifEmpty(fallbackRoot?.optString("obligation_id", "id") ?? "")
         let obligationId = obj.optInt64("obligation_id", "id")
             ?? fallbackRoot?.optInt64("obligation_id", "id")
             ?? 0
-        let submissionId = obj.optInt64("submission_id")
-            ?? (obj["submission"] as? [String: Any])?.optInt64("id", "submission_id")
-            ?? fallbackRoot?.optInt64("submission_id")
 
         let templateObj = (obj["template"] as? [String: Any]) ?? (fallbackRoot?["template"] as? [String: Any])
         let submissionObj = (obj["submission"] as? [String: Any]) ?? (fallbackRoot?["submission"] as? [String: Any])
+
+        let submissionIdUuid = obj.optNullableString("submission_id")
+            ?? submissionObj?.optNullableString("submission_id", "id")
+            ?? fallbackRoot?.optNullableString("submission_id")
+        let submissionId = obj.optInt64("submission_id")
+            ?? submissionObj?.optInt64("id", "submission_id")
+            ?? fallbackRoot?.optInt64("submission_id")
 
         let templateCode = obj.optString("template_code", defaultValue: templateObj?.optString("code", "template_code") ?? "")
         let templateName = obj.optString("template_name", "title", defaultValue: templateObj?.optString("name", "title") ?? "Báo cáo công việc")
@@ -1033,7 +1519,7 @@ public final class WorkReportsAndReportingService {
             "submission_state",
             "state",
             "status",
-            defaultValue: submissionObj?.optString("state", "status", defaultValue: WorkReportsContract.stateNotStarted)
+            defaultValue: submissionObj?.optString("submission_state", "state", "status", defaultValue: WorkReportsContract.stateNotStarted)
                 ?? WorkReportsContract.stateNotStarted
         ).uppercased()
 
@@ -1043,50 +1529,56 @@ public final class WorkReportsAndReportingService {
             defaultValue: fallbackRoot?.optBool("is_overdue", defaultValue: false) ?? false
         )
 
-        let version = obj.optInt(
-            "version",
-            "submission_version",
-            defaultValue: submissionObj?.optInt("version", defaultValue: 1) ?? 1
-        )
+        let explicitSubVersion: Int? = {
+            if let v = submissionObj?.optInt("version", "submission_version", defaultValue: -1), v > 0 {
+                return v
+            }
+            if let v = obj.optInt("submission_version", "version", defaultValue: -1) as Int?, v > 0 {
+                return v
+            }
+            return nil
+        }()
+        let version = explicitSubVersion ?? 1
 
         let submittedAt = obj.optNullableString("submitted_at")
             ?? submissionObj?.optNullableString("submitted_at")
         let reviewedAt = obj.optNullableString("reviewed_at")
             ?? submissionObj?.optNullableString("reviewed_at")
-        let reviewerName = obj.optNullableString("reviewer_name", "reviewed_by_name")
-            ?? submissionObj?.optNullableString("reviewer_name", "reviewed_by_name")
-        let reviewComment = obj.optNullableString("review_comment", "reject_reason", "comment")
-            ?? submissionObj?.optNullableString("review_comment", "reject_reason", "comment")
-        let unitName = obj.optNullableString("unit_name", "department_name")
+        let reviewerName = obj.optNullableString("reviewer_name", "reviewed_by_name", "reviewer_display_name")
+            ?? submissionObj?.optNullableString("reviewer_name", "reviewed_by_name", "reviewer_display_name")
+        let reviewComment = obj.optNullableString("review_note", "review_comment", "reject_reason", "comment")
+            ?? submissionObj?.optNullableString("review_note", "review_comment", "reject_reason", "comment")
+        let unitName = obj.optNullableString("org_unit_name", "unit_name", "department_name")
 
-        let schemaRaw: Any? = obj["schema"]
+        let schemaRaw: Any? = obj["schema_json"]
+            ?? obj["schema"]
             ?? obj["form_schema"]
+            ?? templateObj?["schema_json"]
             ?? templateObj?["schema"]
             ?? templateObj?["form_schema"]
+            ?? fallbackRoot?["schema_json"]
             ?? fallbackRoot?["schema"]
             ?? fallbackRoot?["form_schema"]
         let sections = WorkReportsContract.parseDynamicSections(schemaRaw)
 
-        let rawPayloadDict = (obj["form_payload"] as? [String: Any])
-            ?? (obj["payload"] as? [String: Any])
-            ?? (obj["answers"] as? [String: Any])
+        let rawPayloadDict = (submissionObj?["payload_json"] as? [String: Any])
             ?? (submissionObj?["form_payload"] as? [String: Any])
             ?? (submissionObj?["payload"] as? [String: Any])
             ?? (submissionObj?["answers"] as? [String: Any])
+            ?? (obj["payload_json"] as? [String: Any])
+            ?? (obj["form_payload"] as? [String: Any])
+            ?? (obj["payload"] as? [String: Any])
+            ?? (obj["answers"] as? [String: Any])
             ?? [:]
 
-        var formPayload: [String: String] = [:]
-        for (k, v) in rawPayloadDict {
-            if let s = v as? String {
-                formPayload[k] = s
-            } else if let n = v as? NSNumber {
-                formPayload[k] = n.stringValue
-            }
-        }
+        let formPayload = Self.extractFormPayloadStrings(rawPayloadDict)
 
         return WorkReportObligationItem(
             id: obligationId,
+            obligationIdUuid: obligationIdUuid.isEmpty ? String(obligationId) : obligationIdUuid,
             submissionId: submissionId,
+            submissionIdUuid: submissionIdUuid,
+            submissionVersion: explicitSubVersion,
             templateCode: templateCode,
             templateName: templateName,
             periodType: periodType,
@@ -1106,35 +1598,35 @@ public final class WorkReportsAndReportingService {
     }
 
     public static func parseReviewItem(_ obj: [String: Any]) -> WorkReportReviewItem {
+        let submissionIdUuid = obj.optString("submission_id", "id")
+        let obligationIdUuid = obj.optString("obligation_id", defaultValue: submissionIdUuid)
         let submissionId = obj.optInt64("submission_id", "id") ?? 0
         let obligationId = obj.optInt64("obligation_id") ?? submissionId
         let templateName = obj.optString("template_name", "title", defaultValue: "Báo cáo công việc")
         let periodType = obj.optString("period_type", defaultValue: "WEEKLY")
         let periodKey = obj.optString("period_key", "period")
-        let reporterName = obj.optString("reporter_name", "author_name", "user_name", defaultValue: "Nhân sự")
-        let reporterCode = obj.optString("reporter_code", "author_code", "username")
-        let unitName = obj.optString("unit_name", "department_name")
+        let reporterName = obj.optString("subject_display_name", "reporter_name", "author_name", "user_name", defaultValue: "Nhân sự")
+        let reporterCode = obj.optString("subject_user_id", "reporter_code", "author_code", "username")
+        let unitName = obj.optString("org_unit_name", "unit_name", "department_name")
         let submittedAt = obj.optNullableString("submitted_at", "created_at")
         let submissionState = obj.optString("submission_state", "state", "status", defaultValue: WorkReportsContract.stateSubmitted)
-        let version = max(1, obj.optInt("version", defaultValue: 1))
-        let sections = WorkReportsContract.parseDynamicSections(obj["schema"] ?? obj["form_schema"])
+        let version = max(1, obj.optInt("submission_version", "version", defaultValue: 1))
+        let sections = WorkReportsContract.parseDynamicSections(
+            obj["schema_json"] ?? obj["schema"] ?? obj["form_schema"] ?? (obj["template"] as? [String: Any])?["schema_json"]
+        )
 
-        let rawPayloadDict = (obj["form_payload"] as? [String: Any])
+        let rawPayloadDict = (obj["payload_json"] as? [String: Any])
+            ?? (obj["form_payload"] as? [String: Any])
             ?? (obj["payload"] as? [String: Any])
             ?? (obj["answers"] as? [String: Any])
             ?? [:]
-        var formPayload: [String: String] = [:]
-        for (k, v) in rawPayloadDict {
-            if let s = v as? String {
-                formPayload[k] = s
-            } else if let n = v as? NSNumber {
-                formPayload[k] = n.stringValue
-            }
-        }
+        let formPayload = Self.extractFormPayloadStrings(rawPayloadDict)
 
         return WorkReportReviewItem(
             id: submissionId,
+            submissionIdUuid: submissionIdUuid.isEmpty ? String(submissionId) : submissionIdUuid,
             obligationId: obligationId,
+            obligationIdUuid: obligationIdUuid.isEmpty ? String(obligationId) : obligationIdUuid,
             templateName: templateName,
             periodType: periodType,
             periodKey: periodKey,
@@ -1147,6 +1639,12 @@ public final class WorkReportsAndReportingService {
             sections: sections,
             formPayload: formPayload
         )
+    }
+}
+
+private extension String {
+    func ifEmpty(_ fallback: @autoclosure () -> String) -> String {
+        isEmpty ? fallback() : self
     }
 }
 

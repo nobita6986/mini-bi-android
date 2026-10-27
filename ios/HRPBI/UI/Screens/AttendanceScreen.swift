@@ -12,22 +12,32 @@ public final class AttendanceLocationManager: NSObject, ObservableObject, CLLoca
     @Published public var authorizationStatus: CLAuthorizationStatus = .notDetermined
     @Published public var locationErrorMessage: String?
 
+    public var isPermissionDenied: Bool {
+        authorizationStatus == .denied || authorizationStatus == .restricted
+    }
+
     public override init() {
         super.init()
         manager.delegate = self
         manager.desiredAccuracy = kCLLocationAccuracyBest
+        manager.distanceFilter = 5
         authorizationStatus = manager.authorizationStatus
     }
 
     public func requestLocationUpdate() {
-        locationErrorMessage = nil
+        authorizationStatus = manager.authorizationStatus
         switch manager.authorizationStatus {
         case .notDetermined:
+            locationErrorMessage = "Đang xin quyền Vị trí (GPS)..."
             manager.requestWhenInUseAuthorization()
         case .authorizedWhenInUse, .authorizedAlways:
-            manager.requestLocation()
+            locationErrorMessage = nil
+            manager.startUpdatingLocation()
+            if let cached = manager.location {
+                currentLocation = cached
+            }
         case .denied, .restricted:
-            locationErrorMessage = "Ứng dụng chưa được cấp quyền Vị trí (GPS). Vui lòng bật trong Cài đặt."
+            locationErrorMessage = "Chưa cấp quyền Vị trí (GPS). Vui lòng bấm 'Mở Cài đặt' để cấp quyền."
         @unknown default:
             break
         }
@@ -35,8 +45,17 @@ public final class AttendanceLocationManager: NSObject, ObservableObject, CLLoca
 
     public func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
         authorizationStatus = manager.authorizationStatus
-        if authorizationStatus == .authorizedWhenInUse || authorizationStatus == .authorizedAlways {
-            manager.requestLocation()
+        switch authorizationStatus {
+        case .authorizedWhenInUse, .authorizedAlways:
+            locationErrorMessage = nil
+            manager.startUpdatingLocation()
+            if let cached = manager.location {
+                currentLocation = cached
+            }
+        case .denied, .restricted:
+            locationErrorMessage = "Chưa cấp quyền Vị trí (GPS). Vui lòng bấm 'Mở Cài đặt' để cấp quyền."
+        default:
+            break
         }
     }
 
@@ -48,7 +67,9 @@ public final class AttendanceLocationManager: NSObject, ObservableObject, CLLoca
     }
 
     public func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
-        locationErrorMessage = "Đang lấy vị trí GPS (\(error.localizedDescription))..."
+        if currentLocation == nil {
+            locationErrorMessage = "Đang lấy vị trí GPS (\(error.localizedDescription))..."
+        }
     }
 }
 
@@ -257,6 +278,7 @@ public struct AttendanceScreen: View {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(String(format: "Toạ độ: %.6f, %.6f", loc.coordinate.latitude, loc.coordinate.longitude))
                                     .font(.caption.weight(.semibold))
+                                    .foregroundColor(SemanticColors.textPrimary)
                                 Text(String(format: "Sai số GPS: ±%.1f m", max(0, loc.horizontalAccuracy)))
                                     .font(.caption2)
                                     .foregroundColor(SemanticColors.textMuted)
@@ -264,57 +286,44 @@ public struct AttendanceScreen: View {
                         } else {
                             Text(locationManager.locationErrorMessage ?? "Đang định vị GPS...")
                                 .font(.caption)
-                                .foregroundColor(SemanticColors.textSecondary)
+                                .foregroundColor(locationManager.isPermissionDenied ? SemanticColors.dangerText : SemanticColors.textSecondary)
                         }
                         Spacer()
-                        Button("Lấy lại GPS") {
-                            locationManager.requestLocationUpdate()
+                        if locationManager.isPermissionDenied {
+                            Button("Mở Cài đặt") {
+                                if let url = URL(string: UIApplication.openSettingsURLString) {
+                                    UIApplication.shared.open(url)
+                                }
+                            }
+                            .font(.caption.weight(.bold))
+                            .foregroundColor(SemanticColors.dangerText)
+                        } else {
+                            Button("Lấy lại GPS") {
+                                locationManager.requestLocationUpdate()
+                            }
+                            .font(.caption.weight(.semibold))
+                            .foregroundColor(theme.primary)
                         }
-                        .font(.caption.weight(.semibold))
-                        .foregroundColor(theme.primary)
                     }
                     .padding(10)
                     .background(Color(hex: 0xF8FAFC))
                     .cornerRadius(10)
 
-                    // Photo Capture Row (Freezes timestamp immediately upon capture)
-                    HStack(spacing: 10) {
-                        Button {
-                            isShowingCamera = true
-                        } label: {
-                            HStack(spacing: 6) {
-                                Image(systemName: "camera.fill")
-                                Text(capturedPhotoData == nil ? "Chụp ảnh chấm công" : "Chụp lại ảnh")
-                            }
-                            .font(.caption.weight(.bold))
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 11)
-                            .background(theme.primary)
-                            .foregroundColor(.white)
-                            .cornerRadius(10)
+                    // Photo Capture Row (Live Camera Only — matches Android 100%, freezes timestamp immediately upon capture)
+                    Button {
+                        locationManager.requestLocationUpdate()
+                        isShowingCamera = true
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "camera.fill")
+                            Text(capturedPhotoData == nil ? "Chụp ảnh chấm công" : "Chụp lại ảnh")
                         }
-
-                        PhotosPicker(selection: $selectedPhotoItem, matching: .images) {
-                            HStack(spacing: 6) {
-                                Image(systemName: "photo")
-                                Text("Chọn ảnh")
-                            }
-                            .font(.caption.weight(.semibold))
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 11)
-                            .background(theme.primaryLight)
-                            .foregroundColor(theme.primary)
-                            .cornerRadius(10)
-                        }
-                        .onChange(of: selectedPhotoItem) { newItem in
-                            guard let newItem else { return }
-                            Task {
-                                if let data = try? await newItem.loadTransferable(type: Data.self) {
-                                    capturedPhotoData = data
-                                    frozenCaptureTimestamp = viewModel.timeAnchorManager.resolveCaptureTime()
-                                }
-                            }
-                        }
+                        .font(.caption.weight(.bold))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 11)
+                        .background(theme.primary)
+                        .foregroundColor(.white)
+                        .cornerRadius(10)
                     }
 
                     if let photoData = capturedPhotoData, let uiImg = UIImage(data: photoData) {
@@ -332,6 +341,7 @@ public struct AttendanceScreen: View {
                                 if let frozen = frozenCaptureTimestamp {
                                     Text(AttendanceTimeAnchorManager.formatDisplayDateTimeVi(isoString: frozen.capturedAtIso, fallbackEpochMs: frozen.capturedEpochMs))
                                         .font(.caption)
+                                        .foregroundColor(SemanticColors.textPrimary)
                                     Text(frozen.statusBadgeVi)
                                         .font(.caption2)
                                         .foregroundColor(SemanticColors.textMuted)
@@ -353,6 +363,7 @@ public struct AttendanceScreen: View {
 
                     TextField("Ghi chú chấm công (ca làm, địa điểm, dự án...)", text: $noteInput)
                         .font(.caption)
+                        .foregroundColor(SemanticColors.textPrimary)
                         .padding(10)
                         .background(Color(hex: 0xF8FAFC))
                         .cornerRadius(8)
@@ -361,14 +372,21 @@ public struct AttendanceScreen: View {
                                 .stroke(SemanticColors.borderSubtle, lineWidth: 1)
                         )
 
+                    let canSubmitAttendance = capturedPhotoData != nil && locationManager.currentLocation != nil && !viewModel.isSubmittingAttendance
+
                     Button {
                         guard let photoData = capturedPhotoData else {
                             viewModel.showBanner("Vui lòng chụp ảnh xác thực trước khi chấm công.", isError: true)
                             return
                         }
-                        let lat = locationManager.currentLocation?.coordinate.latitude ?? 21.027763
-                        let lng = locationManager.currentLocation?.coordinate.longitude ?? 105.834160
-                        let acc = locationManager.currentLocation?.horizontalAccuracy
+                        guard let loc = locationManager.currentLocation else {
+                            locationManager.requestLocationUpdate()
+                            viewModel.showBanner("Đang lấy tọa độ GPS. Vui lòng bật Vị trí và đợi GPS định vị xong rồi bấm chấm công.", isError: true)
+                            return
+                        }
+                        let lat = loc.coordinate.latitude
+                        let lng = loc.coordinate.longitude
+                        let acc = loc.horizontalAccuracy >= 0 ? loc.horizontalAccuracy : 15.0
                         let ts = frozenCaptureTimestamp ?? viewModel.timeAnchorManager.resolveCaptureTime()
 
                         Task {
@@ -396,10 +414,10 @@ public struct AttendanceScreen: View {
                             Spacer()
                         }
                         .padding(.vertical, 13)
-                        .background(capturedPhotoData == nil ? Color.gray : SemanticColors.successText)
+                        .background(!canSubmitAttendance ? Color.gray : SemanticColors.successText)
                         .cornerRadius(12)
                     }
-                    .disabled(capturedPhotoData == nil || viewModel.isSubmittingAttendance)
+                    .disabled(!canSubmitAttendance)
                 }
                 .padding(14)
                 .background(Color.white)

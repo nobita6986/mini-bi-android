@@ -16,6 +16,8 @@ public struct MainContainerView: View {
                 LoginScreen(viewModel: viewModel)
             }
         }
+        .preferredColorScheme(.light)
+        .environment(\.colorScheme, .light)
         .task {
             await viewModel.bootstrapSession()
         }

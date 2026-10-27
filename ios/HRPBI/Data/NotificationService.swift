@@ -645,8 +645,26 @@ public final class MiniBiRepository {
         )
     }
 
+    private static func extractProvidedFieldValue(_ dict: [String: Any]?, _ keys: String...) -> String {
+        guard let dict else { return "" }
+        for key in keys {
+            guard let raw = dict[key], !(raw is NSNull) else { continue }
+            if let s = raw as? String {
+                let trimmed = s.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty && trimmed.lowercased() != "null" { return trimmed }
+            } else if let n = raw as? NSNumber {
+                return n.stringValue
+            } else if let nested = raw as? [String: Any] {
+                let val = nested.optString("value", "display", "label", "status", "name")
+                if !val.isEmpty && val.lowercased() != "null" { return val }
+            }
+        }
+        return ""
+    }
+
     public static func parseWorkerItem(_ obj: [String: Any]) -> WorkerItem {
-        let employmentStatusRaw = obj.optString("employment_status", "trang_thai", "status").uppercased()
+        let empStatusDict = obj["employment_status"] as? [String: Any]
+        let employmentStatusRaw = (empStatusDict?.optString("status") ?? obj.optString("employment_status", "trang_thai", "status")).uppercased()
         let trangThaiDisplay: String = {
             switch employmentStatusRaw {
             case "ON": return "Đang làm việc"
@@ -658,37 +676,103 @@ public final class MiniBiRepository {
             }
         }()
 
-        let paymentObj = obj["payment"] as? [String: Any]
+        let workerDetailsObj = obj["worker_details"] as? [String: Any]
+        let paymentObj = (obj["payment"] as? [String: Any]) ?? (workerDetailsObj?["payment"] as? [String: Any])
         let piiObj = obj["pii"] as? [String: Any]
+        let projectObj = obj["project"] as? [String: Any]
+        let recruiterObj = obj["recruiter"] as? [String: Any]
+        let managerObj = obj["manager"] as? [String: Any]
+
+        let rawEmployeeCode = obj.optString("employee_code", "ma_nld", "worker_code")
+        let cleanEmployeeCode = WorkerItem.isUuidLike(rawEmployeeCode) ? "" : rawEmployeeCode
+        let entryId = obj.optString("entry_id", "id", "employee_code", "ma_nld", "worker_code")
+        let entryVersion = obj.optInt("entry_version", "version", defaultValue: 1)
+
+        let projectName = projectObj?.optString("display", "display_name", "name", "project_id")
+            ?? obj.optString("project_display", "du_an", "project_name", "project", "project_id")
+        let recruiterName = recruiterObj?.optString("display", "display_name", "name", "recruiter_id")
+            ?? obj.optString("recruiter_display", "nguoi_tuyen", "recruiter_name", "recruiter", "recruiter_id")
+        let managerName = managerObj?.optString("display", "display_name", "name", "manager_id")
+            ?? obj.optString("quan_ly", "manager_name", "manager")
+
+        let phone = Self.extractProvidedFieldValue(workerDetailsObj, "phone", "phone_number", "sdt")
+            .ifEmpty(obj.optString("phone_number", "sdt", "so_dien_thoai", "phone"))
+        let cccd = Self.extractProvidedFieldValue(workerDetailsObj, "national_id", "so_cccd", "cccd")
+            .ifEmpty(piiObj?.optString("national_id", "so_cccd") ?? obj.optString("national_id", "so_cccd", "cccd", "id_number"))
+        let birthDate = Self.extractProvidedFieldValue(workerDetailsObj, "date_of_birth", "birth_date", "ngay_sinh")
+            .ifEmpty(piiObj?.optString("birth_date", "ngay_sinh") ?? obj.optString("birth_date", "ngay_sinh", "dob"))
+        let rawGender = Self.extractProvidedFieldValue(workerDetailsObj, "gender", "gioi_tinh")
+            .ifEmpty(obj.optString("gioi_tinh", "gender"))
+        let genderDisplay: String = {
+            switch rawGender.lowercased() {
+            case "male", "nam": return "Nam"
+            case "female", "nu", "nữ": return "Nữ"
+            default: return rawGender
+            }
+        }()
+        let address = Self.extractProvidedFieldValue(workerDetailsObj, "address", "permanent_address", "que_quan")
+            .ifEmpty(piiObj?.optString("permanent_address", "que_quan") ?? obj.optString("permanent_address", "que_quan", "dia_chi", "hometown"))
+        let issueDate = Self.extractProvidedFieldValue(workerDetailsObj, "national_id_issued_at", "id_issue_date", "ngay_cap")
+            .ifEmpty(piiObj?.optString("id_issue_date", "ngay_cap") ?? obj.optString("id_issue_date", "ngay_cap", "issue_date"))
+
+        let accountNumber = Self.extractProvidedFieldValue(paymentObj, "account_number", "so_tai_khoan")
+            .ifEmpty(obj.optString("account_number", "so_tai_khoan", "stk", "bank_account"))
+        let bankName = Self.extractProvidedFieldValue(paymentObj, "bank_display", "bank_name", "bank_id", "ngan_hang")
+            .ifEmpty(obj.optString("bank_id", "ngan_hang", "bank_name"))
+        let accountHolder = Self.extractProvidedFieldValue(paymentObj, "account_holder_name", "chu_tai_khoan")
+            .ifEmpty(obj.optString("account_holder_name", "chu_tai_khoan", "bank_holder"))
+
+        var contractUrl = obj.optNullableString("contract_file_url", "hop_dong_url", "contract_file")
+        var frontUrl = obj.optNullableString("cccd_front_url", "mat_truoc_cccd_url")
+        var backUrl = obj.optNullableString("cccd_back_url", "mat_sau_cccd_url")
+        for doc in obj.optObjectArray("documents") {
+            let docType = doc.optString("doc_type", "type").uppercased()
+            let url = doc.optNullableString("download_url", "file_url", "url", "file_name")
+            if let url {
+                if docType == "CCCD_FRONT" && frontUrl == nil { frontUrl = url }
+                else if docType == "CCCD_BACK" && backUrl == nil { backUrl = url }
+                else if (docType == "EMPLOYMENT_CONTRACT" || docType == "SAFETY_CARD") && contractUrl == nil { contractUrl = url }
+            }
+        }
+
+        let offDate = empStatusDict?.optString("effective_date") ?? ""
 
         return WorkerItem(
-            maNld: obj.optString("entry_id", "employee_code", "ma_nld", "worker_code", "id"),
+            maNld: entryId,
+            employeeCode: cleanEmployeeCode,
+            entryVersion: entryVersion,
             hoTen: obj.optString("display_name", "ho_ten", "full_name", "name"),
-            duAn: obj.optString("project_display", "du_an", "project_name", "project", "project_id"),
-            quanLy: obj.optString("quan_ly", "manager_name", "manager"),
-            nguoiTuyen: obj.optString("recruiter_display", "nguoi_tuyen", "recruiter_name", "recruiter", "recruiter_id"),
+            duAn: projectName,
+            quanLy: managerName,
+            nguoiTuyen: recruiterName,
             ngayVaoLam: obj.optString("first_work_date", "ngay_vao_lam", "start_date"),
-            ngayNghiViec: obj.optString("ngay_nghi_viec", "resign_date", "off_date"),
+            ngayNghiViec: obj.optString("ngay_nghi_viec", "resign_date", "off_date").ifEmpty(employmentStatusRaw == "OFF" ? offDate : ""),
             trangThai: trangThaiDisplay,
-            sdt: obj.optString("phone_number", "sdt", "so_dien_thoai", "phone"),
-            soCccd: piiObj?.optString("national_id", "so_cccd") ?? obj.optString("national_id", "so_cccd", "cccd", "id_number"),
-            ngaySinh: piiObj?.optString("birth_date", "ngay_sinh") ?? obj.optString("birth_date", "ngay_sinh", "dob"),
-            gioiTinh: obj.optString("gioi_tinh", "gender"),
-            queQuan: piiObj?.optString("permanent_address", "que_quan") ?? obj.optString("permanent_address", "que_quan", "dia_chi", "hometown"),
-            ngayCap: piiObj?.optString("id_issue_date", "ngay_cap") ?? obj.optString("id_issue_date", "ngay_cap", "issue_date"),
+            sdt: phone,
+            soCccd: cccd,
+            ngaySinh: birthDate,
+            gioiTinh: genderDisplay,
+            queQuan: address,
+            ngayCap: issueDate,
             nganhNghe: obj.optString("labor_type_display", "labor_type", "nganh_nghe", "job_title"),
-            nhom: obj.optString("nhom", "team_name"),
-            soTaiKhoan: paymentObj?.optString("account_number", "so_tai_khoan") ?? obj.optString("account_number", "so_tai_khoan", "stk", "bank_account"),
-            nganHang: paymentObj?.optString("bank_id", "ngan_hang") ?? obj.optString("bank_id", "ngan_hang", "bank_name"),
-            chuTaiKhoan: paymentObj?.optString("account_holder_name", "chu_tai_khoan") ?? obj.optString("account_holder_name", "chu_tai_khoan", "bank_holder"),
-            ghiChu: obj.optString("note", "ghi_chu"),
-            lyDoNghi: obj.optString("ly_do_nghi", "resign_reason"),
-            phanLoaiNghi: obj.optString("phan_loai_nghi", "resign_category"),
-            contractFileUrl: obj.optNullableString("contract_file_url", "hop_dong_url", "contract_file"),
-            cccdFrontUrl: obj.optNullableString("cccd_front_url", "mat_truoc_cccd_url"),
-            cccdBackUrl: obj.optNullableString("cccd_back_url", "mat_sau_cccd_url"),
-            uploaderCode: obj.optString("employee_code", "uploader_code", "created_by")
+            nhom: obj.optString("nhom", "team_name", "team_display"),
+            soTaiKhoan: accountNumber,
+            nganHang: bankName,
+            chuTaiKhoan: accountHolder,
+            ghiChu: Self.extractProvidedFieldValue(workerDetailsObj, "note", "ghi_chu").ifEmpty(obj.optString("note", "ghi_chu")),
+            lyDoNghi: obj.optString("ly_do_nghi", "resign_reason", "leave_reason"),
+            phanLoaiNghi: obj.optString("phan_loai_nghi", "resign_category", "leave_reason_category"),
+            contractFileUrl: contractUrl,
+            cccdFrontUrl: frontUrl,
+            cccdBackUrl: backUrl,
+            uploaderCode: cleanEmployeeCode.ifEmpty(obj.optString("uploader_code", "created_by"))
         )
+    }
+}
+
+private extension String {
+    func ifEmpty(_ fallback: @autoclosure () -> String) -> String {
+        isEmpty ? fallback() : self
     }
 }
 
