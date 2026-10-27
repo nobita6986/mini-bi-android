@@ -26,6 +26,7 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performTextInput
+import androidx.compose.ui.test.performTextReplacement
 import androidx.lifecycle.viewModelScope
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
@@ -2862,5 +2863,432 @@ class WorkerUiAuthorizationRobolectricTest {
         composeTestRule.onNodeWithTag("save_draft_report_button").assertDoesNotExist()
         composeTestRule.onNodeWithTag("cancel_edit_report_button").assertIsDisplayed().performClick()
         composeTestRule.waitForIdle()
+    }
+
+    @Test
+    @Config(qualifiers = "w411dp-h914dp-xxhdpi")
+    fun `attendance screen defaults to Cham cong tab, hides Duyet nghi tab for non-approver, and supports Xin nghi create and withdraw flow`() {
+        val actorId = "11111111-2222-4333-8444-555555555555"
+        val createdRequestId = "cccc1111-2222-4333-8444-555555555555"
+        var hasCreatedRequest = false
+        var currentStatus = "PENDING"
+        val capturedCreatePayloads = java.util.Collections.synchronizedList(mutableListOf<JSONObject>())
+        val capturedWithdrawPayloads = java.util.Collections.synchronizedList(mutableListOf<JSONObject>())
+
+        val server = MockWebServer()
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val path = request.path.orEmpty()
+                return when {
+                    path.startsWith("/api/leave/me") -> {
+                        val requestsJson = if (hasCreatedRequest) {
+                            """
+                            [
+                              {
+                                "request_id": "$createdRequestId",
+                                "app_user_id": "$actorId",
+                                "requester": {
+                                  "app_user_id": "$actorId",
+                                  "display_name": "Nhân viên Tuyển dụng",
+                                  "personnel_code": "NV-101",
+                                  "account_enabled": true
+                                },
+                                "status": "$currentStatus",
+                                "pay_treatment": "PAID_LEAVE",
+                                "employment_status_snapshot": "OFFICIAL",
+                                "unit_kind_snapshot": "RECRUITMENT",
+                                "profile_configured_at_submit": true,
+                                "requested_units": 1,
+                                "reason": "Đi khám bệnh buổi sáng",
+                                "route_kind": "TEAM_LEADER",
+                                "routed_team_name": "Team Miền Bắc",
+                                "submitted_at": "2026-10-27T02:00:00Z",
+                                "row_version": 2,
+                                "days": [
+                                  {
+                                    "request_day_id": "day-am-1",
+                                    "leave_date": "2026-10-28",
+                                    "session_code": "AM",
+                                    "half_day_units": 1,
+                                    "is_active": true
+                                  }
+                                ],
+                                "allocations": []
+                              }
+                            ]
+                            """.trimIndent()
+                        } else {
+                            "[]"
+                        }
+                        MockResponse().setResponseCode(200).setBody(
+                            """
+                            {
+                              "ok": true,
+                              "data": {
+                                "as_of_date": "2026-10-27",
+                                "leave_year": 2026,
+                                "account": {
+                                  "app_user_id": "$actorId",
+                                  "display_name": "Nhân viên Tuyển dụng",
+                                  "personnel_code": "NV-101",
+                                  "account_enabled": true
+                                },
+                                "authority": {
+                                  "app_user_id": "$actorId",
+                                  "is_shared_non_employee": false,
+                                  "is_full_admin": false,
+                                  "is_bod": false,
+                                  "is_hr_operator": false,
+                                  "is_hr_report_viewer": false,
+                                  "is_team_leader": false,
+                                  "is_department_approver": false,
+                                  "can_submit_request": true,
+                                  "can_approve_requests": false,
+                                  "can_view_monthly_report": false,
+                                  "can_manage_config": false
+                                },
+                                "routing": {
+                                  "route_kind": "TEAM_LEADER",
+                                  "unit_kind": "RECRUITMENT",
+                                  "team_name": "Team Miền Bắc",
+                                  "profile_configured": true
+                                },
+                                "policy": {"annual_base_units": 24, "monthly_accrual_units": 2, "row_version": 1},
+                                "balance": {
+                                  "leave_year": 2026,
+                                  "as_of_date": "2026-10-27",
+                                  "has_profile": true,
+                                  "profile_configured": true,
+                                  "employment_status": "OFFICIAL",
+                                  "unit_kind": "RECRUITMENT",
+                                  "available_units": 12,
+                                  "total_granted_units": 16,
+                                  "lots": []
+                                },
+                                "requests": $requestsJson,
+                                "ledger_entries": []
+                              }
+                            }
+                            """.trimIndent()
+                        )
+                    }
+                    path == "/api/leave/requests" && request.method == "POST" -> {
+                        capturedCreatePayloads.add(JSONObject(request.body.readUtf8()))
+                        hasCreatedRequest = true
+                        currentStatus = "PENDING"
+                        MockResponse().setResponseCode(201).setBody(
+                            """{"ok":true,"data":{"request_id":"$createdRequestId","status":"PENDING","requested_units":1,"row_version":2,"replayed":false}}"""
+                        )
+                    }
+                    path == "/api/leave/requests/$createdRequestId/withdraw" && request.method == "POST" -> {
+                        capturedWithdrawPayloads.add(JSONObject(request.body.readUtf8()))
+                        currentStatus = "WITHDRAWN"
+                        MockResponse().setResponseCode(200).setBody(
+                            """{"ok":true,"data":{"request_id":"$createdRequestId","status":"WITHDRAWN","row_version":3,"replayed":false}}"""
+                        )
+                    }
+                    else -> MockResponse().setResponseCode(200).setBody("""{"ok":true,"data":{}}""")
+                }
+            }
+        }
+        server.start()
+
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val db = Room.inMemoryDatabaseBuilder(app, MiniBiDatabase::class.java)
+            .allowMainThreadQueries()
+            .build()
+        val cookieFile = File(app.cacheDir, "leave_non_approver_cookies_${System.nanoTime()}.enc")
+        val prefsFile = File(app.cacheDir, "leave_non_approver_prefs_${System.nanoTime()}.preferences_pb")
+        val repo = MiniBiRepository(
+            context = app,
+            database = db,
+            defaultServerUrl = server.url("/").toString().trimEnd('/'),
+            allowDebugUrlOverride = true,
+            cookieStorageFile = cookieFile,
+            preferencesStorageFile = prefsFile,
+            cookieCipher = JvmAes256GcmCookieCipher()
+        )
+        val vm = MiniBiViewModel(app, repo)
+        registerTestResourcesCleanup(vm, db, server, cookieFile, prefsFile)
+
+        val actor = AppActor(
+            appUserId = actorId,
+            displayName = "Nhân viên Tuyển dụng",
+            capabilities = listOf("entry_read"),
+            scopes = listOf(ActorScope("own", "self", "2026-01-01", null)),
+            selfRecruiterSuggestion = null
+        )
+
+        composeTestRule.setContent {
+            MyApplicationTheme {
+                AttendanceScreen(
+                    actor = actor,
+                    viewModel = vm,
+                    onBackToDashboard = {}
+                )
+            }
+        }
+
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            !vm.myLeaveLoading.value && vm.myLeaveSummary.value != null
+        }
+        composeTestRule.waitForIdle()
+
+        // 1. Default tab is "Chấm công", "Xin nghỉ" is visible, and "Duyệt nghỉ" is hidden for non-approver
+        composeTestRule.onNodeWithTag("attendance_tab_checkin").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("attendance_tab_leave_request").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("attendance_tab_leave_approval").assertDoesNotExist()
+        composeTestRule.onNodeWithText("Ghi nhận Chấm công").assertIsDisplayed()
+
+        // 2. Switch to "Xin nghỉ" tab -> displays balance and create form
+        composeTestRule.onNodeWithTag("attendance_tab_leave_request").performClick()
+        composeTestRule.waitForIdle()
+
+        composeTestRule.onNodeWithTag("leave_balance_summary_card").assertIsDisplayed()
+        composeTestRule.onNodeWithText("6 ngày").assertIsDisplayed()
+
+        // Select half-day morning ("AM"), set date & reason, and submit
+        composeTestRule.onNodeWithTag("leave_request_lazy_column")
+            .performScrollToNode(hasTestTag("leave_create_form_card"))
+        composeTestRule.onNodeWithTag("leave_draft_date_input_0").performTextReplacement("2026-10-28")
+        composeTestRule.onNodeWithTag("leave_draft_session_AM_0").performClick()
+        composeTestRule.onNodeWithTag("leave_reason_input").performTextReplacement("Đi khám bệnh buổi sáng")
+        composeTestRule.onNodeWithTag("leave_submit_request_button").performClick()
+
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            !vm.leaveMutationBusy.value &&
+                !vm.myLeaveLoading.value &&
+                vm.myLeaveSummary.value?.requests?.size == 1
+        }
+        composeTestRule.waitForIdle()
+
+        assertEquals(1, capturedCreatePayloads.size)
+        val createJson = capturedCreatePayloads.single()
+        assertEquals("Đi khám bệnh buổi sáng", createJson.getString("reason"))
+        assertEquals("AM", createJson.getJSONArray("days").getJSONObject(0).getString("session_code"))
+
+        // 3. Withdraw pending request from history
+        composeTestRule.onNodeWithTag("leave_request_lazy_column")
+            .performScrollToNode(hasTestTag("leave_withdraw_btn_$createdRequestId"))
+        composeTestRule.onNodeWithTag("leave_withdraw_btn_$createdRequestId").performClick()
+        composeTestRule.waitForIdle()
+
+        composeTestRule.onNodeWithTag("leave_withdraw_dialog").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("leave_withdraw_reason_input").performTextReplacement("Đã thu xếp xong")
+        composeTestRule.onNodeWithTag("leave_withdraw_confirm_button").performClick()
+
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            !vm.leaveMutationBusy.value &&
+                !vm.myLeaveLoading.value &&
+                vm.myLeaveSummary.value?.requests?.firstOrNull()?.status == "WITHDRAWN"
+        }
+        composeTestRule.waitForIdle()
+
+        assertEquals(1, capturedWithdrawPayloads.size)
+        val withdrawJson = capturedWithdrawPayloads.single()
+        assertEquals(2, withdrawJson.getInt("expected_row_version"))
+        assertEquals("Đã thu xếp xong", withdrawJson.getString("reason"))
+    }
+
+    @Test
+    @Config(qualifiers = "w411dp-h914dp-xxhdpi")
+    fun `attendance screen shows Duyet nghi tab for approver and executes approve and reject with required reason`() {
+        val approverId = "99999999-2222-4333-8444-555555555555"
+        val subordinateId = "11111111-2222-4333-8444-555555555555"
+        val reqId = "dddd1111-2222-4333-8444-555555555555"
+        var currentStatus = "PENDING"
+        var currentRowVersion = 4
+        val capturedDecisions = java.util.Collections.synchronizedList(mutableListOf<JSONObject>())
+
+        val server = MockWebServer()
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val path = request.path.orEmpty()
+                return when {
+                    path.startsWith("/api/leave/me") -> MockResponse().setResponseCode(200).setBody(
+                        """
+                        {
+                          "ok": true,
+                          "data": {
+                            "as_of_date": "2026-10-27",
+                            "leave_year": 2026,
+                            "account": {"app_user_id": "$approverId", "display_name": "Team Leader Bắc", "account_enabled": true},
+                            "authority": {
+                              "app_user_id": "$approverId",
+                              "is_shared_non_employee": false,
+                              "is_full_admin": false,
+                              "is_bod": false,
+                              "is_hr_operator": false,
+                              "is_hr_report_viewer": false,
+                              "is_team_leader": true,
+                              "is_department_approver": false,
+                              "can_submit_request": true,
+                              "can_approve_requests": true,
+                              "can_view_monthly_report": false,
+                              "can_manage_config": false
+                            },
+                            "routing": {"route_kind": "ADMIN_BOD_DIRECT", "unit_kind": "RECRUITMENT", "profile_configured": true},
+                            "policy": {"annual_base_units": 24, "monthly_accrual_units": 2, "row_version": 1},
+                            "balance": {
+                              "leave_year": 2026,
+                              "as_of_date": "2026-10-27",
+                              "has_profile": true,
+                              "profile_configured": true,
+                              "employment_status": "OFFICIAL",
+                              "unit_kind": "RECRUITMENT",
+                              "available_units": 16,
+                              "total_granted_units": 20,
+                              "lots": []
+                            },
+                            "requests": [],
+                            "ledger_entries": []
+                          }
+                        }
+                        """.trimIndent()
+                    )
+                    path == "/api/leave/approvals/$reqId/decision" && request.method == "POST" -> {
+                        val payload = JSONObject(request.body.readUtf8())
+                        capturedDecisions.add(payload)
+                        val dec = payload.getString("decision")
+                        currentStatus = if (dec == "REJECT") "REJECTED" else "APPROVED"
+                        currentRowVersion += 1
+                        MockResponse().setResponseCode(200).setBody(
+                            """{"ok":true,"data":{"request_id":"$reqId","status":"$currentStatus","row_version":$currentRowVersion,"replayed":false}}"""
+                        )
+                    }
+                    path.startsWith("/api/leave/approvals") -> MockResponse().setResponseCode(200).setBody(
+                        """
+                        {
+                          "ok": true,
+                          "data": {
+                            "as_of_date": "2026-10-27",
+                            "status_filter": "PENDING",
+                            "total": 1,
+                            "limit": 50,
+                            "offset": 0,
+                            "items": [
+                              {
+                                "request_id": "$reqId",
+                                "app_user_id": "$subordinateId",
+                                "requester": {
+                                  "app_user_id": "$subordinateId",
+                                  "display_name": "Trần Nhân Viên",
+                                  "personnel_code": "NV-205",
+                                  "account_enabled": true
+                                },
+                                "status": "$currentStatus",
+                                "pay_treatment": "PAID_LEAVE",
+                                "employment_status_snapshot": "OFFICIAL",
+                                "unit_kind_snapshot": "RECRUITMENT",
+                                "profile_configured_at_submit": true,
+                                "requested_units": 2,
+                                "reason": "Nghỉ phép về quê",
+                                "route_kind": "TEAM_LEADER",
+                                "routed_team_name": "Team Miền Bắc",
+                                "submitted_at": "2026-10-27T02:10:00Z",
+                                "row_version": $currentRowVersion,
+                                "days": [
+                                  {
+                                    "request_day_id": "d-full-1",
+                                    "leave_date": "2026-10-30",
+                                    "session_code": "FULL",
+                                    "half_day_units": 2,
+                                    "is_active": true
+                                  }
+                                ],
+                                "allocations": []
+                              }
+                            ]
+                          }
+                        }
+                        """.trimIndent()
+                    )
+                    else -> MockResponse().setResponseCode(200).setBody("""{"ok":true,"data":{}}""")
+                }
+            }
+        }
+        server.start()
+
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val db = Room.inMemoryDatabaseBuilder(app, MiniBiDatabase::class.java)
+            .allowMainThreadQueries()
+            .build()
+        val cookieFile = File(app.cacheDir, "leave_approver_cookies_${System.nanoTime()}.enc")
+        val prefsFile = File(app.cacheDir, "leave_approver_prefs_${System.nanoTime()}.preferences_pb")
+        val repo = MiniBiRepository(
+            context = app,
+            database = db,
+            defaultServerUrl = server.url("/").toString().trimEnd('/'),
+            allowDebugUrlOverride = true,
+            cookieStorageFile = cookieFile,
+            preferencesStorageFile = prefsFile,
+            cookieCipher = JvmAes256GcmCookieCipher()
+        )
+        val vm = MiniBiViewModel(app, repo)
+        registerTestResourcesCleanup(vm, db, server, cookieFile, prefsFile)
+
+        val actor = AppActor(
+            appUserId = approverId,
+            displayName = "Team Leader Bắc",
+            capabilities = listOf("entry_read"),
+            scopes = listOf(ActorScope("team", "TEAM_NORTH", "2026-01-01", null)),
+            selfRecruiterSuggestion = null
+        )
+
+        composeTestRule.setContent {
+            MyApplicationTheme {
+                AttendanceScreen(
+                    actor = actor,
+                    viewModel = vm,
+                    onBackToDashboard = {}
+                )
+            }
+        }
+
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            !vm.myLeaveLoading.value && vm.myLeaveSummary.value != null
+        }
+        composeTestRule.waitForIdle()
+
+        // 1. Approver sees "Duyệt nghỉ" tab and switches to it
+        composeTestRule.onNodeWithTag("attendance_tab_leave_approval").assertIsDisplayed().performClick()
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            !vm.leaveInboxLoading.value && vm.leaveApprovalInbox.value?.items?.size == 1
+        }
+        composeTestRule.waitForIdle()
+
+        composeTestRule.onNodeWithText("Trần Nhân Viên").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("leave_reject_btn_$reqId").assertIsDisplayed().performClick()
+        composeTestRule.waitForIdle()
+
+        // 2. Reject without reason displays validation error and does not call backend
+        composeTestRule.onNodeWithTag("leave_decision_dialog").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("leave_decision_confirm_button").performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("leave_decision_dialog_error").assertIsDisplayed()
+        assertTrue(capturedDecisions.isEmpty())
+
+        // 3. Enter rejection reason and confirm -> sends REJECT, expected_row_version = 4, and idempotency_key
+        composeTestRule.onNodeWithTag("leave_decision_reason_input").performTextReplacement("Nhóm đang cao điểm tuyển dụng")
+        composeTestRule.onNodeWithTag("leave_decision_confirm_button").performClick()
+
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            !vm.leaveMutationBusy.value &&
+                !vm.leaveInboxLoading.value &&
+                capturedDecisions.size == 1
+        }
+        composeTestRule.waitForIdle()
+
+        val decisionPayload = capturedDecisions.single()
+        assertEquals("REJECT", decisionPayload.getString("decision"))
+        assertEquals(4, decisionPayload.getInt("expected_row_version"))
+        assertEquals("Nhóm đang cao điểm tuyển dụng", decisionPayload.getString("reason"))
+        assertTrue(decisionPayload.getString("idempotency_key").startsWith("leave-decision-"))
     }
 }

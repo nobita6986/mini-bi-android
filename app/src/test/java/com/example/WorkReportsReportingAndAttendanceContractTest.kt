@@ -9,6 +9,7 @@ import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import com.example.data.ActorScope
 import com.example.data.AppActor
+import com.example.data.AttendanceAreaTab
 import com.example.data.AttendanceContract
 import com.example.data.AttendanceOutboxService
 import com.example.data.AttendanceOutboxStatus
@@ -16,6 +17,8 @@ import com.example.data.BackendApiException
 import com.example.data.BiBucketItem
 import com.example.data.CatalogRecruiterOption
 import com.example.data.DashboardDatePreset
+import com.example.data.LeaveContract
+import com.example.data.LeaveDraftDayInput
 import com.example.data.MiniBiDatabase
 import com.example.data.MiniBiRepository
 import com.example.data.WorkReportsContract
@@ -1591,6 +1594,516 @@ class WorkReportsReportingAndAttendanceContractTest {
             assertFalse(WorkReportsContract.isActionableObligation(cachedLegacyAfterDraft409))
             assertTrue(WorkReportsContract.isHistoryObligation(cachedLegacyAfterDraft409))
             assertEquals("Quá hạn · Chưa nộp", WorkReportsContract.obligationBadgeDisplayLabel(cachedLegacyAfterDraft409))
+        } finally {
+            vm.cancelScopeForTest()
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Leave Request ("Xin nghỉ") & Leave Approval ("Duyệt nghỉ") Contract Tests
+    // -------------------------------------------------------------------------
+    @Test
+    fun `leave contract and service parse summary, create full and half day requests, withdraw pending request, and map business errors`() = runBlocking {
+        val repo = createRepository()
+        val requestId = "aaaa1111-2222-4333-8444-555555555555"
+
+        val mePayload = """
+            {
+              "ok": true,
+              "data": {
+                "as_of_date": "2026-10-27",
+                "leave_year": 2026,
+                "account": {
+                  "app_user_id": "${testActor.appUserId}",
+                  "display_name": "Nhân sự Thực Địa",
+                  "login_id": "ns01",
+                  "personnel_code": "NV-001",
+                  "recruiter_id": "rec-01",
+                  "account_enabled": true
+                },
+                "authority": {
+                  "app_user_id": "${testActor.appUserId}",
+                  "is_shared_non_employee": false,
+                  "is_full_admin": false,
+                  "is_bod": false,
+                  "is_hr_operator": false,
+                  "is_hr_report_viewer": false,
+                  "is_team_leader": false,
+                  "is_department_approver": false,
+                  "can_submit_request": true,
+                  "can_approve_requests": false,
+                  "can_view_monthly_report": false,
+                  "can_manage_config": false
+                },
+                "routing": {
+                  "route_kind": "TEAM_LEADER",
+                  "unit_kind": "RECRUITMENT",
+                  "primary_approver_app_user_id": "99999999-2222-4333-8444-555555555555",
+                  "team_id": "team-uuid-1",
+                  "team_code": "TEAM_NORTH",
+                  "team_name": "Team Miền Bắc",
+                  "fallback_reason": null,
+                  "profile_configured": true
+                },
+                "policy": {
+                  "annual_base_units": 24,
+                  "monthly_accrual_units": 2,
+                  "default_seniority_years": 5,
+                  "default_seniority_step_units": 2,
+                  "carry_over_expiry_month": 3,
+                  "carry_over_expiry_day": 31,
+                  "carry_over_expires_after_date": "2026-03-31",
+                  "row_version": 2
+                },
+                "balance": {
+                  "leave_year": 2026,
+                  "as_of_date": "2026-10-27",
+                  "has_profile": true,
+                  "profile_configured": true,
+                  "employment_status": "OFFICIAL",
+                  "unit_kind": "RECRUITMENT",
+                  "work_start_date": "2025-01-01",
+                  "official_effective_date": "2025-03-01",
+                  "next_seniority_effective_date": "2030-01-01",
+                  "next_seniority_units": 2,
+                  "total_granted_units": 20,
+                  "carry_over_granted_units": 2,
+                  "carry_over_available_units": 0,
+                  "monthly_accrued_units": 18,
+                  "seniority_granted_units": 0,
+                  "opening_or_adjustment_units": 0,
+                  "available_units": 14,
+                  "reserved_units": 2,
+                  "consumed_units": 4,
+                  "expired_units": 0,
+                  "pending_paid_units": 3,
+                  "pending_unpaid_units": 0,
+                  "approved_unpaid_units": 0,
+                  "lots": [
+                    {
+                      "lot_id": "lot-10",
+                      "leave_year": 2026,
+                      "lot_kind": "MONTHLY_ACCRUAL",
+                      "accrual_month": 10,
+                      "granted_units": 2,
+                      "reserved_units": 0,
+                      "consumed_units": 0,
+                      "expired_units": 0,
+                      "available_units": 2,
+                      "usable_from_date": "2026-10-01",
+                      "expires_after_date": null,
+                      "source_ref": null
+                    }
+                  ]
+                },
+                "requests": [
+                  {
+                    "request_id": "$requestId",
+                    "app_user_id": "${testActor.appUserId}",
+                    "requester": {
+                      "app_user_id": "${testActor.appUserId}",
+                      "display_name": "Nhân sự Thực Địa",
+                      "login_id": "ns01",
+                      "personnel_code": "NV-001",
+                      "recruiter_id": "rec-01",
+                      "account_enabled": true
+                    },
+                    "status": "PENDING",
+                    "pay_treatment": "PAID_LEAVE",
+                    "employment_status_snapshot": "OFFICIAL",
+                    "unit_kind_snapshot": "RECRUITMENT",
+                    "profile_configured_at_submit": true,
+                    "requested_units": 3,
+                    "reason": "Việc gia đình",
+                    "route_kind": "TEAM_LEADER",
+                    "primary_approver_app_user_id": "99999999-2222-4333-8444-555555555555",
+                    "primary_approver": null,
+                    "routed_team_id": "team-uuid-1",
+                    "routed_team_code": "TEAM_NORTH",
+                    "routed_team_name": "Team Miền Bắc",
+                    "fallback_reason": null,
+                    "submitted_at": "2026-10-27T01:00:00Z",
+                    "decided_at": null,
+                    "decided_by_app_user_id": null,
+                    "decided_by": null,
+                    "decision_reason": null,
+                    "cancelled_at": null,
+                    "cancelled_by_app_user_id": null,
+                    "cancellation_reason": null,
+                    "row_version": 3,
+                    "days": [
+                      {
+                        "request_day_id": "day-1",
+                        "leave_date": "2026-10-28",
+                        "session_code": "FULL",
+                        "half_day_units": 2,
+                        "is_active": true
+                      },
+                      {
+                        "request_day_id": "day-2",
+                        "leave_date": "2026-10-29",
+                        "session_code": "AM",
+                        "half_day_units": 1,
+                        "is_active": true
+                      }
+                    ],
+                    "allocations": []
+                  }
+                ],
+                "ledger_entries": []
+              }
+            }
+        """.trimIndent()
+
+        // 1. Fetch personal leave summary
+        server.enqueue(MockResponse().setResponseCode(200).setBody(mePayload))
+        val summary = repo.leaveService.fetchMyLeaveSummary(leaveYear = 2026)
+        val getMeReq = server.takeRequest()
+        assertEquals("GET", getMeReq.method)
+        assertEquals("/api/leave/me?year=2026", getMeReq.path)
+        assertEquals(14, summary.balance.availableUnits)
+        assertEquals("7 ngày", LeaveContract.formatHalfDayUnits(summary.balance.availableUnits))
+        assertEquals("1,5 ngày", LeaveContract.formatHalfDayUnits(summary.requests.first().requestedUnits))
+
+        // Tab visibility for non-approver: only CHECK_IN and LEAVE_REQUEST, NEVER LEAVE_APPROVAL
+        val nonApproverTabs = LeaveContract.resolveVisibleAttendanceTabs(summary.authority, null)
+        assertEquals(listOf(AttendanceAreaTab.CHECK_IN, AttendanceAreaTab.LEAVE_REQUEST), nonApproverTabs)
+
+        // 2. Create leave request with 1 full day (FULL) and 1 afternoon half-day (PM)
+        server.enqueue(
+            MockResponse().setResponseCode(201).setBody(
+                """{"ok":true,"data":{"request_id":"$requestId","status":"PENDING","requested_units":3,"row_version":1,"replayed":false}}"""
+            )
+        )
+        val createdId = repo.leaveService.createLeaveRequest(
+            days = listOf(
+                LeaveDraftDayInput(leaveDate = "2026-11-02", sessionCode = "FULL"),
+                LeaveDraftDayInput(leaveDate = "2026-11-03", sessionCode = "PM")
+            ),
+            reason = "Khám sức khỏe định kỳ",
+            idempotencyKey = "leave-create-test-key-001"
+        )
+        assertEquals(requestId, createdId)
+        val createReq = server.takeRequest()
+        assertEquals("POST", createReq.method)
+        assertEquals("/api/leave/requests", createReq.path)
+        val createBody = JSONObject(createReq.body.readUtf8())
+        assertEquals("Khám sức khỏe định kỳ", createBody.getString("reason"))
+        assertEquals("leave-create-test-key-001", createBody.getString("idempotency_key"))
+        val sentDays = createBody.getJSONArray("days")
+        assertEquals(2, sentDays.length())
+        assertEquals("2026-11-02", sentDays.getJSONObject(0).getString("leave_date"))
+        assertEquals("FULL", sentDays.getJSONObject(0).getString("session_code"))
+        assertEquals("2026-11-03", sentDays.getJSONObject(1).getString("leave_date"))
+        assertEquals("PM", sentDays.getJSONObject(1).getString("session_code"))
+
+        // 3. Withdraw pending request sends expected_row_version and idempotency_key
+        server.enqueue(
+            MockResponse().setResponseCode(200).setBody(
+                """{"ok":true,"data":{"request_id":"$requestId","status":"WITHDRAWN","row_version":4,"replayed":false}}"""
+            )
+        )
+        val withdrawnStatus = repo.leaveService.withdrawLeaveRequest(
+            requestId = requestId,
+            expectedRowVersion = 3,
+            reason = "Đã sắp xếp được công việc",
+            idempotencyKey = "leave-withdraw-test-key-001"
+        )
+        assertEquals("WITHDRAWN", withdrawnStatus)
+        val withdrawReq = server.takeRequest()
+        assertEquals("POST", withdrawReq.method)
+        assertEquals("/api/leave/requests/$requestId/withdraw", withdrawReq.path)
+        val withdrawBody = JSONObject(withdrawReq.body.readUtf8())
+        assertEquals(3, withdrawBody.getInt("expected_row_version"))
+        assertEquals("Đã sắp xếp được công việc", withdrawBody.getString("reason"))
+        assertEquals("leave-withdraw-test-key-001", withdrawBody.getString("idempotency_key"))
+
+        // 4. Business error mapping (e.g. 409 LEAVE_INSUFFICIENT_BALANCE)
+        server.enqueue(
+            MockResponse().setResponseCode(409).setBody(
+                """{"ok":false,"error":{"code":"LEAVE_INSUFFICIENT_BALANCE","message":"Insufficient balance"}}"""
+            )
+        )
+        val err = runCatching {
+            repo.leaveService.createLeaveRequest(
+                days = listOf(LeaveDraftDayInput(leaveDate = "2026-11-10", sessionCode = "FULL")),
+                reason = "Nghỉ phép"
+            )
+        }.exceptionOrNull() as? BackendApiException
+        assertNotNull(err)
+        assertEquals("LEAVE_INSUFFICIENT_BALANCE", err!!.backendCode)
+        assertEquals(
+            "Số dư phép khả dụng tại thời điểm ngày nghỉ không đủ để đáp ứng đơn xin nghỉ có lương.",
+            err.message
+        )
+    }
+
+    @Test
+    fun `leave approval service and viewmodel enforce authority, required rejection and cancellation reasons, and reload latest state on 409 row version conflict`() = runBlocking {
+        val approverActor = AppActor(
+            appUserId = "99999999-2222-4333-8444-555555555555",
+            displayName = "Trưởng Nhóm Tuyển Dụng",
+            capabilities = listOf("entry_read"),
+            scopes = listOf(ActorScope("team", "TEAM_NORTH", "2026-01-01", null)),
+            selfRecruiterSuggestion = null
+        )
+        val subordinateRequestId = "bbbb1111-2222-4333-8444-555555555555"
+        var currentRowVersion = AtomicInteger(2)
+        var currentStatus = "PENDING"
+        var returnConflictOnNextDecision = false
+        val recordedCalls = java.util.Collections.synchronizedList(mutableListOf<String>())
+
+        server.dispatcher = object : okhttp3.mockwebserver.Dispatcher() {
+            override fun dispatch(request: okhttp3.mockwebserver.RecordedRequest): MockResponse {
+                val path = request.path.orEmpty()
+                recordedCalls.add("${request.method} $path")
+                return when {
+                    path.startsWith("/api/auth/session") -> MockResponse().setResponseCode(200).setBody(
+                        """
+                        {
+                          "ok": true,
+                          "actor": {
+                            "app_user_id": "${approverActor.appUserId}",
+                            "display_name": "${approverActor.displayName}",
+                            "capabilities": ["entry_read"],
+                            "scopes": [{"kind":"team","reference":"TEAM_NORTH","valid_from":"2026-01-01","valid_to":null}]
+                          }
+                        }
+                        """.trimIndent()
+                    )
+                    path.startsWith("/api/leave/me") -> MockResponse().setResponseCode(200).setBody(
+                        """
+                        {
+                          "ok": true,
+                          "data": {
+                            "as_of_date": "2026-10-27",
+                            "leave_year": 2026,
+                            "account": {
+                              "app_user_id": "${approverActor.appUserId}",
+                              "display_name": "${approverActor.displayName}",
+                              "account_enabled": true
+                            },
+                            "authority": {
+                              "app_user_id": "${approverActor.appUserId}",
+                              "is_shared_non_employee": false,
+                              "is_full_admin": false,
+                              "is_bod": false,
+                              "is_hr_operator": false,
+                              "is_hr_report_viewer": false,
+                              "is_team_leader": true,
+                              "is_department_approver": false,
+                              "can_submit_request": true,
+                              "can_approve_requests": true,
+                              "can_view_monthly_report": false,
+                              "can_manage_config": false
+                            },
+                            "routing": {
+                              "route_kind": "ADMIN_BOD_DIRECT",
+                              "unit_kind": "RECRUITMENT",
+                              "profile_configured": true
+                            },
+                            "policy": {"annual_base_units": 24, "monthly_accrual_units": 2, "row_version": 1},
+                            "balance": {
+                              "leave_year": 2026,
+                              "as_of_date": "2026-10-27",
+                              "has_profile": true,
+                              "profile_configured": true,
+                              "employment_status": "OFFICIAL",
+                              "unit_kind": "RECRUITMENT",
+                              "available_units": 16,
+                              "total_granted_units": 20,
+                              "lots": []
+                            },
+                            "requests": [],
+                            "ledger_entries": []
+                          }
+                        }
+                        """.trimIndent()
+                    )
+                    path.startsWith("/api/leave/approvals/$subordinateRequestId/decision") -> {
+                        if (returnConflictOnNextDecision) {
+                            returnConflictOnNextDecision = false
+                            currentRowVersion.set(5)
+                            MockResponse().setResponseCode(409).setBody(
+                                """{"ok":false,"error":{"code":"LEAVE_ROW_VERSION_CONFLICT","message":"Row version conflict"}}"""
+                            )
+                        } else {
+                            val body = JSONObject(request.body.readUtf8())
+                            val dec = body.getString("decision")
+                            currentStatus = when (dec) {
+                                "APPROVE" -> "APPROVED"
+                                "REJECT" -> "REJECTED"
+                                "CANCEL_APPROVED" -> "CANCELLED"
+                                else -> currentStatus
+                            }
+                            val nextVer = currentRowVersion.incrementAndGet()
+                            MockResponse().setResponseCode(200).setBody(
+                                """{"ok":true,"data":{"request_id":"$subordinateRequestId","status":"$currentStatus","row_version":$nextVer,"replayed":false}}"""
+                            )
+                        }
+                    }
+                    path.startsWith("/api/leave/approvals") -> MockResponse().setResponseCode(200).setBody(
+                        """
+                        {
+                          "ok": true,
+                          "data": {
+                            "as_of_date": "2026-10-27",
+                            "status_filter": "PENDING",
+                            "total": 1,
+                            "limit": 50,
+                            "offset": 0,
+                            "items": [
+                              {
+                                "request_id": "$subordinateRequestId",
+                                "app_user_id": "${testActor.appUserId}",
+                                "requester": {
+                                  "app_user_id": "${testActor.appUserId}",
+                                  "display_name": "Nhân viên cấp dưới",
+                                  "personnel_code": "NV-099",
+                                  "account_enabled": true
+                                },
+                                "status": "$currentStatus",
+                                "pay_treatment": "PAID_LEAVE",
+                                "employment_status_snapshot": "OFFICIAL",
+                                "unit_kind_snapshot": "RECRUITMENT",
+                                "profile_configured_at_submit": true,
+                                "requested_units": 2,
+                                "reason": "Nghỉ việc riêng",
+                                "route_kind": "TEAM_LEADER",
+                                "routed_team_name": "Team Miền Bắc",
+                                "submitted_at": "2026-10-27T01:30:00Z",
+                                "row_version": ${currentRowVersion.get()},
+                                "days": [
+                                  {
+                                    "request_day_id": "d-1",
+                                    "leave_date": "2026-10-30",
+                                    "session_code": "FULL",
+                                    "half_day_units": 2,
+                                    "is_active": true
+                                  }
+                                ],
+                                "allocations": []
+                              }
+                            ]
+                          }
+                        }
+                        """.trimIndent()
+                    )
+                    else -> MockResponse().setResponseCode(200).setBody("""{"ok":true,"data":{}}""")
+                }
+            }
+        }
+
+        val repo = createRepository()
+        val app = ApplicationProvider.getApplicationContext<android.app.Application>()
+        val vm = com.example.ui.MiniBiViewModel(app, repo)
+        try {
+            var attempts = 0
+            while (vm.sessionBootstrapping.value && attempts < 100) {
+                org.robolectric.shadows.ShadowLooper.idleMainLooper()
+                Thread.sleep(15)
+                attempts++
+            }
+
+            vm.navigateTo(com.example.ui.MainDestination.ATTENDANCE)
+            attempts = 0
+            while ((vm.myLeaveLoading.value || vm.myLeaveSummary.value == null) && attempts < 100) {
+                org.robolectric.shadows.ShadowLooper.idleMainLooper()
+                Thread.sleep(15)
+                attempts++
+            }
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+
+            // Default tab on Attendance navigation is CHECK_IN, and approver sees all 3 tabs
+            assertEquals(AttendanceAreaTab.CHECK_IN, vm.activeAttendanceTab.value)
+            assertEquals(
+                listOf(AttendanceAreaTab.CHECK_IN, AttendanceAreaTab.LEAVE_REQUEST, AttendanceAreaTab.LEAVE_APPROVAL),
+                vm.resolveVisibleAttendanceTabs()
+            )
+
+            // Switch to LEAVE_APPROVAL tab -> loads inbox
+            vm.selectAttendanceTab(AttendanceAreaTab.LEAVE_APPROVAL)
+            attempts = 0
+            while ((vm.leaveInboxLoading.value || vm.leaveApprovalInbox.value == null) && attempts < 100) {
+                org.robolectric.shadows.ShadowLooper.idleMainLooper()
+                Thread.sleep(15)
+                attempts++
+            }
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+
+            val initialItem = vm.leaveApprovalInbox.value!!.items.single()
+            assertEquals(2, initialItem.rowVersion)
+
+            // Rejecting without reason is blocked client-side before hitting network
+            recordedCalls.clear()
+            vm.decideLeaveRequest(initialItem, decision = "REJECT", reason = "   ")
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            assertEquals("Bắt buộc nhập lý do khi từ chối đơn nghỉ phép.", vm.leaveMutationError.value)
+            assertTrue(recordedCalls.none { it.contains("/decision") })
+
+            // Simulate 409 LEAVE_ROW_VERSION_CONFLICT -> ViewModel reloads latest inbox (rowVersion = 5)
+            returnConflictOnNextDecision = true
+            recordedCalls.clear()
+            vm.decideLeaveRequest(initialItem, decision = "APPROVE", reason = null)
+            attempts = 0
+            while (
+                (vm.leaveMutationBusy.value ||
+                    vm.leaveInboxLoading.value ||
+                    vm.leaveApprovalInbox.value?.items?.firstOrNull()?.rowVersion != 5) &&
+                attempts < 100
+            ) {
+                org.robolectric.shadows.ShadowLooper.idleMainLooper()
+                Thread.sleep(15)
+                attempts++
+            }
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+
+            assertEquals(
+                "Dữ liệu vừa được cập nhật bởi thao tác khác. Hệ thống đã làm mới, vui lòng kiểm tra và thử lại.",
+                vm.leaveMutationError.value
+            )
+            val refreshedAfterConflict = vm.leaveApprovalInbox.value!!.items.single()
+            assertEquals(5, refreshedAfterConflict.rowVersion)
+
+            // Approve with refreshed rowVersion = 5 succeeds -> status becomes APPROVED, rowVersion = 6
+            vm.decideLeaveRequest(refreshedAfterConflict, decision = "APPROVE", reason = "Đồng ý duyệt")
+            attempts = 0
+            while (
+                (vm.leaveMutationBusy.value ||
+                    vm.leaveInboxLoading.value ||
+                    vm.leaveApprovalInbox.value?.items?.firstOrNull()?.status != "APPROVED") &&
+                attempts < 100
+            ) {
+                org.robolectric.shadows.ShadowLooper.idleMainLooper()
+                Thread.sleep(15)
+                attempts++
+            }
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+
+            val approvedItem = vm.leaveApprovalInbox.value!!.items.single()
+            assertEquals("APPROVED", approvedItem.status)
+            assertEquals(6, approvedItem.rowVersion)
+
+            // CANCEL_APPROVED requires reason
+            vm.decideLeaveRequest(approvedItem, decision = "CANCEL_APPROVED", reason = "")
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            assertEquals("Bắt buộc nhập lý do khi hủy đơn nghỉ phép đã duyệt.", vm.leaveMutationError.value)
+
+            // CANCEL_APPROVED with valid reason succeeds -> status becomes CANCELLED
+            vm.decideLeaveRequest(approvedItem, decision = "CANCEL_APPROVED", reason = "Nhân sự đi làm lại")
+            attempts = 0
+            while (
+                (vm.leaveMutationBusy.value ||
+                    vm.leaveInboxLoading.value ||
+                    vm.leaveApprovalInbox.value?.items?.firstOrNull()?.status != "CANCELLED") &&
+                attempts < 100
+            ) {
+                org.robolectric.shadows.ShadowLooper.idleMainLooper()
+                Thread.sleep(15)
+                attempts++
+            }
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            assertEquals("CANCELLED", vm.leaveApprovalInbox.value!!.items.single().status)
         } finally {
             vm.cancelScopeForTest()
         }

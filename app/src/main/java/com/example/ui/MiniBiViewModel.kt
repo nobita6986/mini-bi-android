@@ -12,6 +12,7 @@ import androidx.lifecycle.viewModelScope
 import coil.ImageLoader
 import com.example.BuildConfig
 import com.example.data.AppActor
+import com.example.data.AttendanceAreaTab
 import com.example.data.AttendanceEntity
 import com.example.data.AttendanceTimeContract
 import com.example.data.BackendApiException
@@ -27,6 +28,11 @@ import com.example.data.DirectEntryCatalog
 import com.example.data.DirectEntryContract
 import com.example.data.DuplicateCccdGroupItem
 import com.example.data.GeneralOverviewSnapshot
+import com.example.data.LeaveApprovalInboxProjection
+import com.example.data.LeaveContract
+import com.example.data.LeaveDraftDayInput
+import com.example.data.LeaveMeSummaryProjection
+import com.example.data.LeaveRequestProjection
 import com.example.data.MiniBiRepository
 import com.example.data.NewWorkerEntryDraft
 import com.example.data.OwnSubmissionItem
@@ -345,6 +351,51 @@ class MiniBiViewModel internal constructor(
         .catch { e -> if (e is CancellationException) throw e }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
+    // Leave Request & Leave Approval States (Backend authority only; zero client-side role inference)
+    private val _activeAttendanceTab = MutableStateFlow(AttendanceAreaTab.CHECK_IN)
+    val activeAttendanceTab: StateFlow<AttendanceAreaTab> = _activeAttendanceTab.asStateFlow()
+
+    private val _leaveYear = MutableStateFlow(LeaveContract.currentVietnamLeaveYear())
+    val leaveYear: StateFlow<Int> = _leaveYear.asStateFlow()
+
+    private val _myLeaveSummary = MutableStateFlow<LeaveMeSummaryProjection?>(null)
+    val myLeaveSummary: StateFlow<LeaveMeSummaryProjection?> = _myLeaveSummary.asStateFlow()
+
+    private val _myLeaveLoading = MutableStateFlow(false)
+    val myLeaveLoading: StateFlow<Boolean> = _myLeaveLoading.asStateFlow()
+
+    private val _myLeaveError = MutableStateFlow<String?>(null)
+    val myLeaveError: StateFlow<String?> = _myLeaveError.asStateFlow()
+
+    private val _myLeaveErrorCode = MutableStateFlow<String?>(null)
+    val myLeaveErrorCode: StateFlow<String?> = _myLeaveErrorCode.asStateFlow()
+
+    val leaveDraftDays = mutableStateListOf<LeaveDraftDayInput>()
+
+    private val _leaveDraftReason = MutableStateFlow("")
+    val leaveDraftReason: StateFlow<String> = _leaveDraftReason.asStateFlow()
+
+    private val _leaveMutationBusy = MutableStateFlow(false)
+    val leaveMutationBusy: StateFlow<Boolean> = _leaveMutationBusy.asStateFlow()
+
+    private val _leaveMutationError = MutableStateFlow<String?>(null)
+    val leaveMutationError: StateFlow<String?> = _leaveMutationError.asStateFlow()
+
+    private val _leaveInboxStatusFilter = MutableStateFlow("PENDING")
+    val leaveInboxStatusFilter: StateFlow<String> = _leaveInboxStatusFilter.asStateFlow()
+
+    private val _leaveInboxPage = MutableStateFlow(1)
+    val leaveInboxPage: StateFlow<Int> = _leaveInboxPage.asStateFlow()
+
+    private val _leaveApprovalInbox = MutableStateFlow<LeaveApprovalInboxProjection?>(null)
+    val leaveApprovalInbox: StateFlow<LeaveApprovalInboxProjection?> = _leaveApprovalInbox.asStateFlow()
+
+    private val _leaveInboxLoading = MutableStateFlow(false)
+    val leaveInboxLoading: StateFlow<Boolean> = _leaveInboxLoading.asStateFlow()
+
+    private val _leaveInboxError = MutableStateFlow<String?>(null)
+    val leaveInboxError: StateFlow<String?> = _leaveInboxError.asStateFlow()
+
     init {
         bootstrapSession()
     }
@@ -400,8 +451,10 @@ class MiniBiViewModel internal constructor(
                 ensureInitialWorkerTabLoaded(actor)
             }
             MainDestination.ATTENDANCE -> {
+                _activeAttendanceTab.value = AttendanceAreaTab.CHECK_IN
                 syncAttendanceTimeAnchor(actor = actor, force = false)
                 syncAttendanceHistoryFromServer(actor = actor)
+                refreshMyLeaveSummary(year = _leaveYear.value)
             }
         }
     }
@@ -545,6 +598,21 @@ class MiniBiViewModel internal constructor(
             _reviewQueue.value = emptyList()
             _analyticsSnapshot.value = null
             _availableReportTemplates.value = emptyList()
+            _activeAttendanceTab.value = AttendanceAreaTab.CHECK_IN
+            _leaveYear.value = LeaveContract.currentVietnamLeaveYear()
+            _myLeaveSummary.value = null
+            _myLeaveLoading.value = false
+            _myLeaveError.value = null
+            _myLeaveErrorCode.value = null
+            leaveDraftDays.clear()
+            _leaveDraftReason.value = ""
+            _leaveMutationBusy.value = false
+            _leaveMutationError.value = null
+            _leaveInboxStatusFilter.value = "PENDING"
+            _leaveInboxPage.value = 1
+            _leaveApprovalInbox.value = null
+            _leaveInboxLoading.value = false
+            _leaveInboxError.value = null
         }
     }
 
@@ -3046,7 +3114,389 @@ class MiniBiViewModel internal constructor(
         }
     }
 
+    // =========================================================================
+    // Leave Request ("Xin nghỉ") & Leave Approval ("Duyệt nghỉ") Actions
+    // Strictly authority-driven from backend `/api/leave/me` & `/api/leave/approvals`
+    // =========================================================================
+
+    fun resolveVisibleAttendanceTabs(): List<AttendanceAreaTab> {
+        return LeaveContract.resolveVisibleAttendanceTabs(
+            authority = _myLeaveSummary.value?.authority,
+            errorCode = _myLeaveErrorCode.value
+        )
+    }
+
+    fun selectAttendanceTab(tab: AttendanceAreaTab) {
+        val visibleTabs = resolveVisibleAttendanceTabs()
+        val safeTab = if (tab in visibleTabs) tab else AttendanceAreaTab.CHECK_IN
+        _activeAttendanceTab.value = safeTab
+        _leaveMutationError.value = null
+        when (safeTab) {
+            AttendanceAreaTab.CHECK_IN -> Unit
+            AttendanceAreaTab.LEAVE_REQUEST -> {
+                ensureInitialLeaveDraftDay()
+                if (_myLeaveSummary.value == null && !_myLeaveLoading.value) {
+                    refreshMyLeaveSummary(year = _leaveYear.value)
+                }
+            }
+            AttendanceAreaTab.LEAVE_APPROVAL -> {
+                refreshLeaveApprovalInbox(
+                    statusFilter = _leaveInboxStatusFilter.value,
+                    page = _leaveInboxPage.value
+                )
+            }
+        }
+    }
+
+    fun ensureInitialLeaveDraftDay() {
+        if (leaveDraftDays.isEmpty()) {
+            val defaultDate = _myLeaveSummary.value?.asOfDate
+                ?.takeIf { LeaveContract.isValidIsoDate(it) }
+                ?: LeaveContract.todayVietnamIsoDate()
+            leaveDraftDays.add(
+                LeaveDraftDayInput(
+                    leaveDate = defaultDate,
+                    sessionCode = "FULL"
+                )
+            )
+        }
+    }
+
+    private fun nextIsoDateAfter(isoDate: String): String {
+        if (!LeaveContract.isValidIsoDate(isoDate)) {
+            return _myLeaveSummary.value?.asOfDate
+                ?.takeIf { LeaveContract.isValidIsoDate(it) }
+                ?: LeaveContract.todayVietnamIsoDate()
+        }
+        return runCatching {
+            val sdf = java.text.SimpleDateFormat("yyyy-MM-dd", Locale.US).apply {
+                isLenient = false
+                timeZone = java.util.TimeZone.getTimeZone("UTC")
+            }
+            val parsed = sdf.parse(isoDate) ?: return@runCatching isoDate
+            val cal = java.util.Calendar.getInstance(java.util.TimeZone.getTimeZone("UTC")).apply {
+                time = parsed
+                add(java.util.Calendar.DAY_OF_MONTH, 1)
+            }
+            sdf.format(cal.time)
+        }.getOrDefault(isoDate)
+    }
+
+    fun addLeaveDraftDay() {
+        if (leaveDraftDays.size >= 60) {
+            _leaveMutationError.value = "Mỗi đơn chỉ được đăng ký tối đa 60 ngày nghỉ."
+            return
+        }
+        _leaveMutationError.value = null
+        val baseDate = leaveDraftDays.lastOrNull()?.leaveDate
+            ?: _myLeaveSummary.value?.asOfDate
+            ?: LeaveContract.todayVietnamIsoDate()
+        val nextDate = if (leaveDraftDays.isEmpty()) baseDate else nextIsoDateAfter(baseDate)
+        leaveDraftDays.add(
+            LeaveDraftDayInput(
+                leaveDate = nextDate,
+                sessionCode = "FULL"
+            )
+        )
+    }
+
+    fun removeLeaveDraftDay(id: String) {
+        _leaveMutationError.value = null
+        leaveDraftDays.removeAll { it.id == id }
+        ensureInitialLeaveDraftDay()
+    }
+
+    fun updateLeaveDraftDayDate(id: String, leaveDate: String) {
+        _leaveMutationError.value = null
+        val index = leaveDraftDays.indexOfFirst { it.id == id }
+        if (index >= 0) {
+            leaveDraftDays[index] = leaveDraftDays[index].copy(leaveDate = leaveDate.trim())
+        }
+    }
+
+    fun updateLeaveDraftDaySession(id: String, sessionCode: String) {
+        _leaveMutationError.value = null
+        val normalized = sessionCode.trim().uppercase(Locale.ROOT)
+        if (normalized !in LeaveContract.SESSION_CODES) return
+        val index = leaveDraftDays.indexOfFirst { it.id == id }
+        if (index >= 0) {
+            leaveDraftDays[index] = leaveDraftDays[index].copy(sessionCode = normalized)
+        }
+    }
+
+    fun updateLeaveDraftReason(reason: String) {
+        _leaveMutationError.value = null
+        _leaveDraftReason.value = reason
+    }
+
+    fun clearLeaveMutationError() {
+        _leaveMutationError.value = null
+    }
+
+    fun setLeaveYear(year: Int) {
+        if (year < 2000 || year > 2100) return
+        _leaveYear.value = year
+        refreshMyLeaveSummary(year = year)
+    }
+
+    fun refreshMyLeaveSummary(year: Int = _leaveYear.value) {
+        _myLeaveLoading.value = true
+        _myLeaveError.value = null
+        _myLeaveErrorCode.value = null
+        viewModelScope.launch {
+            try {
+                val summary = repository.leaveService.fetchMyLeaveSummary(leaveYear = year)
+                _myLeaveSummary.value = summary
+                _leaveYear.value = summary.leaveYear
+                _myLeaveError.value = null
+                _myLeaveErrorCode.value = null
+                ensureInitialLeaveDraftDay()
+
+                val visibleTabs = LeaveContract.resolveVisibleAttendanceTabs(summary.authority, null)
+                if (_activeAttendanceTab.value !in visibleTabs) {
+                    _activeAttendanceTab.value = AttendanceAreaTab.CHECK_IN
+                }
+                if (summary.authority.canApproveRequests &&
+                    !summary.authority.isSharedNonEmployee &&
+                    (_activeAttendanceTab.value == AttendanceAreaTab.LEAVE_APPROVAL || _leaveApprovalInbox.value != null)
+                ) {
+                    refreshLeaveApprovalInbox(
+                        statusFilter = _leaveInboxStatusFilter.value,
+                        page = _leaveInboxPage.value
+                    )
+                }
+            } catch (e: BackendApiException) {
+                _myLeaveError.value = e.message
+                _myLeaveErrorCode.value = e.backendCode
+                if (e.backendCode == "LEAVE_SHARED_ACCOUNT_FORBIDDEN") {
+                    _myLeaveSummary.value = null
+                    _activeAttendanceTab.value = AttendanceAreaTab.CHECK_IN
+                }
+            } catch (e: Exception) {
+                e.rethrowIfCancelled()
+                _myLeaveError.value = e.message ?: "Không thể tải thông tin phép cá nhân."
+            } finally {
+                _myLeaveLoading.value = false
+            }
+        }
+    }
+
+    fun submitLeaveRequest(onSuccess: (() -> Unit)? = null) {
+        if (_leaveMutationBusy.value) return
+        val daysSnapshot = leaveDraftDays.toList()
+        val reasonSnapshot = _leaveDraftReason.value
+        val validationError = LeaveContract.validateCreateDraftInput(
+            days = daysSnapshot,
+            reason = reasonSnapshot
+        )
+        if (validationError != null) {
+            _leaveMutationError.value = validationError
+            showBanner(validationError, isError = true)
+            return
+        }
+        _leaveMutationBusy.value = true
+        _leaveMutationError.value = null
+        viewModelScope.launch {
+            try {
+                repository.leaveService.createLeaveRequest(
+                    days = daysSnapshot,
+                    reason = reasonSnapshot
+                )
+                leaveDraftDays.clear()
+                ensureInitialLeaveDraftDay()
+                _leaveDraftReason.value = ""
+                showBanner("Đã gửi đơn xin nghỉ phép thành công.")
+                refreshMyLeaveSummary(year = _leaveYear.value)
+                onSuccess?.invoke()
+            } catch (e: BackendApiException) {
+                _leaveMutationError.value = e.message
+                showBanner(e.message, isError = true)
+                if (e.kind == BackendFailureKind.CONFLICT ||
+                    e.backendCode == "LEAVE_ROW_VERSION_CONFLICT" ||
+                    e.backendCode == "LEAVE_INVALID_STATE_TRANSITION"
+                ) {
+                    refreshMyLeaveSummary(year = _leaveYear.value)
+                }
+            } catch (e: Exception) {
+                e.rethrowIfCancelled()
+                val msg = e.message ?: "Không thể gửi đơn xin nghỉ phép."
+                _leaveMutationError.value = msg
+                showBanner(msg, isError = true)
+            } finally {
+                _leaveMutationBusy.value = false
+            }
+        }
+    }
+
+    fun withdrawLeaveRequest(
+        request: LeaveRequestProjection,
+        reason: String?,
+        onSuccess: (() -> Unit)? = null
+    ) {
+        if (_leaveMutationBusy.value) return
+        val actorId = currentActor.value?.appUserId ?: _myLeaveSummary.value?.authority?.appUserId
+        if (!LeaveContract.canWithdrawOwnLeaveRequest(actorId, request)) {
+            val msg = "Đơn này không ở trạng thái Chờ duyệt hoặc không thuộc quyền tự rút của bạn."
+            _leaveMutationError.value = msg
+            showBanner(msg, isError = true)
+            return
+        }
+        _leaveMutationBusy.value = true
+        _leaveMutationError.value = null
+        viewModelScope.launch {
+            try {
+                repository.leaveService.withdrawLeaveRequest(
+                    requestId = request.requestId,
+                    expectedRowVersion = request.rowVersion,
+                    reason = reason
+                )
+                showBanner("Đã rút đơn xin nghỉ phép.")
+                refreshMyLeaveSummary(year = _leaveYear.value)
+                onSuccess?.invoke()
+            } catch (e: BackendApiException) {
+                _leaveMutationError.value = e.message
+                showBanner(e.message, isError = true)
+                if (e.kind == BackendFailureKind.CONFLICT ||
+                    e.backendCode == "LEAVE_ROW_VERSION_CONFLICT" ||
+                    e.backendCode == "LEAVE_INVALID_STATE_TRANSITION"
+                ) {
+                    refreshMyLeaveSummary(year = _leaveYear.value)
+                }
+            } catch (e: Exception) {
+                e.rethrowIfCancelled()
+                val msg = e.message ?: "Không thể rút đơn xin nghỉ phép."
+                _leaveMutationError.value = msg
+                showBanner(msg, isError = true)
+            } finally {
+                _leaveMutationBusy.value = false
+            }
+        }
+    }
+
+    fun setLeaveInboxFilter(statusFilter: String) {
+        val clean = statusFilter.trim().uppercase(Locale.ROOT)
+        if (clean !in LeaveContract.REQUEST_STATUS_FILTERS) return
+        _leaveInboxStatusFilter.value = clean
+        _leaveInboxPage.value = 1
+        refreshLeaveApprovalInbox(statusFilter = clean, page = 1)
+    }
+
+    fun setLeaveInboxPage(page: Int) {
+        val safePage = page.coerceAtLeast(1)
+        _leaveInboxPage.value = safePage
+        refreshLeaveApprovalInbox(statusFilter = _leaveInboxStatusFilter.value, page = safePage)
+    }
+
+    fun refreshLeaveApprovalInbox(
+        statusFilter: String = _leaveInboxStatusFilter.value,
+        page: Int = _leaveInboxPage.value
+    ) {
+        val authority = _myLeaveSummary.value?.authority
+        if (authority != null && (!authority.canApproveRequests || authority.isSharedNonEmployee)) {
+            _leaveApprovalInbox.value = null
+            return
+        }
+        val safePage = page.coerceAtLeast(1)
+        val limit = LEAVE_INBOX_PAGE_SIZE
+        val offset = (safePage - 1) * limit
+        _leaveInboxLoading.value = true
+        _leaveInboxError.value = null
+        viewModelScope.launch {
+            try {
+                val inbox = repository.leaveService.fetchApprovalInbox(
+                    statusFilter = statusFilter,
+                    limit = limit,
+                    offset = offset
+                )
+                _leaveApprovalInbox.value = inbox
+                _leaveInboxError.value = null
+            } catch (e: BackendApiException) {
+                _leaveInboxError.value = e.message
+                if (e.kind == BackendFailureKind.FORBIDDEN || e.backendCode == "LEAVE_APPROVAL_FORBIDDEN") {
+                    _leaveApprovalInbox.value = null
+                    if (_activeAttendanceTab.value == AttendanceAreaTab.LEAVE_APPROVAL) {
+                        _activeAttendanceTab.value = AttendanceAreaTab.CHECK_IN
+                    }
+                }
+            } catch (e: Exception) {
+                e.rethrowIfCancelled()
+                _leaveInboxError.value = e.message ?: "Không thể tải danh sách đơn cần duyệt."
+            } finally {
+                _leaveInboxLoading.value = false
+            }
+        }
+    }
+
+    fun decideLeaveRequest(
+        request: LeaveRequestProjection,
+        decision: String,
+        reason: String?,
+        onSuccess: (() -> Unit)? = null
+    ) {
+        if (_leaveMutationBusy.value) return
+        val actorId = currentActor.value?.appUserId ?: _myLeaveSummary.value?.authority?.appUserId
+        val (isValid, validationError) = LeaveContract.validateApproverDecisionInput(
+            actorAppUserId = actorId,
+            request = request,
+            decision = decision,
+            reason = reason.orEmpty()
+        )
+        if (!isValid) {
+            val msg = validationError ?: "Quyết định xử lý đơn không hợp lệ."
+            _leaveMutationError.value = msg
+            showBanner(msg, isError = true)
+            return
+        }
+        _leaveMutationBusy.value = true
+        _leaveMutationError.value = null
+        viewModelScope.launch {
+            try {
+                val cleanDecision = decision.trim().uppercase(Locale.ROOT)
+                repository.leaveService.decideLeaveRequest(
+                    requestId = request.requestId,
+                    decision = cleanDecision,
+                    expectedRowVersion = request.rowVersion,
+                    reason = reason
+                )
+                val successMsg = when (cleanDecision) {
+                    "APPROVE" -> "Đã duyệt đơn nghỉ phép."
+                    "REJECT" -> "Đã từ chối đơn nghỉ phép."
+                    "CANCEL_APPROVED" -> "Đã hủy đơn nghỉ phép đã duyệt và hoàn phép."
+                    else -> "Đã cập nhật quyết định duyệt nghỉ phép."
+                }
+                showBanner(successMsg)
+                refreshLeaveApprovalInbox(
+                    statusFilter = _leaveInboxStatusFilter.value,
+                    page = _leaveInboxPage.value
+                )
+                refreshMyLeaveSummary(year = _leaveYear.value)
+                onSuccess?.invoke()
+            } catch (e: BackendApiException) {
+                _leaveMutationError.value = e.message
+                showBanner(e.message, isError = true)
+                if (e.kind == BackendFailureKind.CONFLICT ||
+                    e.backendCode == "LEAVE_ROW_VERSION_CONFLICT" ||
+                    e.backendCode == "LEAVE_INVALID_STATE_TRANSITION"
+                ) {
+                    refreshLeaveApprovalInbox(
+                        statusFilter = _leaveInboxStatusFilter.value,
+                        page = _leaveInboxPage.value
+                    )
+                    refreshMyLeaveSummary(year = _leaveYear.value)
+                }
+            } catch (e: Exception) {
+                e.rethrowIfCancelled()
+                val msg = e.message ?: "Không thể gửi quyết định xử lý đơn nghỉ phép."
+                _leaveMutationError.value = msg
+                showBanner(msg, isError = true)
+            } finally {
+                _leaveMutationBusy.value = false
+            }
+        }
+    }
+
     companion object {
         internal const val BANNER_AUTO_DISMISS_MS = 5_000L
+        internal const val LEAVE_INBOX_PAGE_SIZE = 50
     }
 }

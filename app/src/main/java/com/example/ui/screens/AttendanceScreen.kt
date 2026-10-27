@@ -1,6 +1,7 @@
 package com.example.ui.screens
 
 import android.Manifest
+import android.app.DatePickerDialog
 import android.content.Context
 import android.content.pm.PackageManager
 import android.net.Uri
@@ -11,6 +12,7 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -28,15 +30,24 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.EventNote
+import androidx.compose.material.icons.automirrored.filled.FactCheck
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.filled.AccessTime
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.CameraAlt
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.CloudDone
 import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.CloudUpload
+import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.GpsFixed
 import androidx.compose.material.icons.filled.LocationOn
@@ -50,6 +61,8 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -57,6 +70,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -76,22 +90,31 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import com.example.data.AppActor
+import com.example.data.AttendanceAreaTab
 import com.example.data.AttendanceContract
 import com.example.data.AttendanceEntity
 import com.example.data.AttendanceOutboxStatus
 import com.example.data.AttendanceTimeContract
 import com.example.data.AttendanceTimeSource
 import com.example.data.CapturedAttendanceTime
+import com.example.data.LeaveApprovalInboxProjection
+import com.example.data.LeaveContract
+import com.example.data.LeaveDraftDayInput
+import com.example.data.LeaveMeSummaryProjection
+import com.example.data.LeaveRequestProjection
 import com.example.ui.MiniBiViewModel
 import com.example.ui.theme.JetBrainsMono
 import com.example.ui.theme.SemanticColors
 import kotlinx.coroutines.delay
 import java.io.File
+import java.util.Calendar
 import java.util.Locale
 
 @Composable
@@ -110,6 +133,19 @@ fun AttendanceScreen(
     val submitting by viewModel.submittingAttendance.collectAsStateWithLifecycle()
     val timeAnchorState by viewModel.timeAnchorState.collectAsStateWithLifecycle()
     val allRecords by viewModel.attendanceRecords.collectAsStateWithLifecycle()
+    val activeTab by viewModel.activeAttendanceTab.collectAsStateWithLifecycle()
+    val myLeaveSummary by viewModel.myLeaveSummary.collectAsStateWithLifecycle()
+    val myLeaveErrorCode by viewModel.myLeaveErrorCode.collectAsStateWithLifecycle()
+
+    val visibleTabs = remember(myLeaveSummary?.authority, myLeaveErrorCode) {
+        LeaveContract.resolveVisibleAttendanceTabs(
+            authority = myLeaveSummary?.authority,
+            errorCode = myLeaveErrorCode
+        )
+    }
+    val effectiveTab = remember(activeTab, visibleTabs) {
+        if (activeTab in visibleTabs) activeTab else AttendanceAreaTab.CHECK_IN
+    }
 
     val attendanceRecords = remember(allRecords, actor.appUserId) {
         allRecords.filter { it.appUserId == actor.appUserId }
@@ -178,10 +214,11 @@ fun AttendanceScreen(
         }
     }
 
-    // 1. Refresh server time anchor & server attendance history whenever Attendance screen is opened, and fetch GPS if granted
+    // 1. Refresh server time anchor, server attendance history & leave authority/summary whenever Attendance screen is opened, and fetch GPS if granted
     LaunchedEffect(actor.appUserId) {
         viewModel.syncAttendanceTimeAnchor(actor = actor, force = true)
         viewModel.syncAttendanceHistoryFromServer(actor = actor)
+        viewModel.refreshMyLeaveSummary()
         val hasFine = ContextCompat.checkSelfPermission(
             context,
             Manifest.permission.ACCESS_FINE_LOCATION
@@ -244,20 +281,29 @@ fun AttendanceScreen(
         }
     }
 
-    LazyColumn(
-        modifier = Modifier
-            .fillMaxSize()
-            .testTag("attendance_lazy_column"),
-        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp)
-    ) {
-        item {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(22.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                elevation = CardDefaults.cardElevation(defaultElevation = 3.dp)
-            ) {
+    Column(modifier = Modifier.fillMaxSize()) {
+        AttendanceAreaTopTabBar(
+            tabs = visibleTabs,
+            selectedTab = effectiveTab,
+            onSelectTab = { viewModel.selectAttendanceTab(it) }
+        )
+
+        when (effectiveTab) {
+            AttendanceAreaTab.CHECK_IN -> {
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .testTag("attendance_lazy_column"),
+                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp),
+                    verticalArrangement = Arrangement.spacedBy(14.dp)
+                ) {
+                    item {
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(22.dp),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                            elevation = CardDefaults.cardElevation(defaultElevation = 3.dp)
+                        ) {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -811,6 +857,21 @@ fun AttendanceScreen(
                 )
             }
         }
+                }
+            }
+            AttendanceAreaTab.LEAVE_REQUEST -> {
+                LeaveRequestTabContent(
+                    actor = actor,
+                    viewModel = viewModel
+                )
+            }
+            AttendanceAreaTab.LEAVE_APPROVAL -> {
+                LeaveApprovalTabContent(
+                    actor = actor,
+                    viewModel = viewModel
+                )
+            }
+        }
     }
 }
 
@@ -1146,4 +1207,1653 @@ private fun createPersistentCaptureFileAndUri(context: Context): Pair<File, Uri>
         file
     )
     return file to uri
+}
+
+@Composable
+private fun AttendanceAreaTopTabBar(
+    tabs: List<AttendanceAreaTab>,
+    selectedTab: AttendanceAreaTab,
+    onSelectTab: (AttendanceAreaTab) -> Unit
+) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 6.dp)
+            .testTag("attendance_area_tab_row"),
+        shape = RoundedCornerShape(14.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(4.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            tabs.forEach { tab ->
+                val isSelected = tab == selectedTab
+                val tag = when (tab) {
+                    AttendanceAreaTab.CHECK_IN -> "attendance_tab_checkin"
+                    AttendanceAreaTab.LEAVE_REQUEST -> "attendance_tab_leave_request"
+                    AttendanceAreaTab.LEAVE_APPROVAL -> "attendance_tab_leave_approval"
+                }
+                val icon = when (tab) {
+                    AttendanceAreaTab.CHECK_IN -> Icons.Default.PhotoCamera
+                    AttendanceAreaTab.LEAVE_REQUEST -> Icons.AutoMirrored.Filled.EventNote
+                    AttendanceAreaTab.LEAVE_APPROVAL -> Icons.AutoMirrored.Filled.FactCheck
+                }
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = if (isSelected) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        Color.Transparent
+                    },
+                    modifier = Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(10.dp))
+                        .clickable { onSelectTab(tab) }
+                        .testTag(tag)
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 8.dp, vertical = 8.dp),
+                        horizontalArrangement = Arrangement.Center,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = icon,
+                            contentDescription = null,
+                            tint = if (isSelected) {
+                                MaterialTheme.colorScheme.onPrimary
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = tab.label,
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                            color = if (isSelected) {
+                                MaterialTheme.colorScheme.onPrimary
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun LeaveRequestTabContent(
+    actor: AppActor,
+    viewModel: MiniBiViewModel
+) {
+    val context = LocalContext.current
+    val leaveYear by viewModel.leaveYear.collectAsStateWithLifecycle()
+    val myLeaveSummary by viewModel.myLeaveSummary.collectAsStateWithLifecycle()
+    val myLeaveLoading by viewModel.myLeaveLoading.collectAsStateWithLifecycle()
+    val myLeaveError by viewModel.myLeaveError.collectAsStateWithLifecycle()
+    val leaveDraftReason by viewModel.leaveDraftReason.collectAsStateWithLifecycle()
+    val leaveMutationBusy by viewModel.leaveMutationBusy.collectAsStateWithLifecycle()
+    val leaveMutationError by viewModel.leaveMutationError.collectAsStateWithLifecycle()
+    val draftDays = viewModel.leaveDraftDays
+
+    var withdrawDialogTarget by remember { mutableStateOf<LeaveRequestProjection?>(null) }
+    var withdrawReasonInput by remember { mutableStateOf("") }
+
+    LaunchedEffect(Unit) {
+        viewModel.ensureInitialLeaveDraftDay()
+        if (myLeaveSummary == null && !myLeaveLoading) {
+            viewModel.refreshMyLeaveSummary(year = leaveYear)
+        }
+    }
+
+    val totalDraftHalfDayUnits = draftDays.sumOf {
+        LeaveContract.leaveSessionHalfDayUnits(it.sessionCode)
+    }
+
+    LazyColumn(
+        modifier = Modifier
+            .fillMaxSize()
+            .testTag("leave_request_lazy_column"),
+        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp)
+    ) {
+        item {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(20.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 14.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "QUẢN LÝ NGHỈ PHÉP CÁ NHÂN",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Text(
+                            text = "Xin nghỉ phép năm $leaveYear",
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        val currentViYear = remember { LeaveContract.currentVietnamLeaveYear() }
+                        listOf(currentViYear - 1, currentViYear, currentViYear + 1).forEach { y ->
+                            FilterChip(
+                                selected = leaveYear == y,
+                                onClick = { viewModel.setLeaveYear(y) },
+                                label = { Text("$y") },
+                                modifier = Modifier.testTag("leave_year_chip_$y")
+                            )
+                        }
+                        IconButton(
+                            onClick = { viewModel.refreshMyLeaveSummary(year = leaveYear) },
+                            enabled = !myLeaveLoading,
+                            modifier = Modifier.testTag("leave_refresh_summary_button")
+                        ) {
+                            if (myLeaveLoading) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(18.dp),
+                                    strokeWidth = 2.dp
+                                )
+                            } else {
+                                Icon(
+                                    imageVector = Icons.Default.Refresh,
+                                    contentDescription = "Làm mới thông tin phép"
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if (myLeaveError != null) {
+            item {
+                Surface(
+                    shape = RoundedCornerShape(14.dp),
+                    color = MaterialTheme.colorScheme.errorContainer,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("leave_summary_error_banner")
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(14.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = myLeaveError.orEmpty(),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onErrorContainer,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        OutlinedButton(
+                            onClick = { viewModel.refreshMyLeaveSummary(year = leaveYear) },
+                            modifier = Modifier.testTag("leave_summary_retry_button")
+                        ) {
+                            Text("Thử lại")
+                        }
+                    }
+                }
+            }
+        }
+
+        val summary = myLeaveSummary
+        if (myLeaveLoading && summary == null) {
+            item {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(18.dp)
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(24.dp),
+                        horizontalArrangement = Arrangement.Center,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.dp)
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Text("Đang tải số dư phép và lịch sử đơn từ máy chủ...")
+                    }
+                }
+            }
+        }
+
+        if (summary != null) {
+            item {
+                LeaveBalanceAndRoutingSummaryCard(summary = summary)
+            }
+
+            item {
+                LeaveCreateRequestFormCard(
+                    summary = summary,
+                    draftDays = draftDays,
+                    totalDraftHalfDayUnits = totalDraftHalfDayUnits,
+                    reason = leaveDraftReason,
+                    busy = leaveMutationBusy,
+                    errorMessage = leaveMutationError,
+                    onAddDay = { viewModel.addLeaveDraftDay() },
+                    onRemoveDay = { viewModel.removeLeaveDraftDay(it) },
+                    onUpdateDayDate = { id, dateStr -> viewModel.updateLeaveDraftDayDate(id, dateStr) },
+                    onOpenDatePicker = { day ->
+                        openIsoDatePicker(
+                            context = context,
+                            initialIsoDate = day.leaveDate,
+                            onDatePicked = { picked ->
+                                viewModel.updateLeaveDraftDayDate(day.id, picked)
+                            }
+                        )
+                    },
+                    onUpdateDaySession = { id, session -> viewModel.updateLeaveDraftDaySession(id, session) },
+                    onUpdateReason = { viewModel.updateLeaveDraftReason(it) },
+                    onSubmit = { viewModel.submitLeaveRequest() }
+                )
+            }
+
+            item {
+                LeaveMyRequestHistoryCard(
+                    actorAppUserId = actor.appUserId,
+                    requests = summary.requests,
+                    busy = leaveMutationBusy,
+                    onRequestWithdraw = { req ->
+                        withdrawReasonInput = ""
+                        withdrawDialogTarget = req
+                    }
+                )
+            }
+
+            if (summary.balance.lots.isNotEmpty()) {
+                item {
+                    LeaveEntitlementLotsCard(summary = summary)
+                }
+            }
+        }
+    }
+
+    val targetToWithdraw = withdrawDialogTarget
+    if (targetToWithdraw != null) {
+        Dialog(
+            onDismissRequest = {
+                if (!leaveMutationBusy) {
+                    withdrawDialogTarget = null
+                }
+            },
+            properties = DialogProperties(usePlatformDefaultWidth = false)
+        ) {
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth(0.95f)
+                    .testTag("leave_withdraw_dialog"),
+                shape = RoundedCornerShape(20.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                elevation = CardDefaults.cardElevation(defaultElevation = 6.dp)
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(18.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Text(
+                        text = "Rút đơn xin nghỉ phép",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = "Bạn muốn rút đơn xin nghỉ ${LeaveContract.formatHalfDayUnits(targetToWithdraw.requestedUnits)} đang chờ duyệt?",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    OutlinedTextField(
+                        value = withdrawReasonInput,
+                        onValueChange = { withdrawReasonInput = it },
+                        label = { Text("Ghi chú rút đơn (tùy chọn)") },
+                        placeholder = { Text("Nhập lý do rút đơn nếu cần...") },
+                        singleLine = true,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("leave_withdraw_reason_input")
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        TextButton(
+                            onClick = { withdrawDialogTarget = null },
+                            enabled = !leaveMutationBusy,
+                            modifier = Modifier.testTag("leave_withdraw_cancel_button")
+                        ) {
+                            Text("Đóng")
+                        }
+                        Button(
+                            onClick = {
+                                viewModel.withdrawLeaveRequest(
+                                    request = targetToWithdraw,
+                                    reason = withdrawReasonInput.trim().ifEmpty { null },
+                                    onSuccess = {
+                                        withdrawDialogTarget = null
+                                        withdrawReasonInput = ""
+                                    }
+                                )
+                            },
+                            enabled = !leaveMutationBusy,
+                            modifier = Modifier.testTag("leave_withdraw_confirm_button")
+                        ) {
+                            Text(if (leaveMutationBusy) "Đang rút..." else "Xác nhận rút đơn")
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun LeaveBalanceAndRoutingSummaryCard(
+    summary: LeaveMeSummaryProjection
+) {
+    val balance = summary.balance
+    val routing = summary.routing
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("leave_balance_summary_card"),
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Text(
+                text = "Số dư phép & Thông tin cá nhân (tính đến ${LeaveContract.formatIsoDateVi(summary.asOfDate)})",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                LeaveStatMetricTile(
+                    modifier = Modifier.weight(1f),
+                    title = "Phép khả dụng",
+                    value = LeaveContract.formatHalfDayUnits(balance.availableUnits),
+                    subtitle = "Phép tồn còn dùng: ${LeaveContract.formatHalfDayUnits(balance.carryOverAvailableUnits)}",
+                    accentColor = SemanticColors.SuccessLight,
+                    testTag = "leave_metric_available"
+                )
+                LeaveStatMetricTile(
+                    modifier = Modifier.weight(1f),
+                    title = "Tổng phép được cấp",
+                    value = LeaveContract.formatHalfDayUnits(balance.totalGrantedUnits),
+                    subtitle = "Định kỳ: ${LeaveContract.formatHalfDayUnits(balance.monthlyAccruedUnits)} • Thâm niên: ${LeaveContract.formatHalfDayUnits(balance.seniorityGrantedUnits)}",
+                    accentColor = MaterialTheme.colorScheme.primary,
+                    testTag = "leave_metric_granted"
+                )
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                LeaveStatMetricTile(
+                    modifier = Modifier.weight(1f),
+                    title = "Giữ chỗ / Chờ duyệt",
+                    value = LeaveContract.formatHalfDayUnits(balance.reservedUnits + balance.pendingPaidUnits),
+                    subtitle = "Đã duyệt chờ đến ngày: ${LeaveContract.formatHalfDayUnits(balance.reservedUnits)} • Chờ duyệt: ${LeaveContract.formatHalfDayUnits(balance.pendingPaidUnits)}",
+                    accentColor = SemanticColors.WarningLight,
+                    testTag = "leave_metric_reserved_pending"
+                )
+                LeaveStatMetricTile(
+                    modifier = Modifier.weight(1f),
+                    title = "Đã sử dụng",
+                    value = LeaveContract.formatHalfDayUnits(balance.consumedUnits),
+                    subtitle = "Hết hạn: ${LeaveContract.formatHalfDayUnits(balance.expiredUnits)} • Không lương: ${LeaveContract.formatHalfDayUnits(balance.approvedUnpaidUnits)}",
+                    accentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                    testTag = "leave_metric_consumed"
+                )
+            }
+
+            Surface(
+                shape = RoundedCornerShape(14.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("leave_routing_info_section")
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Text(
+                        text = "Trạng thái nhân sự: ${LeaveContract.leaveEmploymentStatusLabel(balance.employmentStatus)} • Đơn vị: ${LeaveContract.leaveUnitKindLabel(balance.unitKind)}",
+                        style = MaterialTheme.typography.bodySmall,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        text = "Luồng duyệt đơn: ${LeaveContract.leaveRouteKindLabel(routing.routeKind, routing.teamName, routing.unitKind)}",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    Text(
+                        text = "Ngày vào làm: ${LeaveContract.formatIsoDateVi(balance.workStartDate)} • Lên chính thức: ${LeaveContract.formatIsoDateVi(balance.officialEffectiveDate)}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    if (balance.nextSeniorityEffectiveDate != null && balance.nextSeniorityUnits > 0) {
+                        Text(
+                            text = "Mốc tăng phép thâm niên tiếp theo: ${LeaveContract.formatIsoDateVi(balance.nextSeniorityEffectiveDate)} (+${LeaveContract.formatHalfDayUnits(balance.nextSeniorityUnits)})",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    if (summary.policy.carryOverExpiresAfterDate != null) {
+                        Text(
+                            text = "Hạn sử dụng phép tồn năm trước: đến hết ${LeaveContract.formatIsoDateVi(summary.policy.carryOverExpiresAfterDate)}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+
+            if (!balance.profileConfigured || balance.employmentStatus.equals("PROBATION", ignoreCase = true)) {
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = SemanticColors.WarningLight.copy(alpha = 0.14f),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("leave_probation_or_unconfigured_banner")
+                ) {
+                    Text(
+                        text = if (!balance.profileConfigured) {
+                            "Hồ sơ nghỉ phép của bạn chưa được cấu hình đầy đủ trạng thái Chính thức. Đơn xin nghỉ gửi lúc này sẽ được hệ thống ghi nhận theo diện Nghỉ không lương (Chưa cấu hình hồ sơ)."
+                        } else {
+                            "Bạn đang trong giai đoạn Thử việc. Phép định kỳ tháng sẽ được cộng bù khi lên Chính thức; đơn xin nghỉ trong thời gian thử việc được ghi nhận là Nghỉ không lương (Thử việc)."
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = SemanticColors.WarningLight,
+                        modifier = Modifier.padding(12.dp)
+                    )
+                }
+            }
+
+            LeaveContract.leaveFallbackReasonLabel(routing.fallbackReason)?.let { fallbackLabel ->
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = "Lưu ý định tuyến duyệt: $fallbackLabel. Đơn xin nghỉ sẽ được chuyển thẳng tới hàng đợi Admin / Ban Giám đốc.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(12.dp)
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun LeaveStatMetricTile(
+    modifier: Modifier = Modifier,
+    title: String,
+    value: String,
+    subtitle: String,
+    accentColor: Color,
+    testTag: String
+) {
+    Surface(
+        modifier = modifier.testTag(testTag),
+        shape = RoundedCornerShape(14.dp),
+        color = accentColor.copy(alpha = 0.10f)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Text(
+                text = value,
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold,
+                color = accentColor
+            )
+            Text(
+                text = subtitle,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+    }
+}
+
+@Composable
+private fun LeaveCreateRequestFormCard(
+    summary: LeaveMeSummaryProjection,
+    draftDays: List<LeaveDraftDayInput>,
+    totalDraftHalfDayUnits: Int,
+    reason: String,
+    busy: Boolean,
+    errorMessage: String?,
+    onAddDay: () -> Unit,
+    onRemoveDay: (String) -> Unit,
+    onUpdateDayDate: (String, String) -> Unit,
+    onOpenDatePicker: (LeaveDraftDayInput) -> Unit,
+    onUpdateDaySession: (String, String) -> Unit,
+    onUpdateReason: (String) -> Unit,
+    onSubmit: () -> Unit
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("leave_create_form_card"),
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Tạo đơn xin nghỉ phép",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = "Chọn nghỉ cả ngày hoặc nửa ngày (buổi sáng / buổi chiều)",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = MaterialTheme.colorScheme.primaryContainer
+                ) {
+                    Text(
+                        text = "Tổng: ${LeaveContract.formatHalfDayUnits(totalDraftHalfDayUnits)}",
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer,
+                        modifier = Modifier
+                            .padding(horizontal = 10.dp, vertical = 6.dp)
+                            .testTag("leave_draft_total_units_badge")
+                    )
+                }
+            }
+
+            if (!summary.authority.canSubmitRequest || summary.authority.isSharedNonEmployee) {
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.errorContainer,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = "Tài khoản hiện tại không thuộc đối tượng tạo đơn xin nghỉ phép cá nhân.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onErrorContainer,
+                        modifier = Modifier.padding(12.dp)
+                    )
+                }
+                return@Column
+            }
+
+            draftDays.forEachIndexed { index, day ->
+                Surface(
+                    shape = RoundedCornerShape(14.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("leave_draft_day_row_$index")
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            OutlinedTextField(
+                                value = day.leaveDate,
+                                onValueChange = { onUpdateDayDate(day.id, it) },
+                                label = { Text("Ngày nghỉ #${index + 1} (YYYY-MM-DD)") },
+                                singleLine = true,
+                                trailingIcon = {
+                                    IconButton(
+                                        onClick = { onOpenDatePicker(day) },
+                                        modifier = Modifier.testTag("leave_draft_date_picker_btn_$index")
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.CalendarMonth,
+                                            contentDescription = "Chọn ngày nghỉ"
+                                        )
+                                    }
+                                },
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .testTag("leave_draft_date_input_$index")
+                            )
+                            if (draftDays.size > 1) {
+                                IconButton(
+                                    onClick = { onRemoveDay(day.id) },
+                                    enabled = !busy,
+                                    modifier = Modifier.testTag("leave_draft_remove_day_btn_$index")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.DeleteOutline,
+                                        contentDescription = "Xóa ngày nghỉ",
+                                        tint = MaterialTheme.colorScheme.error
+                                    )
+                                }
+                            }
+                        }
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            LeaveContract.SESSION_CODES.forEach { code ->
+                                val isSelected = day.sessionCode.equals(code, ignoreCase = true)
+                                FilterChip(
+                                    selected = isSelected,
+                                    onClick = { onUpdateDaySession(day.id, code) },
+                                    label = {
+                                        Text(
+                                            text = LeaveContract.leaveSessionLabel(code),
+                                            style = MaterialTheme.typography.labelMedium
+                                        )
+                                    },
+                                    modifier = Modifier.testTag("leave_draft_session_${code}_$index")
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            OutlinedButton(
+                onClick = onAddDay,
+                enabled = !busy && draftDays.size < 60,
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier.testTag("leave_add_day_button")
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Add,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(modifier = Modifier.width(6.dp))
+                Text("Thêm ngày nghỉ")
+            }
+
+            OutlinedTextField(
+                value = reason,
+                onValueChange = onUpdateReason,
+                label = { Text("Lý do xin nghỉ phép (bắt buộc)") },
+                placeholder = { Text("Nhập lý do xin nghỉ phép...") },
+                minLines = 2,
+                maxLines = 5,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("leave_reason_input")
+            )
+
+            if (!errorMessage.isNullOrBlank()) {
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.errorContainer,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("leave_mutation_error_banner")
+                ) {
+                    Text(
+                        text = errorMessage,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onErrorContainer,
+                        modifier = Modifier.padding(12.dp)
+                    )
+                }
+            }
+
+            Button(
+                onClick = onSubmit,
+                enabled = !busy,
+                shape = RoundedCornerShape(14.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 48.dp)
+                    .testTag("leave_submit_request_button")
+            ) {
+                if (busy) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(18.dp),
+                        strokeWidth = 2.dp,
+                        color = MaterialTheme.colorScheme.onPrimary
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Đang gửi đơn xin nghỉ...")
+                } else {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.Send,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Gửi đơn xin nghỉ phép")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun LeaveMyRequestHistoryCard(
+    actorAppUserId: String,
+    requests: List<LeaveRequestProjection>,
+    busy: Boolean,
+    onRequestWithdraw: (LeaveRequestProjection) -> Unit
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("leave_my_requests_section"),
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Text(
+                text = "Lịch sử đơn xin nghỉ của tôi (${requests.size})",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
+
+            if (requests.isEmpty()) {
+                Text(
+                    text = "Chưa có đơn xin nghỉ phép nào trong năm nghiệp vụ này.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            } else {
+                requests.forEach { req ->
+                    val statusColor = leaveStatusColor(req.status)
+                    val canWithdraw = LeaveContract.canWithdrawOwnLeaveRequest(actorAppUserId, req)
+                    Surface(
+                        shape = RoundedCornerShape(14.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.40f),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("leave_my_request_card_${req.requestId}")
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Row(
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Surface(
+                                        shape = RoundedCornerShape(6.dp),
+                                        color = statusColor.copy(alpha = 0.15f)
+                                    ) {
+                                        Text(
+                                            text = LeaveContract.leaveRequestStatusLabel(req.status),
+                                            style = MaterialTheme.typography.labelSmall,
+                                            fontWeight = FontWeight.Bold,
+                                            color = statusColor,
+                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                                        )
+                                    }
+                                    Surface(
+                                        shape = RoundedCornerShape(6.dp),
+                                        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.6f)
+                                    ) {
+                                        Text(
+                                            text = LeaveContract.leavePayTreatmentLabel(req.payTreatment),
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                                        )
+                                    }
+                                }
+                                Text(
+                                    text = LeaveContract.formatHalfDayUnits(req.requestedUnits),
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
+
+                            val daysSummary = req.days.joinToString(", ") { d ->
+                                "${LeaveContract.formatIsoDateVi(d.leaveDate)} (${LeaveContract.leaveSessionShortLabel(d.sessionCode)})"
+                            }
+                            Text(
+                                text = "Ngày nghỉ: $daysSummary",
+                                style = MaterialTheme.typography.bodySmall,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Text(
+                                text = "Lý do: ${req.reason}",
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                            Text(
+                                text = "Luồng duyệt: ${LeaveContract.leaveRouteKindLabel(req.routeKind, req.routedTeamName, req.unitKindSnapshot)} • Gửi lúc: ${formatIsoToVietnamDateTime(req.submittedAt)}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            if (!req.decisionReason.isNullOrBlank()) {
+                                Text(
+                                    text = "Ghi chú người duyệt: ${req.decisionReason}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = statusColor
+                                )
+                            }
+                            if (!req.cancellationReason.isNullOrBlank()) {
+                                Text(
+                                    text = "Lý do hủy/rút: ${req.cancellationReason}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            if (canWithdraw) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.End
+                                ) {
+                                    OutlinedButton(
+                                        onClick = { onRequestWithdraw(req) },
+                                        enabled = !busy,
+                                        shape = RoundedCornerShape(10.dp),
+                                        modifier = Modifier.testTag("leave_withdraw_btn_${req.requestId}")
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.AutoMirrored.Filled.Undo,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text("Rút đơn")
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun LeaveEntitlementLotsCard(
+    summary: LeaveMeSummaryProjection
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("leave_lots_section"),
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.5.dp)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Text(
+                text = "Chi tiết các khoản phép năm ${summary.leaveYear}",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
+            summary.balance.lots.forEach { lot ->
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(10.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = LeaveContract.leaveLotKindLabel(lot.lotKind, lot.accrualMonth),
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Text(
+                                text = "Hiệu lực từ ${LeaveContract.formatIsoDateVi(lot.usableFromDate)}" +
+                                    (lot.expiresAfterDate?.let { " • Hết hạn sau ${LeaveContract.formatIsoDateVi(it)}" } ?: ""),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Column(horizontalAlignment = Alignment.End) {
+                            Text(
+                                text = "Còn: ${LeaveContract.formatHalfDayUnits(lot.availableUnits)}",
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = FontWeight.Bold,
+                                color = SemanticColors.SuccessLight
+                            )
+                            Text(
+                                text = "Cấp ${LeaveContract.formatHalfDayUnits(lot.grantedUnits, false)} • Dùng ${LeaveContract.formatHalfDayUnits(lot.consumedUnits, false)}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+private data class PendingApproverDecisionDialogState(
+    val request: LeaveRequestProjection,
+    val decision: String
+)
+
+@Composable
+private fun LeaveApprovalTabContent(
+    actor: AppActor,
+    viewModel: MiniBiViewModel
+) {
+    val myLeaveSummary by viewModel.myLeaveSummary.collectAsStateWithLifecycle()
+    val statusFilter by viewModel.leaveInboxStatusFilter.collectAsStateWithLifecycle()
+    val inbox by viewModel.leaveApprovalInbox.collectAsStateWithLifecycle()
+    val inboxLoading by viewModel.leaveInboxLoading.collectAsStateWithLifecycle()
+    val inboxError by viewModel.leaveInboxError.collectAsStateWithLifecycle()
+    val mutationBusy by viewModel.leaveMutationBusy.collectAsStateWithLifecycle()
+    val mutationError by viewModel.leaveMutationError.collectAsStateWithLifecycle()
+
+    val authority = myLeaveSummary?.authority
+    if (authority == null || !authority.canApproveRequests || authority.isSharedNonEmployee) {
+        return
+    }
+
+    var expandedRequestIds by remember { mutableStateOf(setOf<String>()) }
+    var decisionDialogState by remember { mutableStateOf<PendingApproverDecisionDialogState?>(null) }
+    var decisionReasonInput by remember { mutableStateOf("") }
+    var localDialogError by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(statusFilter) {
+        if (inbox == null && !inboxLoading) {
+            viewModel.refreshLeaveApprovalInbox(statusFilter = statusFilter)
+        }
+    }
+
+    LazyColumn(
+        modifier = Modifier
+            .fillMaxSize()
+            .testTag("leave_approval_lazy_column"),
+        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp)
+    ) {
+        item {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(20.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "PHÊ DUYỆT NGHỈ PHÉP THEO PHẠM VI",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                            Text(
+                                text = "Danh sách đơn nghỉ phép (${inbox?.total ?: 0})",
+                                style = MaterialTheme.typography.titleLarge,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                        IconButton(
+                            onClick = { viewModel.refreshLeaveApprovalInbox() },
+                            enabled = !inboxLoading,
+                            modifier = Modifier.testTag("leave_inbox_refresh_button")
+                        ) {
+                            if (inboxLoading) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(18.dp),
+                                    strokeWidth = 2.dp
+                                )
+                            } else {
+                                Icon(
+                                    imageVector = Icons.Default.Refresh,
+                                    contentDescription = "Làm mới hộp thư duyệt nghỉ"
+                                )
+                            }
+                        }
+                    }
+
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState())
+                            .testTag("leave_inbox_filter_row"),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        LeaveContract.REQUEST_STATUS_FILTERS.forEach { code ->
+                            FilterChip(
+                                selected = statusFilter == code,
+                                onClick = { viewModel.setLeaveInboxFilter(code) },
+                                label = { Text(LeaveContract.leaveRequestStatusLabel(code)) },
+                                modifier = Modifier.testTag("leave_inbox_filter_$code")
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        if (!mutationError.isNullOrBlank()) {
+            item {
+                Surface(
+                    shape = RoundedCornerShape(14.dp),
+                    color = MaterialTheme.colorScheme.errorContainer,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("leave_mutation_error_banner")
+                ) {
+                    Text(
+                        text = mutationError.orEmpty(),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onErrorContainer,
+                        modifier = Modifier.padding(12.dp)
+                    )
+                }
+            }
+        }
+
+        if (!inboxError.isNullOrBlank()) {
+            item {
+                Surface(
+                    shape = RoundedCornerShape(14.dp),
+                    color = MaterialTheme.colorScheme.errorContainer,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("leave_inbox_error_banner")
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(14.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = inboxError.orEmpty(),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onErrorContainer,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        OutlinedButton(
+                            onClick = { viewModel.refreshLeaveApprovalInbox() },
+                            modifier = Modifier.testTag("leave_inbox_retry_button")
+                        ) {
+                            Text("Thử lại")
+                        }
+                    }
+                }
+            }
+        }
+
+        val items = inbox?.items.orEmpty()
+        if (inboxLoading && items.isEmpty()) {
+            item {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(18.dp)
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(24.dp),
+                        horizontalArrangement = Arrangement.Center,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.dp)
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Text("Đang tải danh sách đơn cần duyệt...")
+                    }
+                }
+            }
+        } else if (items.isEmpty()) {
+            item {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(18.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(24.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.FactCheck,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(32.dp)
+                        )
+                        Text(
+                            text = "Không có đơn nghỉ phép nào trong bộ lọc hiện tại",
+                            style = MaterialTheme.typography.titleSmall
+                        )
+                    }
+                }
+            }
+        } else {
+            itemsIndexed(items, key = { _, req -> req.requestId }) { _, req ->
+                val isExpanded = req.requestId in expandedRequestIds
+                val isOwnRequest = req.appUserId.equals(actor.appUserId, ignoreCase = true)
+                val statusColor = leaveStatusColor(req.status)
+
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("leave_inbox_item_card_${req.requestId}"),
+                    shape = RoundedCornerShape(18.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.Top
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = req.requester?.displayName?.ifBlank { req.appUserId } ?: req.appUserId,
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                val subMeta = buildList {
+                                    req.requester?.personnelCode?.takeIf { it.isNotBlank() }?.let { add("Mã NV: $it") }
+                                    add(LeaveContract.leaveEmploymentStatusLabel(req.employmentStatusSnapshot))
+                                    add(LeaveContract.leaveUnitKindLabel(req.unitKindSnapshot))
+                                }.joinToString(" • ")
+                                Text(
+                                    text = subMeta,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            Column(horizontalAlignment = Alignment.End) {
+                                Surface(
+                                    shape = RoundedCornerShape(6.dp),
+                                    color = statusColor.copy(alpha = 0.15f)
+                                ) {
+                                    Text(
+                                        text = LeaveContract.leaveRequestStatusLabel(req.status),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontWeight = FontWeight.Bold,
+                                        color = statusColor,
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                                    )
+                                }
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    text = LeaveContract.formatHalfDayUnits(req.requestedUnits),
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                        }
+
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f)
+                        ) {
+                            Text(
+                                text = LeaveContract.leavePayTreatmentLabel(req.payTreatment),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                            )
+                        }
+
+                        val daysText = req.days.joinToString(", ") { d ->
+                            "${LeaveContract.formatIsoDateVi(d.leaveDate)} (${LeaveContract.leaveSessionShortLabel(d.sessionCode)})"
+                        }
+                        Text(
+                            text = "Ngày nghỉ: $daysText",
+                            style = MaterialTheme.typography.bodySmall,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Text(
+                            text = "Lý do xin nghỉ: ${req.reason}",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                        Text(
+                            text = "Định tuyến: ${LeaveContract.leaveRouteKindLabel(req.routeKind, req.routedTeamName, req.unitKindSnapshot)}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+
+                        TextButton(
+                            onClick = {
+                                expandedRequestIds = if (isExpanded) {
+                                    expandedRequestIds - req.requestId
+                                } else {
+                                    expandedRequestIds + req.requestId
+                                }
+                            },
+                            contentPadding = PaddingValues(0.dp),
+                            modifier = Modifier.testTag("leave_inbox_detail_toggle_${req.requestId}")
+                        ) {
+                            Text(if (isExpanded) "Thu gọn chi tiết" else "Xem chi tiết đơn")
+                        }
+
+                        AnimatedVisibility(visible = isExpanded) {
+                            Surface(
+                                shape = RoundedCornerShape(12.dp),
+                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("leave_inbox_detail_panel_${req.requestId}")
+                            ) {
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(12.dp),
+                                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    Text(
+                                        text = "Mã đơn: #${req.requestId.take(8)} • Phiên bản: v${req.rowVersion}",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontFamily = JetBrainsMono
+                                    )
+                                    Text(
+                                        text = "Thời điểm gửi: ${formatIsoToVietnamDateTime(req.submittedAt)}",
+                                        style = MaterialTheme.typography.bodySmall
+                                    )
+                                    LeaveContract.leaveFallbackReasonLabel(req.fallbackReason)?.let { fb ->
+                                        Text(
+                                            text = "Lý do chuyển dự phòng: $fb",
+                                            style = MaterialTheme.typography.bodySmall
+                                        )
+                                    }
+                                    req.decidedBy?.let { decider ->
+                                        Text(
+                                            text = "Người xử lý: ${decider.displayName} (${req.decidedAt?.let { formatIsoToVietnamDateTime(it) } ?: "--"})",
+                                            style = MaterialTheme.typography.bodySmall
+                                        )
+                                    }
+                                    if (!req.decisionReason.isNullOrBlank()) {
+                                        Text(
+                                            text = "Lý do quyết định: ${req.decisionReason}",
+                                            style = MaterialTheme.typography.bodySmall
+                                        )
+                                    }
+                                    if (!req.cancellationReason.isNullOrBlank()) {
+                                        Text(
+                                            text = "Lý do hủy/rút: ${req.cancellationReason}",
+                                            style = MaterialTheme.typography.bodySmall
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        HorizontalDivider()
+
+                        if (isOwnRequest) {
+                            Text(
+                                text = "Đơn của chính bạn (không tự duyệt hoặc tự hủy trên hộp thư phê duyệt)",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.testTag("leave_self_approval_notice_${req.requestId}")
+                            )
+                        } else {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                if (req.status.equals("PENDING", ignoreCase = true)) {
+                                    OutlinedButton(
+                                        onClick = {
+                                            decisionReasonInput = ""
+                                            localDialogError = null
+                                            viewModel.clearLeaveMutationError()
+                                            decisionDialogState = PendingApproverDecisionDialogState(
+                                                request = req,
+                                                decision = "REJECT"
+                                            )
+                                        },
+                                        enabled = !mutationBusy,
+                                        shape = RoundedCornerShape(10.dp),
+                                        modifier = Modifier.testTag("leave_reject_btn_${req.requestId}")
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Close,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.error,
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text("Từ chối", color = MaterialTheme.colorScheme.error)
+                                    }
+                                    Button(
+                                        onClick = {
+                                            decisionReasonInput = ""
+                                            localDialogError = null
+                                            viewModel.clearLeaveMutationError()
+                                            decisionDialogState = PendingApproverDecisionDialogState(
+                                                request = req,
+                                                decision = "APPROVE"
+                                            )
+                                        },
+                                        enabled = !mutationBusy,
+                                        shape = RoundedCornerShape(10.dp),
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = SemanticColors.SuccessLight
+                                        ),
+                                        modifier = Modifier.testTag("leave_approve_btn_${req.requestId}")
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.CheckCircle,
+                                            contentDescription = null,
+                                            tint = Color.White,
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text("Duyệt đơn", color = Color.White)
+                                    }
+                                } else if (req.status.equals("APPROVED", ignoreCase = true)) {
+                                    OutlinedButton(
+                                        onClick = {
+                                            decisionReasonInput = ""
+                                            localDialogError = null
+                                            viewModel.clearLeaveMutationError()
+                                            decisionDialogState = PendingApproverDecisionDialogState(
+                                                request = req,
+                                                decision = "CANCEL_APPROVED"
+                                            )
+                                        },
+                                        enabled = !mutationBusy,
+                                        shape = RoundedCornerShape(10.dp),
+                                        modifier = Modifier.testTag("leave_cancel_approved_btn_${req.requestId}")
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.AutoMirrored.Filled.Undo,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.error,
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text("Hủy đã duyệt (Hoàn phép)", color = MaterialTheme.colorScheme.error)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    val activeDecisionState = decisionDialogState
+    if (activeDecisionState != null) {
+        val req = activeDecisionState.request
+        val decision = activeDecisionState.decision
+        val isReasonRequired = decision == "REJECT" || decision == "CANCEL_APPROVED"
+
+        Dialog(
+            onDismissRequest = {
+                if (!mutationBusy) {
+                    decisionDialogState = null
+                }
+            },
+            properties = DialogProperties(usePlatformDefaultWidth = false)
+        ) {
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth(0.95f)
+                    .testTag("leave_decision_dialog"),
+                shape = RoundedCornerShape(20.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                elevation = CardDefaults.cardElevation(defaultElevation = 6.dp)
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(18.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Text(
+                        text = LeaveContract.leaveDecisionActionLabel(decision),
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = "Nhân sự: ${req.requester?.displayName ?: req.appUserId} • Số ngày: ${LeaveContract.formatHalfDayUnits(req.requestedUnits)}",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    OutlinedTextField(
+                        value = decisionReasonInput,
+                        onValueChange = {
+                            decisionReasonInput = it
+                            localDialogError = null
+                        },
+                        label = {
+                            Text(
+                                if (isReasonRequired) {
+                                    "Lý do xử lý (bắt buộc)"
+                                } else {
+                                    "Ghi chú duyệt (tùy chọn)"
+                                }
+                            )
+                        },
+                        placeholder = {
+                            Text(
+                                if (isReasonRequired) {
+                                    "Nhập lý do từ chối / hủy duyệt..."
+                                } else {
+                                    "Nhập ghi chú phê duyệt nếu cần..."
+                                }
+                            )
+                        },
+                        singleLine = true,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("leave_decision_reason_input")
+                    )
+                    val effectiveErr = localDialogError ?: mutationError
+                    if (!effectiveErr.isNullOrBlank()) {
+                        Text(
+                            text = effectiveErr,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.testTag("leave_decision_dialog_error")
+                        )
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        TextButton(
+                            onClick = {
+                                decisionDialogState = null
+                                localDialogError = null
+                            },
+                            enabled = !mutationBusy,
+                            modifier = Modifier.testTag("leave_decision_cancel_button")
+                        ) {
+                            Text("Đóng")
+                        }
+                        Button(
+                            onClick = {
+                                val (valid, validationMsg) = LeaveContract.validateApproverDecisionInput(
+                                    actorAppUserId = actor.appUserId,
+                                    request = req,
+                                    decision = decision,
+                                    reason = decisionReasonInput
+                                )
+                                if (!valid) {
+                                    localDialogError = validationMsg
+                                    return@Button
+                                }
+                                viewModel.decideLeaveRequest(
+                                    request = req,
+                                    decision = decision,
+                                    reason = decisionReasonInput.trim().ifEmpty { null },
+                                    onSuccess = {
+                                        decisionDialogState = null
+                                        decisionReasonInput = ""
+                                        localDialogError = null
+                                    }
+                                )
+                            },
+                            enabled = !mutationBusy,
+                            modifier = Modifier.testTag("leave_decision_confirm_button")
+                        ) {
+                            Text(
+                                when {
+                                    mutationBusy -> "Đang xử lý..."
+                                    decision == "APPROVE" -> "Xác nhận duyệt"
+                                    decision == "REJECT" -> "Xác nhận từ chối"
+                                    else -> "Xác nhận hủy duyệt"
+                                }
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+private fun leaveStatusColor(status: String): Color =
+    when (status.trim().uppercase(Locale.ROOT)) {
+        "APPROVED" -> SemanticColors.SuccessLight
+        "PENDING" -> SemanticColors.WarningLight
+        "REJECTED", "CANCELLED" -> SemanticColors.ErrorLight
+        else -> Color(0xFF64748B)
+    }
+
+private fun openIsoDatePicker(
+    context: Context,
+    initialIsoDate: String,
+    onDatePicked: (String) -> Unit
+) {
+    val parts = initialIsoDate.trim().split("-")
+    val cal = Calendar.getInstance()
+    val year = parts.getOrNull(0)?.toIntOrNull() ?: cal.get(Calendar.YEAR)
+    val monthZeroBased = (parts.getOrNull(1)?.toIntOrNull() ?: (cal.get(Calendar.MONTH) + 1)) - 1
+    val dayOfMonth = parts.getOrNull(2)?.toIntOrNull() ?: cal.get(Calendar.DAY_OF_MONTH)
+
+    DatePickerDialog(
+        context,
+        { _, pickedYear, pickedMonthZeroBased, pickedDay ->
+            val formatted = "%04d-%02d-%02d".format(
+                Locale.US,
+                pickedYear,
+                pickedMonthZeroBased + 1,
+                pickedDay
+            )
+            onDatePicked(formatted)
+        },
+        year,
+        monthZeroBased.coerceIn(0, 11),
+        dayOfMonth.coerceIn(1, 31)
+    ).show()
 }

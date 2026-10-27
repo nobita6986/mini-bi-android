@@ -138,7 +138,9 @@ class BackendHttpClient(
             backendCode: String?,
             backendMessage: String? = null
         ): BackendApiException {
-            val knownBusinessMsg = backendCode?.let { DIRECT_ENTRY_CODE_MESSAGES[it] }
+            val knownBusinessMsg = backendCode?.let {
+                DIRECT_ENTRY_CODE_MESSAGES[it] ?: LeaveContract.LEAVE_ERROR_MESSAGES[it]
+            }
             return when {
                 statusCode == 401 -> BackendApiException(
                     kind = BackendFailureKind.UNAUTHENTICATED,

@@ -315,6 +315,10 @@ class MiniBiRepository(
         dao = dao
     )
 
+    val leaveService = LeaveService(
+        httpClient = httpClient
+    )
+
     val attendanceTimeAnchorManager = AttendanceTimeAnchorManager(
         context = context,
         httpClient = httpClient,
