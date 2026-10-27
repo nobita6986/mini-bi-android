@@ -750,11 +750,11 @@ public final class DirectEntryService: @unchecked Sendable {
                         if let s = v as? String { extraHeaders[k] = s }
                     }
                 }
-                let putRes = await httpClient.putRawData(
-                    urlOrPath: uploadUrl,
+                let putRes = await httpClient.putPresignedUrl(
+                    uploadUrl: uploadUrl,
+                    fileData: prepared.data,
                     contentType: prepared.mimeType,
-                    data: prepared.data,
-                    extraHeaders: extraHeaders
+                    additionalHeaders: extraHeaders
                 )
                 guard putRes.isSuccess else {
                     return .failure(
