@@ -71,6 +71,44 @@ public struct LoginScreen: View {
                                 .font(.caption)
                                 .foregroundColor(SemanticColors.textMuted)
                         }
+
+                        // Environment Selector: HRP BI (Production) vs HRP BI 2 (Staging / Mock Data)
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Môi trường máy chủ")
+                                .font(.caption.weight(.semibold))
+                                .foregroundColor(SemanticColors.textSecondary)
+
+                            HStack(spacing: 8) {
+                                ForEach([
+                                    (AppEnvironmentVariant.release, "HRP BI", "Chính thức"),
+                                    (AppEnvironmentVariant.staging, "HRP BI 2", "Dữ liệu giả / Test")
+                                ], id: \.0.rawValue) { variant, title, subtitle in
+                                    let isSelected = env.variant == variant
+                                    Button {
+                                        viewModel.selectEnvironmentVariant(variant)
+                                    } label: {
+                                        VStack(spacing: 2) {
+                                            Text(title)
+                                                .font(.caption.weight(.bold))
+                                                .foregroundColor(isSelected ? .white : SemanticColors.textPrimary)
+                                            Text(subtitle)
+                                                .font(.system(size: 10, weight: .medium))
+                                                .foregroundColor(isSelected ? Color.white.opacity(0.9) : SemanticColors.textMuted)
+                                        }
+                                        .frame(maxWidth: .infinity)
+                                        .padding(.vertical, 8)
+                                        .background(isSelected ? theme.primary : Color(hex: 0xF8FAFC))
+                                        .overlay(
+                                            RoundedRectangle(cornerRadius: 10)
+                                                .stroke(isSelected ? theme.primary : SemanticColors.borderSubtle, lineWidth: 1)
+                                        )
+                                        .cornerRadius(10)
+                                    }
+                                    .buttonStyle(.plain)
+                                    .disabled(viewModel.isLoggingIn)
+                                }
+                            }
+                        }
                         // Saved Login Accounts (1-tap login or remove)
                         if !viewModel.savedAccounts.isEmpty {
                             VStack(alignment: .leading, spacing: 8) {

@@ -216,6 +216,7 @@ public final class MiniBiRepository {
 
     private static let keySavedLoginAccounts = "saved_login_accounts_v1"
     private static let keySelectedThemeId = "selected_theme_id_v1"
+    private static let keySelectedEnvVariant = "selected_env_variant_v1"
     private static let maxSavedAccounts = 5
 
     public init(
@@ -269,7 +270,7 @@ public final class MiniBiRepository {
         }
     }
 
-    // MARK: - Theme Persistence
+    // MARK: - Theme & Environment Persistence
 
     public func getSelectedThemeId() -> String {
         keychain.getString(forKey: Self.keySelectedThemeId) ?? "hr-partner"
@@ -277,6 +278,17 @@ public final class MiniBiRepository {
 
     public func setSelectedThemeId(_ themeId: String) {
         keychain.setString(themeId, forKey: Self.keySelectedThemeId)
+    }
+
+    public func getSelectedEnvironmentVariant() -> AppEnvironmentVariant? {
+        guard let raw = keychain.getString(forKey: Self.keySelectedEnvVariant) else {
+            return nil
+        }
+        return AppEnvironmentVariant(rawValue: raw)
+    }
+
+    public func setSelectedEnvironmentVariant(_ variant: AppEnvironmentVariant) {
+        keychain.setString(variant.rawValue, forKey: Self.keySelectedEnvVariant)
     }
 
     // MARK: - Auth APIs

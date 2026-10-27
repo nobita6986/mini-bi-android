@@ -135,6 +135,20 @@ public final class MiniBiViewModel: ObservableObject {
         self.leaveService = leaveService
         self.attendanceTimeEvaluation = timeAnchorManager.evaluateAnchor()
 
+        let bundleEnv = AppEnvironmentConfig.current
+        if let savedVariant = repository.getSelectedEnvironmentVariant() {
+            let resolvedEnv = AppEnvironmentConfig.forVariant(
+                savedVariant,
+                marketingVersion: bundleEnv.marketingVersion,
+                buildNumber: bundleEnv.buildNumber
+            )
+            self.environmentConfig = resolvedEnv
+            self.repository.httpClient.setBaseUrl(resolvedEnv.defaultBaseUrl)
+        } else {
+            self.environmentConfig = bundleEnv
+            self.repository.httpClient.setBaseUrl(bundleEnv.defaultBaseUrl)
+        }
+
         self.selectedTheme = MiniBiThemes.byId(repository.getSelectedThemeId())
         self.savedAccounts = repository.getSavedLoginAccounts()
         if let firstAccount = savedAccounts.first {
@@ -188,6 +202,20 @@ public final class MiniBiViewModel: ObservableObject {
     public func selectTheme(_ palette: MiniBiThemePalette) {
         selectedTheme = palette
         repository.setSelectedThemeId(palette.id)
+    }
+
+    public func selectEnvironmentVariant(_ variant: AppEnvironmentVariant) {
+        let currentEnv = AppEnvironmentConfig.current
+        let nextEnv = AppEnvironmentConfig.forVariant(
+            variant,
+            marketingVersion: currentEnv.marketingVersion,
+            buildNumber: currentEnv.buildNumber
+        )
+        environmentConfig = nextEnv
+        repository.setSelectedEnvironmentVariant(variant)
+        repository.httpClient.setBaseUrl(nextEnv.defaultBaseUrl)
+        repository.httpClient.cookieStore.clearAll()
+        loginErrorMessage = nil
     }
 
     // MARK: - Navigation (Preserves `newWorkerDraftRows`)

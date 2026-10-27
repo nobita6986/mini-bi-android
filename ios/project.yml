@@ -176,8 +176,8 @@ schemes:
       targets:
         - HRPBTests
     profile:
-      config: Debug
+      config: Release
     analyze:
-      config: Debug
+      config: Release
     archive:
-      config: Debug
+      config: Release
