@@ -1326,69 +1326,8 @@ private fun LeaveRequestTabContent(
             .fillMaxSize()
             .testTag("leave_request_lazy_column"),
         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp)
+        verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        item {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(20.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 14.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "QUẢN LÝ NGHỈ PHÉP CÁ NHÂN",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                        Text(
-                            text = "Xin nghỉ phép năm $leaveYear",
-                            style = MaterialTheme.typography.titleLarge,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        val currentViYear = remember { LeaveContract.currentVietnamLeaveYear() }
-                        listOf(currentViYear - 1, currentViYear, currentViYear + 1).forEach { y ->
-                            FilterChip(
-                                selected = leaveYear == y,
-                                onClick = { viewModel.setLeaveYear(y) },
-                                label = { Text("$y") },
-                                modifier = Modifier.testTag("leave_year_chip_$y")
-                            )
-                        }
-                        IconButton(
-                            onClick = { viewModel.refreshMyLeaveSummary(year = leaveYear) },
-                            enabled = !myLeaveLoading,
-                            modifier = Modifier.testTag("leave_refresh_summary_button")
-                        ) {
-                            if (myLeaveLoading) {
-                                CircularProgressIndicator(
-                                    modifier = Modifier.size(18.dp),
-                                    strokeWidth = 2.dp
-                                )
-                            } else {
-                                Icon(
-                                    imageVector = Icons.Default.Refresh,
-                                    contentDescription = "Làm mới thông tin phép"
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
         if (myLeaveError != null) {
             item {
                 Surface(
@@ -1447,10 +1386,6 @@ private fun LeaveRequestTabContent(
 
         if (summary != null) {
             item {
-                LeaveBalanceAndRoutingSummaryCard(summary = summary)
-            }
-
-            item {
                 LeaveCreateRequestFormCard(
                     summary = summary,
                     draftDays = draftDays,
@@ -1474,6 +1409,122 @@ private fun LeaveRequestTabContent(
                     onUpdateReason = { viewModel.updateLeaveDraftReason(it) },
                     onSubmit = { viewModel.submitLeaveRequest() }
                 )
+            }
+        }
+
+        item {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                elevation = CardDefaults.cardElevation(defaultElevation = 1.5.dp)
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 14.dp, vertical = 10.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "TỒN PHÉP & LỊCH SỬ NGHỈ",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.primary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            text = "Tra cứu năm $leaveYear",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            text = "Chọn năm trước để xem lịch sử nghỉ & tồn công phép",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        val currentViYear = remember { LeaveContract.currentVietnamLeaveYear() }
+                        val selectableYears = remember(currentViYear) {
+                            LeaveContract.selectableHistoryLeaveYears(currentViYear)
+                        }
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(3.dp),
+                                horizontalArrangement = Arrangement.spacedBy(3.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                selectableYears.forEach { y ->
+                                    val isSelected = leaveYear == y
+                                    Surface(
+                                        shape = RoundedCornerShape(8.dp),
+                                        color = if (isSelected) {
+                                            MaterialTheme.colorScheme.primary
+                                        } else {
+                                            Color.Transparent
+                                        },
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .clickable { viewModel.setLeaveYear(y) }
+                                            .testTag("leave_year_chip_$y")
+                                    ) {
+                                        Text(
+                                            text = "$y",
+                                            style = MaterialTheme.typography.labelMedium,
+                                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                            color = if (isSelected) {
+                                                MaterialTheme.colorScheme.onPrimary
+                                            } else {
+                                                MaterialTheme.colorScheme.onSurfaceVariant
+                                            },
+                                            maxLines = 1,
+                                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                        IconButton(
+                            onClick = { viewModel.refreshMyLeaveSummary(year = leaveYear) },
+                            enabled = !myLeaveLoading,
+                            modifier = Modifier
+                                .size(34.dp)
+                                .testTag("leave_refresh_summary_button")
+                        ) {
+                            if (myLeaveLoading) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(16.dp),
+                                    strokeWidth = 2.dp
+                                )
+                            } else {
+                                Icon(
+                                    imageVector = Icons.Default.Refresh,
+                                    contentDescription = "Làm mới thông tin phép",
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if (summary != null) {
+            item {
+                LeaveBalanceAndRoutingSummaryCard(summary = summary)
             }
 
             item {
@@ -1811,8 +1862,8 @@ private fun LeaveCreateRequestFormCard(
                         fontWeight = FontWeight.Bold
                     )
                     Text(
-                        text = "Chọn nghỉ cả ngày hoặc nửa ngày (buổi sáng / buổi chiều)",
-                        style = MaterialTheme.typography.bodySmall,
+                        text = "Tự động trừ phép cũ nhất trước (FIFO) • Cả ngày / nửa ngày",
+                        style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
@@ -1850,7 +1901,7 @@ private fun LeaveCreateRequestFormCard(
 
             draftDays.forEachIndexed { index, day ->
                 Surface(
-                    shape = RoundedCornerShape(14.dp),
+                    shape = RoundedCornerShape(12.dp),
                     color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
                     modifier = Modifier
                         .fillMaxWidth()
@@ -1859,12 +1910,12 @@ private fun LeaveCreateRequestFormCard(
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(12.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                            .padding(horizontal = 10.dp, vertical = 8.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             OutlinedTextField(
@@ -1891,7 +1942,9 @@ private fun LeaveCreateRequestFormCard(
                                 IconButton(
                                     onClick = { onRemoveDay(day.id) },
                                     enabled = !busy,
-                                    modifier = Modifier.testTag("leave_draft_remove_day_btn_$index")
+                                    modifier = Modifier
+                                        .size(36.dp)
+                                        .testTag("leave_draft_remove_day_btn_$index")
                                 ) {
                                     Icon(
                                         imageVector = Icons.Default.DeleteOutline,
@@ -1904,22 +1957,50 @@ private fun LeaveCreateRequestFormCard(
 
                         Row(
                             modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             LeaveContract.SESSION_CODES.forEach { code ->
                                 val isSelected = day.sessionCode.equals(code, ignoreCase = true)
-                                FilterChip(
-                                    selected = isSelected,
-                                    onClick = { onUpdateDaySession(day.id, code) },
-                                    label = {
-                                        Text(
-                                            text = LeaveContract.leaveSessionLabel(code),
-                                            style = MaterialTheme.typography.labelMedium
-                                        )
+                                Surface(
+                                    shape = RoundedCornerShape(8.dp),
+                                    color = if (isSelected) {
+                                        MaterialTheme.colorScheme.primary
+                                    } else {
+                                        MaterialTheme.colorScheme.surface
                                     },
-                                    modifier = Modifier.testTag("leave_draft_session_${code}_$index")
-                                )
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .border(
+                                            width = 1.dp,
+                                            color = if (isSelected) {
+                                                MaterialTheme.colorScheme.primary
+                                            } else {
+                                                MaterialTheme.colorScheme.outlineVariant
+                                            },
+                                            shape = RoundedCornerShape(8.dp)
+                                        )
+                                        .clickable(enabled = !busy) { onUpdateDaySession(day.id, code) }
+                                        .testTag("leave_draft_session_${code}_$index")
+                                ) {
+                                    Text(
+                                        text = LeaveContract.leaveSessionCompactLabel(code),
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                        color = if (isSelected) {
+                                            MaterialTheme.colorScheme.onPrimary
+                                        } else {
+                                            MaterialTheme.colorScheme.onSurfaceVariant
+                                        },
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        textAlign = TextAlign.Center,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 4.dp, vertical = 7.dp)
+                                    )
+                                }
                             }
                         }
                     }

@@ -702,6 +702,23 @@ public enum LeaveContract {
         }
     }
 
+    public static func leaveSessionCompactLabel(_ sessionCode: String) -> String {
+        switch sessionCode.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() {
+        case "FULL":
+            return "Cả ngày (1,0)"
+        case "AM":
+            return "Sáng (0,5)"
+        case "PM":
+            return "Chiều (0,5)"
+        default:
+            return sessionCode
+        }
+    }
+
+    public static func selectableHistoryLeaveYears(currentYear: Int = currentVietnamLeaveYear()) -> [Int] {
+        [currentYear, currentYear - 1]
+    }
+
     public static func leaveSessionShortLabel(_ sessionCode: String) -> String {
         switch sessionCode.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() {
         case "FULL":

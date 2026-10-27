@@ -523,65 +523,13 @@ public struct AttendanceScreen: View {
 
     private func leaveRequestTabContent(theme: MiniBiThemePalette) -> some View {
         let currentViYear = LeaveContract.currentVietnamLeaveYear()
-        let yearOptions = [currentViYear - 1, currentViYear, currentViYear + 1]
+        let yearOptions = LeaveContract.selectableHistoryLeaveYears(currentYear: currentViYear)
         let totalDraftHalfDayUnits = viewModel.leaveDraftDays.reduce(0) {
             $0 + LeaveContract.leaveSessionHalfDayUnits($1.sessionCode)
         }
 
         return ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
-                // Header & Year Selector Card
-                VStack(alignment: .leading, spacing: 10) {
-                    HStack {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("QUẢN LÝ NGHỈ PHÉP CÁ NHÂN")
-                                .font(.caption2.weight(.bold))
-                                .foregroundColor(theme.primary)
-                            Text("Xin nghỉ phép năm \(String(viewModel.leaveYear))")
-                                .font(.headline.weight(.bold))
-                                .foregroundColor(SemanticColors.textPrimary)
-                        }
-                        Spacer()
-                        HStack(spacing: 6) {
-                            ForEach(yearOptions, id: \.self) { y in
-                                let isYearSelected = viewModel.leaveYear == y
-                                Button {
-                                    viewModel.setLeaveYear(y)
-                                } label: {
-                                    Text(String(y))
-                                        .font(.caption.weight(isYearSelected ? .bold : .medium))
-                                        .padding(.horizontal, 10)
-                                        .padding(.vertical, 6)
-                                        .background(isYearSelected ? theme.primary : Color(hex: 0xF1F5F9))
-                                        .foregroundColor(isYearSelected ? .white : SemanticColors.textSecondary)
-                                        .cornerRadius(8)
-                                }
-                                .buttonStyle(.plain)
-                            }
-                            Button {
-                                Task { await viewModel.refreshMyLeaveSummary(year: viewModel.leaveYear) }
-                            } label: {
-                                if viewModel.isLoadingMyLeave {
-                                    ProgressView()
-                                        .scaleEffect(0.75)
-                                        .frame(width: 28, height: 28)
-                                } else {
-                                    Image(systemName: "arrow.clockwise")
-                                        .font(.caption.weight(.bold))
-                                        .frame(width: 28, height: 28)
-                                        .background(theme.primaryLight)
-                                        .foregroundColor(theme.primary)
-                                        .cornerRadius(8)
-                                }
-                            }
-                            .disabled(viewModel.isLoadingMyLeave)
-                        }
-                    }
-                }
-                .padding(14)
-                .background(Color.white)
-                .cornerRadius(14)
-
+            VStack(alignment: .leading, spacing: 12) {
                 if let err = viewModel.myLeaveError, !err.isEmpty {
                     HStack {
                         Text(err)
@@ -614,12 +562,78 @@ public struct AttendanceScreen: View {
                 }
 
                 if let summary = viewModel.myLeaveSummary {
-                    leaveBalanceAndRoutingCard(summary: summary, theme: theme)
                     leaveCreateFormCard(
                         summary: summary,
                         totalDraftHalfDayUnits: totalDraftHalfDayUnits,
                         theme: theme
                     )
+                }
+
+                // Compact History & Balance Year Switcher Card
+                HStack(spacing: 8) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("TỒN PHÉP & LỊCH SỬ NGHỈ")
+                            .font(.caption2.weight(.bold))
+                            .foregroundColor(theme.primary)
+                            .lineLimit(1)
+                        Text("Tra cứu năm \(String(viewModel.leaveYear))")
+                            .font(.subheadline.weight(.bold))
+                            .foregroundColor(SemanticColors.textPrimary)
+                            .lineLimit(1)
+                        Text("Chọn năm trước để xem lịch sử nghỉ & tồn công phép")
+                            .font(.caption2)
+                            .foregroundColor(SemanticColors.textSecondary)
+                            .lineLimit(1)
+                    }
+                    Spacer()
+                    HStack(spacing: 4) {
+                        HStack(spacing: 3) {
+                            ForEach(yearOptions, id: \.self) { y in
+                                let isYearSelected = viewModel.leaveYear == y
+                                Button {
+                                    viewModel.setLeaveYear(y)
+                                } label: {
+                                    Text(String(y))
+                                        .font(.caption.weight(isYearSelected ? .bold : .medium))
+                                        .padding(.horizontal, 10)
+                                        .padding(.vertical, 5)
+                                        .background(isYearSelected ? theme.primary : Color.clear)
+                                        .foregroundColor(isYearSelected ? .white : SemanticColors.textSecondary)
+                                        .cornerRadius(7)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                        .padding(3)
+                        .background(Color(hex: 0xF1F5F9))
+                        .cornerRadius(9)
+
+                        Button {
+                            Task { await viewModel.refreshMyLeaveSummary(year: viewModel.leaveYear) }
+                        } label: {
+                            if viewModel.isLoadingMyLeave {
+                                ProgressView()
+                                    .scaleEffect(0.75)
+                                    .frame(width: 28, height: 28)
+                            } else {
+                                Image(systemName: "arrow.clockwise")
+                                    .font(.caption.weight(.bold))
+                                    .frame(width: 28, height: 28)
+                                    .background(theme.primaryLight)
+                                    .foregroundColor(theme.primary)
+                                    .cornerRadius(8)
+                            }
+                        }
+                        .disabled(viewModel.isLoadingMyLeave)
+                    }
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+                .background(Color.white)
+                .cornerRadius(14)
+
+                if let summary = viewModel.myLeaveSummary {
+                    leaveBalanceAndRoutingCard(summary: summary, theme: theme)
                     leaveMyRequestHistoryCard(summary: summary, theme: theme)
                     if !summary.balance.lots.isEmpty {
                         leaveEntitlementLotsCard(summary: summary)
@@ -774,7 +788,7 @@ public struct AttendanceScreen: View {
                     Text("Tạo đơn xin nghỉ phép")
                         .font(.subheadline.weight(.bold))
                         .foregroundColor(SemanticColors.textPrimary)
-                    Text("Chọn nghỉ cả ngày hoặc nửa ngày (buổi sáng / buổi chiều)")
+                    Text("Tự động trừ phép cũ nhất trước (FIFO) • Cả ngày / nửa ngày")
                         .font(.caption2)
                         .foregroundColor(SemanticColors.textSecondary)
                 }
@@ -860,9 +874,10 @@ public struct AttendanceScreen: View {
                                 Button {
                                     viewModel.updateLeaveDraftDaySession(id: day.id, sessionCode: code)
                                 } label: {
-                                    Text(LeaveContract.leaveSessionLabel(code))
-                                        .font(.caption2.weight(isSelected ? .bold : .medium))
-                                        .padding(.horizontal, 10)
+                                    Text(LeaveContract.leaveSessionCompactLabel(code))
+                                        .font(.caption.weight(isSelected ? .bold : .medium))
+                                        .lineLimit(1)
+                                        .padding(.horizontal, 6)
                                         .padding(.vertical, 7)
                                         .frame(maxWidth: .infinity)
                                         .background(isSelected ? theme.primary : Color.white)

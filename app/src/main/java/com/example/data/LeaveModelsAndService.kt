@@ -326,11 +326,22 @@ object LeaveContract {
         else -> sessionCode
     }
 
+    fun leaveSessionCompactLabel(sessionCode: String): String = when (sessionCode.trim().uppercase(Locale.ROOT)) {
+        "FULL" -> "Cả ngày (1,0)"
+        "AM" -> "Sáng (0,5)"
+        "PM" -> "Chiều (0,5)"
+        else -> sessionCode
+    }
+
     fun leaveSessionShortLabel(sessionCode: String): String = when (sessionCode.trim().uppercase(Locale.ROOT)) {
         "FULL" -> "Cả ngày"
         "AM" -> "Buổi sáng"
         "PM" -> "Buổi chiều"
         else -> sessionCode
+    }
+
+    fun selectableHistoryLeaveYears(currentYear: Int = currentVietnamLeaveYear()): List<Int> {
+        return listOf(currentYear, currentYear - 1)
     }
 
     fun leaveSessionHalfDayUnits(sessionCode: String): Int {

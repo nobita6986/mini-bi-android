@@ -3041,10 +3041,24 @@ class WorkerUiAuthorizationRobolectricTest {
         composeTestRule.onNodeWithTag("attendance_tab_leave_approval").assertDoesNotExist()
         composeTestRule.onNodeWithText("Ghi nhận Chấm công").assertIsDisplayed()
 
-        // 2. Switch to "Xin nghỉ" tab -> displays balance and create form
+        // 2. Switch to "Xin nghỉ" tab -> displays create form at top (FIFO) and compact year switcher without future year
         composeTestRule.onNodeWithTag("attendance_tab_leave_request").performClick()
         composeTestRule.waitForIdle()
 
+        val currentViYear = com.example.data.LeaveContract.currentVietnamLeaveYear()
+        composeTestRule.onNodeWithTag("leave_year_chip_$currentViYear").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("leave_year_chip_${currentViYear - 1}").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("leave_year_chip_${currentViYear + 1}").assertDoesNotExist()
+
+        val fullBounds = composeTestRule.onNodeWithTag("leave_draft_session_FULL_0").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+        val amBounds = composeTestRule.onNodeWithTag("leave_draft_session_AM_0").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+        val pmBounds = composeTestRule.onNodeWithTag("leave_draft_session_PM_0").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+        assertEquals(fullBounds.top, amBounds.top, 2f)
+        assertEquals(fullBounds.top, pmBounds.top, 2f)
+        assertTrue("Expected compact session row height, got ${fullBounds.height}", fullBounds.height < 140f)
+
+        composeTestRule.onNodeWithTag("leave_request_lazy_column")
+            .performScrollToNode(hasTestTag("leave_balance_summary_card"))
         composeTestRule.onNodeWithTag("leave_balance_summary_card").assertIsDisplayed()
         composeTestRule.onNodeWithText("6 ngày").assertIsDisplayed()
 
