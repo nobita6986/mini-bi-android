@@ -1,0 +1,176 @@
+name: HRPBI
+options:
+  bundleIdPrefix: com.aistudio.minibi
+  deploymentTarget:
+    iOS: "16.0"
+  xcodeVersion: "15.0"
+  generateEmptyDirectories: true
+
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    IPHONEOS_DEPLOYMENT_TARGET: "16.0"
+    MARKETING_VERSION: "1.0.1.27102026"
+    CURRENT_PROJECT_VERSION: "1"
+    TARGETED_DEVICE_FAMILY: "1,2"
+    ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+    CODE_SIGN_STYLE: Automatic
+    ENABLE_USER_SCRIPT_SANDBOXING: NO
+
+targets:
+  HRP-BI:
+    type: application
+    platform: iOS
+    deploymentTarget: "16.0"
+    sources:
+      - path: HRPBI
+        excludes:
+          - "Info*.plist"
+    settings:
+      base:
+        PRODUCT_NAME: HRPBI
+        PRODUCT_MODULE_NAME: HRPBI
+        PRODUCT_BUNDLE_IDENTIFIER: com.aistudio.minibi.hrpbia
+        INFOPLIST_FILE: HRPBI/Info.plist
+        APP_DISPLAY_NAME: "HRP BI"
+        BRAND_BADGE_LABEL: "BI"
+        DEFAULT_SERVER_HOST: "bi.hrpartner.vn"
+        ALLOW_DEBUG_URL_OVERRIDE: "NO"
+        MARKETING_VERSION: "1.0.1.27102026"
+        CURRENT_PROJECT_VERSION: "1"
+    info:
+      path: HRPBI/Info.plist
+      properties:
+        CFBundleName: $(PRODUCT_NAME)
+        CFBundleDisplayName: $(APP_DISPLAY_NAME)
+        CFBundleIdentifier: $(PRODUCT_BUNDLE_IDENTIFIER)
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        CFBundlePackageType: APPL
+        LSRequiresIPhoneOS: true
+        UILaunchScreen: {}
+        NSCameraUsageDescription: "Ứng dụng cần quyền truy cập Camera để chụp ảnh chấm công, chụp CCCD/hợp đồng và quét mã QR CCCD."
+        NSPhotoLibraryUsageDescription: "Ứng dụng cần quyền truy cập Thư viện ảnh để đính kèm ảnh chân dung, CCCD và hợp đồng lao động."
+        NSPhotoLibraryAddUsageDescription: "Ứng dụng cần quyền lưu ảnh và tài liệu xuất ra vào thiết bị."
+        NSLocationWhenInUseUsageDescription: "Ứng dụng cần quyền truy cập Vị trí GPS thực tế để xác thực địa điểm chấm công."
+        APP_DISPLAY_NAME: $(APP_DISPLAY_NAME)
+        BRAND_BADGE_LABEL: $(BRAND_BADGE_LABEL)
+        DEFAULT_SERVER_HOST: $(DEFAULT_SERVER_HOST)
+        ALLOW_DEBUG_URL_OVERRIDE: $(ALLOW_DEBUG_URL_OVERRIDE)
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+
+  HRP-BI2:
+    type: application
+    platform: iOS
+    deploymentTarget: "16.0"
+    sources:
+      - path: HRPBI
+        excludes:
+          - "Info*.plist"
+    settings:
+      base:
+        PRODUCT_NAME: HRPBI2
+        PRODUCT_MODULE_NAME: HRPBI
+        PRODUCT_BUNDLE_IDENTIFIER: com.aistudio.minibi.hrpbia.bi2
+        INFOPLIST_FILE: HRPBI/Info-BI2.plist
+        APP_DISPLAY_NAME: "HRP BI 2"
+        BRAND_BADGE_LABEL: "BI2"
+        DEFAULT_SERVER_HOST: "bi2.hrpartner.vn"
+        ALLOW_DEBUG_URL_OVERRIDE: "YES"
+        MARKETING_VERSION: "1.0.1.27102026"
+        CURRENT_PROJECT_VERSION: "1"
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) BI2_STAGING"
+    info:
+      path: HRPBI/Info-BI2.plist
+      properties:
+        CFBundleName: $(PRODUCT_NAME)
+        CFBundleDisplayName: $(APP_DISPLAY_NAME)
+        CFBundleIdentifier: $(PRODUCT_BUNDLE_IDENTIFIER)
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        CFBundlePackageType: APPL
+        LSRequiresIPhoneOS: true
+        UILaunchScreen: {}
+        NSCameraUsageDescription: "Ứng dụng cần quyền truy cập Camera để chụp ảnh chấm công, chụp CCCD/hợp đồng và quét mã QR CCCD."
+        NSPhotoLibraryUsageDescription: "Ứng dụng cần quyền truy cập Thư viện ảnh để đính kèm ảnh chân dung, CCCD và hợp đồng lao động."
+        NSPhotoLibraryAddUsageDescription: "Ứng dụng cần quyền lưu ảnh và tài liệu xuất ra vào thiết bị."
+        NSLocationWhenInUseUsageDescription: "Ứng dụng cần quyền truy cập Vị trí GPS thực tế để xác thực địa điểm chấm công."
+        APP_DISPLAY_NAME: $(APP_DISPLAY_NAME)
+        BRAND_BADGE_LABEL: $(BRAND_BADGE_LABEL)
+        DEFAULT_SERVER_HOST: $(DEFAULT_SERVER_HOST)
+        ALLOW_DEBUG_URL_OVERRIDE: $(ALLOW_DEBUG_URL_OVERRIDE)
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+
+  HRPBTests:
+    type: bundle.unit-test
+    platform: iOS
+    deploymentTarget: "16.0"
+    sources:
+      - path: HRPBTests
+        excludes:
+          - "Info*.plist"
+    dependencies:
+      - target: HRP-BI
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.aistudio.minibi.hrpbia.tests
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/HRPBI.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/HRPBI"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+        GENERATE_INFOPLIST_FILE: YES
+
+schemes:
+  HRP-BI:
+    build:
+      targets:
+        HRP-BI: all
+        HRPBTests: [test]
+    run:
+      config: Release
+    test:
+      config: Debug
+      targets:
+        - HRPBTests
+    profile:
+      config: Release
+    analyze:
+      config: Release
+    archive:
+      config: Release
+
+  HRP-BI2:
+    build:
+      targets:
+        HRP-BI2: all
+        HRPBTests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - HRPBTests
+    profile:
+      config: Debug
+    analyze:
+      config: Debug
+    archive:
+      config: Debug
