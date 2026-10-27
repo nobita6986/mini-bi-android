@@ -827,23 +827,22 @@ final class HRPBTests: XCTestCase {
         )
 
         // DirectEntry worker-profile/1.2 row payload contract
-        var draftRow = NewWorkerEntryDraft(
-            hoTen: "Nguyễn Văn A",
-            soCccd: "034098001234",
-            ngaySinh: "15/08/1998",
-            gioiTinh: "Nam",
-            queQuan: "Thái Bình",
-            ngayCap: "20/10/2021",
-            sdt: "0987654321",
-            duAn: "Luxshare Bắc Giang",
-            nganhNghe: "Thời vụ",
-            nguoiTuyen: "Phạm Thị Sâm",
-            ngayVaoLam: "27/10/2026",
-            trangThai: "Đang làm",
-            nganHang: "MB Bank",
-            soTaiKhoan: "123456789",
-            ghiChu: "Ghi chú test"
-        )
+        var draftRow = NewWorkerEntryDraft()
+        draftRow.hoTen = "Nguyễn Văn A"
+        draftRow.soCccd = "034098001234"
+        draftRow.ngaySinh = "15/08/1998"
+        draftRow.gioiTinh = "Nam"
+        draftRow.queQuan = "Thái Bình"
+        draftRow.ngayCap = "20/10/2021"
+        draftRow.sdt = "0987654321"
+        draftRow.duAn = "Luxshare Bắc Giang"
+        draftRow.nganhNghe = "Thời vụ"
+        draftRow.nguoiTuyen = "Phạm Thị Sâm"
+        draftRow.ngayVaoLam = "27/10/2026"
+        draftRow.trangThai = "Đang làm"
+        draftRow.nganHang = "MB Bank"
+        draftRow.soTaiKhoan = "123456789"
+        draftRow.ghiChu = "Ghi chú test"
         draftRow.projectId = "LUXSHARE-BG"
         draftRow.recruiterId = "11111111-2222-4333-8444-555555555555"
         draftRow.laborTypeKey = "TEMPORARY"
