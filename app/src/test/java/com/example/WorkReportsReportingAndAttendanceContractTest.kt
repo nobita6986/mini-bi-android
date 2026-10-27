@@ -1808,7 +1808,7 @@ class WorkReportsReportingAndAttendanceContractTest {
             reason = ""
         )
         assertEquals(
-            "Ngày 2026-11-05: 2 buổi cùng loại nghỉ phải chọn 'Cả ngày' thay vì tách 2 dòng.",
+            "Không được chọn trùng ngày/buổi với cùng loại nghỉ trong cùng một đơn (05/11/2026). Nếu tách Sáng + Chiều trong cùng một ngày, hai buổi phải có loại nghỉ khác nhau.",
             sameDateSameTypeErr
         )
         val sameDateDifferentTypeValid = LeaveContract.validateCreateDraftInput(
@@ -1867,7 +1867,7 @@ class WorkReportsReportingAndAttendanceContractTest {
         assertNotNull(err)
         assertEquals("LEAVE_INSUFFICIENT_BALANCE", err!!.backendCode)
         assertEquals(
-            "Số dư Phép năm khả dụng không đủ cho các ngày đăng ký loại Phép năm. Vui lòng chuyển phần ngày vượt sang Nghỉ không lương hoặc loại nghỉ phù hợp.",
+            "Số dư phép năm khả dụng tại thời điểm ngày nghỉ không đủ cho phần Phép năm đã chọn. Bạn có thể chia yêu cầu sang Nghỉ không lương hoặc loại nghỉ phù hợp.",
             err.message
         )
     }

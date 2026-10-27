@@ -500,9 +500,9 @@ object LeaveContract {
 
     fun autoAllocateDraftDaysByBalance(
         days: List<LeaveDraftDayInput>,
-        availableAnnualUnits: Int
+        availableUnits: Int
     ): List<LeaveDraftDayInput> {
-        var remaining = availableAnnualUnits.coerceAtLeast(0)
+        var remaining = availableUnits.coerceAtLeast(0)
         val result = mutableListOf<LeaveDraftDayInput>()
         for (row in days) {
             val session = row.sessionCode.trim().uppercase(Locale.ROOT).let {
@@ -678,7 +678,7 @@ object LeaveContract {
         val normalizedStatus = request.status.trim().uppercase(Locale.ROOT)
         val trimmedReason = reason.trim()
         if (trimmedReason.length > 2000) {
-            return false to "Vui lòng nhập lý do hợp lệ (tối đa 2.000 ký tự)."
+            return false to "Lý do xử lý không được vượt quá 2000 ký tự."
         }
         return when (normalizedDecision) {
             "APPROVE" -> {
