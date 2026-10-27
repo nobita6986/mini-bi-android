@@ -116,7 +116,7 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY=""
 
-      - name: Package unsigned .app bundles for inspection
+      - name: Package unsigned .ipa and .app bundles for sideloading & inspection
         working-directory: ios
         run: |
           mkdir -p build/artifacts
@@ -124,18 +124,28 @@ jobs:
           APP_DEBUG_PATH="build/DerivedData-HRP-BI2/Build/Products/Debug-iphoneos/HRPBI2.app"
 
           if [ -d "$APP_RELEASE_PATH" ]; then
+            codesign --force --deep --sign - "$APP_RELEASE_PATH" || true
             ditto -c -k --sequesterRsrc --keepParent "$APP_RELEASE_PATH" "build/artifacts/HRP-BI-Release-unsigned.app.zip"
+            rm -rf build/ipa-rel && mkdir -p build/ipa-rel/Payload
+            cp -R "$APP_RELEASE_PATH" build/ipa-rel/Payload/
+            ditto -c -k --sequesterRsrc build/ipa-rel "build/artifacts/HRP-BI-unsigned.ipa"
           fi
           if [ -d "$APP_DEBUG_PATH" ]; then
+            codesign --force --deep --sign - "$APP_DEBUG_PATH" || true
             ditto -c -k --sequesterRsrc --keepParent "$APP_DEBUG_PATH" "build/artifacts/HRP-BI2-Debug-unsigned.app.zip"
+            rm -rf build/ipa-dbg && mkdir -p build/ipa-dbg/Payload
+            cp -R "$APP_DEBUG_PATH" build/ipa-dbg/Payload/
+            ditto -c -k --sequesterRsrc build/ipa-dbg "build/artifacts/HRP-BI2-debug-unsigned.ipa"
           fi
-          shasum -a 256 build/artifacts/*.zip || true
+          shasum -a 256 build/artifacts/* || true
 
       - name: Upload unsigned build artifacts
         uses: actions/upload-artifact@v4
         with:
           name: ios-unsigned-builds-${{ github.sha }}
-          path: ios/build/artifacts/*.zip
+          path: |
+            ios/build/artifacts/*.zip
+            ios/build/artifacts/*.ipa
           if-no-files-found: error
 
   # ============================================================================
