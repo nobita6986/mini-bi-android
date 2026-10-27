@@ -672,11 +672,11 @@ final class HRPBTests: XCTestCase {
         )
         XCTAssertEqual(
             BackendHttpClient.codeMessagesVi["AUTH_INVALID_CREDENTIALS"],
-            "Email hoặc mật khẩu không đúng."
+            "Sai thông tin đăng nhập. Vui lòng kiểm tra lại tài khoản và mật khẩu."
         )
         XCTAssertEqual(
             BackendHttpClient.codeMessagesVi["AUTH_REQUEST_INVALID"],
-            "Vui lòng nhập đúng định dạng email và mật khẩu."
+            "Vui lòng nhập đầy đủ tài khoản (email) và mật khẩu hợp lệ."
         )
     }
 
