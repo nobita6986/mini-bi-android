@@ -776,7 +776,7 @@ final class HRPBTests: XCTestCase {
                 ]
             ]
         ]
-        let parsedSections = WorkReportsContract.parseDynamicSections(schemaJson: prodSchema)
+        let parsedSections = WorkReportsContract.parseDynamicSections(prodSchema)
         XCTAssertEqual(parsedSections.count, 1)
         XCTAssertEqual(parsedSections[0].title, "Thông tin chung")
         XCTAssertEqual(parsedSections[0].fields.map(\.key), ["interview_count", "shift_type", "has_issue"])
@@ -784,18 +784,18 @@ final class HRPBTests: XCTestCase {
         XCTAssertEqual(parsedSections[0].fields[1].options.map(\.label), ["Ca ngày", "Ca đêm"])
 
         // Empty schema must NOT fabricate fake fields
-        XCTAssertTrue(WorkReportsContract.parseDynamicSections(schemaJson: nil).isEmpty)
+        XCTAssertTrue(WorkReportsContract.parseDynamicSections(nil).isEmpty)
 
         // Typed payload builder converts string values according to field types
         let typedPayload = WorkReportsContract.buildTypedPayloadJson(
-            sections: parsedSections,
-            answers: [
+            formPayload: [
                 "interview_count": "15",
                 "shift_type": "DAY",
                 "has_issue": "true"
-            ]
+            ],
+            sections: parsedSections
         )
-        XCTAssertEqual(typedPayload["interview_count"] as? Int64, 15)
+        XCTAssertEqual((typedPayload["interview_count"] as? NSNumber)?.intValue, 15)
         XCTAssertEqual(typedPayload["shift_type"] as? String, "DAY")
         XCTAssertEqual(typedPayload["has_issue"] as? Bool, true)
     }
