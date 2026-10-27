@@ -3211,6 +3211,29 @@ class MiniBiViewModel internal constructor(
         )
     }
 
+    fun applyLeaveDraftDateRange(
+        startDateIso: String,
+        endDateIso: String,
+        leaveType: String = "ANNUAL",
+        skipSundays: Boolean = false
+    ): Boolean {
+        _leaveMutationError.value = null
+        val (generated, errorMessage) = LeaveContract.generateDraftDaysFromRange(
+            startDateIso = startDateIso,
+            endDateIso = endDateIso,
+            leaveType = leaveType,
+            sessionCode = "FULL",
+            skipSundays = skipSundays
+        )
+        if (errorMessage != null) {
+            _leaveMutationError.value = errorMessage
+            return false
+        }
+        leaveDraftDays.clear()
+        leaveDraftDays.addAll(generated)
+        return true
+    }
+
     fun removeLeaveDraftDay(id: String) {
         _leaveMutationError.value = null
         leaveDraftDays.removeAll { it.id == id }

@@ -180,6 +180,7 @@ public struct LoginScreen: View {
                                 Image(systemName: "person.fill")
                                     .foregroundColor(theme.primary)
                                 TextField("Nhập email hoặc mã ID", text: $viewModel.loginIdentifierInput)
+                                    .submitLabel(.done)
                                     .textInputAutocapitalization(.never)
                                     .autocorrectionDisabled(true)
                                     .foregroundColor(SemanticColors.textPrimary)
@@ -205,12 +206,22 @@ public struct LoginScreen: View {
                                     .foregroundColor(theme.primary)
                                 if isPasswordVisible {
                                     TextField("Nhập mật khẩu", text: $viewModel.loginPasswordInput)
+                                        .submitLabel(.go)
+                                        .onSubmit {
+                                            KeyboardDismissal.dismiss()
+                                            Task { await viewModel.performLogin() }
+                                        }
                                         .textInputAutocapitalization(.never)
                                         .autocorrectionDisabled(true)
                                         .foregroundColor(SemanticColors.textPrimary)
                                         .tint(theme.primary)
                                 } else {
                                     SecureField("Nhập mật khẩu", text: $viewModel.loginPasswordInput)
+                                        .submitLabel(.go)
+                                        .onSubmit {
+                                            KeyboardDismissal.dismiss()
+                                            Task { await viewModel.performLogin() }
+                                        }
                                         .textInputAutocapitalization(.never)
                                         .foregroundColor(SemanticColors.textPrimary)
                                         .tint(theme.primary)
@@ -261,6 +272,7 @@ public struct LoginScreen: View {
 
                         // Login Button
                         Button {
+                            KeyboardDismissal.dismiss()
                             Task {
                                 await viewModel.performLogin()
                             }
@@ -302,5 +314,6 @@ public struct LoginScreen: View {
                 }
             }
         }
+        .dismissKeyboardOnTapOutside()
     }
 }

@@ -99,6 +99,13 @@ public struct AttendanceScreen: View {
     @State private var expandedInboxRequestIds: Set<String> = []
     @State private var datePickerTargetDay: LeaveDraftDayInput?
     @State private var datePickerSelection: Date = Date()
+    @State private var datePickerModeIsRange: Bool = false
+    @State private var isShowingRangePickerSheet: Bool = false
+    @State private var rangeStartDate: Date = Date()
+    @State private var rangeEndDate: Date = Date()
+    @State private var rangeLeaveType: String = "ANNUAL"
+    @State private var rangeSkipSundays: Bool = false
+    @State private var rangeErrorMessage: String?
 
     public init(viewModel: MiniBiViewModel) {
         self.viewModel = viewModel
@@ -128,6 +135,7 @@ public struct AttendanceScreen: View {
             }
         }
         .background(theme.background)
+        .dismissKeyboardOnTapOutside()
         .onAppear {
             locationManager.requestLocationUpdate()
             Task {
@@ -158,6 +166,9 @@ public struct AttendanceScreen: View {
         .sheet(item: $datePickerTargetDay) { day in
             leaveDatePickerSheet(day: day, theme: theme)
         }
+        .sheet(isPresented: $isShowingRangePickerSheet) {
+            leaveDateRangePickerSheet(theme: theme)
+        }
     }
 
     // MARK: - Top Tab Bar (`Chấm công` | `Xin nghỉ` | `Duyệt nghỉ`)
@@ -171,6 +182,7 @@ public struct AttendanceScreen: View {
             ForEach(tabs) { tab in
                 let isSelected = tab == selectedTab
                 Button {
+                    KeyboardDismissal.dismiss()
                     viewModel.selectAttendanceTab(tab)
                 } label: {
                     HStack(spacing: 6) {
@@ -837,50 +849,93 @@ public struct AttendanceScreen: View {
                     .background(SemanticColors.dangerBg)
                     .cornerRadius(10)
             } else {
+                Button {
+                    KeyboardDismissal.dismiss()
+                    let firstIso = viewModel.leaveDraftDays.first?.leaveDate ?? LeaveContract.todayVietnamIsoDate()
+                    let lastIso = viewModel.leaveDraftDays.last?.leaveDate ?? firstIso
+                    rangeStartDate = parseIsoDate(firstIso) ?? Date()
+                    rangeEndDate = max(rangeStartDate, parseIsoDate(lastIso) ?? rangeStartDate)
+                    rangeLeaveType = viewModel.leaveDraftDays.first?.leaveType
+                        ?? (summary.balance.availableUnits <= 0 ? "UNPAID" : "ANNUAL")
+                    rangeErrorMessage = nil
+                    isShowingRangePickerSheet = true
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "calendar.badge.plus")
+                            .font(.subheadline.weight(.bold))
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("Chọn nhanh theo dải ngày (Từ ngày → Đến ngày)")
+                                .font(.caption.weight(.bold))
+                            Text("Tự động tạo danh sách nhiều ngày nghỉ liên tiếp chỉ với 1 chạm")
+                                .font(.caption2)
+                                .opacity(0.85)
+                        }
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                            .font(.caption.weight(.bold))
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(theme.primaryLight)
+                    .foregroundColor(theme.primary)
+                    .cornerRadius(10)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10)
+                            .stroke(theme.primary.opacity(0.35), lineWidth: 1)
+                    )
+                }
+                .buttonStyle(.plain)
+                .disabled(viewModel.isMutatingLeave)
+
                 ForEach(Array(viewModel.leaveDraftDays.enumerated()), id: \.element.id) { index, day in
                     VStack(alignment: .leading, spacing: 8) {
                         HStack(spacing: 8) {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("Ngày nghỉ #\(index + 1) (YYYY-MM-DD)")
-                                    .font(.caption2)
-                                    .foregroundColor(SemanticColors.textMuted)
-                                TextField(
-                                    "YYYY-MM-DD",
-                                    text: Binding(
-                                        get: { day.leaveDate },
-                                        set: { viewModel.updateLeaveDraftDayDate(id: day.id, leaveDate: $0) }
-                                    )
-                                )
-                                .font(.caption.weight(.semibold))
-                                .autocapitalization(.none)
-                                .disableAutocorrection(true)
-                            }
-                            .padding(8)
-                            .background(Color.white)
-                            .cornerRadius(8)
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 8)
-                                    .stroke(SemanticColors.borderSubtle, lineWidth: 1)
-                            )
-
                             Button {
+                                KeyboardDismissal.dismiss()
+                                datePickerModeIsRange = false
                                 datePickerSelection = parseIsoDate(day.leaveDate) ?? Date()
+                                rangeStartDate = datePickerSelection
+                                rangeEndDate = max(
+                                    rangeStartDate,
+                                    parseIsoDate(viewModel.leaveDraftDays.last?.leaveDate ?? day.leaveDate) ?? datePickerSelection
+                                )
+                                rangeLeaveType = day.leaveType
+                                rangeErrorMessage = nil
                                 datePickerTargetDay = day
                             } label: {
-                                HStack(spacing: 4) {
+                                HStack(spacing: 8) {
                                     Image(systemName: "calendar")
-                                    Text(LeaveContract.formatIsoDateVi(day.leaveDate))
+                                        .font(.subheadline.weight(.bold))
+                                        .foregroundColor(theme.primary)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text("Ngày nghỉ #\(index + 1) (Chạm chọn lịch)")
+                                            .font(.caption2)
+                                            .foregroundColor(SemanticColors.textMuted)
+                                        Text("\(LeaveContract.formatIsoDateVi(day.leaveDate)) (\(day.leaveDate))")
+                                            .font(.caption.weight(.bold))
+                                            .foregroundColor(SemanticColors.textPrimary)
+                                    }
+                                    Spacer(minLength: 4)
+                                    Image(systemName: "chevron.down")
+                                        .font(.caption2.weight(.bold))
+                                        .foregroundColor(theme.primary)
                                 }
-                                .font(.caption.weight(.semibold))
                                 .padding(.horizontal, 10)
-                                .padding(.vertical, 10)
-                                .background(theme.primaryLight)
-                                .foregroundColor(theme.primary)
+                                .padding(.vertical, 8)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .background(Color.white)
                                 .cornerRadius(8)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 8)
+                                        .stroke(theme.primary.opacity(0.35), lineWidth: 1)
+                                )
                             }
+                            .buttonStyle(.plain)
 
                             if day.sessionCode.uppercased() == "FULL" && viewModel.leaveDraftDays.count < 120 {
                                 Button {
+                                    KeyboardDismissal.dismiss()
                                     viewModel.splitLeaveDraftDayToHalfDays(id: day.id)
                                 } label: {
                                     Text("Tách 2 buổi")
@@ -900,6 +955,7 @@ public struct AttendanceScreen: View {
 
                             if viewModel.leaveDraftDays.count > 1 {
                                 Button {
+                                    KeyboardDismissal.dismiss()
                                     viewModel.removeLeaveDraftDay(id: day.id)
                                 } label: {
                                     Image(systemName: "trash")
@@ -917,6 +973,7 @@ public struct AttendanceScreen: View {
                             ForEach(LeaveContract.sessionCodes, id: \.self) { code in
                                 let isSelected = day.sessionCode.uppercased() == code
                                 Button {
+                                    KeyboardDismissal.dismiss()
                                     viewModel.updateLeaveDraftDaySession(id: day.id, sessionCode: code)
                                 } label: {
                                     Text(LeaveContract.leaveSessionCompactLabel(code))
@@ -946,6 +1003,7 @@ public struct AttendanceScreen: View {
                                     ForEach(LeaveContract.leaveTypes, id: \.self) { typeCode in
                                         let isSelected = day.leaveType.uppercased() == typeCode
                                         Button {
+                                            KeyboardDismissal.dismiss()
                                             viewModel.updateLeaveDraftDayType(id: day.id, leaveType: typeCode)
                                         } label: {
                                             Text(LeaveContract.leaveTypeShortLabel(typeCode))
@@ -1005,6 +1063,7 @@ public struct AttendanceScreen: View {
                             .font(.caption)
                             .foregroundColor(SemanticColors.warningText)
                         Button {
+                            KeyboardDismissal.dismiss()
                             viewModel.autoAllocateLeaveDraftDaysByBalance()
                         } label: {
                             Text("Tự động chia Phép năm + Nghỉ không lương")
@@ -1027,26 +1086,65 @@ public struct AttendanceScreen: View {
                     .cornerRadius(10)
                 }
 
-                Button {
-                    viewModel.addLeaveDraftDay()
-                } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: "plus.circle.fill")
-                        Text("Thêm dòng ngày/buổi nghỉ")
+                HStack(spacing: 8) {
+                    Button {
+                        KeyboardDismissal.dismiss()
+                        viewModel.addLeaveDraftDay()
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "plus.circle.fill")
+                            Text("Thêm 1 ngày kế tiếp")
+                        }
+                        .font(.caption.weight(.bold))
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(theme.primaryLight)
+                        .foregroundColor(theme.primary)
+                        .cornerRadius(8)
                     }
-                    .font(.caption.weight(.bold))
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .background(theme.primaryLight)
-                    .foregroundColor(theme.primary)
-                    .cornerRadius(8)
+                    .disabled(viewModel.isMutatingLeave || viewModel.leaveDraftDays.count >= 120)
+
+                    Button {
+                        KeyboardDismissal.dismiss()
+                        let firstIso = viewModel.leaveDraftDays.first?.leaveDate ?? LeaveContract.todayVietnamIsoDate()
+                        let lastIso = viewModel.leaveDraftDays.last?.leaveDate ?? firstIso
+                        rangeStartDate = parseIsoDate(firstIso) ?? Date()
+                        rangeEndDate = max(rangeStartDate, parseIsoDate(lastIso) ?? rangeStartDate)
+                        rangeLeaveType = viewModel.leaveDraftDays.first?.leaveType
+                            ?? (summary.balance.availableUnits <= 0 ? "UNPAID" : "ANNUAL")
+                        rangeErrorMessage = nil
+                        isShowingRangePickerSheet = true
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "calendar.badge.plus")
+                            Text("Chọn dải ngày")
+                        }
+                        .font(.caption.weight(.bold))
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(Color.white)
+                        .foregroundColor(theme.primary)
+                        .cornerRadius(8)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8)
+                                .stroke(theme.primary.opacity(0.45), lineWidth: 1)
+                        )
+                    }
+                    .disabled(viewModel.isMutatingLeave)
                 }
-                .disabled(viewModel.isMutatingLeave || viewModel.leaveDraftDays.count >= 120)
 
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Lý do xin nghỉ (không bắt buộc)")
-                        .font(.caption.weight(.semibold))
-                        .foregroundColor(SemanticColors.textPrimary)
+                    HStack {
+                        Text("Lý do xin nghỉ (không bắt buộc)")
+                            .font(.caption.weight(.semibold))
+                            .foregroundColor(SemanticColors.textPrimary)
+                        Spacer()
+                        Button("Ẩn bàn phím") {
+                            KeyboardDismissal.dismiss()
+                        }
+                        .font(.caption2.weight(.semibold))
+                        .foregroundColor(theme.primary)
+                    }
                     TextField(
                         "Nhập lý do hoặc ghi chú đơn xin nghỉ (nếu có)...",
                         text: Binding(
@@ -1077,6 +1175,7 @@ public struct AttendanceScreen: View {
                 }
 
                 Button {
+                    KeyboardDismissal.dismiss()
                     Task { await viewModel.submitLeaveRequest() }
                 } label: {
                     HStack {
@@ -1603,6 +1702,7 @@ public struct AttendanceScreen: View {
                         .foregroundColor(SemanticColors.textSecondary)
                     TextField("Nhập lý do rút đơn nếu cần...", text: $withdrawReasonInput)
                         .font(.caption)
+                        .submitLabel(.done)
                         .padding(10)
                         .background(Color(hex: 0xF8FAFC))
                         .cornerRadius(8)
@@ -1614,6 +1714,7 @@ public struct AttendanceScreen: View {
 
                 HStack(spacing: 10) {
                     Button("Đóng") {
+                        KeyboardDismissal.dismiss()
                         withdrawTargetRequest = nil
                     }
                     .font(.subheadline.weight(.semibold))
@@ -1625,6 +1726,7 @@ public struct AttendanceScreen: View {
                     .disabled(viewModel.isMutatingLeave)
 
                     Button {
+                        KeyboardDismissal.dismiss()
                         let cleanReason = withdrawReasonInput.trimmingCharacters(in: .whitespacesAndNewlines)
                         Task {
                             await viewModel.withdrawLeaveRequest(
@@ -1650,6 +1752,7 @@ public struct AttendanceScreen: View {
                 Spacer()
             }
             .padding(18)
+            .dismissKeyboardOnTapOutside()
             .navigationTitle("Rút đơn xin nghỉ phép")
             .navigationBarTitleDisplayMode(.inline)
         }
@@ -1692,6 +1795,7 @@ public struct AttendanceScreen: View {
                         )
                     )
                     .font(.caption)
+                    .submitLabel(.done)
                     .padding(10)
                     .background(Color(hex: 0xF8FAFC))
                     .cornerRadius(8)
@@ -1709,6 +1813,7 @@ public struct AttendanceScreen: View {
 
                 HStack(spacing: 10) {
                     Button("Đóng") {
+                        KeyboardDismissal.dismiss()
                         pendingDecisionItem = nil
                         localDecisionDialogError = nil
                     }
@@ -1721,6 +1826,7 @@ public struct AttendanceScreen: View {
                     .disabled(viewModel.isMutatingLeave)
 
                     Button {
+                        KeyboardDismissal.dismiss()
                         let actorId = viewModel.currentLeaveActorAppUserId
                         let validation = LeaveContract.validateApproverDecisionInput(
                             actorAppUserId: actorId,
@@ -1765,6 +1871,7 @@ public struct AttendanceScreen: View {
                 Spacer()
             }
             .padding(18)
+            .dismissKeyboardOnTapOutside()
             .navigationTitle(LeaveContract.leaveDecisionActionLabel(decision))
             .navigationBarTitleDisplayMode(.inline)
         }
@@ -1776,37 +1883,78 @@ public struct AttendanceScreen: View {
         theme: MiniBiThemePalette
     ) -> some View {
         NavigationStack {
-            VStack(spacing: 14) {
-                DatePicker(
-                    "Chọn ngày nghỉ",
-                    selection: $datePickerSelection,
-                    displayedComponents: [.date]
-                )
-                .datePickerStyle(.graphical)
-                .environment(\.locale, Locale(identifier: "vi_VN"))
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    // Mode Switcher: Chọn 1 ngày vs Chọn dải ngày (Từ → Đến)
+                    HStack(spacing: 6) {
+                        Button {
+                            datePickerModeIsRange = false
+                            rangeErrorMessage = nil
+                        } label: {
+                            Text("Chọn 1 ngày")
+                                .font(.caption.weight(!datePickerModeIsRange ? .bold : .semibold))
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 8)
+                                .background(!datePickerModeIsRange ? theme.primary : Color.clear)
+                                .foregroundColor(!datePickerModeIsRange ? .white : SemanticColors.textSecondary)
+                                .cornerRadius(8)
+                        }
+                        .buttonStyle(.plain)
 
-                Button {
-                    let df = DateFormatter()
-                    df.locale = Locale(identifier: "en_US_POSIX")
-                    df.timeZone = TimeZone(identifier: "Asia/Ho_Chi_Minh") ?? .current
-                    df.dateFormat = "yyyy-MM-dd"
-                    viewModel.updateLeaveDraftDayDate(
-                        id: day.id,
-                        leaveDate: df.string(from: datePickerSelection)
-                    )
-                    datePickerTargetDay = nil
-                } label: {
-                    Text("Chọn ngày này")
-                        .font(.subheadline.weight(.bold))
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 12)
-                        .background(theme.primary)
-                        .foregroundColor(.white)
-                        .cornerRadius(10)
+                        Button {
+                            datePickerModeIsRange = true
+                            rangeErrorMessage = nil
+                        } label: {
+                            Text("Chọn dải ngày (Từ → Đến)")
+                                .font(.caption.weight(datePickerModeIsRange ? .bold : .semibold))
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 8)
+                                .background(datePickerModeIsRange ? theme.primary : Color.clear)
+                                .foregroundColor(datePickerModeIsRange ? .white : SemanticColors.textSecondary)
+                                .cornerRadius(8)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    .padding(4)
+                    .background(Color(hex: 0xF1F5F9))
+                    .cornerRadius(10)
+
+                    if !datePickerModeIsRange {
+                        DatePicker(
+                            "Chọn ngày nghỉ",
+                            selection: $datePickerSelection,
+                            displayedComponents: [.date]
+                        )
+                        .datePickerStyle(.graphical)
+                        .environment(\.locale, Locale(identifier: "vi_VN"))
+
+                        Button {
+                            viewModel.updateLeaveDraftDayDate(
+                                id: day.id,
+                                leaveDate: formatDateIso(datePickerSelection)
+                            )
+                            datePickerTargetDay = nil
+                        } label: {
+                            Text("Áp dụng ngày \(LeaveContract.formatIsoDateVi(formatDateIso(datePickerSelection)))")
+                                .font(.subheadline.weight(.bold))
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 12)
+                                .background(theme.primary)
+                                .foregroundColor(.white)
+                                .cornerRadius(10)
+                        }
+                    } else {
+                        dateRangePickerFormContent(
+                            theme: theme,
+                            onApplied: {
+                                datePickerTargetDay = nil
+                            }
+                        )
+                    }
                 }
+                .padding(16)
             }
-            .padding(16)
-            .navigationTitle("Chọn ngày xin nghỉ")
+            .navigationTitle(datePickerModeIsRange ? "Chọn dải ngày nghỉ" : "Chọn ngày xin nghỉ")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -1816,7 +1964,206 @@ public struct AttendanceScreen: View {
                 }
             }
         }
+        .presentationDetents([.large])
+    }
+
+    private func leaveDateRangePickerSheet(theme: MiniBiThemePalette) -> some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    dateRangePickerFormContent(
+                        theme: theme,
+                        onApplied: {
+                            isShowingRangePickerSheet = false
+                        }
+                    )
+                }
+                .padding(16)
+            }
+            .navigationTitle("Chọn dải ngày nghỉ phép")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Đóng") {
+                        isShowingRangePickerSheet = false
+                    }
+                }
+            }
+        }
         .presentationDetents([.medium, .large])
+    }
+
+    private func dateRangePickerFormContent(
+        theme: MiniBiThemePalette,
+        onApplied: @escaping () -> Void
+    ) -> some View {
+        let startIso = formatDateIso(rangeStartDate)
+        let endIso = formatDateIso(rangeEndDate)
+        let preview = LeaveContract.generateDraftDaysFromRange(
+            startDateIso: startIso,
+            endDateIso: endIso,
+            leaveType: rangeLeaveType,
+            sessionCode: "FULL",
+            skipSundays: rangeSkipSundays
+        )
+
+        return VStack(alignment: .leading, spacing: 14) {
+            Text("Chọn ngày bắt đầu và ngày kết thúc để tự động tạo danh sách các ngày xin nghỉ liên tiếp. Sau khi áp dụng, bạn vẫn có thể chỉnh sửa từng buổi (Sáng/Chiều) hoặc tách 2 buổi trên từng ngày.")
+                .font(.caption)
+                .foregroundColor(SemanticColors.textSecondary)
+
+            VStack(spacing: 10) {
+                HStack {
+                    Text("Từ ngày bắt đầu")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundColor(SemanticColors.textPrimary)
+                    Spacer()
+                    DatePicker(
+                        "Từ ngày",
+                        selection: Binding(
+                            get: { rangeStartDate },
+                            set: { newStart in
+                                rangeStartDate = newStart
+                                if rangeEndDate < newStart {
+                                    rangeEndDate = newStart
+                                }
+                                rangeErrorMessage = nil
+                            }
+                        ),
+                        displayedComponents: [.date]
+                    )
+                    .labelsHidden()
+                    .environment(\.locale, Locale(identifier: "vi_VN"))
+                }
+                .padding(12)
+                .background(Color(hex: 0xF8FAFC))
+                .cornerRadius(10)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10)
+                        .stroke(SemanticColors.borderSubtle, lineWidth: 1)
+                )
+
+                HStack {
+                    Text("Đến ngày kết thúc")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundColor(SemanticColors.textPrimary)
+                    Spacer()
+                    DatePicker(
+                        "Đến ngày",
+                        selection: Binding(
+                            get: { rangeEndDate },
+                            set: { newEnd in
+                                rangeEndDate = newEnd
+                                rangeErrorMessage = nil
+                            }
+                        ),
+                        in: rangeStartDate...,
+                        displayedComponents: [.date]
+                    )
+                    .labelsHidden()
+                    .environment(\.locale, Locale(identifier: "vi_VN"))
+                }
+                .padding(12)
+                .background(Color(hex: 0xF8FAFC))
+                .cornerRadius(10)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10)
+                        .stroke(SemanticColors.borderSubtle, lineWidth: 1)
+                )
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Loại nghỉ mặc định cho dải ngày")
+                    .font(.caption.weight(.semibold))
+                    .foregroundColor(SemanticColors.textSecondary)
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        ForEach(LeaveContract.leaveTypes, id: \.self) { typeCode in
+                            let isSelected = rangeLeaveType.uppercased() == typeCode
+                            Button {
+                                rangeLeaveType = typeCode
+                            } label: {
+                                Text(LeaveContract.leaveTypeShortLabel(typeCode))
+                                    .font(.caption.weight(isSelected ? .bold : .medium))
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 8)
+                                    .background(isSelected ? theme.primaryLight : Color(hex: 0xF8FAFC))
+                                    .foregroundColor(isSelected ? theme.primary : SemanticColors.textSecondary)
+                                    .cornerRadius(8)
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 8)
+                                            .stroke(isSelected ? theme.primary : SemanticColors.borderSubtle, lineWidth: 1)
+                                    )
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+            }
+
+            Toggle(isOn: $rangeSkipSundays) {
+                Text("Bỏ qua ngày Chủ nhật trong dải ngày")
+                    .font(.caption.weight(.semibold))
+                    .foregroundColor(SemanticColors.textPrimary)
+            }
+            .tint(theme.primary)
+            .padding(10)
+            .background(Color(hex: 0xF8FAFC))
+            .cornerRadius(10)
+
+            if let err = rangeErrorMessage ?? preview.errorMessage {
+                Text(err)
+                    .font(.caption)
+                    .foregroundColor(SemanticColors.dangerText)
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(SemanticColors.dangerBg)
+                    .cornerRadius(8)
+            } else {
+                HStack {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundColor(SemanticColors.successText)
+                    Text("Sẽ tạo \(preview.days.count) ngày nghỉ (\(LeaveContract.formatIsoDateVi(startIso)) → \(LeaveContract.formatIsoDateVi(endIso))) • Loại: \(LeaveContract.leaveTypeShortLabel(rangeLeaveType))")
+                        .font(.caption.weight(.semibold))
+                        .foregroundColor(SemanticColors.successText)
+                }
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(SemanticColors.successBg)
+                .cornerRadius(8)
+            }
+
+            Button {
+                let ok = viewModel.applyLeaveDraftDateRange(
+                    startDateIso: startIso,
+                    endDateIso: endIso,
+                    leaveType: rangeLeaveType,
+                    skipSundays: rangeSkipSundays
+                )
+                if ok {
+                    onApplied()
+                } else {
+                    rangeErrorMessage = viewModel.leaveMutationError
+                }
+            } label: {
+                Text(preview.days.isEmpty ? "Áp dụng dải ngày" : "Áp dụng dải ngày (\(preview.days.count) ngày)")
+                    .font(.subheadline.weight(.bold))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 12)
+                    .background(preview.days.isEmpty ? Color.gray : theme.primary)
+                    .foregroundColor(.white)
+                    .cornerRadius(10)
+            }
+            .disabled(preview.days.isEmpty)
+        }
+    }
+
+    private func formatDateIso(_ date: Date) -> String {
+        let df = DateFormatter()
+        df.locale = Locale(identifier: "en_US_POSIX")
+        df.timeZone = TimeZone(identifier: "Asia/Ho_Chi_Minh") ?? .current
+        df.dateFormat = "yyyy-MM-dd"
+        return df.string(from: date)
     }
 
     // MARK: - Helpers

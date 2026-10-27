@@ -865,6 +865,83 @@ object LeaveContract {
         return eval.blockingErrors.firstOrNull()
     }
 
+    fun nextIsoDateAfter(isoDate: String): String {
+        val trimmed = isoDate.trim()
+        if (!isValidIsoDate(trimmed)) {
+            return todayVietnamIsoDate()
+        }
+        return runCatching {
+            val sdf = SimpleDateFormat("yyyy-MM-dd", Locale.US).apply {
+                isLenient = false
+                timeZone = TimeZone.getTimeZone("UTC")
+            }
+            val parsed = sdf.parse(trimmed) ?: return@runCatching trimmed
+            val cal = Calendar.getInstance(TimeZone.getTimeZone("UTC")).apply {
+                time = parsed
+                add(Calendar.DAY_OF_MONTH, 1)
+            }
+            sdf.format(cal.time)
+        }.getOrDefault(trimmed)
+    }
+
+    fun generateDraftDaysFromRange(
+        startDateIso: String,
+        endDateIso: String,
+        leaveType: String = "ANNUAL",
+        sessionCode: String = "FULL",
+        skipSundays: Boolean = false
+    ): Pair<List<LeaveDraftDayInput>, String?> {
+        val cleanStart = startDateIso.trim()
+        val cleanEnd = endDateIso.trim()
+        val cleanType = leaveType.trim().uppercase(Locale.ROOT).let {
+            if (it in LEAVE_TYPES) it else "ANNUAL"
+        }
+        val cleanSession = sessionCode.trim().uppercase(Locale.ROOT).let {
+            if (it in SESSION_CODES) it else "FULL"
+        }
+        if (!isValidIsoDate(cleanStart) || !isValidIsoDate(cleanEnd)) {
+            return emptyList<LeaveDraftDayInput>() to "Định dạng ngày không hợp lệ (YYYY-MM-DD)."
+        }
+        if (cleanEnd < cleanStart) {
+            return emptyList<LeaveDraftDayInput>() to "Đến ngày phải lớn hơn hoặc bằng Từ ngày."
+        }
+        val sdf = SimpleDateFormat("yyyy-MM-dd", Locale.US).apply {
+            isLenient = false
+            timeZone = TimeZone.getTimeZone("UTC")
+        }
+        val startDate = sdf.parse(cleanStart)
+            ?: return emptyList<LeaveDraftDayInput>() to "Không thể đọc Từ ngày."
+        val endDate = sdf.parse(cleanEnd)
+            ?: return emptyList<LeaveDraftDayInput>() to "Không thể đọc Đến ngày."
+        val cal = Calendar.getInstance(TimeZone.getTimeZone("UTC")).apply {
+            time = startDate
+        }
+        val result = mutableListOf<LeaveDraftDayInput>()
+        var steps = 0
+        while (!cal.time.after(endDate)) {
+            if (steps >= 60) {
+                return emptyList<LeaveDraftDayInput>() to "Dải ngày nghỉ một lần không được vượt quá 60 ngày liên tiếp."
+            }
+            val weekday = cal.get(Calendar.DAY_OF_WEEK) // 1 = Sunday
+            if (!(skipSundays && weekday == Calendar.SUNDAY)) {
+                val iso = sdf.format(cal.time)
+                result.add(
+                    LeaveDraftDayInput(
+                        leaveDate = iso,
+                        sessionCode = cleanSession,
+                        leaveType = cleanType
+                    )
+                )
+            }
+            cal.add(Calendar.DAY_OF_MONTH, 1)
+            steps += 1
+        }
+        if (result.isEmpty()) {
+            return emptyList<LeaveDraftDayInput>() to "Không có ngày làm việc nào trong khoảng đã chọn."
+        }
+        return result to null
+    }
+
     private fun JSONObject.optNullableString(key: String): String? {
         if (!has(key) || isNull(key)) return null
         return optString(key, "").trim().ifEmpty { null }

@@ -2055,6 +2055,22 @@ class WorkReportsReportingAndAttendanceContractTest {
                 vm.resolveVisibleAttendanceTabs()
             )
 
+            // Date range generator (From -> To) creates consecutive leave days and supports skipSundays
+            assertEquals("2026-11-02", LeaveContract.nextIsoDateAfter("2026-11-01"))
+            val (rangeDays, rangeErr) = LeaveContract.generateDraftDaysFromRange(
+                startDateIso = "2026-10-30",
+                endDateIso = "2026-11-02",
+                leaveType = "ANNUAL",
+                skipSundays = true
+            )
+            assertNull(rangeErr)
+            assertEquals(listOf("2026-10-30", "2026-10-31", "2026-11-02"), rangeDays.map { it.leaveDate })
+            assertTrue(vm.applyLeaveDraftDateRange("2026-10-30", "2026-11-02", leaveType = "ANNUAL", skipSundays = true))
+            assertEquals(3, vm.leaveDraftDays.size)
+            assertFalse(vm.applyLeaveDraftDateRange("2026-11-05", "2026-11-02"))
+            assertNotNull(vm.leaveMutationError.value)
+            vm.clearLeaveMessages()
+
             // Switch to LEAVE_APPROVAL tab -> loads inbox
             vm.selectAttendanceTab(AttendanceAreaTab.LEAVE_APPROVAL)
             attempts = 0

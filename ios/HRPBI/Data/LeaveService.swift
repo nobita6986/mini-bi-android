@@ -1337,6 +1337,62 @@ public enum LeaveContract {
         return df.string(from: next)
     }
 
+    public static func generateDraftDaysFromRange(
+        startDateIso: String,
+        endDateIso: String,
+        leaveType: String = "ANNUAL",
+        sessionCode: String = "FULL",
+        skipSundays: Bool = false
+    ) -> (days: [LeaveDraftDayInput], errorMessage: String?) {
+        let startTrimmed = startDateIso.trimmingCharacters(in: .whitespacesAndNewlines)
+        let endTrimmed = endDateIso.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard isValidIsoDate(startTrimmed) && isValidIsoDate(endTrimmed) else {
+            return ([], "Vui lòng chọn Từ ngày và Đến ngày hợp lệ (YYYY-MM-DD).")
+        }
+        let df = DateFormatter()
+        df.locale = Locale(identifier: "en_US_POSIX")
+        df.timeZone = TimeZone(secondsFromGMT: 0)
+        df.dateFormat = "yyyy-MM-dd"
+        guard let startDate = df.date(from: startTrimmed),
+              let endDate = df.date(from: endTrimmed) else {
+            return ([], "Vui lòng chọn Từ ngày và Đến ngày hợp lệ.")
+        }
+        if endDate < startDate {
+            return ([], "Ngày kết thúc phải lớn hơn hoặc bằng ngày bắt đầu.")
+        }
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone(secondsFromGMT: 0)!
+        let diffDays = (cal.dateComponents([.day], from: startDate, to: endDate).day ?? 0) + 1
+        if diffDays > 60 {
+            return ([], "Dải ngày nghỉ không được vượt quá 60 ngày trong một lần chọn.")
+        }
+        let normType = leaveType.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        let safeType = leaveTypes.contains(normType) ? normType : "ANNUAL"
+        let normSession = sessionCode.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        let safeSession = sessionCodes.contains(normSession) ? normSession : "FULL"
+
+        var rows: [LeaveDraftDayInput] = []
+        var cursor = startDate
+        while cursor <= endDate {
+            let weekday = cal.component(.weekday, from: cursor)
+            if !(skipSundays && weekday == 1) {
+                rows.append(
+                    LeaveDraftDayInput(
+                        leaveDate: df.string(from: cursor),
+                        sessionCode: safeSession,
+                        leaveType: safeType
+                    )
+                )
+            }
+            guard let next = cal.date(byAdding: .day, value: 1, to: cursor) else { break }
+            cursor = next
+        }
+        if rows.isEmpty {
+            return ([], "Dải ngày đã chọn chỉ có Chủ nhật. Vui lòng chọn khoảng ngày khác hoặc tắt tùy chọn bỏ qua Chủ nhật.")
+        }
+        return (rows, nil)
+    }
+
     public static func newClientIdempotencyKey(_ prefix: String) -> String {
         let cleanPrefix = prefix.trimmingCharacters(in: .whitespacesAndNewlines)
         return "\(cleanPrefix)-\(UUID().uuidString.lowercased())"

@@ -1,4 +1,108 @@
 import SwiftUI
+import UIKit
+
+// MARK: - Universal Keyboard Dismissal Utilities
+
+public enum KeyboardDismissal {
+    public static func dismiss() {
+        UIApplication.shared.sendAction(
+            #selector(UIResponder.resignFirstResponder),
+            to: nil,
+            from: nil,
+            for: nil
+        )
+    }
+}
+
+private final class NonCancelingKeyboardDismissGesture: UITapGestureRecognizer, UIGestureRecognizerDelegate {
+    override init(target: Any?, action: Selector?) {
+        super.init(target: target, action: action)
+        self.cancelsTouchesInView = false
+        self.delaysTouchesBegan = false
+        self.delaysTouchesEnded = false
+        self.delegate = self
+    }
+
+    @objc func handleTap(_ recognizer: UITapGestureRecognizer) {
+        if recognizer.state == .ended {
+            KeyboardDismissal.dismiss()
+        }
+    }
+
+    func gestureRecognizer(
+        _ gestureRecognizer: UIGestureRecognizer,
+        shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
+    ) -> Bool {
+        true
+    }
+
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+        var current: UIView? = touch.view
+        while let view = current {
+            if view is UITextField || view is UITextView {
+                return false
+            }
+            let typeName = String(describing: type(of: view))
+            if typeName.contains("Keyboard") || typeName.contains("InputSet") {
+                return false
+            }
+            current = view.superview
+        }
+        return true
+    }
+}
+
+private struct WindowTapKeyboardDismissInstaller: UIViewRepresentable {
+    func makeUIView(context: Context) -> UIView {
+        let view = PassthroughInstallerView()
+        view.backgroundColor = .clear
+        view.isUserInteractionEnabled = false
+        return view
+    }
+
+    func updateUIView(_ uiView: UIView, context: Context) {
+        (uiView as? PassthroughInstallerView)?.installIfNeeded()
+    }
+
+    private final class PassthroughInstallerView: UIView {
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            installIfNeeded()
+        }
+
+        func installIfNeeded() {
+            if let win = self.window {
+                attachRecognizer(to: win)
+            }
+            var responder: UIResponder? = self.next
+            while let r = responder {
+                if let vc = r as? UIViewController, let rootView = vc.view {
+                    attachRecognizer(to: rootView)
+                    break
+                }
+                responder = r.next
+            }
+        }
+
+        private func attachRecognizer(to targetView: UIView) {
+            let alreadyInstalled = (targetView.gestureRecognizers ?? []).contains {
+                $0 is NonCancelingKeyboardDismissGesture
+            }
+            guard !alreadyInstalled else { return }
+            let gesture = NonCancelingKeyboardDismissGesture(target: nil, action: nil)
+            gesture.addTarget(gesture, action: #selector(NonCancelingKeyboardDismissGesture.handleTap(_:)))
+            targetView.addGestureRecognizer(gesture)
+        }
+    }
+}
+
+public extension View {
+    func dismissKeyboardOnTapOutside() -> some View {
+        self
+            .background(WindowTapKeyboardDismissInstaller().frame(width: 0, height: 0))
+            .scrollDismissesKeyboard(.interactively)
+    }
+}
 
 // MARK: - Mini BI Theme Palettes & Semantic Colors
 // Mirrors Android's `ui/theme/Color.kt` 100%

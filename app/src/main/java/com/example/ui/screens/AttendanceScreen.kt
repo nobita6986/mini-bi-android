@@ -1409,6 +1409,21 @@ private fun LeaveRequestTabContent(
                     onUpdateDayType = { id, leaveType -> viewModel.updateLeaveDraftDayType(id, leaveType) },
                     onSplitDayToHalfDays = { id -> viewModel.splitLeaveDraftDayToHalfDays(id) },
                     onAutoAllocateByBalance = { viewModel.autoAllocateLeaveDraftDaysByBalance() },
+                    onApplyDateRange = { startIso, endIso, leaveType, skipSundays ->
+                        viewModel.applyLeaveDraftDateRange(
+                            startDateIso = startIso,
+                            endDateIso = endIso,
+                            leaveType = leaveType,
+                            skipSundays = skipSundays
+                        )
+                    },
+                    onChooseAnyIsoDate = { initialIso, onPicked ->
+                        openIsoDatePicker(
+                            context = context,
+                            initialIsoDate = initialIso,
+                            onDatePicked = onPicked
+                        )
+                    },
                     onUpdateReason = { viewModel.updateLeaveDraftReason(it) },
                     onSubmit = { viewModel.submitLeaveRequest() }
                 )
@@ -1840,6 +1855,8 @@ private fun LeaveCreateRequestFormCard(
     onUpdateDayType: (String, String) -> Unit,
     onSplitDayToHalfDays: (String) -> Unit,
     onAutoAllocateByBalance: () -> Unit,
+    onApplyDateRange: (String, String, String, Boolean) -> Boolean = { _, _, _, _ -> false },
+    onChooseAnyIsoDate: (String, (String) -> Unit) -> Unit = { _, _ -> },
     onUpdateReason: (String) -> Unit,
     onSubmit: () -> Unit
 ) {
@@ -1851,6 +1868,21 @@ private fun LeaveCreateRequestFormCard(
             availableUnits = summary.balance.availableUnits
         )
     }
+    var showDateRangeDialog by remember { mutableStateOf(false) }
+    var rangeStartIso by remember { mutableStateOf(draftDays.firstOrNull()?.leaveDate ?: summary.asOfDate) }
+    var rangeEndIso by remember {
+        mutableStateOf(
+            draftDays.lastOrNull()?.leaveDate
+                ?: LeaveContract.nextIsoDateAfter(draftDays.firstOrNull()?.leaveDate ?: summary.asOfDate)
+        )
+    }
+    var rangeLeaveType by remember {
+        mutableStateOf(
+            draftDays.firstOrNull()?.leaveType
+                ?: if (summary.balance.availableUnits > 0) "ANNUAL" else "UNPAID"
+        )
+    }
+    var rangeSkipSundays by remember { mutableStateOf(false) }
 
     Card(
         modifier = Modifier
@@ -1913,6 +1945,51 @@ private fun LeaveCreateRequestFormCard(
                     )
                 }
                 return@Column
+            }
+
+            Surface(
+                shape = RoundedCornerShape(12.dp),
+                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .clickable(enabled = !busy) {
+                        val firstIso = draftDays.firstOrNull()?.leaveDate ?: summary.asOfDate
+                        val lastIso = draftDays.lastOrNull()?.leaveDate ?: LeaveContract.nextIsoDateAfter(firstIso)
+                        rangeStartIso = firstIso
+                        rangeEndIso = if (lastIso >= firstIso) lastIso else LeaveContract.nextIsoDateAfter(firstIso)
+                        rangeLeaveType = draftDays.firstOrNull()?.leaveType
+                            ?: if (summary.balance.availableUnits > 0) "ANNUAL" else "UNPAID"
+                        showDateRangeDialog = true
+                    }
+                    .testTag("leave_open_date_range_button")
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.CalendarMonth,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Chọn nhanh theo dải ngày (Từ ngày → Đến ngày)",
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Text(
+                            text = "Tự động tạo danh sách nhiều ngày nghỉ liên tiếp chỉ trong 1 lần chọn",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
             }
 
             draftDays.forEachIndexed { index, day ->
@@ -2180,19 +2257,186 @@ private fun LeaveCreateRequestFormCard(
                 }
             }
 
-            OutlinedButton(
-                onClick = onAddDay,
-                enabled = !busy && draftDays.size < 120,
-                shape = RoundedCornerShape(12.dp),
-                modifier = Modifier.testTag("leave_add_day_button")
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Icon(
-                    imageVector = Icons.Default.Add,
-                    contentDescription = null,
-                    modifier = Modifier.size(18.dp)
-                )
-                Spacer(modifier = Modifier.width(6.dp))
-                Text("Thêm dòng ngày/buổi nghỉ")
+                OutlinedButton(
+                    onClick = onAddDay,
+                    enabled = !busy && draftDays.size < 120,
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier
+                        .weight(1f)
+                        .testTag("leave_add_day_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Add,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Thêm 1 ngày kế tiếp")
+                }
+
+                OutlinedButton(
+                    onClick = {
+                        val firstIso = draftDays.firstOrNull()?.leaveDate ?: summary.asOfDate
+                        val lastIso = draftDays.lastOrNull()?.leaveDate ?: LeaveContract.nextIsoDateAfter(firstIso)
+                        rangeStartIso = firstIso
+                        rangeEndIso = if (lastIso >= firstIso) lastIso else LeaveContract.nextIsoDateAfter(firstIso)
+                        showDateRangeDialog = true
+                    },
+                    enabled = !busy,
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.testTag("leave_add_date_range_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.CalendarMonth,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Chọn dải ngày")
+                }
+            }
+
+            if (showDateRangeDialog) {
+                val (previewDays, previewErr) = remember(rangeStartIso, rangeEndIso, rangeLeaveType, rangeSkipSundays) {
+                    LeaveContract.generateDraftDaysFromRange(
+                        startDateIso = rangeStartIso,
+                        endDateIso = rangeEndIso,
+                        leaveType = rangeLeaveType,
+                        sessionCode = "FULL",
+                        skipSundays = rangeSkipSundays
+                    )
+                }
+                Dialog(
+                    onDismissRequest = { showDateRangeDialog = false },
+                    properties = DialogProperties(usePlatformDefaultWidth = false)
+                ) {
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth(0.95f)
+                            .testTag("leave_date_range_dialog"),
+                        shape = RoundedCornerShape(20.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                        elevation = CardDefaults.cardElevation(defaultElevation = 6.dp)
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(18.dp),
+                            verticalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            Text(
+                                text = "Chọn dải ngày nghỉ phép",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                OutlinedTextField(
+                                    value = rangeStartIso,
+                                    onValueChange = { rangeStartIso = it.trim() },
+                                    label = { Text("Từ ngày") },
+                                    singleLine = true,
+                                    trailingIcon = {
+                                        IconButton(onClick = {
+                                            onChooseAnyIsoDate(rangeStartIso) { picked ->
+                                                rangeStartIso = picked
+                                                if (rangeEndIso < picked) {
+                                                    rangeEndIso = picked
+                                                }
+                                            }
+                                        }) {
+                                            Icon(Icons.Default.CalendarMonth, contentDescription = "Chọn từ ngày")
+                                        }
+                                    },
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .testTag("leave_range_start_input")
+                                )
+                                OutlinedTextField(
+                                    value = rangeEndIso,
+                                    onValueChange = { rangeEndIso = it.trim() },
+                                    label = { Text("Đến ngày") },
+                                    singleLine = true,
+                                    trailingIcon = {
+                                        IconButton(onClick = {
+                                            onChooseAnyIsoDate(rangeEndIso) { picked ->
+                                                rangeEndIso = picked
+                                            }
+                                        }) {
+                                            Icon(Icons.Default.CalendarMonth, contentDescription = "Chọn đến ngày")
+                                        }
+                                    },
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .testTag("leave_range_end_input")
+                                )
+                            }
+
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                LeaveContract.LEAVE_TYPES.forEach { typeCode ->
+                                    FilterChip(
+                                        selected = rangeLeaveType == typeCode,
+                                        onClick = { rangeLeaveType = typeCode },
+                                        label = { Text(LeaveContract.leaveTypeShortLabel(typeCode)) }
+                                    )
+                                }
+                            }
+
+                            FilterChip(
+                                selected = rangeSkipSundays,
+                                onClick = { rangeSkipSundays = !rangeSkipSundays },
+                                label = { Text("Bỏ qua ngày Chủ nhật trong dải ngày") }
+                            )
+
+                            if (previewErr != null) {
+                                Text(
+                                    text = previewErr,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.error
+                                )
+                            } else {
+                                Text(
+                                    text = "Sẽ tạo ${previewDays.size} ngày nghỉ (${LeaveContract.formatHalfDayUnits(previewDays.size * 2)}): từ ${LeaveContract.formatIsoDateVi(rangeStartIso)} đến ${LeaveContract.formatIsoDateVi(rangeEndIso)}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = SemanticColors.SuccessLight
+                                )
+                            }
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End)
+                            ) {
+                                TextButton(onClick = { showDateRangeDialog = false }) {
+                                    Text("Đóng")
+                                }
+                                Button(
+                                    onClick = {
+                                        if (onApplyDateRange(rangeStartIso, rangeEndIso, rangeLeaveType, rangeSkipSundays)) {
+                                            showDateRangeDialog = false
+                                        }
+                                    },
+                                    enabled = previewErr == null && previewDays.isNotEmpty(),
+                                    modifier = Modifier.testTag("leave_range_apply_button")
+                                ) {
+                                    Text("Áp dụng ${previewDays.size} ngày")
+                                }
+                            }
+                        }
+                    }
+                }
             }
 
             OutlinedTextField(

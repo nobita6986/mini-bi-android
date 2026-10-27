@@ -20,6 +20,7 @@ public struct DashboardScreen: View {
                     ForEach(DashboardSubTab.allCases) { tab in
                         let isSelected = viewModel.selectedDashboardSubTab == tab
                         Button {
+                            KeyboardDismissal.dismiss()
                             viewModel.selectedDashboardSubTab = tab
                         } label: {
                             Text(tab.titleVi)
@@ -83,6 +84,7 @@ public struct DashboardScreen: View {
             }
         }
         .background(theme.background)
+        .dismissKeyboardOnTapOutside()
         .sheet(item: $viewModel.selectedCccdReviewItem) { item in
             CccdReviewDetailSheet(viewModel: viewModel, item: item)
         }
@@ -345,11 +347,14 @@ public struct DashboardScreen: View {
                 Image(systemName: "magnifyingglass")
                     .foregroundColor(SemanticColors.textMuted)
                 TextField("Tìm theo số CCCD hoặc họ tên...", text: $viewModel.duplicateSearchQuery)
+                    .submitLabel(.search)
                     .foregroundColor(SemanticColors.textPrimary)
                     .onSubmit {
+                        KeyboardDismissal.dismiss()
                         Task { await viewModel.loadDashboardData() }
                     }
                 Button("Tìm") {
+                    KeyboardDismissal.dismiss()
                     Task { await viewModel.loadDashboardData() }
                 }
                 .font(.caption.weight(.bold))
@@ -570,11 +575,14 @@ public struct CccdReviewSectionView: View {
                 Image(systemName: "magnifyingglass")
                     .foregroundColor(SemanticColors.textMuted)
                 TextField("Tìm mã NLĐ, họ tên, số CCCD...", text: $viewModel.cccdReviewSearchQuery)
+                    .submitLabel(.search)
                     .foregroundColor(SemanticColors.textPrimary)
                     .onSubmit {
+                        KeyboardDismissal.dismiss()
                         Task { await viewModel.loadCccdReviewItems() }
                     }
                 Button("Lọc") {
+                    KeyboardDismissal.dismiss()
                     Task { await viewModel.loadCccdReviewItems() }
                 }
                 .font(.caption.weight(.bold))
@@ -779,6 +787,7 @@ public struct CccdReviewDetailSheet: View {
                             .font(.subheadline.weight(.bold))
 
                         TextField("Số CCCD chuẩn (12 chữ số)...", text: $correctedCccdInput)
+                            .submitLabel(.done)
                             .foregroundColor(SemanticColors.textPrimary)
                             .keyboardType(.numberPad)
                             .padding(10)
@@ -786,6 +795,7 @@ public struct CccdReviewDetailSheet: View {
                             .cornerRadius(8)
 
                         TextField("Ghi chú duyệt / lý do...", text: $reviewNoteInput)
+                            .submitLabel(.done)
                             .foregroundColor(SemanticColors.textPrimary)
                             .padding(10)
                             .background(Color(hex: 0xF8FAFC))
@@ -793,6 +803,7 @@ public struct CccdReviewDetailSheet: View {
 
                         HStack(spacing: 10) {
                             Button {
+                                KeyboardDismissal.dismiss()
                                 Task {
                                     await viewModel.resolveCccdReview(
                                         entryId: item.entryId,
@@ -812,6 +823,7 @@ public struct CccdReviewDetailSheet: View {
                             }
 
                             Button {
+                                KeyboardDismissal.dismiss()
                                 Task {
                                     await viewModel.resolveCccdReview(
                                         entryId: item.entryId,
@@ -833,6 +845,7 @@ public struct CccdReviewDetailSheet: View {
                         }
 
                         Button {
+                            KeyboardDismissal.dismiss()
                             Task {
                                 await viewModel.retryCccdQrExtraction(entryId: item.entryId)
                             }
@@ -856,11 +869,15 @@ public struct CccdReviewDetailSheet: View {
                 .padding(14)
             }
             .background(theme.background)
+            .dismissKeyboardOnTapOutside()
             .navigationTitle("Chi tiết duyệt CCCD")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Đóng") { dismiss() }
+                    Button("Đóng") {
+                        KeyboardDismissal.dismiss()
+                        dismiss()
+                    }
                 }
             }
             .onAppear {

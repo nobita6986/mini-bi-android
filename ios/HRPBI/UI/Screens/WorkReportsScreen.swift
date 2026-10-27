@@ -21,6 +21,7 @@ public struct WorkReportsScreen: View {
                         let isSelected = viewModel.selectedWorkReportsSubTab == tab
                         let countBadge = badgeCount(for: tab)
                         Button {
+                            KeyboardDismissal.dismiss()
                             viewModel.selectedWorkReportsSubTab = tab
                         } label: {
                             HStack(spacing: 6) {
@@ -87,6 +88,7 @@ public struct WorkReportsScreen: View {
             }
         }
         .background(theme.background)
+        .dismissKeyboardOnTapOutside()
         .onAppear {
             if viewModel.workReportObligations.isEmpty {
                 Task { await viewModel.loadWorkReportsData() }
@@ -566,6 +568,7 @@ public struct WorkReportEditorSheet: View {
                                             .disabled(isReadOnly)
                                         } else {
                                             TextField(field.placeholder ?? "Nhập nội dung...", text: binding)
+                                                .submitLabel(.done)
                                                 .disabled(isReadOnly)
                                                 .foregroundColor(SemanticColors.textPrimary)
                                                 .padding(10)
@@ -588,6 +591,7 @@ public struct WorkReportEditorSheet: View {
                                             ForEach(field.options) { opt in
                                                 let isSel = selectedSet.contains(opt.value)
                                                 Button {
+                                                    KeyboardDismissal.dismiss()
                                                     guard !isReadOnly else { return }
                                                     var next = selectedSet
                                                     if isSel { next.remove(opt.value) } else { next.insert(opt.value) }
@@ -614,6 +618,7 @@ public struct WorkReportEditorSheet: View {
 
                                     case "date":
                                         TextField(field.placeholder ?? "YYYY-MM-DD hoặc DD/MM/YYYY", text: binding)
+                                            .submitLabel(.done)
                                             .disabled(isReadOnly)
                                             .foregroundColor(SemanticColors.textPrimary)
                                             .padding(10)
@@ -626,6 +631,7 @@ public struct WorkReportEditorSheet: View {
 
                                     default:
                                         TextField(field.placeholder ?? "Nhập nội dung...", text: binding)
+                                            .submitLabel(.done)
                                             .disabled(isReadOnly)
                                             .foregroundColor(SemanticColors.textPrimary)
                                             .keyboardType(field.type == "number" ? .decimalPad : .default)
@@ -649,6 +655,7 @@ public struct WorkReportEditorSheet: View {
                     if !isReadOnly {
                         HStack(spacing: 12) {
                             Button {
+                                KeyboardDismissal.dismiss()
                                 Task {
                                     await viewModel.saveWorkReportDraft()
                                 }
@@ -667,6 +674,7 @@ public struct WorkReportEditorSheet: View {
                             .disabled(viewModel.isSavingWorkReport)
 
                             Button {
+                                KeyboardDismissal.dismiss()
                                 Task {
                                     await viewModel.submitWorkReportFinal()
                                 }
@@ -692,11 +700,13 @@ public struct WorkReportEditorSheet: View {
                 .padding(14)
             }
             .background(theme.background)
+            .dismissKeyboardOnTapOutside()
             .navigationTitle(isReadOnly ? "Xem báo cáo công việc" : "Lập báo cáo công việc")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Đóng") {
+                        KeyboardDismissal.dismiss()
                         viewModel.closeObligationEditor()
                         dismiss()
                     }
@@ -762,12 +772,14 @@ struct WorkReportReviewDetailSheet: View {
                         Text("Nhận xét phê duyệt / Lý do từ chối")
                             .font(.subheadline.weight(.bold))
                         TextField("Nhập ý kiến phản hồi...", text: $commentInput)
+                            .submitLabel(.done)
                             .padding(10)
                             .background(Color(hex: 0xF8FAFC))
                             .cornerRadius(8)
 
                         HStack(spacing: 12) {
                             Button {
+                                KeyboardDismissal.dismiss()
                                 Task {
                                     await viewModel.submitWorkReportReviewDecision(
                                         review: review,
@@ -787,6 +799,7 @@ struct WorkReportReviewDetailSheet: View {
                             }
 
                             Button {
+                                KeyboardDismissal.dismiss()
                                 Task {
                                     await viewModel.submitWorkReportReviewDecision(
                                         review: review,
@@ -813,11 +826,15 @@ struct WorkReportReviewDetailSheet: View {
                 .padding(14)
             }
             .background(theme.background)
+            .dismissKeyboardOnTapOutside()
             .navigationTitle("Duyệt báo cáo")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Đóng") { dismiss() }
+                    Button("Đóng") {
+                        KeyboardDismissal.dismiss()
+                        dismiss()
+                    }
                 }
             }
         }

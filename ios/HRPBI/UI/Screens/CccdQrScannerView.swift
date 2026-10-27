@@ -112,11 +112,14 @@ public struct CccdQrScannerSheet: View {
                         .foregroundColor(SemanticColors.textSecondary)
                     HStack {
                         TextField("034098001234||Nguyễn Văn A|...", text: $manualQrInput)
+                            .submitLabel(.done)
                             .font(.caption)
+                            .foregroundColor(SemanticColors.textPrimary)
                             .padding(10)
                             .background(Color(hex: 0xF8FAFC))
                             .cornerRadius(8)
                         Button("Áp dụng") {
+                            KeyboardDismissal.dismiss()
                             handleRawCandidate(manualQrInput)
                         }
                         .font(.caption.weight(.bold))
@@ -132,11 +135,15 @@ public struct CccdQrScannerSheet: View {
                 Spacer()
             }
             .padding(.top, 12)
+            .dismissKeyboardOnTapOutside()
             .navigationTitle("Quét mã QR CCCD")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Đóng") { dismiss() }
+                    Button("Đóng") {
+                        KeyboardDismissal.dismiss()
+                        dismiss()
+                    }
                 }
             }
         }

@@ -1060,6 +1060,29 @@ public final class MiniBiViewModel: ObservableObject {
         )
     }
 
+    @discardableResult
+    public func applyLeaveDraftDateRange(
+        startDateIso: String,
+        endDateIso: String,
+        leaveType: String,
+        skipSundays: Bool = false
+    ) -> Bool {
+        leaveMutationError = nil
+        let res = LeaveContract.generateDraftDaysFromRange(
+            startDateIso: startDateIso,
+            endDateIso: endDateIso,
+            leaveType: leaveType,
+            sessionCode: "FULL",
+            skipSundays: skipSundays
+        )
+        if let err = res.errorMessage {
+            leaveMutationError = err
+            return false
+        }
+        leaveDraftDays = res.days
+        return true
+    }
+
     public func updateLeaveDraftReason(_ reason: String) {
         leaveMutationError = nil
         leaveDraftReason = reason

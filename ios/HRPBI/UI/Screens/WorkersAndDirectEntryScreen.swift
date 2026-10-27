@@ -33,6 +33,7 @@ public struct DirectEntryNewWorkersScreen: View {
                 Spacer()
 
                 Button {
+                    KeyboardDismissal.dismiss()
                     Task {
                         await viewModel.loadDirectEntryBatchHistory()
                         showBatchHistorySheet = true
@@ -51,6 +52,7 @@ public struct DirectEntryNewWorkersScreen: View {
                 }
 
                 Button {
+                    KeyboardDismissal.dismiss()
                     viewModel.addNewWorkerDraftRow()
                 } label: {
                     HStack(spacing: 4) {
@@ -66,6 +68,7 @@ public struct DirectEntryNewWorkersScreen: View {
                 }
 
                 Button {
+                    KeyboardDismissal.dismiss()
                     Task {
                         await viewModel.submitNewWorkerDraftBatch(confirmedDuplicates: false)
                     }
@@ -101,6 +104,7 @@ public struct DirectEntryNewWorkersScreen: View {
                             draft: draft,
                             viewModel: viewModel,
                             onScanQrTap: {
+                                KeyboardDismissal.dismiss()
                                 activeQrScannerRowId = draft.rowId
                             }
                         )
@@ -110,6 +114,7 @@ public struct DirectEntryNewWorkersScreen: View {
             }
         }
         .background(theme.background)
+        .dismissKeyboardOnTapOutside()
         .onAppear {
             if viewModel.directEntryOptions.catalogProjects.isEmpty {
                 Task { await viewModel.loadDirectEntryAssigneeOptions() }
@@ -219,6 +224,7 @@ struct NewWorkerDraftRowCard: View {
                     .font(.caption2.weight(.semibold))
                     .foregroundColor(SemanticColors.textSecondary)
                 Button {
+                    KeyboardDismissal.dismiss()
                     showProjectSearchSheet = true
                 } label: {
                     HStack {
@@ -293,6 +299,7 @@ struct NewWorkerDraftRowCard: View {
                         .font(.caption2.weight(.semibold))
                         .foregroundColor(SemanticColors.textSecondary)
                     Button {
+                        KeyboardDismissal.dismiss()
                         showRecruiterSearchSheet = true
                     } label: {
                         HStack {
@@ -819,6 +826,7 @@ struct NewWorkerDraftRowCard: View {
                             .font(.caption2.weight(.semibold))
                             .foregroundColor(SemanticColors.textSecondary)
                         Button {
+                            KeyboardDismissal.dismiss()
                             showBankSearchSheet = true
                         } label: {
                             HStack {
@@ -996,6 +1004,7 @@ struct NewWorkerDraftRowCard: View {
                 text: Binding(get: { value }, set: { onChange($0) })
             )
             .keyboardType(keyboard)
+            .submitLabel(.done)
             .font(.caption)
             .foregroundColor(SemanticColors.textPrimary)
             .padding(9)
@@ -1033,6 +1042,7 @@ struct DirectEntrySearchablePickerSheet: View {
                     Image(systemName: "magnifyingglass")
                         .foregroundColor(SemanticColors.textMuted)
                     TextField(placeholder, text: $searchText)
+                        .submitLabel(.search)
                         .font(.subheadline)
                         .foregroundColor(SemanticColors.textPrimary)
                 }
@@ -1044,6 +1054,7 @@ struct DirectEntrySearchablePickerSheet: View {
                 List {
                     if allowCustomInput && !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && filtered.isEmpty {
                         Button {
+                            KeyboardDismissal.dismiss()
                             let val = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
                             onSelect(val, val)
                             dismiss()
@@ -1056,6 +1067,7 @@ struct DirectEntrySearchablePickerSheet: View {
 
                     ForEach(Array(filtered.enumerated()), id: \.offset) { _, item in
                         Button {
+                            KeyboardDismissal.dismiss()
                             onSelect(item.id, item.label)
                             dismiss()
                         } label: {
@@ -1070,11 +1082,15 @@ struct DirectEntrySearchablePickerSheet: View {
                 }
                 .listStyle(.plain)
             }
+            .dismissKeyboardOnTapOutside()
             .navigationTitle(title)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Đóng") { dismiss() }
+                    Button("Đóng") {
+                        KeyboardDismissal.dismiss()
+                        dismiss()
+                    }
                 }
             }
         }
@@ -1403,9 +1419,11 @@ public struct WorkersScreen: View {
                     Image(systemName: "magnifyingglass")
                         .foregroundColor(SemanticColors.textMuted)
                     TextField("Tìm họ tên, mã NLĐ, CCCD, SĐT...", text: $viewModel.workerSearchQuery)
+                        .submitLabel(.search)
                         .font(.caption)
                         .foregroundColor(SemanticColors.textPrimary)
                         .onSubmit {
+                            KeyboardDismissal.dismiss()
                             Task { await viewModel.loadWorkers(resetPage: true) }
                         }
                 }
@@ -1414,6 +1432,7 @@ public struct WorkersScreen: View {
                 .cornerRadius(8)
 
                 Button("Tìm") {
+                    KeyboardDismissal.dismiss()
                     Task { await viewModel.loadWorkers(resetPage: true) }
                 }
                 .font(.caption.weight(.bold))
@@ -1516,6 +1535,7 @@ public struct WorkersScreen: View {
             }
         }
         .background(theme.background)
+        .dismissKeyboardOnTapOutside()
         .onAppear {
             if viewModel.workers.isEmpty {
                 Task { await viewModel.loadWorkers(resetPage: true) }
@@ -1646,24 +1666,29 @@ struct WorkerDetailSheet: View {
                             .font(.headline)
 
                         TextField("Số điện thoại", text: $editedPhone)
+                            .keyboardType(.phonePad)
+                            .submitLabel(.done)
                             .foregroundColor(SemanticColors.textPrimary)
                             .padding(9)
                             .background(Color(hex: 0xF8FAFC))
                             .cornerRadius(8)
 
                         TextField("Dự án", text: $editedProject)
+                            .submitLabel(.done)
                             .foregroundColor(SemanticColors.textPrimary)
                             .padding(9)
                             .background(Color(hex: 0xF8FAFC))
                             .cornerRadius(8)
 
                         TextField("Trạng thái", text: $editedStatus)
+                            .submitLabel(.done)
                             .foregroundColor(SemanticColors.textPrimary)
                             .padding(9)
                             .background(Color(hex: 0xF8FAFC))
                             .cornerRadius(8)
 
                         TextField("Lý do đề xuất chỉnh sửa...", text: $proposeReason)
+                            .submitLabel(.done)
                             .foregroundColor(SemanticColors.textPrimary)
                             .padding(9)
                             .background(Color(hex: 0xF8FAFC))
@@ -1671,6 +1696,7 @@ struct WorkerDetailSheet: View {
 
                         HStack(spacing: 10) {
                             Button {
+                                KeyboardDismissal.dismiss()
                                 Task {
                                     let res = await viewModel.repository.proposeWorkerChange(
                                         maNld: worker.maNld,
@@ -1700,6 +1726,7 @@ struct WorkerDetailSheet: View {
                             }
 
                             Button {
+                                KeyboardDismissal.dismiss()
                                 Task {
                                     let res = await viewModel.repository.directEditWorker(
                                         maNld: worker.maNld,
@@ -1736,11 +1763,15 @@ struct WorkerDetailSheet: View {
                 .padding(14)
             }
             .background(theme.background)
+            .dismissKeyboardOnTapOutside()
             .navigationTitle("Hồ sơ NLĐ")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Đóng") { dismiss() }
+                    Button("Đóng") {
+                        KeyboardDismissal.dismiss()
+                        dismiss()
+                    }
                 }
             }
             .onAppear {

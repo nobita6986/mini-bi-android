@@ -598,6 +598,24 @@ final class HRPBTests: XCTestCase {
         XCTAssertEqual(autoSplit[1].sessionCode, "PM")
         XCTAssertEqual(autoSplit[1].leaveType, "UNPAID")
 
+        // Date range generator (inclusive range + optional skipSundays + reversed range rejection)
+        XCTAssertEqual(LeaveContract.nextIsoDateAfter("2026-11-01"), "2026-11-02")
+        let rangeResult = LeaveContract.generateDraftDaysFromRange(
+            startDateIso: "2026-10-30", // Friday
+            endDateIso: "2026-11-02",   // Monday (includes Sunday 2026-11-01)
+            leaveType: "ANNUAL",
+            skipSundays: true
+        )
+        XCTAssertNil(rangeResult.errorMessage)
+        XCTAssertEqual(rangeResult.days.map(\.leaveDate), ["2026-10-30", "2026-10-31", "2026-11-02"])
+
+        let reversedRange = LeaveContract.generateDraftDaysFromRange(
+            startDateIso: "2026-11-05",
+            endDateIso: "2026-11-02"
+        )
+        XCTAssertNotNil(reversedRange.errorMessage)
+        XCTAssertTrue(reversedRange.days.isEmpty)
+
         // 2. Withdraw payload
         let withdrawPayload = LeaveContract.buildWithdrawLeaveRequestPayload(
             expectedRowVersion: 3,

@@ -18,6 +18,7 @@ public struct MainContainerView: View {
         }
         .preferredColorScheme(.light)
         .environment(\.colorScheme, .light)
+        .dismissKeyboardOnTapOutside()
         .task {
             await viewModel.bootstrapSession()
         }
@@ -225,6 +226,7 @@ public struct MainContainerView: View {
                 ForEach(MiniBiNavDestination.allCases) { dest in
                     let isSelected = viewModel.currentDestination == dest
                     Button {
+                        KeyboardDismissal.dismiss()
                         viewModel.navigateTo(dest)
                     } label: {
                         VStack(spacing: 4) {
