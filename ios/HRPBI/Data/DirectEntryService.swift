@@ -474,14 +474,18 @@ public final class DirectEntryService: @unchecked Sendable {
         let resolvedLaborType: String = {
             let explicit = d.laborTypeKey.trimmingCharacters(in: .whitespacesAndNewlines)
             let disp = d.nganhNghe.trimmingCharacters(in: .whitespacesAndNewlines)
-            if let matched = catalog.catalogLaborTypes.first(where: {
-                (!explicit.isEmpty && $0.laborTypeKey.caseInsensitiveCompare(explicit) == .orderedSame) ||
-                (!disp.isEmpty && $0.displayName.caseInsensitiveCompare(disp) == .orderedSame)
+            if !explicit.isEmpty, let matchedByKey = catalog.catalogLaborTypes.first(where: {
+                $0.laborTypeKey.caseInsensitiveCompare(explicit) == .orderedSame
             }) {
-                return matched.laborTypeKey
+                return matchedByKey.laborTypeKey
             }
             if !explicit.isEmpty && explicit != "SEASONAL" {
                 return explicit
+            }
+            if !disp.isEmpty, let matchedByDisplay = catalog.catalogLaborTypes.first(where: {
+                $0.displayName.caseInsensitiveCompare(disp) == .orderedSame
+            }) {
+                return matchedByDisplay.laborTypeKey
             }
             if disp.lowercased().contains("chính thức") {
                 if let official = catalog.catalogLaborTypes.first(where: {
