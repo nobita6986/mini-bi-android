@@ -2069,7 +2069,7 @@ class WorkReportsReportingAndAttendanceContractTest {
             assertEquals(3, vm.leaveDraftDays.size)
             assertFalse(vm.applyLeaveDraftDateRange("2026-11-05", "2026-11-02"))
             assertNotNull(vm.leaveMutationError.value)
-            vm.clearLeaveMessages()
+            vm.clearLeaveMutationError()
 
             // Switch to LEAVE_APPROVAL tab -> loads inbox
             vm.selectAttendanceTab(AttendanceAreaTab.LEAVE_APPROVAL)
