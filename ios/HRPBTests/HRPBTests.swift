@@ -779,7 +779,7 @@ final class HRPBTests: XCTestCase {
         let parsedSections = WorkReportsContract.parseDynamicSections(prodSchema)
         XCTAssertEqual(parsedSections.count, 1)
         XCTAssertEqual(parsedSections[0].title, "Thông tin chung")
-        XCTAssertEqual(parsedSections[0].fields.map(\.fieldKey), ["interview_count", "shift_type", "has_issue"])
+        XCTAssertEqual(parsedSections[0].fields.map(\.id), ["interview_count", "shift_type", "has_issue"])
         XCTAssertEqual(parsedSections[0].fields[1].options.map(\.value), ["DAY", "NIGHT"])
         XCTAssertEqual(parsedSections[0].fields[1].options.map(\.label), ["Ca ngày", "Ca đêm"])
 
