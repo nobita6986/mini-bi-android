@@ -12,62 +12,98 @@ public struct MiniBiThemePalette: Identifiable, Equatable {
     public let accent: Color
     public let background: Color
     public let surface: Color
+    public let topBar: Color
+    public let topBarBorder: Color
+
+    public init(
+        id: String,
+        name: String,
+        primary: Color,
+        primaryLight: Color,
+        primaryDark: Color,
+        accent: Color,
+        background: Color,
+        surface: Color,
+        topBar: Color = Color(hex: 0xFFF8F3),
+        topBarBorder: Color = Color(hex: 0xF2DFD0)
+    ) {
+        self.id = id
+        self.name = name
+        self.primary = primary
+        self.primaryLight = primaryLight
+        self.primaryDark = primaryDark
+        self.accent = accent
+        self.background = background
+        self.surface = surface
+        self.topBar = topBar
+        self.topBarBorder = topBarBorder
+    }
 }
 
 public enum MiniBiThemes {
     public static let hrPartner = MiniBiThemePalette(
         id: "hr-partner",
-        name: "HR Partner (Mặc định)",
-        primary: Color(hex: 0x1E6BB8),
-        primaryLight: Color(hex: 0xEBF3FB),
-        primaryDark: Color(hex: 0x144B82),
-        accent: Color(hex: 0x0EA5E9),
-        background: Color(hex: 0xF4F7FB),
-        surface: .white
+        name: "HRP Brand Orange (Mặc định)",
+        primary: Color(hex: 0xEA580C),
+        primaryLight: Color(hex: 0xFFF1E6),
+        primaryDark: Color(hex: 0x9A3412),
+        accent: Color(hex: 0xC2410C),
+        background: Color(hex: 0xF8F7F5),
+        surface: .white,
+        topBar: Color(hex: 0xFFF8F3),
+        topBarBorder: Color(hex: 0xF2DFD0)
     )
 
     public static let indigoCorporate = MiniBiThemePalette(
         id: "indigo-corporate",
         name: "Indigo Corporate",
-        primary: Color(hex: 0x4F46E5),
-        primaryLight: Color(hex: 0xEEF2FF),
-        primaryDark: Color(hex: 0x3730A3),
-        accent: Color(hex: 0x6366F1),
-        background: Color(hex: 0xF5F6FA),
-        surface: .white
+        primary: Color(hex: 0x3949AB),
+        primaryLight: Color(hex: 0xE8EAF6),
+        primaryDark: Color(hex: 0x1A237E),
+        accent: Color(hex: 0x303F9F),
+        background: Color(hex: 0xF4F6FA),
+        surface: .white,
+        topBar: Color(hex: 0xF7F8FC),
+        topBarBorder: Color(hex: 0xD9DFF0)
     )
 
     public static let oceanTrust = MiniBiThemePalette(
         id: "ocean-trust",
         name: "Ocean Trust",
-        primary: Color(hex: 0x0284C7),
-        primaryLight: Color(hex: 0xE0F2FE),
-        primaryDark: Color(hex: 0x0369A1),
-        accent: Color(hex: 0x06B6D4),
-        background: Color(hex: 0xF0F9FF),
-        surface: .white
+        primary: Color(hex: 0x0077B6),
+        primaryLight: Color(hex: 0xE0F4FF),
+        primaryDark: Color(hex: 0x023E8A),
+        accent: Color(hex: 0x005F92),
+        background: Color(hex: 0xF2F8FC),
+        surface: .white,
+        topBar: Color(hex: 0xF4FAFE),
+        topBarBorder: Color(hex: 0xCCE5F6)
     )
 
     public static let emeraldGrowth = MiniBiThemePalette(
         id: "emerald-growth",
         name: "Emerald Growth",
-        primary: Color(hex: 0x059669),
-        primaryLight: Color(hex: 0xECFDF5),
-        primaryDark: Color(hex: 0x047857),
-        accent: Color(hex: 0x10B981),
-        background: Color(hex: 0xF2FBF7),
-        surface: .white
+        primary: Color(hex: 0x047857),
+        primaryLight: Color(hex: 0xE6F7F1),
+        primaryDark: Color(hex: 0x064E3B),
+        accent: Color(hex: 0x065F46),
+        background: Color(hex: 0xF2F7F5),
+        surface: .white,
+        topBar: Color(hex: 0xF4FAF7),
+        topBarBorder: Color(hex: 0xCCE8DC)
     )
 
     public static let executiveGold = MiniBiThemePalette(
         id: "executive-gold",
         name: "Executive Gold",
         primary: Color(hex: 0xB45309),
-        primaryLight: Color(hex: 0xFEF3C7),
-        primaryDark: Color(hex: 0x92400E),
-        accent: Color(hex: 0xD97706),
-        background: Color(hex: 0xFAF8F5),
-        surface: .white
+        primaryLight: Color(hex: 0xFFF3DC),
+        primaryDark: Color(hex: 0x78350F),
+        accent: Color(hex: 0x92400E),
+        background: Color(hex: 0xF8F6F2),
+        surface: .white,
+        topBar: Color(hex: 0xFCF8F2),
+        topBarBorder: Color(hex: 0xEDE0CC)
     )
 
     public static let all: [MiniBiThemePalette] = [

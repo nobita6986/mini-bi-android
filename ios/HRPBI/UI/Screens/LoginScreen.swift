@@ -17,48 +17,60 @@ public struct LoginScreen: View {
 
         ZStack {
             LinearGradient(
-                colors: [theme.primaryDark, theme.primary, theme.background],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
+                colors: [
+                    Color(hex: 0xFFFBF8),
+                    theme.background,
+                    Color(hex: 0xF5F4F2)
+                ],
+                startPoint: .top,
+                endPoint: .bottom
             )
             .ignoresSafeArea()
 
             ScrollView {
-                VStack(spacing: 20) {
+                VStack(spacing: 16) {
                     Spacer(minLength: 28)
 
-                    // Brand Header (`HRP BI` or `HRP BI 2`)
-                    VStack(spacing: 10) {
+                    // Brand Header (`HRP BI` or `HRP BI 2`) — matches Android LoginScreen.kt
+                    VStack(spacing: 8) {
                         ZStack {
-                            RoundedRectangle(cornerRadius: 20, style: .continuous)
-                                .fill(Color.white.opacity(0.18))
-                                .frame(width: 76, height: 76)
+                            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                .fill(Color.white)
+                                .frame(width: 64, height: 64)
+                                .shadow(color: Color.black.opacity(0.08), radius: 6, x: 0, y: 2)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                        .stroke(Color(hex: 0xE5E7EB), lineWidth: 1)
+                                )
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .fill(theme.primary)
+                                .frame(width: 48, height: 48)
                             Text(env.appBrandBadgeText)
-                                .font(.system(size: 28, weight: .heavy, design: .rounded))
+                                .font(.system(size: 20, weight: .heavy, design: .rounded))
                                 .foregroundColor(.white)
                         }
 
                         Text(env.appBrandTitle)
-                            .font(.system(size: 28, weight: .bold))
-                            .foregroundColor(.white)
+                            .font(.system(size: 24, weight: .heavy))
+                            .foregroundColor(SemanticColors.textPrimary)
 
-                        Text("Hệ thống Quản trị Nhân sự & Báo cáo điều hành")
+                        Text("Hệ thống quản trị nhân sự HRP")
                             .font(.subheadline)
-                            .foregroundColor(Color.white.opacity(0.88))
+                            .foregroundColor(SemanticColors.textMuted)
                             .multilineTextAlignment(.center)
-
-                        Text(env.defaultBaseUrl)
-                            .font(.caption2)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 4)
-                            .background(Color.white.opacity(0.16))
-                            .foregroundColor(.white)
-                            .clipShape(Capsule())
                     }
                     .padding(.bottom, 4)
 
                     // Login Card
-                    VStack(alignment: .leading, spacing: 16) {
+                    VStack(alignment: .leading, spacing: 14) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Đăng Nhập Tài Khoản")
+                                .font(.title3.weight(.bold))
+                                .foregroundColor(SemanticColors.textPrimary)
+                            Text("Sử dụng email hoặc mã nhân viên đã đăng ký")
+                                .font(.caption)
+                                .foregroundColor(SemanticColors.textMuted)
+                        }
                         // Saved Login Accounts (1-tap login or remove)
                         if !viewModel.savedAccounts.isEmpty {
                             VStack(alignment: .leading, spacing: 8) {
@@ -122,24 +134,24 @@ public struct LoginScreen: View {
 
                         // Identifier Input
                         VStack(alignment: .leading, spacing: 6) {
-                            Text("Tài khoản / Mã nhân viên / Email")
+                            Text("Email hoặc ID nhân viên")
                                 .font(.caption.weight(.semibold))
                                 .foregroundColor(SemanticColors.textSecondary)
 
                             HStack {
                                 Image(systemName: "person.fill")
-                                    .foregroundColor(SemanticColors.textMuted)
-                                TextField("Nhập tên đăng nhập...", text: $viewModel.loginIdentifierInput)
+                                    .foregroundColor(theme.primary)
+                                TextField("Nhập email hoặc mã ID", text: $viewModel.loginIdentifierInput)
                                     .textInputAutocapitalization(.never)
                                     .autocorrectionDisabled(true)
                             }
                             .padding(12)
-                            .background(Color(hex: 0xF8FAFC))
+                            .background(Color.white)
                             .overlay(
-                                RoundedRectangle(cornerRadius: 10)
-                                    .stroke(SemanticColors.borderSubtle, lineWidth: 1)
+                                RoundedRectangle(cornerRadius: 14)
+                                    .stroke(Color(hex: 0xD8DEE6), lineWidth: 1)
                             )
-                            .cornerRadius(10)
+                            .cornerRadius(14)
                         }
 
                         // Password Input
@@ -150,13 +162,13 @@ public struct LoginScreen: View {
 
                             HStack {
                                 Image(systemName: "lock.fill")
-                                    .foregroundColor(SemanticColors.textMuted)
+                                    .foregroundColor(theme.primary)
                                 if isPasswordVisible {
-                                    TextField("Nhập mật khẩu...", text: $viewModel.loginPasswordInput)
+                                    TextField("Nhập mật khẩu", text: $viewModel.loginPasswordInput)
                                         .textInputAutocapitalization(.never)
                                         .autocorrectionDisabled(true)
                                 } else {
-                                    SecureField("Nhập mật khẩu...", text: $viewModel.loginPasswordInput)
+                                    SecureField("Nhập mật khẩu", text: $viewModel.loginPasswordInput)
                                         .textInputAutocapitalization(.never)
                                 }
                                 Button {
@@ -168,17 +180,17 @@ public struct LoginScreen: View {
                                 .buttonStyle(.plain)
                             }
                             .padding(12)
-                            .background(Color(hex: 0xF8FAFC))
+                            .background(Color.white)
                             .overlay(
-                                RoundedRectangle(cornerRadius: 10)
-                                    .stroke(SemanticColors.borderSubtle, lineWidth: 1)
+                                RoundedRectangle(cornerRadius: 14)
+                                    .stroke(Color(hex: 0xD8DEE6), lineWidth: 1)
                             )
-                            .cornerRadius(10)
+                            .cornerRadius(14)
                         }
 
                         // Remember Login Toggle
                         Toggle(isOn: $viewModel.rememberLoginChecked) {
-                            Text("Ghi nhớ đăng nhập trên thiết bị này")
+                            Text("Lưu tài khoản đã đăng nhập")
                                 .font(.subheadline)
                                 .foregroundColor(SemanticColors.textSecondary)
                         }
@@ -197,10 +209,10 @@ public struct LoginScreen: View {
                             .padding(10)
                             .background(SemanticColors.dangerBg)
                             .overlay(
-                                RoundedRectangle(cornerRadius: 8)
+                                RoundedRectangle(cornerRadius: 12)
                                     .stroke(SemanticColors.dangerBorder, lineWidth: 1)
                             )
-                            .cornerRadius(8)
+                            .cornerRadius(12)
                         }
 
                         // Login Button
@@ -216,26 +228,30 @@ public struct LoginScreen: View {
                                         .tint(.white)
                                         .padding(.trailing, 6)
                                 }
-                                Text(viewModel.isLoggingIn ? "Đang đăng nhập..." : "Đăng nhập \(env.appBrandTitle)")
-                                    .font(.headline)
+                                Text(viewModel.isLoggingIn ? "Đang đăng nhập…" : "Đăng Nhập")
+                                    .font(.headline.weight(.bold))
                                     .foregroundColor(.white)
                                 Spacer()
                             }
                             .padding(.vertical, 14)
                             .background(theme.primary)
-                            .cornerRadius(12)
+                            .cornerRadius(14)
                         }
                         .disabled(viewModel.isLoggingIn || viewModel.isBootstrapping)
                     }
-                    .padding(20)
+                    .padding(18)
                     .background(Color.white)
-                    .cornerRadius(18)
-                    .shadow(color: Color.black.opacity(0.12), radius: 14, x: 0, y: 6)
-                    .padding(.horizontal, 16)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 22)
+                            .stroke(Color(hex: 0xE5E7EB), lineWidth: 1)
+                    )
+                    .cornerRadius(22)
+                    .shadow(color: Color.black.opacity(0.06), radius: 10, x: 0, y: 4)
+                    .padding(.horizontal, 18)
 
                     Text("Phiên bản \(env.marketingVersion) (Build \(env.buildNumber))")
                         .font(.caption)
-                        .foregroundColor(Color.white.opacity(0.8))
+                        .foregroundColor(SemanticColors.textMuted)
                         .padding(.top, 8)
 
                     Spacer(minLength: 24)

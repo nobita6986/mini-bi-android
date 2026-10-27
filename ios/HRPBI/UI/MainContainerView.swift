@@ -26,87 +26,127 @@ public struct MainContainerView: View {
         let env = viewModel.environmentConfig
 
         return VStack(spacing: 0) {
-            // Top App Bar
-            HStack(spacing: 10) {
-                HStack(spacing: 8) {
-                    Text(env.appBrandBadgeText)
-                        .font(.caption.weight(.heavy))
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 5)
-                        .background(Color.white.opacity(0.2))
-                        .foregroundColor(.white)
-                        .cornerRadius(8)
-
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(env.appBrandTitle)
-                            .font(.subheadline.weight(.bold))
-                            .foregroundColor(.white)
-                        if let user = viewModel.currentUser {
-                            Text("\(user.fullName) · \(user.roleLabel)")
-                                .font(.caption2)
-                                .foregroundColor(Color.white.opacity(0.85))
-                                .lineLimit(1)
-                        }
-                    }
-                }
-
-                Spacer()
-
-                // Notifications Bell with Unread Badge
-                Button {
-                    Task { await viewModel.refreshNotifications() }
-                    viewModel.isNotificationSheetPresented = true
-                } label: {
-                    ZStack(alignment: .topTrailing) {
-                        Image(systemName: "bell.fill")
-                            .font(.subheadline)
-                            .foregroundColor(.white)
-                            .padding(8)
-                        if viewModel.unreadNotificationCount > 0 {
-                            Text("\(min(99, viewModel.unreadNotificationCount))")
-                                .font(.system(size: 10, weight: .bold))
-                                .padding(.horizontal, 5)
-                                .padding(.vertical, 2)
-                                .background(Color.red)
+            // Top App Bar (matches Android MainActivity.kt lightTopBar + primary brand badge)
+            VStack(spacing: 0) {
+                HStack(spacing: 10) {
+                    HStack(spacing: 8) {
+                        ZStack {
+                            RoundedRectangle(cornerRadius: 11, style: .continuous)
+                                .fill(Color.white)
+                                .frame(width: 40, height: 40)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 11, style: .continuous)
+                                        .stroke(theme.topBarBorder, lineWidth: 1)
+                                )
+                            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                .fill(theme.primary)
+                                .frame(width: 30, height: 30)
+                            Text(env.appBrandBadgeText)
+                                .font(.caption.weight(.heavy))
                                 .foregroundColor(.white)
-                                .clipShape(Capsule())
-                                .offset(x: 4, y: -2)
+                        }
+
+                        VStack(alignment: .leading, spacing: 2) {
+                            HStack(spacing: 6) {
+                                Text("HRPartner")
+                                    .font(.system(size: 17, weight: .heavy))
+                                    .foregroundColor(SemanticColors.textPrimary)
+                                Text(env.appBrandBadgeText)
+                                    .font(.system(size: 10, weight: .bold))
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 2)
+                                    .background(theme.primary)
+                                    .foregroundColor(.white)
+                                    .cornerRadius(6)
+                            }
+                            if let user = viewModel.currentUser {
+                                Text("\(viewModel.currentDestination.titleVi) · \(user.fullName)")
+                                    .font(.caption)
+                                    .foregroundColor(SemanticColors.textMuted)
+                                    .lineLimit(1)
+                            }
                         }
                     }
-                }
 
-                // Theme Selector & Logout Menu
-                Menu {
-                    Section("Giao diện màu sắc") {
-                        ForEach(MiniBiThemes.all) { palette in
-                            Button {
-                                viewModel.selectTheme(palette)
-                            } label: {
-                                HStack {
-                                    Text(palette.name)
-                                    if palette.id == theme.id {
-                                        Image(systemName: "checkmark")
+                    Spacer()
+
+                    // Notifications Bell with Unread Badge
+                    Button {
+                        Task { await viewModel.refreshNotifications() }
+                        viewModel.isNotificationSheetPresented = true
+                    } label: {
+                        ZStack(alignment: .topTrailing) {
+                            Image(systemName: "bell.fill")
+                                .font(.subheadline)
+                                .foregroundColor(theme.primary)
+                                .padding(8)
+                                .background(Color.white.opacity(0.85))
+                                .clipShape(Circle())
+                                .overlay(
+                                    Circle()
+                                        .stroke(theme.topBarBorder, lineWidth: 1)
+                                )
+                            if viewModel.unreadNotificationCount > 0 {
+                                Text("\(min(99, viewModel.unreadNotificationCount))")
+                                    .font(.system(size: 10, weight: .bold))
+                                    .padding(.horizontal, 5)
+                                    .padding(.vertical, 2)
+                                    .background(Color.red)
+                                    .foregroundColor(.white)
+                                    .clipShape(Capsule())
+                                    .offset(x: 4, y: -2)
+                            }
+                        }
+                    }
+
+                    // Theme Selector & Logout Menu
+                    Menu {
+                        Section("Giao diện màu sắc") {
+                            ForEach(MiniBiThemes.all) { palette in
+                                Button {
+                                    viewModel.selectTheme(palette)
+                                } label: {
+                                    HStack {
+                                        Text(palette.name)
+                                        if palette.id == theme.id {
+                                            Image(systemName: "checkmark")
+                                        }
                                     }
                                 }
                             }
                         }
-                    }
-                    Divider()
-                    Button(role: .destructive) {
-                        Task { await viewModel.performLogout() }
+                        Divider()
+                        Button(role: .destructive) {
+                            Task { await viewModel.performLogout() }
+                        } label: {
+                            Label("Đăng xuất", systemImage: "rectangle.portrait.and.arrow.right")
+                        }
                     } label: {
-                        Label("Đăng xuất", systemImage: "rectangle.portrait.and.arrow.right")
+                        HStack(spacing: 4) {
+                            Image(systemName: "ellipsis.circle.fill")
+                                .font(.subheadline)
+                            Text("Menu")
+                                .font(.caption.weight(.semibold))
+                        }
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 7)
+                        .background(Color.white.opacity(0.85))
+                        .foregroundColor(theme.primary)
+                        .clipShape(Capsule())
+                        .overlay(
+                            Capsule()
+                                .stroke(theme.primary.opacity(0.28), lineWidth: 1)
+                        )
                     }
-                } label: {
-                    Image(systemName: "ellipsis.circle.fill")
-                        .font(.title3)
-                        .foregroundColor(.white)
-                        .padding(4)
                 }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .background(theme.topBar)
+
+                Rectangle()
+                    .fill(theme.topBarBorder)
+                    .frame(height: 1)
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
-            .background(theme.primary)
 
             // Global Banner (Success / Error / Deadline Passed)
             if let message = viewModel.bannerMessage, !message.isEmpty {
