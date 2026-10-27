@@ -618,8 +618,8 @@ public final class DirectEntryService: @unchecked Sendable {
         var response = await httpClient.request(
             method: "POST",
             path: "/api/direct-entry/batches/full-profile",
-            headers: ["Idempotency-Key": batchIdempotencyKey],
-            jsonBody: fullProfileBody
+            jsonBody: fullProfileBody,
+            additionalHeaders: ["Idempotency-Key": batchIdempotencyKey]
         )
 
         // Fallback to `/api/direct-entry/batches` if mock/legacy server returns 404
@@ -636,12 +636,12 @@ public final class DirectEntryService: @unchecked Sendable {
             response = await httpClient.request(
                 method: "POST",
                 path: "/api/direct-entry/batches",
-                headers: ["Idempotency-Key": batchIdempotencyKey],
                 jsonBody: [
                     "rows": legacyRows,
                     "entries": legacyRows,
                     "confirm_duplicates": confirmDuplicates
-                ]
+                ],
+                additionalHeaders: ["Idempotency-Key": batchIdempotencyKey]
             )
         }
 
@@ -744,8 +744,8 @@ public final class DirectEntryService: @unchecked Sendable {
             let transitionRes = await httpClient.request(
                 method: "POST",
                 path: "/api/direct-entry/submissions/\(encodedSub)/transition",
-                headers: ["Idempotency-Key": transitionIdemKey],
-                jsonBody: transitionBody
+                jsonBody: transitionBody,
+                additionalHeaders: ["Idempotency-Key": transitionIdemKey]
             )
             if !transitionRes.isSuccess && transitionRes.statusCode != 404 {
                 return .failure(
@@ -829,7 +829,7 @@ public final class DirectEntryService: @unchecked Sendable {
 
         let baseIdemKey = UUID().uuidString.lowercased()
 
-        func reserveSlot(version: Int, idemSuffix: String) async -> HttpRawResponse {
+        func reserveSlot(version: Int, idemSuffix: String) async -> BackendHttpResponse {
             let initBody: [String: Any] = [
                 "document_type": docType,
                 "expected_entry_version": version,
@@ -840,8 +840,8 @@ public final class DirectEntryService: @unchecked Sendable {
             return await httpClient.request(
                 method: "POST",
                 path: "/api/direct-entry/entries/\(encodedEntryId)/documents",
-                headers: ["Idempotency-Key": "\(baseIdemKey):\(idemSuffix)"],
-                jsonBody: initBody
+                jsonBody: initBody,
+                additionalHeaders: ["Idempotency-Key": "\(baseIdemKey):\(idemSuffix)"]
             )
         }
 
@@ -899,10 +899,10 @@ public final class DirectEntryService: @unchecked Sendable {
                 let finalizeRes = await httpClient.request(
                     method: "POST",
                     path: "/api/direct-entry/entries/\(encodedEntryId)/documents/\(encodedDocId)/finalize",
-                    headers: ["Idempotency-Key": "\(baseIdemKey):finalize"],
                     jsonBody: [
                         "expected_entry_version": reservedEntryVersion
-                    ]
+                    ],
+                    additionalHeaders: ["Idempotency-Key": "\(baseIdemKey):finalize"]
                 )
                 guard finalizeRes.isSuccess else {
                     return (
