@@ -75,9 +75,12 @@ public struct AppEnvironmentConfig: Equatable, Sendable {
 
     public static func fromBundle(_ bundle: Bundle) -> AppEnvironmentConfig {
         let info = bundle.infoDictionary ?? [:]
+        let displayVer = (info["APP_DISPLAY_VERSION"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
         let marketing = (info["CFBundleShortVersionString"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
         let build = (info["CFBundleVersion"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let resolvedMarketing = (marketing?.isEmpty == false) ? marketing! : "1.0.2.27102026"
+        let resolvedMarketing = (displayVer?.isEmpty == false)
+            ? displayVer!
+            : ((marketing?.isEmpty == false) ? marketing! : "1.0.2.27102026")
         let resolvedBuild = (build?.isEmpty == false) ? build! : "6"
 
         let bundleId = (bundle.bundleIdentifier ?? (info["CFBundleIdentifier"] as? String) ?? "")

@@ -197,11 +197,12 @@ jobs:
             RAW_TAG="${GITHUB_REF#refs/tags/}"
           else
             TODAY=$(TZ=Asia/Ho_Chi_Minh date +"%d%m%Y")
-            RAW_TAG="V1.0.1.${TODAY}"
+            RAW_TAG="V1.0.2.${TODAY}"
           fi
 
-          MARKETING_VER="${RAW_TAG#V}"
-          MARKETING_VER="${MARKETING_VER#v}"
+          FULL_VER="${RAW_TAG#V}"
+          FULL_VER="${FULL_VER#v}"
+          MARKETING_VER=$(echo "$FULL_VER" | awk -F. '{if (NF>=3) print $1"."$2"."$3; else print $0}')
 
           if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ inputs.build_number }}" ]; then
             BUILD_NUM="${{ inputs.build_number }}"
@@ -213,6 +214,7 @@ jobs:
           IPA_FILENAME="HRP-BI-${RAW_TAG}.ipa"
 
           echo "tag=$RAW_TAG" >> "$GITHUB_OUTPUT"
+          echo "full_version=$FULL_VER" >> "$GITHUB_OUTPUT"
           echo "marketing_version=$MARKETING_VER" >> "$GITHUB_OUTPUT"
           echo "build_number=$BUILD_NUM" >> "$GITHUB_OUTPUT"
           echo "scheme=$SCHEME_NAME" >> "$GITHUB_OUTPUT"
@@ -271,27 +273,30 @@ jobs:
           EXPORT_DIR="$RUNNER_TEMP/export"
           EXPORT_PLIST="$RUNNER_TEMP/ExportOptions.plist"
 
-          cat > "$EXPORT_PLIST" <<EOF
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0">
-          <dict>
-              <key>method</key>
-              <string>app-store</string>
-              <key>teamID</key>
-              <string>${{ steps.signing.outputs.team_id }}</string>
-              <key>signingStyle</key>
-              <string>manual</string>
-              <key>uploadSymbols</key>
-              <true/>
-              <key>provisioningProfiles</key>
-              <dict>
-                  <key>${{ steps.signing.outputs.bundle_id }}</key>
-                  <string>${{ steps.signing.outputs.profile_uuid }}</string>
-              </dict>
-          </dict>
-          </plist>
-          EOF
+          cat > "$EXPORT_PLIST" <<'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>method</key>
+    <string>app-store</string>
+    <key>teamID</key>
+    <string>__TEAM_ID__</string>
+    <key>signingStyle</key>
+    <string>manual</string>
+    <key>uploadSymbols</key>
+    <true/>
+    <key>provisioningProfiles</key>
+    <dict>
+        <key>__BUNDLE_ID__</key>
+        <string>__PROFILE_UUID__</string>
+    </dict>
+</dict>
+</plist>
+EOF
+          sed -i '' "s|__TEAM_ID__|${{ steps.signing.outputs.team_id }}|g" "$EXPORT_PLIST"
+          sed -i '' "s|__BUNDLE_ID__|${{ steps.signing.outputs.bundle_id }}|g" "$EXPORT_PLIST"
+          sed -i '' "s|__PROFILE_UUID__|${{ steps.signing.outputs.profile_uuid }}|g" "$EXPORT_PLIST"
 
           xcodebuild archive \
             -project HRPBI.xcodeproj \
@@ -300,6 +305,7 @@ jobs:
             -destination "generic/platform=iOS" \
             -archivePath "$ARCHIVE_PATH" \
             MARKETING_VERSION="${{ steps.version.outputs.marketing_version }}" \
+            APP_DISPLAY_VERSION="${{ steps.version.outputs.full_version }}" \
             CURRENT_PROJECT_VERSION="${{ steps.version.outputs.build_number }}" \
             DEVELOPMENT_TEAM="${{ steps.signing.outputs.team_id }}" \
             CODE_SIGN_STYLE=Manual \

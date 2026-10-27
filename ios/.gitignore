@@ -6,4 +6,10 @@ DerivedData/
 *.ipa
 *.dSYM.zip
 *.dSYM
+*.p8
+*.p12
+*.mobileprovision
+*.cer
+*.certSigningRequest
+*.key
 .DS_Store

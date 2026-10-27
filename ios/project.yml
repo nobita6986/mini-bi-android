@@ -10,7 +10,8 @@ settings:
   base:
     SWIFT_VERSION: "5.9"
     IPHONEOS_DEPLOYMENT_TARGET: "16.0"
-    MARKETING_VERSION: "1.0.2.27102026"
+    MARKETING_VERSION: "1.0.2"
+    APP_DISPLAY_VERSION: "1.0.2.27102026"
     CURRENT_PROJECT_VERSION: "6"
     TARGETED_DEVICE_FAMILY: "1,2"
     ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
@@ -36,7 +37,8 @@ targets:
         BRAND_BADGE_LABEL: "BI"
         DEFAULT_SERVER_HOST: "bi.hrpartner.vn"
         ALLOW_DEBUG_URL_OVERRIDE: "NO"
-        MARKETING_VERSION: "1.0.2.27102026"
+        MARKETING_VERSION: "1.0.2"
+        APP_DISPLAY_VERSION: "1.0.2.27102026"
         CURRENT_PROJECT_VERSION: "6"
     info:
       path: HRPBI/Info.plist
@@ -54,9 +56,11 @@ targets:
         NSPhotoLibraryAddUsageDescription: "Ứng dụng cần quyền lưu ảnh và tài liệu xuất ra vào thiết bị."
         NSLocationWhenInUseUsageDescription: "Ứng dụng cần quyền truy cập Vị trí GPS thực tế để xác thực địa điểm chấm công."
         APP_DISPLAY_NAME: $(APP_DISPLAY_NAME)
+        APP_DISPLAY_VERSION: $(APP_DISPLAY_VERSION)
         BRAND_BADGE_LABEL: $(BRAND_BADGE_LABEL)
         DEFAULT_SERVER_HOST: $(DEFAULT_SERVER_HOST)
         ALLOW_DEBUG_URL_OVERRIDE: $(ALLOW_DEBUG_URL_OVERRIDE)
+        ITSAppUsesNonExemptEncryption: false
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
         UISupportedInterfaceOrientations:
@@ -87,7 +91,8 @@ targets:
         BRAND_BADGE_LABEL: "BI2"
         DEFAULT_SERVER_HOST: "bi2.hrpartner.vn"
         ALLOW_DEBUG_URL_OVERRIDE: "YES"
-        MARKETING_VERSION: "1.0.2.27102026"
+        MARKETING_VERSION: "1.0.2"
+        APP_DISPLAY_VERSION: "1.0.2.27102026"
         CURRENT_PROJECT_VERSION: "6"
         SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) BI2_STAGING"
     info:
@@ -106,9 +111,11 @@ targets:
         NSPhotoLibraryAddUsageDescription: "Ứng dụng cần quyền lưu ảnh và tài liệu xuất ra vào thiết bị."
         NSLocationWhenInUseUsageDescription: "Ứng dụng cần quyền truy cập Vị trí GPS thực tế để xác thực địa điểm chấm công."
         APP_DISPLAY_NAME: $(APP_DISPLAY_NAME)
+        APP_DISPLAY_VERSION: $(APP_DISPLAY_VERSION)
         BRAND_BADGE_LABEL: $(BRAND_BADGE_LABEL)
         DEFAULT_SERVER_HOST: $(DEFAULT_SERVER_HOST)
         ALLOW_DEBUG_URL_OVERRIDE: $(ALLOW_DEBUG_URL_OVERRIDE)
+        ITSAppUsesNonExemptEncryption: false
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
         UISupportedInterfaceOrientations:
