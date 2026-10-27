@@ -452,11 +452,11 @@ public final class MiniBiRepository {
         let encoded = maNld.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? maNld
         let response = await httpClient.uploadMultipart(
             path: "/api/direct-entry/entries/\(encoded)/documents",
-            fields: ["doc_type": DirectEntryContract.docTypeSafetyCard],
             fieldName: "file",
             fileName: preparedPayload.fileName,
             mimeType: preparedPayload.mimeType,
-            fileData: preparedPayload.data
+            fileData: preparedPayload.data,
+            extraFields: ["doc_type": DirectEntryContract.docTypeSafetyCard]
         )
         guard response.isSuccess else {
             return .failure(

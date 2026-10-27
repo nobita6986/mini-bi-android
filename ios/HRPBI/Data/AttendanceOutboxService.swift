@@ -250,11 +250,11 @@ public final class AttendanceOutboxService {
 
         let response = await httpClient.uploadMultipart(
             path: "/api/attendance/check-in",
-            fields: ["metadata": metadataJsonString],
             fieldName: "photo",
             fileName: "\(item.localId).jpg",
             mimeType: item.mimeType,
             fileData: photoData,
+            extraFields: ["metadata": metadataJsonString],
             additionalHeaders: ["Idempotency-Key": cleanIdempotencyKey]
         )
 

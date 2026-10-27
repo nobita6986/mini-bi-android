@@ -698,9 +698,13 @@ public final class WorkReportsAndReportingService {
         let workersRes = await MiniBiRepository.shared.fetchWorkers(scope: scope, pageSize: 100)
         if case .success(let wData, let statusCode) = workersRes {
             let items = wData.items
+            let isWorking: (WorkerItem) -> Bool = { w in
+                let st = w.trangThai.lowercased()
+                return !st.contains("nghỉ") && !st.contains("off") && !st.contains("chưa")
+            }
             let total = max(wData.total, items.count)
-            let active = items.filter { $0.isWorking }.count
-            let inactive = items.filter { $0.trangThai.lowercased().contains("nghỉ") }.count
+            let active = items.filter { isWorking($0) }.count
+            let inactive = items.filter { $0.trangThai.lowercased().contains("nghỉ") || $0.trangThai.lowercased() == "off" }.count
             let interview = max(0, items.count - active - inactive)
             let retention = items.isEmpty ? 0.0 : (Double(active) * 100.0 / Double(items.count))
             let turnover = items.isEmpty ? 0.0 : (Double(inactive) * 100.0 / Double(items.count))
@@ -711,13 +715,13 @@ public final class WorkReportsAndReportingService {
                 let pName = w.duAn.isEmpty ? "Chưa phân dự án" : w.duAn
                 var pCur = byProject[pName] ?? (0, 0, 0)
                 pCur.total += 1
-                if w.isWorking { pCur.active += 1 } else { pCur.inactive += 1 }
+                if isWorking(w) { pCur.active += 1 } else { pCur.inactive += 1 }
                 byProject[pName] = pCur
 
                 let rName = w.nguoiTuyen.isEmpty ? "Chưa gán người tuyển" : w.nguoiTuyen
                 var rCur = byRecruiter[rName] ?? (0, 0, 0)
                 rCur.total += 1
-                if w.isWorking { rCur.active += 1 } else { rCur.inactive += 1 }
+                if isWorking(w) { rCur.active += 1 } else { rCur.inactive += 1 }
                 byRecruiter[rName] = rCur
             }
 
