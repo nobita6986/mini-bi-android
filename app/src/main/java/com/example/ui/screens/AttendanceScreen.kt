@@ -1406,6 +1406,9 @@ private fun LeaveRequestTabContent(
                         )
                     },
                     onUpdateDaySession = { id, session -> viewModel.updateLeaveDraftDaySession(id, session) },
+                    onUpdateDayType = { id, leaveType -> viewModel.updateLeaveDraftDayType(id, leaveType) },
+                    onSplitDayToHalfDays = { id -> viewModel.splitLeaveDraftDayToHalfDays(id) },
+                    onAutoAllocateByBalance = { viewModel.autoAllocateLeaveDraftDaysByBalance() },
                     onUpdateReason = { viewModel.updateLeaveDraftReason(it) },
                     onSubmit = { viewModel.submitLeaveRequest() }
                 )
@@ -1677,11 +1680,12 @@ private fun LeaveBalanceAndRoutingSummaryCard(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
+                val totalPendingUnits = balance.pendingAnnualUnits + balance.pendingNonAnnualUnits
                 LeaveStatMetricTile(
                     modifier = Modifier.weight(1f),
                     title = "Giữ chỗ / Chờ duyệt",
-                    value = LeaveContract.formatHalfDayUnits(balance.reservedUnits + balance.pendingPaidUnits),
-                    subtitle = "Đã duyệt chờ đến ngày: ${LeaveContract.formatHalfDayUnits(balance.reservedUnits)} • Chờ duyệt: ${LeaveContract.formatHalfDayUnits(balance.pendingPaidUnits)}",
+                    value = LeaveContract.formatHalfDayUnits(balance.reservedUnits + totalPendingUnits),
+                    subtitle = "Giữ chỗ phép năm: ${LeaveContract.formatHalfDayUnits(balance.reservedUnits)} • Chờ duyệt: ${LeaveContract.formatHalfDayUnits(totalPendingUnits)}",
                     accentColor = SemanticColors.WarningLight,
                     testTag = "leave_metric_reserved_pending"
                 )
@@ -1689,7 +1693,7 @@ private fun LeaveBalanceAndRoutingSummaryCard(
                     modifier = Modifier.weight(1f),
                     title = "Đã sử dụng",
                     value = LeaveContract.formatHalfDayUnits(balance.consumedUnits),
-                    subtitle = "Hết hạn: ${LeaveContract.formatHalfDayUnits(balance.expiredUnits)} • Không lương: ${LeaveContract.formatHalfDayUnits(balance.approvedUnpaidUnits)}",
+                    subtitle = "Hết hạn: ${LeaveContract.formatHalfDayUnits(balance.expiredUnits)} • Ngoài phép năm: ${LeaveContract.formatHalfDayUnits(balance.approvedNonAnnualUnits)}",
                     accentColor = MaterialTheme.colorScheme.onSurfaceVariant,
                     testTag = "leave_metric_consumed"
                 )
@@ -1749,9 +1753,9 @@ private fun LeaveBalanceAndRoutingSummaryCard(
                 ) {
                     Text(
                         text = if (!balance.profileConfigured) {
-                            "Hồ sơ nghỉ phép của bạn chưa được cấu hình đầy đủ trạng thái Chính thức. Đơn xin nghỉ gửi lúc này sẽ được hệ thống ghi nhận theo diện Nghỉ không lương (Chưa cấu hình hồ sơ)."
+                            "Hồ sơ nghỉ phép của bạn chưa được cấu hình đầy đủ trạng thái Chính thức nên số dư Phép năm hiện bằng 0. Bạn vẫn có thể chọn các loại nghỉ ngoài phép năm (Nghỉ tang, Nghỉ cưới, Nghỉ ốm, Nghỉ không lương)."
                         } else {
-                            "Bạn đang trong giai đoạn Thử việc. Phép định kỳ tháng sẽ được cộng bù khi lên Chính thức; đơn xin nghỉ trong thời gian thử việc được ghi nhận là Nghỉ không lương (Thử việc)."
+                            "Bạn đang trong giai đoạn Thử việc nên số dư Phép năm hiện bằng 0 (phép định kỳ sẽ cộng bù khi lên Chính thức). Trong thời gian thử việc, vui lòng chọn các loại nghỉ ngoài phép năm (Nghỉ không lương, Nghỉ ốm, Nghỉ cưới, Nghỉ tang)."
                         },
                         style = MaterialTheme.typography.bodySmall,
                         color = SemanticColors.WarningLight,
@@ -1833,9 +1837,21 @@ private fun LeaveCreateRequestFormCard(
     onUpdateDayDate: (String, String) -> Unit,
     onOpenDatePicker: (LeaveDraftDayInput) -> Unit,
     onUpdateDaySession: (String, String) -> Unit,
+    onUpdateDayType: (String, String) -> Unit,
+    onSplitDayToHalfDays: (String) -> Unit,
+    onAutoAllocateByBalance: () -> Unit,
     onUpdateReason: (String) -> Unit,
     onSubmit: () -> Unit
 ) {
+    val draftEval = remember(draftDays, reason, summary.leaveYear, summary.balance.availableUnits) {
+        LeaveContract.evaluateLeaveRequestDraft(
+            days = draftDays,
+            reason = reason,
+            leaveYear = summary.leaveYear,
+            availableUnits = summary.balance.availableUnits
+        )
+    }
+
     Card(
         modifier = Modifier
             .fillMaxWidth()
@@ -1862,7 +1878,7 @@ private fun LeaveCreateRequestFormCard(
                         fontWeight = FontWeight.Bold
                     )
                     Text(
-                        text = "Tự động trừ phép cũ nhất trước (FIFO) • Cả ngày / nửa ngày",
+                        text = "Chọn ngày, buổi và loại nghỉ (Phép năm trừ FIFO • Hỗ trợ tách 2 buổi khác loại trong cùng ngày)",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -1911,7 +1927,7 @@ private fun LeaveCreateRequestFormCard(
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(horizontal = 10.dp, vertical = 8.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
@@ -1938,6 +1954,21 @@ private fun LeaveCreateRequestFormCard(
                                     .weight(1f)
                                     .testTag("leave_draft_date_input_$index")
                             )
+                            if (day.sessionCode.equals("FULL", ignoreCase = true) && draftDays.size < 120) {
+                                OutlinedButton(
+                                    onClick = { onSplitDayToHalfDays(day.id) },
+                                    enabled = !busy,
+                                    shape = RoundedCornerShape(8.dp),
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
+                                    modifier = Modifier.testTag("leave_draft_split_btn_$index")
+                                ) {
+                                    Text(
+                                        text = "Tách 2 buổi",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        maxLines = 1
+                                    )
+                                }
+                            }
                             if (draftDays.size > 1) {
                                 IconButton(
                                     onClick = { onRemoveDay(day.id) },
@@ -2003,13 +2034,155 @@ private fun LeaveCreateRequestFormCard(
                                 }
                             }
                         }
+
+                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text(
+                                text = "Loại nghỉ: ${LeaveContract.leaveTypeLabel(day.leaveType)}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                LeaveContract.LEAVE_TYPES.forEach { typeCode ->
+                                    val isSelected = day.leaveType.equals(typeCode, ignoreCase = true)
+                                    Surface(
+                                        shape = RoundedCornerShape(8.dp),
+                                        color = if (isSelected) {
+                                            MaterialTheme.colorScheme.primaryContainer
+                                        } else {
+                                            MaterialTheme.colorScheme.surface
+                                        },
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .border(
+                                                width = 1.dp,
+                                                color = if (isSelected) {
+                                                    MaterialTheme.colorScheme.primary
+                                                } else {
+                                                    MaterialTheme.colorScheme.outlineVariant
+                                                },
+                                                shape = RoundedCornerShape(8.dp)
+                                            )
+                                            .clickable(enabled = !busy) { onUpdateDayType(day.id, typeCode) }
+                                            .testTag("leave_draft_type_${typeCode}_$index")
+                                    ) {
+                                        Text(
+                                            text = LeaveContract.leaveTypeShortLabel(typeCode),
+                                            style = MaterialTheme.typography.labelSmall,
+                                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                            color = if (isSelected) {
+                                                MaterialTheme.colorScheme.onPrimaryContainer
+                                            } else {
+                                                MaterialTheme.colorScheme.onSurfaceVariant
+                                            },
+                                            maxLines = 1,
+                                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            Surface(
+                shape = RoundedCornerShape(12.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("leave_draft_breakdown_section")
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(10.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        draftEval.typeBreakdown.forEach { tb ->
+                            Surface(
+                                shape = RoundedCornerShape(6.dp),
+                                color = if (tb.leaveType == "ANNUAL") {
+                                    MaterialTheme.colorScheme.primaryContainer
+                                } else {
+                                    MaterialTheme.colorScheme.secondaryContainer
+                                }
+                            ) {
+                                Text(
+                                    text = "${LeaveContract.leaveTypeShortLabel(tb.leaveType)}: ${LeaveContract.formatHalfDayUnits(tb.halfDayUnits)}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = if (tb.leaveType == "ANNUAL") {
+                                        MaterialTheme.colorScheme.onPrimaryContainer
+                                    } else {
+                                        MaterialTheme.colorScheme.onSecondaryContainer
+                                    },
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                )
+                            }
+                        }
+                        Text(
+                            text = "• Phép năm khả dụng: ${LeaveContract.formatHalfDayUnits(summary.balance.availableUnits)}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    if (draftEval.nonAnnualUnits > 0) {
+                        Text(
+                            text = "Các ngày nghỉ ngoài phép năm (Nghỉ tang, Nghỉ cưới, Nghỉ ốm, Nghỉ không lương) không trừ vào số dư phép năm khả dụng.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+
+            if (draftEval.canSplitExcessAnnualToUnpaid) {
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = SemanticColors.WarningLight.copy(alpha = 0.14f),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("leave_auto_split_balance_banner")
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            text = "Số ngày Phép năm đang chọn (${LeaveContract.formatHalfDayUnits(draftEval.annualUnits)}) vượt quá số dư khả dụng (${LeaveContract.formatHalfDayUnits(summary.balance.availableUnits)}). Bạn có thể tách phần vượt (${LeaveContract.formatHalfDayUnits(draftEval.excessAnnualUnits)}) sang Nghỉ không lương.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = SemanticColors.WarningLight
+                        )
+                        OutlinedButton(
+                            onClick = onAutoAllocateByBalance,
+                            enabled = !busy,
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier.testTag("leave_auto_split_balance_button")
+                        ) {
+                            Text("Tự động chia Phép năm + Nghỉ không lương")
+                        }
                     }
                 }
             }
 
             OutlinedButton(
                 onClick = onAddDay,
-                enabled = !busy && draftDays.size < 60,
+                enabled = !busy && draftDays.size < 120,
                 shape = RoundedCornerShape(12.dp),
                 modifier = Modifier.testTag("leave_add_day_button")
             ) {
@@ -2019,14 +2192,14 @@ private fun LeaveCreateRequestFormCard(
                     modifier = Modifier.size(18.dp)
                 )
                 Spacer(modifier = Modifier.width(6.dp))
-                Text("Thêm ngày nghỉ")
+                Text("Thêm dòng ngày/buổi nghỉ")
             }
 
             OutlinedTextField(
                 value = reason,
                 onValueChange = onUpdateReason,
-                label = { Text("Lý do xin nghỉ phép (bắt buộc)") },
-                placeholder = { Text("Nhập lý do xin nghỉ phép...") },
+                label = { Text("Lý do xin nghỉ (không bắt buộc)") },
+                placeholder = { Text("Nhập lý do hoặc ghi chú đơn xin nghỉ (nếu có)...") },
                 minLines = 2,
                 maxLines = 5,
                 modifier = Modifier
@@ -2119,6 +2292,7 @@ private fun LeaveMyRequestHistoryCard(
                 requests.forEach { req ->
                     val statusColor = leaveStatusColor(req.status)
                     val canWithdraw = LeaveContract.canWithdrawOwnLeaveRequest(actorAppUserId, req)
+                    val breakdown = LeaveContract.resolveRequestTypeBreakdown(req)
                     Surface(
                         shape = RoundedCornerShape(14.dp),
                         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.40f),
@@ -2138,6 +2312,9 @@ private fun LeaveMyRequestHistoryCard(
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Row(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .horizontalScroll(rememberScrollState()),
                                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
@@ -2153,18 +2330,21 @@ private fun LeaveMyRequestHistoryCard(
                                             modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
                                         )
                                     }
-                                    Surface(
-                                        shape = RoundedCornerShape(6.dp),
-                                        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.6f)
-                                    ) {
-                                        Text(
-                                            text = LeaveContract.leavePayTreatmentLabel(req.payTreatment),
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = MaterialTheme.colorScheme.onPrimaryContainer,
-                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
-                                        )
+                                    breakdown.forEach { tb ->
+                                        Surface(
+                                            shape = RoundedCornerShape(6.dp),
+                                            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.6f)
+                                        ) {
+                                            Text(
+                                                text = "${LeaveContract.leaveTypeShortLabel(tb.leaveType)}: ${LeaveContract.formatHalfDayUnits(tb.halfDayUnits)}",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                                            )
+                                        }
                                     }
                                 }
+                                Spacer(modifier = Modifier.width(6.dp))
                                 Text(
                                     text = LeaveContract.formatHalfDayUnits(req.requestedUnits),
                                     style = MaterialTheme.typography.titleSmall,
@@ -2174,7 +2354,7 @@ private fun LeaveMyRequestHistoryCard(
                             }
 
                             val daysSummary = req.days.joinToString(", ") { d ->
-                                "${LeaveContract.formatIsoDateVi(d.leaveDate)} (${LeaveContract.leaveSessionShortLabel(d.sessionCode)})"
+                                "${LeaveContract.formatIsoDateVi(d.leaveDate)} (${LeaveContract.leaveSessionShortLabel(d.sessionCode)} · ${LeaveContract.leaveTypeShortLabel(d.leaveType)})"
                             }
                             Text(
                                 text = "Ngày nghỉ: $daysSummary",
@@ -2182,7 +2362,7 @@ private fun LeaveMyRequestHistoryCard(
                                 fontWeight = FontWeight.SemiBold
                             )
                             Text(
-                                text = "Lý do: ${req.reason}",
+                                text = "Lý do: ${req.reason.ifBlank { "Không ghi lý do" }}",
                                 style = MaterialTheme.typography.bodySmall
                             )
                             Text(
@@ -2577,20 +2757,31 @@ private fun LeaveApprovalTabContent(
                             }
                         }
 
-                        Surface(
-                            shape = RoundedCornerShape(8.dp),
-                            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f)
+                        val breakdown = LeaveContract.resolveRequestTypeBreakdown(req)
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Text(
-                                text = LeaveContract.leavePayTreatmentLabel(req.payTreatment),
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onPrimaryContainer,
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                            )
+                            breakdown.forEach { tb ->
+                                Surface(
+                                    shape = RoundedCornerShape(8.dp),
+                                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f)
+                                ) {
+                                    Text(
+                                        text = "${LeaveContract.leaveTypeShortLabel(tb.leaveType)}: ${LeaveContract.formatHalfDayUnits(tb.halfDayUnits)}",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                    )
+                                }
+                            }
                         }
 
                         val daysText = req.days.joinToString(", ") { d ->
-                            "${LeaveContract.formatIsoDateVi(d.leaveDate)} (${LeaveContract.leaveSessionShortLabel(d.sessionCode)})"
+                            "${LeaveContract.formatIsoDateVi(d.leaveDate)} (${LeaveContract.leaveSessionShortLabel(d.sessionCode)} · ${LeaveContract.leaveTypeShortLabel(d.leaveType)})"
                         }
                         Text(
                             text = "Ngày nghỉ: $daysText",
@@ -2598,7 +2789,7 @@ private fun LeaveApprovalTabContent(
                             fontWeight = FontWeight.SemiBold
                         )
                         Text(
-                            text = "Lý do xin nghỉ: ${req.reason}",
+                            text = "Lý do xin nghỉ: ${req.reason.ifBlank { "Không ghi lý do" }}",
                             style = MaterialTheme.typography.bodySmall
                         )
                         Text(
@@ -2774,7 +2965,9 @@ private fun LeaveApprovalTabContent(
     if (activeDecisionState != null) {
         val req = activeDecisionState.request
         val decision = activeDecisionState.decision
-        val isReasonRequired = decision == "REJECT" || decision == "CANCEL_APPROVED"
+        val breakdownText = LeaveContract.resolveRequestTypeBreakdown(req).joinToString(" • ") {
+            "${LeaveContract.leaveTypeShortLabel(it.leaveType)}: ${LeaveContract.formatHalfDayUnits(it.halfDayUnits)}"
+        }
 
         Dialog(
             onDismissRequest = {
@@ -2808,6 +3001,13 @@ private fun LeaveApprovalTabContent(
                         style = MaterialTheme.typography.bodyMedium,
                         fontWeight = FontWeight.SemiBold
                     )
+                    if (breakdownText.isNotBlank()) {
+                        Text(
+                            text = "Loại nghỉ: $breakdownText",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                     OutlinedTextField(
                         value = decisionReasonInput,
                         onValueChange = {
@@ -2815,22 +3015,10 @@ private fun LeaveApprovalTabContent(
                             localDialogError = null
                         },
                         label = {
-                            Text(
-                                if (isReasonRequired) {
-                                    "Lý do xử lý (bắt buộc)"
-                                } else {
-                                    "Ghi chú duyệt (tùy chọn)"
-                                }
-                            )
+                            Text("Lý do / Ghi chú phản hồi (không bắt buộc)")
                         },
                         placeholder = {
-                            Text(
-                                if (isReasonRequired) {
-                                    "Nhập lý do từ chối / hủy duyệt..."
-                                } else {
-                                    "Nhập ghi chú phê duyệt nếu cần..."
-                                }
-                            )
+                            Text("Nhập ghi chú phản hồi (nếu có)...")
                         },
                         singleLine = true,
                         modifier = Modifier

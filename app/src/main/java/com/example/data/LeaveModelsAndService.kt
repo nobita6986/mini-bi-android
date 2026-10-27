@@ -103,7 +103,14 @@ data class LeaveBalanceProjection(
     val pendingPaidUnits: Int,
     val pendingUnpaidUnits: Int,
     val approvedUnpaidUnits: Int,
-    val lots: List<LeaveLotProjection>
+    val lots: List<LeaveLotProjection>,
+    val pendingAnnualUnits: Int = pendingPaidUnits,
+    val pendingNonAnnualUnits: Int = pendingUnpaidUnits,
+    val approvedAnnualUnits: Int = consumedUnits + reservedUnits,
+    val approvedNonAnnualUnits: Int = approvedUnpaidUnits,
+    val approvedBereavementUnits: Int = 0,
+    val approvedMarriageUnits: Int = 0,
+    val approvedSickUnits: Int = 0
 )
 
 data class LeaveRequestDayProjection(
@@ -111,7 +118,13 @@ data class LeaveRequestDayProjection(
     val leaveDate: String,
     val sessionCode: String,
     val halfDayUnits: Int,
-    val isActive: Boolean
+    val isActive: Boolean,
+    val leaveType: String = "ANNUAL"
+)
+
+data class LeaveRequestTypeBreakdownProjection(
+    val leaveType: String,
+    val halfDayUnits: Int
 )
 
 data class LeaveRequestAllocationProjection(
@@ -154,7 +167,11 @@ data class LeaveRequestProjection(
     val cancellationReason: String?,
     val rowVersion: Int,
     val days: List<LeaveRequestDayProjection>,
-    val allocations: List<LeaveRequestAllocationProjection>
+    val allocations: List<LeaveRequestAllocationProjection>,
+    val leaveTypes: List<String> = emptyList(),
+    val typeBreakdown: List<LeaveRequestTypeBreakdownProjection> = emptyList(),
+    val requestedAnnualUnits: Int = requestedUnits,
+    val requestedNonAnnualUnits: Int = 0
 )
 
 data class LeaveLedgerEntryProjection(
@@ -195,11 +212,43 @@ data class LeaveApprovalInboxProjection(
 data class LeaveDraftDayInput(
     val id: String = UUID.randomUUID().toString(),
     val leaveDate: String,
-    val sessionCode: String = "FULL"
+    val sessionCode: String = "FULL",
+    val leaveType: String = "ANNUAL"
+)
+
+data class LeaveRequestDraftEvaluation(
+    val isValid: Boolean,
+    val requestedUnits: Int,
+    val requestedDays: Double,
+    val annualUnits: Int,
+    val nonAnnualUnits: Int,
+    val typeBreakdown: List<LeaveRequestTypeBreakdownProjection>,
+    val duplicateDates: List<String>,
+    val outOfYearDates: List<String>,
+    val typeLimitErrors: List<String>,
+    val exceedsAvailableBalance: Boolean,
+    val excessAnnualUnits: Int,
+    val canSplitExcessAnnualToUnpaid: Boolean,
+    val hasReasonValid: Boolean,
+    val blockingErrors: List<String>
 )
 
 object LeaveContract {
     val SESSION_CODES = listOf("FULL", "AM", "PM")
+    val LEAVE_TYPES = listOf(
+        "ANNUAL",
+        "BEREAVEMENT",
+        "MARRIAGE",
+        "SICK",
+        "UNPAID"
+    )
+    val LEAVE_TYPE_MAX_UNITS_PER_REQUEST: Map<String, Int?> = mapOf(
+        "ANNUAL" to null,
+        "BEREAVEMENT" to 6,
+        "MARRIAGE" to 6,
+        "SICK" to 14,
+        "UNPAID" to 14
+    )
     val REQUEST_STATUS_FILTERS = listOf(
         "PENDING",
         "APPROVED",
@@ -226,10 +275,13 @@ object LeaveContract {
         "LEAVE_REASON_INVALID" to "Vui lòng nhập lý do hợp lệ (tối đa 2.000 ký tự).",
         "LEAVE_REASON_REQUIRED" to "Vui lòng nhập lý do hợp lệ (tối đa 2.000 ký tự).",
         "LEAVE_REQUEST_DAYS_INVALID" to "Danh sách ngày xin nghỉ không hợp lệ. Vui lòng chọn từ 1 đến 60 ngày nghỉ hợp lệ.",
+        "LEAVE_TYPE_INVALID" to "Loại nghỉ không hợp lệ. Vui lòng chọn Phép năm, Nghỉ tang, Nghỉ cưới, Nghỉ ốm hoặc Nghỉ không lương.",
+        "LEAVE_TYPE_LIMIT_EXCEEDED" to "Số ngày nghỉ vượt quá giới hạn tối đa mỗi yêu cầu (Nghỉ tang/Nghỉ cưới tối đa 3 ngày; Nghỉ ốm/Nghỉ không lương tối đa 7 ngày).",
+        "LEAVE_TYPE_ALLOCATION_MISMATCH" to "Tổng số ngày/đơn vị phân bổ theo loại nghỉ không khớp với các ngày/buổi đã chọn trong yêu cầu.",
         "LEAVE_REQUEST_YEAR_OUT_OF_RANGE" to "Ngày xin nghỉ phải thuộc năm nghiệp vụ hiện hành.",
-        "LEAVE_REQUEST_DUPLICATE_DATE" to "Không được chọn trùng một ngày nhiều lần trong cùng một đơn xin nghỉ.",
+        "LEAVE_REQUEST_DUPLICATE_DATE" to "Không được chọn trùng một ngày/buổi với cùng loại nghỉ nhiều lần trong cùng một đơn.",
         "LEAVE_REQUEST_OVERLAP" to "Ngày hoặc buổi xin nghỉ bị trùng với một đơn đang chờ duyệt hoặc đã được duyệt.",
-        "LEAVE_INSUFFICIENT_BALANCE" to "Số dư phép khả dụng tại thời điểm ngày nghỉ không đủ để đáp ứng đơn xin nghỉ có lương.",
+        "LEAVE_INSUFFICIENT_BALANCE" to "Số dư phép năm khả dụng tại thời điểm ngày nghỉ không đủ cho phần Phép năm đã chọn. Bạn có thể chia yêu cầu sang Nghỉ không lương hoặc loại nghỉ phù hợp.",
         "LEAVE_REQUEST_NOT_FOUND" to "Không tìm thấy đơn xin nghỉ phép.",
         "LEAVE_REQUEST_OWNERSHIP_FORBIDDEN" to "Bạn chỉ được phép rút đơn xin nghỉ phép của chính mình.",
         "LEAVE_ROW_VERSION_CONFLICT" to "Dữ liệu vừa được cập nhật bởi thao tác khác. Hệ thống đã làm mới, vui lòng kiểm tra và thử lại.",
@@ -382,6 +434,108 @@ object LeaveContract {
         else -> payTreatment
     }
 
+    fun leaveTypeShortLabel(leaveType: String?): String = when (leaveType?.trim()?.uppercase(Locale.ROOT)) {
+        "ANNUAL" -> "Phép năm"
+        "BEREAVEMENT" -> "Nghỉ tang"
+        "MARRIAGE" -> "Nghỉ cưới"
+        "SICK" -> "Nghỉ ốm"
+        "UNPAID" -> "Nghỉ không lương"
+        else -> "Phép năm"
+    }
+
+    fun leaveTypeLabel(leaveType: String?): String = when (leaveType?.trim()?.uppercase(Locale.ROOT)) {
+        "ANNUAL" -> "Phép năm"
+        "BEREAVEMENT" -> "Nghỉ tang (tối đa 3 ngày/đơn)"
+        "MARRIAGE" -> "Nghỉ cưới (tối đa 3 ngày/đơn)"
+        "SICK" -> "Nghỉ ốm (tối đa 7 ngày/đơn)"
+        "UNPAID" -> "Nghỉ không lương (tối đa 7 ngày/đơn)"
+        else -> "Phép năm"
+    }
+
+    fun resolveRequestTypeBreakdown(
+        request: LeaveRequestProjection
+    ): List<LeaveRequestTypeBreakdownProjection> {
+        if (request.typeBreakdown.isNotEmpty()) {
+            return request.typeBreakdown
+        }
+        return resolveRequestTypeBreakdownFromDays(
+            days = request.days,
+            fallbackRequestedUnits = request.requestedUnits
+        )
+    }
+
+    fun resolveRequestTypeBreakdownFromDays(
+        days: List<LeaveRequestDayProjection>,
+        fallbackRequestedUnits: Int = 0
+    ): List<LeaveRequestTypeBreakdownProjection> {
+        val unitsByType = mutableMapOf(
+            "ANNUAL" to 0,
+            "BEREAVEMENT" to 0,
+            "MARRIAGE" to 0,
+            "SICK" to 0,
+            "UNPAID" to 0
+        )
+        for (d in days) {
+            val lt = d.leaveType.trim().uppercase(Locale.ROOT).let {
+                if (it in LEAVE_TYPES) it else "ANNUAL"
+            }
+            val units = if (d.halfDayUnits > 0) d.halfDayUnits else leaveSessionHalfDayUnits(d.sessionCode)
+            unitsByType[lt] = (unitsByType[lt] ?: 0) + units
+        }
+        val list = LEAVE_TYPES.mapNotNull { lt ->
+            val u = unitsByType[lt] ?: 0
+            if (u > 0) LeaveRequestTypeBreakdownProjection(leaveType = lt, halfDayUnits = u) else null
+        }
+        if (list.isNotEmpty()) return list
+        if (fallbackRequestedUnits > 0) {
+            return listOf(
+                LeaveRequestTypeBreakdownProjection(
+                    leaveType = "ANNUAL",
+                    halfDayUnits = fallbackRequestedUnits
+                )
+            )
+        }
+        return emptyList()
+    }
+
+    fun autoAllocateDraftDaysByBalance(
+        days: List<LeaveDraftDayInput>,
+        availableAnnualUnits: Int
+    ): List<LeaveDraftDayInput> {
+        var remaining = availableAnnualUnits.coerceAtLeast(0)
+        val result = mutableListOf<LeaveDraftDayInput>()
+        for (row in days) {
+            val session = row.sessionCode.trim().uppercase(Locale.ROOT).let {
+                if (it in SESSION_CODES) it else "FULL"
+            }
+            val leaveType = row.leaveType.trim().uppercase(Locale.ROOT).let {
+                if (it in LEAVE_TYPES) it else "ANNUAL"
+            }
+            if (leaveType != "ANNUAL") {
+                result.add(row.copy(sessionCode = session, leaveType = leaveType))
+                continue
+            }
+            val units = leaveSessionHalfDayUnits(session)
+            if (remaining >= units) {
+                remaining -= units
+                result.add(row.copy(sessionCode = session, leaveType = "ANNUAL"))
+            } else if (remaining == 1 && session == "FULL") {
+                remaining = 0
+                result.add(row.copy(sessionCode = "AM", leaveType = "ANNUAL"))
+                result.add(
+                    LeaveDraftDayInput(
+                        leaveDate = row.leaveDate.trim(),
+                        sessionCode = "PM",
+                        leaveType = "UNPAID"
+                    )
+                )
+            } else {
+                result.add(row.copy(sessionCode = session, leaveType = "UNPAID"))
+            }
+        }
+        return result
+    }
+
     fun leaveRouteKindLabel(
         routeKind: String,
         teamName: String? = null,
@@ -522,6 +676,10 @@ object LeaveContract {
         }
         val normalizedDecision = decision.trim().uppercase(Locale.ROOT)
         val normalizedStatus = request.status.trim().uppercase(Locale.ROOT)
+        val trimmedReason = reason.trim()
+        if (trimmedReason.length > 2000) {
+            return false to "Vui lòng nhập lý do hợp lệ (tối đa 2.000 ký tự)."
+        }
         return when (normalizedDecision) {
             "APPROVE" -> {
                 if (normalizedStatus != "PENDING") {
@@ -533,10 +691,6 @@ object LeaveContract {
             "REJECT" -> {
                 if (normalizedStatus != "PENDING") {
                     false to "Chỉ có thể từ chối đơn đang ở trạng thái Chờ duyệt."
-                } else if (reason.trim().isEmpty()) {
-                    false to "Bắt buộc nhập lý do khi từ chối đơn nghỉ phép."
-                } else if (reason.trim().length > 2000) {
-                    false to "Vui lòng nhập lý do hợp lệ (tối đa 2.000 ký tự)."
                 } else {
                     true to null
                 }
@@ -544,10 +698,6 @@ object LeaveContract {
             "CANCEL_APPROVED" -> {
                 if (normalizedStatus != "APPROVED") {
                     false to "Chỉ có thể hủy đơn đã ở trạng thái Đã duyệt để hoàn lại phép."
-                } else if (reason.trim().isEmpty()) {
-                    false to "Bắt buộc nhập lý do khi hủy đơn nghỉ phép đã duyệt."
-                } else if (reason.trim().length > 2000) {
-                    false to "Vui lòng nhập lý do hợp lệ (tối đa 2.000 ký tự)."
                 } else {
                     true to null
                 }
@@ -556,44 +706,163 @@ object LeaveContract {
         }
     }
 
-    fun validateCreateDraftInput(
+    fun evaluateLeaveRequestDraft(
         days: List<LeaveDraftDayInput>,
-        reason: String
-    ): String? {
-        if (days.isEmpty()) {
-            return "Vui lòng thêm ít nhất 1 ngày xin nghỉ."
-        }
-        if (days.size > 60) {
-            return "Mỗi đơn chỉ được đăng ký tối đa 60 ngày nghỉ."
-        }
-        val seenDates = mutableSetOf<String>()
+        reason: String,
+        leaveYear: Int? = null,
+        availableUnits: Int? = null
+    ): LeaveRequestDraftEvaluation {
+        val blockingErrors = mutableListOf<String>()
         val duplicateDates = mutableListOf<String>()
+        val outOfYearDates = mutableListOf<String>()
+        val typeLimitErrors = mutableListOf<String>()
+        val seenDateEntries = mutableMapOf<String, MutableList<Pair<String, String>>>()
+
+        val unitsByType = mutableMapOf(
+            "ANNUAL" to 0,
+            "BEREAVEMENT" to 0,
+            "MARRIAGE" to 0,
+            "SICK" to 0,
+            "UNPAID" to 0
+        )
+
+        var requestedUnits = 0
+        var hasInvalidRow = false
+
+        if (days.isEmpty()) {
+            blockingErrors.add("Vui lòng thêm ít nhất 1 ngày xin nghỉ.")
+        } else if (days.size > 120) {
+            blockingErrors.add("Mỗi yêu cầu nghỉ phép chỉ được tối đa 120 dòng ngày/buổi nghỉ.")
+        }
+
+        val yearPrefix = leaveYear?.let { "$it-" }
+
         for (row in days) {
             val dateStr = row.leaveDate.trim()
             val sessionStr = row.sessionCode.trim().uppercase(Locale.ROOT)
+            val typeStr = row.leaveType.trim().uppercase(Locale.ROOT)
             if (!isValidIsoDate(dateStr)) {
-                return "Vui lòng chọn đầy đủ ngày nghỉ hợp lệ (YYYY-MM-DD)."
+                hasInvalidRow = true
+                continue
             }
             if (sessionStr !in SESSION_CODES) {
-                return "Vui lòng chọn buổi nghỉ hợp lệ (Cả ngày, Buổi sáng hoặc Buổi chiều)."
+                hasInvalidRow = true
+                continue
             }
-            if (!seenDates.add(dateStr)) {
-                if (dateStr !in duplicateDates) {
+            if (typeStr !in LEAVE_TYPES) {
+                hasInvalidRow = true
+                continue
+            }
+            val prevEntries = seenDateEntries.getOrPut(dateStr) { mutableListOf() }
+            if (prevEntries.isNotEmpty()) {
+                val prev = prevEntries[0]
+                val isSplitDifferentTypes =
+                    prevEntries.size == 1 &&
+                        prev.first != "FULL" &&
+                        sessionStr != "FULL" &&
+                        prev.first != sessionStr &&
+                        prev.second != typeStr
+                if (!isSplitDifferentTypes && dateStr !in duplicateDates) {
                     duplicateDates.add(dateStr)
                 }
             }
+            prevEntries.add(sessionStr to typeStr)
+
+            if (yearPrefix != null && !dateStr.startsWith(yearPrefix)) {
+                if (dateStr !in outOfYearDates) {
+                    outOfYearDates.add(dateStr)
+                }
+            }
+
+            val rowUnits = leaveSessionHalfDayUnits(sessionStr)
+            requestedUnits += rowUnits
+            unitsByType[typeStr] = (unitsByType[typeStr] ?: 0) + rowUnits
+        }
+
+        if (hasInvalidRow) {
+            blockingErrors.add("Vui lòng chọn đầy đủ ngày nghỉ (YYYY-MM-DD), buổi nghỉ và loại nghỉ hợp lệ.")
         }
         if (duplicateDates.isNotEmpty()) {
-            return "Không được chọn trùng một ngày nhiều lần trong cùng một đơn xin nghỉ (${duplicateDates.joinToString(", ") { formatIsoDateVi(it) }})."
+            blockingErrors.add(
+                "Không được chọn trùng ngày/buổi với cùng loại nghỉ trong cùng một đơn (${duplicateDates.joinToString(", ") { formatIsoDateVi(it) }}). Nếu tách Sáng + Chiều trong cùng một ngày, hai buổi phải có loại nghỉ khác nhau."
+            )
         }
+        if (outOfYearDates.isNotEmpty() && leaveYear != null) {
+            blockingErrors.add("Tất cả ngày xin nghỉ phải thuộc năm nghiệp vụ $leaveYear.")
+        }
+
+        for (lt in LEAVE_TYPES) {
+            val maxUnits = LEAVE_TYPE_MAX_UNITS_PER_REQUEST[lt]
+            val units = unitsByType[lt] ?: 0
+            if (maxUnits != null && units > maxUnits) {
+                val msg = "${leaveTypeShortLabel(lt)} vượt quá giới hạn tối đa ${formatHalfDayUnits(maxUnits)} mỗi yêu cầu (đang chọn ${formatHalfDayUnits(units)})."
+                typeLimitErrors.add(msg)
+                blockingErrors.add(msg)
+            }
+        }
+
+        val annualUnits = unitsByType["ANNUAL"] ?: 0
+        val nonAnnualUnits = requestedUnits - annualUnits
+        val typeBreakdown = LEAVE_TYPES.mapNotNull { lt ->
+            val u = unitsByType[lt] ?: 0
+            if (u > 0) LeaveRequestTypeBreakdownProjection(leaveType = lt, halfDayUnits = u) else null
+        }
+
+        val safeAvailable = availableUnits?.coerceAtLeast(0)
+        val exceedsAvailableBalance = safeAvailable != null && annualUnits > safeAvailable
+        val excessAnnualUnits = if (exceedsAvailableBalance && safeAvailable != null) {
+            annualUnits - safeAvailable
+        } else {
+            0
+        }
+        val maxUnpaidUnits = LEAVE_TYPE_MAX_UNITS_PER_REQUEST["UNPAID"] ?: 14
+        val currentUnpaidUnits = unitsByType["UNPAID"] ?: 0
+        val canSplitExcessAnnualToUnpaid =
+            exceedsAvailableBalance && (currentUnpaidUnits + excessAnnualUnits <= maxUnpaidUnits)
+
+        if (exceedsAvailableBalance && safeAvailable != null) {
+            blockingErrors.add(
+                "Phần Phép năm đã chọn (${formatHalfDayUnits(annualUnits)}) vượt quá số dư phép năm khả dụng hiện tại (${formatHalfDayUnits(safeAvailable)}). Hãy chuyển phần vượt quá sang Nghỉ không lương hoặc loại nghỉ phù hợp."
+            )
+        }
+
         val trimmedReason = reason.trim()
-        if (trimmedReason.isEmpty()) {
-            return "Vui lòng nhập lý do xin nghỉ phép."
+        val hasReasonValid = trimmedReason.length <= 2000
+        if (!hasReasonValid) {
+            blockingErrors.add("Vui lòng nhập lý do hợp lệ (tối đa 2.000 ký tự).")
         }
-        if (trimmedReason.length > 2000) {
-            return "Vui lòng nhập lý do hợp lệ (tối đa 2.000 ký tự)."
-        }
-        return null
+
+        return LeaveRequestDraftEvaluation(
+            isValid = blockingErrors.isEmpty() && days.isNotEmpty() && !hasInvalidRow && hasReasonValid,
+            requestedUnits = requestedUnits,
+            requestedDays = halfDayUnitsToDays(requestedUnits),
+            annualUnits = annualUnits,
+            nonAnnualUnits = nonAnnualUnits,
+            typeBreakdown = typeBreakdown,
+            duplicateDates = duplicateDates,
+            outOfYearDates = outOfYearDates,
+            typeLimitErrors = typeLimitErrors,
+            exceedsAvailableBalance = exceedsAvailableBalance,
+            excessAnnualUnits = excessAnnualUnits,
+            canSplitExcessAnnualToUnpaid = canSplitExcessAnnualToUnpaid,
+            hasReasonValid = hasReasonValid,
+            blockingErrors = blockingErrors
+        )
+    }
+
+    fun validateCreateDraftInput(
+        days: List<LeaveDraftDayInput>,
+        reason: String,
+        leaveYear: Int? = null,
+        availableUnits: Int? = null
+    ): String? {
+        val eval = evaluateLeaveRequestDraft(
+            days = days,
+            reason = reason,
+            leaveYear = leaveYear,
+            availableUnits = availableUnits
+        )
+        return eval.blockingErrors.firstOrNull()
     }
 
     private fun JSONObject.optNullableString(key: String): String? {
@@ -704,6 +973,11 @@ object LeaveContract {
                 )
             }
         }
+        val reservedUnits = safe.optInt("reserved_units", 0)
+        val consumedUnits = safe.optInt("consumed_units", 0)
+        val pendingPaidUnits = safe.optInt("pending_paid_units", 0)
+        val pendingUnpaidUnits = safe.optInt("pending_unpaid_units", 0)
+        val approvedUnpaidUnits = safe.optInt("approved_unpaid_units", 0)
         return LeaveBalanceProjection(
             leaveYear = safe.optInt("leave_year", defaultYear),
             asOfDate = safe.optString("as_of_date", "").trim(),
@@ -722,13 +996,20 @@ object LeaveContract {
             seniorityGrantedUnits = safe.optInt("seniority_granted_units", 0),
             openingOrAdjustmentUnits = safe.optInt("opening_or_adjustment_units", 0),
             availableUnits = safe.optInt("available_units", 0),
-            reservedUnits = safe.optInt("reserved_units", 0),
-            consumedUnits = safe.optInt("consumed_units", 0),
+            reservedUnits = reservedUnits,
+            consumedUnits = consumedUnits,
             expiredUnits = safe.optInt("expired_units", 0),
-            pendingPaidUnits = safe.optInt("pending_paid_units", 0),
-            pendingUnpaidUnits = safe.optInt("pending_unpaid_units", 0),
-            approvedUnpaidUnits = safe.optInt("approved_unpaid_units", 0),
-            lots = lots
+            pendingPaidUnits = pendingPaidUnits,
+            pendingUnpaidUnits = pendingUnpaidUnits,
+            approvedUnpaidUnits = approvedUnpaidUnits,
+            lots = lots,
+            pendingAnnualUnits = safe.optInt("pending_annual_units", pendingPaidUnits),
+            pendingNonAnnualUnits = safe.optInt("pending_non_annual_units", pendingUnpaidUnits),
+            approvedAnnualUnits = safe.optInt("approved_annual_units", consumedUnits + reservedUnits),
+            approvedNonAnnualUnits = safe.optInt("approved_non_annual_units", approvedUnpaidUnits),
+            approvedBereavementUnits = safe.optInt("approved_bereavement_units", 0),
+            approvedMarriageUnits = safe.optInt("approved_marriage_units", 0),
+            approvedSickUnits = safe.optInt("approved_sick_units", 0)
         )
     }
 
@@ -738,13 +1019,16 @@ object LeaveContract {
             for (i in 0 until daysArr.length()) {
                 val d = daysArr.optJSONObject(i) ?: continue
                 val sessionCode = d.optString("session_code", "FULL").trim().uppercase(Locale.ROOT)
+                val rawType = d.optString("leave_type", "ANNUAL").trim().uppercase(Locale.ROOT)
+                val leaveType = if (rawType in LEAVE_TYPES) rawType else "ANNUAL"
                 add(
                     LeaveRequestDayProjection(
                         requestDayId = d.optString("request_day_id", "").trim(),
                         leaveDate = d.optString("leave_date", "").trim(),
                         sessionCode = sessionCode,
                         halfDayUnits = d.optInt("half_day_units", leaveSessionHalfDayUnits(sessionCode)),
-                        isActive = d.optBoolean("is_active", true)
+                        isActive = d.optBoolean("is_active", true),
+                        leaveType = leaveType
                     )
                 )
             }
@@ -768,6 +1052,46 @@ object LeaveContract {
                 )
             }
         }
+        val requestedUnits = obj.optInt("requested_units", days.sumOf { it.halfDayUnits })
+        val breakdownArr = obj.optJSONArray("type_breakdown")
+        val parsedBreakdown = buildList {
+            if (breakdownArr != null) {
+                for (i in 0 until breakdownArr.length()) {
+                    val tb = breakdownArr.optJSONObject(i) ?: continue
+                    val rawType = tb.optString("leave_type", "ANNUAL").trim().uppercase(Locale.ROOT)
+                    val leaveType = if (rawType in LEAVE_TYPES) rawType else "ANNUAL"
+                    val units = tb.optInt("half_day_units", 0)
+                    if (units > 0) {
+                        add(LeaveRequestTypeBreakdownProjection(leaveType = leaveType, halfDayUnits = units))
+                    }
+                }
+            }
+        }
+        val resolvedBreakdown = if (parsedBreakdown.isNotEmpty()) {
+            parsedBreakdown
+        } else {
+            resolveRequestTypeBreakdownFromDays(days, requestedUnits)
+        }
+        val leaveTypesArr = obj.optJSONArray("leave_types")
+        val leaveTypes = buildList {
+            if (leaveTypesArr != null) {
+                for (i in 0 until leaveTypesArr.length()) {
+                    val rawType = leaveTypesArr.optString(i, "").trim().uppercase(Locale.ROOT)
+                    if (rawType in LEAVE_TYPES && rawType !in this) {
+                        add(rawType)
+                    }
+                }
+            }
+            if (isEmpty()) {
+                addAll(resolvedBreakdown.map { it.leaveType })
+            }
+        }
+        val defaultAnnualUnits = resolvedBreakdown.filter { it.leaveType == "ANNUAL" }.sumOf { it.halfDayUnits }
+        val requestedAnnualUnits = obj.optInt("requested_annual_units", defaultAnnualUnits)
+        val requestedNonAnnualUnits = obj.optInt(
+            "requested_non_annual_units",
+            (requestedUnits - requestedAnnualUnits).coerceAtLeast(0)
+        )
         return LeaveRequestProjection(
             requestId = obj.optString("request_id", "").trim(),
             appUserId = obj.optString("app_user_id", "").trim(),
@@ -777,8 +1101,8 @@ object LeaveContract {
             employmentStatusSnapshot = obj.optString("employment_status_snapshot", "UNCONFIGURED").trim(),
             unitKindSnapshot = obj.optString("unit_kind_snapshot", "UNCLASSIFIED").trim(),
             profileConfiguredAtSubmit = obj.optBoolean("profile_configured_at_submit", false),
-            requestedUnits = obj.optInt("requested_units", days.sumOf { it.halfDayUnits }),
-            reason = obj.optString("reason", "").trim(),
+            requestedUnits = requestedUnits,
+            reason = obj.optNullableString("reason").orEmpty(),
             routeKind = obj.optString("route_kind", "").trim(),
             primaryApproverAppUserId = obj.optNullableString("primary_approver_app_user_id"),
             primaryApprover = parseAccountProjection(obj.optJSONObject("primary_approver")),
@@ -796,7 +1120,11 @@ object LeaveContract {
             cancellationReason = obj.optNullableString("cancellation_reason"),
             rowVersion = obj.optInt("row_version", 1),
             days = days,
-            allocations = allocations
+            allocations = allocations,
+            leaveTypes = leaveTypes,
+            typeBreakdown = resolvedBreakdown,
+            requestedAnnualUnits = requestedAnnualUnits,
+            requestedNonAnnualUnits = requestedNonAnnualUnits
         )
     }
 
@@ -876,21 +1204,26 @@ object LeaveContract {
 
     fun buildCreateLeaveRequestPayload(
         days: List<LeaveDraftDayInput>,
-        reason: String,
+        reason: String?,
         idempotencyKey: String = newClientIdempotencyKey("leave-create")
     ): JSONObject {
         val daysArr = JSONArray()
         for (d in days) {
+            val cleanType = d.leaveType.trim().uppercase(Locale.ROOT).let {
+                if (it in LEAVE_TYPES) it else "ANNUAL"
+            }
             daysArr.put(
                 JSONObject().apply {
                     put("leave_date", d.leaveDate.trim())
                     put("session_code", d.sessionCode.trim().uppercase(Locale.ROOT))
+                    put("leave_type", cleanType)
                 }
             )
         }
+        val cleanReason = reason?.trim()?.takeIf { it.isNotEmpty() }
         return JSONObject().apply {
             put("days", daysArr)
-            put("reason", reason.trim())
+            put("reason", cleanReason ?: JSONObject.NULL)
             put("idempotency_key", idempotencyKey.trim())
         }
     }

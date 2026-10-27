@@ -553,12 +553,12 @@ final class HRPBTests: XCTestCase {
     }
 
     func testLeavePayloadBuildersAndValidationRules() throws {
-        // 1. Create request payload (`FULL`, `AM`, `PM`)
+        // 1. Create request payload (`FULL`, `AM`, `PM`, with `leave_type`)
         let days = [
-            LeaveDraftDayInput(leaveDate: "2026-11-02", sessionCode: "FULL"),
-            LeaveDraftDayInput(leaveDate: "2026-11-03", sessionCode: "PM")
+            LeaveDraftDayInput(leaveDate: "2026-11-02", sessionCode: "FULL", leaveType: "ANNUAL"),
+            LeaveDraftDayInput(leaveDate: "2026-11-03", sessionCode: "PM", leaveType: "SICK")
         ]
-        XCTAssertNil(LeaveContract.validateCreateDraftInput(days: days, reason: "Khám sức khỏe"))
+        XCTAssertNil(LeaveContract.validateCreateDraftInput(days: days, reason: ""))
         let createPayload = LeaveContract.buildCreateLeaveRequestPayload(
             days: days,
             reason: "  Khám sức khỏe  ",
@@ -570,15 +570,33 @@ final class HRPBTests: XCTestCase {
         XCTAssertEqual(payloadDays.count, 2)
         XCTAssertEqual(payloadDays[0]["leave_date"], "2026-11-02")
         XCTAssertEqual(payloadDays[0]["session_code"], "FULL")
+        XCTAssertEqual(payloadDays[0]["leave_type"], "ANNUAL")
         XCTAssertEqual(payloadDays[1]["leave_date"], "2026-11-03")
         XCTAssertEqual(payloadDays[1]["session_code"], "PM")
+        XCTAssertEqual(payloadDays[1]["leave_type"], "SICK")
 
-        // Duplicate date validation
-        let dupDays = [
-            LeaveDraftDayInput(leaveDate: "2026-11-02", sessionCode: "AM"),
-            LeaveDraftDayInput(leaveDate: "2026-11-02", sessionCode: "PM")
+        // Same date with same leave_type is rejected, but AM + PM with different leave_type is allowed
+        let dupSameTypeDays = [
+            LeaveDraftDayInput(leaveDate: "2026-11-02", sessionCode: "AM", leaveType: "ANNUAL"),
+            LeaveDraftDayInput(leaveDate: "2026-11-02", sessionCode: "PM", leaveType: "ANNUAL")
         ]
-        XCTAssertNotNil(LeaveContract.validateCreateDraftInput(days: dupDays, reason: "Trùng ngày"))
+        XCTAssertNotNil(LeaveContract.validateCreateDraftInput(days: dupSameTypeDays, reason: ""))
+
+        let splitDiffTypeDays = [
+            LeaveDraftDayInput(leaveDate: "2026-11-02", sessionCode: "AM", leaveType: "ANNUAL"),
+            LeaveDraftDayInput(leaveDate: "2026-11-02", sessionCode: "PM", leaveType: "UNPAID")
+        ]
+        XCTAssertNil(LeaveContract.validateCreateDraftInput(days: splitDiffTypeDays, reason: "", leaveYear: 2026, availableUnits: 1))
+
+        let autoSplit = LeaveContract.autoAllocateDraftDaysByBalance(
+            days: [LeaveDraftDayInput(leaveDate: "2026-11-05", sessionCode: "FULL", leaveType: "ANNUAL")],
+            availableUnits: 1
+        )
+        XCTAssertEqual(autoSplit.count, 2)
+        XCTAssertEqual(autoSplit[0].sessionCode, "AM")
+        XCTAssertEqual(autoSplit[0].leaveType, "ANNUAL")
+        XCTAssertEqual(autoSplit[1].sessionCode, "PM")
+        XCTAssertEqual(autoSplit[1].leaveType, "UNPAID")
 
         // 2. Withdraw payload
         let withdrawPayload = LeaveContract.buildWithdrawLeaveRequestPayload(
@@ -608,15 +626,23 @@ final class HRPBTests: XCTestCase {
         )
         XCTAssertFalse(selfCheck.isValid)
 
-        // REJECT requires non-empty reason
+        // REJECT allows optional empty reason, but blocks >2000 chars
         let rejectEmpty = LeaveContract.validateApproverDecisionInput(
             actorAppUserId: approverId,
             request: pendingReq,
             decision: "REJECT",
             reason: "   "
         )
-        XCTAssertFalse(rejectEmpty.isValid)
-        XCTAssertEqual(rejectEmpty.errorMessage, "Bắt buộc nhập lý do khi từ chối đơn nghỉ phép.")
+        XCTAssertTrue(rejectEmpty.isValid)
+
+        let rejectTooLong = LeaveContract.validateApproverDecisionInput(
+            actorAppUserId: approverId,
+            request: pendingReq,
+            decision: "REJECT",
+            reason: String(repeating: "x", count: 2001)
+        )
+        XCTAssertFalse(rejectTooLong.isValid)
+        XCTAssertEqual(rejectTooLong.errorMessage, "Lý do xử lý không được vượt quá 2000 ký tự.")
 
         let rejectValid = LeaveContract.validateApproverDecisionInput(
             actorAppUserId: approverId,
@@ -626,7 +652,7 @@ final class HRPBTests: XCTestCase {
         )
         XCTAssertTrue(rejectValid.isValid)
 
-        // CANCEL_APPROVED requires APPROVED status and non-empty reason
+        // CANCEL_APPROVED requires APPROVED status and allows optional reason
         let approvedReq = LeaveRequestProjection(
             requestId: "bbbb1111-2222-4333-8444-555555555555",
             appUserId: "11111111-2222-4333-8444-555555555555",
@@ -639,8 +665,7 @@ final class HRPBTests: XCTestCase {
             decision: "CANCEL_APPROVED",
             reason: ""
         )
-        XCTAssertFalse(cancelEmpty.isValid)
-        XCTAssertEqual(cancelEmpty.errorMessage, "Bắt buộc nhập lý do khi hủy đơn nghỉ phép đã duyệt.")
+        XCTAssertTrue(cancelEmpty.isValid)
 
         let cancelValid = LeaveContract.validateApproverDecisionInput(
             actorAppUserId: approverId,
@@ -664,7 +689,7 @@ final class HRPBTests: XCTestCase {
         // Error code mapping
         XCTAssertEqual(
             LeaveContract.errorMessageForCode("LEAVE_INSUFFICIENT_BALANCE"),
-            "Số dư phép khả dụng tại thời điểm ngày nghỉ không đủ để đáp ứng đơn xin nghỉ có lương."
+            "Số dư Phép năm khả dụng không đủ cho các ngày đăng ký loại Phép năm. Vui lòng chuyển phần ngày vượt sang Nghỉ không lương hoặc loại nghỉ phù hợp."
         )
         XCTAssertEqual(
             BackendHttpClient.codeMessagesVi["LEAVE_ROW_VERSION_CONFLICT"],

@@ -1769,7 +1769,7 @@ class WorkReportsReportingAndAttendanceContractTest {
         val nonApproverTabs = LeaveContract.resolveVisibleAttendanceTabs(summary.authority, null)
         assertEquals(listOf(AttendanceAreaTab.CHECK_IN, AttendanceAreaTab.LEAVE_REQUEST), nonApproverTabs)
 
-        // 2. Create leave request with 1 full day (FULL) and 1 afternoon half-day (PM)
+        // 2. Create leave request with 1 full day (FULL, ANNUAL) and 1 afternoon half-day (PM, SICK)
         server.enqueue(
             MockResponse().setResponseCode(201).setBody(
                 """{"ok":true,"data":{"request_id":"$requestId","status":"PENDING","requested_units":3,"row_version":1,"replayed":false}}"""
@@ -1777,10 +1777,10 @@ class WorkReportsReportingAndAttendanceContractTest {
         )
         val createdId = repo.leaveService.createLeaveRequest(
             days = listOf(
-                LeaveDraftDayInput(leaveDate = "2026-11-02", sessionCode = "FULL"),
-                LeaveDraftDayInput(leaveDate = "2026-11-03", sessionCode = "PM")
+                LeaveDraftDayInput(leaveDate = "2026-11-02", sessionCode = "FULL", leaveType = "ANNUAL"),
+                LeaveDraftDayInput(leaveDate = "2026-11-03", sessionCode = "PM", leaveType = "SICK")
             ),
-            reason = "Khám sức khỏe định kỳ",
+            reason = "",
             idempotencyKey = "leave-create-test-key-001"
         )
         assertEquals(requestId, createdId)
@@ -1788,14 +1788,48 @@ class WorkReportsReportingAndAttendanceContractTest {
         assertEquals("POST", createReq.method)
         assertEquals("/api/leave/requests", createReq.path)
         val createBody = JSONObject(createReq.body.readUtf8())
-        assertEquals("Khám sức khỏe định kỳ", createBody.getString("reason"))
+        assertTrue(createBody.isNull("reason"))
         assertEquals("leave-create-test-key-001", createBody.getString("idempotency_key"))
         val sentDays = createBody.getJSONArray("days")
         assertEquals(2, sentDays.length())
         assertEquals("2026-11-02", sentDays.getJSONObject(0).getString("leave_date"))
         assertEquals("FULL", sentDays.getJSONObject(0).getString("session_code"))
+        assertEquals("ANNUAL", sentDays.getJSONObject(0).getString("leave_type"))
         assertEquals("2026-11-03", sentDays.getJSONObject(1).getString("leave_date"))
         assertEquals("PM", sentDays.getJSONObject(1).getString("session_code"))
+        assertEquals("SICK", sentDays.getJSONObject(1).getString("leave_type"))
+
+        // 2b. Validate per-type limits, same-date split rules, and auto-allocate excess ANNUAL -> UNPAID
+        val sameDateSameTypeErr = LeaveContract.validateCreateDraftInput(
+            days = listOf(
+                LeaveDraftDayInput(leaveDate = "2026-11-05", sessionCode = "AM", leaveType = "ANNUAL"),
+                LeaveDraftDayInput(leaveDate = "2026-11-05", sessionCode = "PM", leaveType = "ANNUAL")
+            ),
+            reason = ""
+        )
+        assertEquals(
+            "Ngày 2026-11-05: 2 buổi cùng loại nghỉ phải chọn 'Cả ngày' thay vì tách 2 dòng.",
+            sameDateSameTypeErr
+        )
+        val sameDateDifferentTypeValid = LeaveContract.validateCreateDraftInput(
+            days = listOf(
+                LeaveDraftDayInput(leaveDate = "2026-11-05", sessionCode = "AM", leaveType = "ANNUAL"),
+                LeaveDraftDayInput(leaveDate = "2026-11-05", sessionCode = "PM", leaveType = "UNPAID")
+            ),
+            reason = "",
+            leaveYear = 2026,
+            availableUnits = 1
+        )
+        assertNull(sameDateDifferentTypeValid)
+        val allocatedSplit = LeaveContract.autoAllocateDraftDaysByBalance(
+            days = listOf(LeaveDraftDayInput(leaveDate = "2026-11-06", sessionCode = "FULL", leaveType = "ANNUAL")),
+            availableUnits = 1
+        )
+        assertEquals(2, allocatedSplit.size)
+        assertEquals("AM", allocatedSplit[0].sessionCode)
+        assertEquals("ANNUAL", allocatedSplit[0].leaveType)
+        assertEquals("PM", allocatedSplit[1].sessionCode)
+        assertEquals("UNPAID", allocatedSplit[1].leaveType)
 
         // 3. Withdraw pending request sends expected_row_version and idempotency_key
         server.enqueue(
@@ -1833,7 +1867,7 @@ class WorkReportsReportingAndAttendanceContractTest {
         assertNotNull(err)
         assertEquals("LEAVE_INSUFFICIENT_BALANCE", err!!.backendCode)
         assertEquals(
-            "Số dư phép khả dụng tại thời điểm ngày nghỉ không đủ để đáp ứng đơn xin nghỉ có lương.",
+            "Số dư Phép năm khả dụng không đủ cho các ngày đăng ký loại Phép năm. Vui lòng chuyển phần ngày vượt sang Nghỉ không lương hoặc loại nghỉ phù hợp.",
             err.message
         )
     }
@@ -2034,11 +2068,11 @@ class WorkReportsReportingAndAttendanceContractTest {
             val initialItem = vm.leaveApprovalInbox.value!!.items.single()
             assertEquals(2, initialItem.rowVersion)
 
-            // Rejecting without reason is blocked client-side before hitting network
+            // Reason exceeding 2000 characters is blocked client-side before hitting network
             recordedCalls.clear()
-            vm.decideLeaveRequest(initialItem, decision = "REJECT", reason = "   ")
+            vm.decideLeaveRequest(initialItem, decision = "REJECT", reason = "a".repeat(2001))
             org.robolectric.shadows.ShadowLooper.idleMainLooper()
-            assertEquals("Bắt buộc nhập lý do khi từ chối đơn nghỉ phép.", vm.leaveMutationError.value)
+            assertEquals("Lý do xử lý không được vượt quá 2000 ký tự.", vm.leaveMutationError.value)
             assertTrue(recordedCalls.none { it.contains("/decision") })
 
             // Simulate 409 LEAVE_ROW_VERSION_CONFLICT -> ViewModel reloads latest inbox (rowVersion = 5)
@@ -2084,13 +2118,8 @@ class WorkReportsReportingAndAttendanceContractTest {
             assertEquals("APPROVED", approvedItem.status)
             assertEquals(6, approvedItem.rowVersion)
 
-            // CANCEL_APPROVED requires reason
+            // CANCEL_APPROVED with optional empty reason succeeds -> status becomes CANCELLED
             vm.decideLeaveRequest(approvedItem, decision = "CANCEL_APPROVED", reason = "")
-            org.robolectric.shadows.ShadowLooper.idleMainLooper()
-            assertEquals("Bắt buộc nhập lý do khi hủy đơn nghỉ phép đã duyệt.", vm.leaveMutationError.value)
-
-            // CANCEL_APPROVED with valid reason succeeds -> status becomes CANCELLED
-            vm.decideLeaveRequest(approvedItem, decision = "CANCEL_APPROVED", reason = "Nhân sự đi làm lại")
             attempts = 0
             while (
                 (vm.leaveMutationBusy.value ||

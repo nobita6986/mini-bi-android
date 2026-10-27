@@ -698,17 +698,18 @@ public struct AttendanceScreen: View {
             }
 
             HStack(spacing: 10) {
+                let totalPendingUnits = balance.pendingAnnualUnits + balance.pendingNonAnnualUnits
                 leaveStatMetricTile(
                     title: "Giữ chỗ / Chờ duyệt",
-                    value: LeaveContract.formatHalfDayUnits(balance.reservedUnits + balance.pendingPaidUnits),
-                    subtitle: "Đã duyệt chờ đến ngày: \(LeaveContract.formatHalfDayUnits(balance.reservedUnits)) • Chờ duyệt: \(LeaveContract.formatHalfDayUnits(balance.pendingPaidUnits))",
+                    value: LeaveContract.formatHalfDayUnits(balance.reservedUnits + totalPendingUnits),
+                    subtitle: "Giữ chỗ phép năm: \(LeaveContract.formatHalfDayUnits(balance.reservedUnits)) • Chờ duyệt: \(LeaveContract.formatHalfDayUnits(totalPendingUnits))",
                     accentColor: SemanticColors.warningText,
                     bgColor: SemanticColors.warningBg.opacity(0.6)
                 )
                 leaveStatMetricTile(
                     title: "Đã sử dụng",
                     value: LeaveContract.formatHalfDayUnits(balance.consumedUnits),
-                    subtitle: "Hết hạn: \(LeaveContract.formatHalfDayUnits(balance.expiredUnits)) • Không lương: \(LeaveContract.formatHalfDayUnits(balance.approvedUnpaidUnits))",
+                    subtitle: "Hết hạn: \(LeaveContract.formatHalfDayUnits(balance.expiredUnits)) • Ngoài phép năm: \(LeaveContract.formatHalfDayUnits(balance.approvedNonAnnualUnits))",
                     accentColor: SemanticColors.textSecondary,
                     bgColor: Color(hex: 0xF1F5F9)
                 )
@@ -744,8 +745,8 @@ public struct AttendanceScreen: View {
             if !balance.profileConfigured || balance.employmentStatus.uppercased() == "PROBATION" {
                 Text(
                     !balance.profileConfigured
-                        ? "Hồ sơ nghỉ phép của bạn chưa được cấu hình đầy đủ trạng thái Chính thức. Đơn xin nghỉ gửi lúc này sẽ được hệ thống ghi nhận theo diện Nghỉ không lương (Chưa cấu hình hồ sơ)."
-                        : "Bạn đang trong giai đoạn Thử việc. Phép định kỳ tháng sẽ được cộng bù khi lên Chính thức; đơn xin nghỉ trong thời gian thử việc được ghi nhận là Nghỉ không lương (Thử việc)."
+                        ? "Hồ sơ nghỉ phép của bạn chưa được cấu hình đầy đủ trạng thái Chính thức nên số dư Phép năm hiện bằng 0. Bạn vẫn có thể chọn các loại nghỉ ngoài phép năm (Nghỉ tang, Nghỉ cưới, Nghỉ ốm, Nghỉ không lương)."
+                        : "Bạn đang trong giai đoạn Thử việc nên số dư Phép năm hiện bằng 0 (phép định kỳ sẽ cộng bù khi lên Chính thức). Trong thời gian thử việc, vui lòng chọn các loại nghỉ ngoài phép năm (Nghỉ không lương, Nghỉ ốm, Nghỉ cưới, Nghỉ tang)."
                 )
                 .font(.caption)
                 .foregroundColor(SemanticColors.warningText)
@@ -800,13 +801,20 @@ public struct AttendanceScreen: View {
         totalDraftHalfDayUnits: Int,
         theme: MiniBiThemePalette
     ) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
+        let draftEval = LeaveContract.evaluateLeaveRequestDraft(
+            days: viewModel.leaveDraftDays,
+            reason: viewModel.leaveDraftReason,
+            leaveYear: summary.leaveYear,
+            availableUnits: summary.balance.availableUnits
+        )
+
+        return VStack(alignment: .leading, spacing: 12) {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Tạo đơn xin nghỉ phép")
                         .font(.subheadline.weight(.bold))
                         .foregroundColor(SemanticColors.textPrimary)
-                    Text("Tự động trừ phép cũ nhất trước (FIFO) • Cả ngày / nửa ngày")
+                    Text("Chọn ngày, buổi và loại nghỉ (Phép năm trừ FIFO • Hỗ trợ tách 2 buổi khác loại trong cùng ngày)")
                         .font(.caption2)
                         .foregroundColor(SemanticColors.textSecondary)
                 }
@@ -871,6 +879,25 @@ public struct AttendanceScreen: View {
                                 .cornerRadius(8)
                             }
 
+                            if day.sessionCode.uppercased() == "FULL" && viewModel.leaveDraftDays.count < 120 {
+                                Button {
+                                    viewModel.splitLeaveDraftDayToHalfDays(id: day.id)
+                                } label: {
+                                    Text("Tách 2 buổi")
+                                        .font(.caption2.weight(.semibold))
+                                        .padding(.horizontal, 8)
+                                        .padding(.vertical, 10)
+                                        .background(Color.white)
+                                        .foregroundColor(theme.primary)
+                                        .cornerRadius(8)
+                                        .overlay(
+                                            RoundedRectangle(cornerRadius: 8)
+                                                .stroke(theme.primary.opacity(0.45), lineWidth: 1)
+                                        )
+                                }
+                                .disabled(viewModel.isMutatingLeave)
+                            }
+
                             if viewModel.leaveDraftDays.count > 1 {
                                 Button {
                                     viewModel.removeLeaveDraftDay(id: day.id)
@@ -909,10 +936,95 @@ public struct AttendanceScreen: View {
                                 .buttonStyle(.plain)
                             }
                         }
+
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Loại nghỉ: \(LeaveContract.leaveTypeLabel(day.leaveType))")
+                                .font(.caption2)
+                                .foregroundColor(SemanticColors.textMuted)
+                            ScrollView(.horizontal, showsIndicators: false) {
+                                HStack(spacing: 6) {
+                                    ForEach(LeaveContract.leaveTypes, id: \.self) { typeCode in
+                                        let isSelected = day.leaveType.uppercased() == typeCode
+                                        Button {
+                                            viewModel.updateLeaveDraftDayType(id: day.id, leaveType: typeCode)
+                                        } label: {
+                                            Text(LeaveContract.leaveTypeShortLabel(typeCode))
+                                                .font(.caption.weight(isSelected ? .bold : .medium))
+                                                .padding(.horizontal, 10)
+                                                .padding(.vertical, 6)
+                                                .background(isSelected ? theme.primaryLight : Color.white)
+                                                .foregroundColor(isSelected ? theme.primary : SemanticColors.textSecondary)
+                                                .cornerRadius(8)
+                                                .overlay(
+                                                    RoundedRectangle(cornerRadius: 8)
+                                                        .stroke(isSelected ? theme.primary : SemanticColors.borderSubtle, lineWidth: 1)
+                                                )
+                                        }
+                                        .buttonStyle(.plain)
+                                    }
+                                }
+                            }
+                        }
                     }
                     .padding(10)
                     .background(Color(hex: 0xF8FAFC))
                     .cornerRadius(12)
+                }
+
+                VStack(alignment: .leading, spacing: 6) {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 6) {
+                            ForEach(draftEval.typeBreakdown) { tb in
+                                Text("\(LeaveContract.leaveTypeShortLabel(tb.leaveType)): \(LeaveContract.formatHalfDayUnits(tb.halfDayUnits))")
+                                    .font(.caption2.weight(.semibold))
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 4)
+                                    .background(tb.leaveType == "ANNUAL" ? theme.primaryLight : Color(hex: 0xE2E8F0))
+                                    .foregroundColor(tb.leaveType == "ANNUAL" ? theme.primary : SemanticColors.textPrimary)
+                                    .cornerRadius(6)
+                            }
+                            Text("• Phép năm khả dụng: \(LeaveContract.formatHalfDayUnits(summary.balance.availableUnits))")
+                                .font(.caption2)
+                                .foregroundColor(SemanticColors.textSecondary)
+                        }
+                    }
+                    if draftEval.nonAnnualUnits > 0 {
+                        Text("Các ngày nghỉ ngoài phép năm (Nghỉ tang, Nghỉ cưới, Nghỉ ốm, Nghỉ không lương) không trừ vào số dư phép năm khả dụng.")
+                            .font(.caption2)
+                            .foregroundColor(SemanticColors.textMuted)
+                    }
+                }
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color(hex: 0xF8FAFC))
+                .cornerRadius(10)
+
+                if draftEval.canSplitExcessAnnualToUnpaid {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Số ngày Phép năm đang chọn (\(LeaveContract.formatHalfDayUnits(draftEval.annualUnits))) vượt quá số dư khả dụng (\(LeaveContract.formatHalfDayUnits(summary.balance.availableUnits))). Bạn có thể tách phần vượt (\(LeaveContract.formatHalfDayUnits(draftEval.excessAnnualUnits))) sang Nghỉ không lương.")
+                            .font(.caption)
+                            .foregroundColor(SemanticColors.warningText)
+                        Button {
+                            viewModel.autoAllocateLeaveDraftDaysByBalance()
+                        } label: {
+                            Text("Tự động chia Phép năm + Nghỉ không lương")
+                                .font(.caption.weight(.bold))
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 7)
+                                .background(Color.white)
+                                .foregroundColor(SemanticColors.warningText)
+                                .cornerRadius(8)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 8)
+                                        .stroke(SemanticColors.warningText.opacity(0.45), lineWidth: 1)
+                                )
+                        }
+                        .disabled(viewModel.isMutatingLeave)
+                    }
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(SemanticColors.warningBg)
+                    .cornerRadius(10)
                 }
 
                 Button {
@@ -920,7 +1032,7 @@ public struct AttendanceScreen: View {
                 } label: {
                     HStack(spacing: 6) {
                         Image(systemName: "plus.circle.fill")
-                        Text("Thêm ngày nghỉ")
+                        Text("Thêm dòng ngày/buổi nghỉ")
                     }
                     .font(.caption.weight(.bold))
                     .padding(.horizontal, 12)
@@ -929,14 +1041,14 @@ public struct AttendanceScreen: View {
                     .foregroundColor(theme.primary)
                     .cornerRadius(8)
                 }
-                .disabled(viewModel.isMutatingLeave || viewModel.leaveDraftDays.count >= 60)
+                .disabled(viewModel.isMutatingLeave || viewModel.leaveDraftDays.count >= 120)
 
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Lý do xin nghỉ phép (bắt buộc)")
+                    Text("Lý do xin nghỉ (không bắt buộc)")
                         .font(.caption.weight(.semibold))
                         .foregroundColor(SemanticColors.textPrimary)
                     TextField(
-                        "Nhập lý do xin nghỉ phép...",
+                        "Nhập lý do hoặc ghi chú đơn xin nghỉ (nếu có)...",
                         text: Binding(
                             get: { viewModel.leaveDraftReason },
                             set: { viewModel.updateLeaveDraftReason($0) }
@@ -1013,24 +1125,29 @@ public struct AttendanceScreen: View {
                         actorAppUserId: actorId,
                         request: req
                     )
+                    let breakdown = LeaveContract.resolveRequestTypeBreakdown(req)
                     VStack(alignment: .leading, spacing: 6) {
                         HStack {
-                            HStack(spacing: 6) {
-                                Text(LeaveContract.leaveRequestStatusLabel(req.status))
-                                    .font(.caption2.weight(.bold))
-                                    .padding(.horizontal, 8)
-                                    .padding(.vertical, 3)
-                                    .background(leaveStatusBgColor(req.status))
-                                    .foregroundColor(leaveStatusTextColor(req.status))
-                                    .cornerRadius(6)
+                            ScrollView(.horizontal, showsIndicators: false) {
+                                HStack(spacing: 6) {
+                                    Text(LeaveContract.leaveRequestStatusLabel(req.status))
+                                        .font(.caption2.weight(.bold))
+                                        .padding(.horizontal, 8)
+                                        .padding(.vertical, 3)
+                                        .background(leaveStatusBgColor(req.status))
+                                        .foregroundColor(leaveStatusTextColor(req.status))
+                                        .cornerRadius(6)
 
-                                Text(LeaveContract.leavePayTreatmentLabel(req.payTreatment))
-                                    .font(.caption2.weight(.semibold))
-                                    .padding(.horizontal, 8)
-                                    .padding(.vertical, 3)
-                                    .background(theme.primaryLight)
-                                    .foregroundColor(theme.primary)
-                                    .cornerRadius(6)
+                                    ForEach(breakdown) { tb in
+                                        Text("\(LeaveContract.leaveTypeShortLabel(tb.leaveType)): \(LeaveContract.formatHalfDayUnits(tb.halfDayUnits))")
+                                            .font(.caption2.weight(.semibold))
+                                            .padding(.horizontal, 8)
+                                            .padding(.vertical, 3)
+                                            .background(theme.primaryLight)
+                                            .foregroundColor(theme.primary)
+                                            .cornerRadius(6)
+                                    }
+                                }
                             }
                             Spacer()
                             Text(LeaveContract.formatHalfDayUnits(req.requestedUnits))
@@ -1039,13 +1156,14 @@ public struct AttendanceScreen: View {
                         }
 
                         let daysSummary = req.days.map {
-                            "\(LeaveContract.formatIsoDateVi($0.leaveDate)) (\(LeaveContract.leaveSessionShortLabel($0.sessionCode)))"
+                            "\(LeaveContract.formatIsoDateVi($0.leaveDate)) (\(LeaveContract.leaveSessionShortLabel($0.sessionCode)) · \(LeaveContract.leaveTypeShortLabel($0.leaveType)))"
                         }.joined(separator: ", ")
 
                         Text("Ngày nghỉ: \(daysSummary)")
                             .font(.caption.weight(.semibold))
                             .foregroundColor(SemanticColors.textPrimary)
-                        Text("Lý do: \(req.reason)")
+                        let cleanReason = req.reason.trimmingCharacters(in: .whitespacesAndNewlines)
+                        Text("Lý do: \(cleanReason.isEmpty ? "Không ghi lý do" : cleanReason)")
                             .font(.caption)
                             .foregroundColor(SemanticColors.textPrimary)
                         Text("Luồng duyệt: \(LeaveContract.leaveRouteKindLabel(req.routeKind, teamName: req.routedTeamName, unitKind: req.unitKindSnapshot)) • Gửi lúc: \(WorkReportsContract.formatIsoDateTimeVi(req.submittedAt))")
@@ -1291,22 +1409,30 @@ public struct AttendanceScreen: View {
                                     }
                                 }
 
-                                Text(LeaveContract.leavePayTreatmentLabel(req.payTreatment))
-                                    .font(.caption2.weight(.semibold))
-                                    .padding(.horizontal, 8)
-                                    .padding(.vertical, 4)
-                                    .background(theme.primaryLight)
-                                    .foregroundColor(theme.primary)
-                                    .cornerRadius(6)
+                                let breakdown = LeaveContract.resolveRequestTypeBreakdown(req)
+                                ScrollView(.horizontal, showsIndicators: false) {
+                                    HStack(spacing: 6) {
+                                        ForEach(breakdown) { tb in
+                                            Text("\(LeaveContract.leaveTypeShortLabel(tb.leaveType)): \(LeaveContract.formatHalfDayUnits(tb.halfDayUnits))")
+                                                .font(.caption2.weight(.semibold))
+                                                .padding(.horizontal, 8)
+                                                .padding(.vertical, 4)
+                                                .background(theme.primaryLight)
+                                                .foregroundColor(theme.primary)
+                                                .cornerRadius(6)
+                                        }
+                                    }
+                                }
 
                                 let daysText = req.days.map {
-                                    "\(LeaveContract.formatIsoDateVi($0.leaveDate)) (\(LeaveContract.leaveSessionShortLabel($0.sessionCode)))"
+                                    "\(LeaveContract.formatIsoDateVi($0.leaveDate)) (\(LeaveContract.leaveSessionShortLabel($0.sessionCode)) · \(LeaveContract.leaveTypeShortLabel($0.leaveType)))"
                                 }.joined(separator: ", ")
 
                                 Text("Ngày nghỉ: \(daysText)")
                                     .font(.caption.weight(.semibold))
                                     .foregroundColor(SemanticColors.textPrimary)
-                                Text("Lý do xin nghỉ: \(req.reason)")
+                                let cleanReason = req.reason.trimmingCharacters(in: .whitespacesAndNewlines)
+                                Text("Lý do xin nghỉ: \(cleanReason.isEmpty ? "Không ghi lý do" : cleanReason)")
                                     .font(.caption)
                                     .foregroundColor(SemanticColors.textPrimary)
                                 Text("Định tuyến: \(LeaveContract.leaveRouteKindLabel(req.routeKind, teamName: req.routedTeamName, unitKind: req.unitKindSnapshot))")
@@ -1536,20 +1662,27 @@ public struct AttendanceScreen: View {
     ) -> some View {
         let req = item.request
         let decision = item.decision
-        let isReasonRequired = decision == "REJECT" || decision == "CANCEL_APPROVED"
+        let breakdownText = LeaveContract.resolveRequestTypeBreakdown(req).map {
+            "\(LeaveContract.leaveTypeShortLabel($0.leaveType)): \(LeaveContract.formatHalfDayUnits($0.halfDayUnits))"
+        }.joined(separator: " • ")
 
         return NavigationStack {
             VStack(alignment: .leading, spacing: 14) {
                 Text("Nhân sự: \(req.requester?.displayName ?? req.appUserId) • Số ngày: \(LeaveContract.formatHalfDayUnits(req.requestedUnits))")
                     .font(.subheadline.weight(.semibold))
                     .foregroundColor(SemanticColors.textPrimary)
+                if !breakdownText.isEmpty {
+                    Text("Loại nghỉ: \(breakdownText)")
+                        .font(.caption)
+                        .foregroundColor(SemanticColors.textSecondary)
+                }
 
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(isReasonRequired ? "Lý do xử lý (bắt buộc)" : "Ghi chú duyệt (tùy chọn)")
+                    Text("Lý do / Ghi chú phản hồi (không bắt buộc)")
                         .font(.caption.weight(.semibold))
                         .foregroundColor(SemanticColors.textSecondary)
                     TextField(
-                        isReasonRequired ? "Nhập lý do từ chối / hủy duyệt..." : "Nhập ghi chú phê duyệt nếu cần...",
+                        "Nhập ghi chú phản hồi (nếu có)...",
                         text: Binding(
                             get: { decisionReasonInput },
                             set: {

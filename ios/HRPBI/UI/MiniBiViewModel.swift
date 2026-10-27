@@ -958,30 +958,40 @@ public final class MiniBiViewModel: ObservableObject {
     }
 
     public func ensureInitialLeaveDraftDay() {
+        let summary = myLeaveSummary
+        let defaultType = (summary != nil && summary!.balance.availableUnits <= 0) ? "UNPAID" : "ANNUAL"
         if leaveDraftDays.isEmpty {
-            let asOf = myLeaveSummary?.asOfDate ?? ""
+            let asOf = summary?.asOfDate ?? ""
             let defaultDate = LeaveContract.isValidIsoDate(asOf)
                 ? asOf
                 : LeaveContract.todayVietnamIsoDate()
             leaveDraftDays = [
-                LeaveDraftDayInput(leaveDate: defaultDate, sessionCode: "FULL")
+                LeaveDraftDayInput(leaveDate: defaultDate, sessionCode: "FULL", leaveType: defaultType)
             ]
+        } else if let summary,
+                  summary.balance.availableUnits <= 0,
+                  leaveDraftDays.count == 1,
+                  leaveDraftDays[0].leaveType == "ANNUAL" {
+            leaveDraftDays[0].leaveType = "UNPAID"
         }
     }
 
     public func addLeaveDraftDay() {
-        if leaveDraftDays.count >= 60 {
-            leaveMutationError = "Mỗi đơn chỉ được đăng ký tối đa 60 ngày nghỉ."
+        if leaveDraftDays.count >= 120 {
+            leaveMutationError = "Mỗi đơn chỉ được tối đa 120 dòng ngày/buổi nghỉ."
             return
         }
         leaveMutationError = nil
-        let fallbackDate = myLeaveSummary?.asOfDate ?? LeaveContract.todayVietnamIsoDate()
+        let summary = myLeaveSummary
+        let fallbackDate = summary?.asOfDate ?? LeaveContract.todayVietnamIsoDate()
+        let defaultType = leaveDraftDays.last?.leaveType
+            ?? ((summary != nil && summary!.balance.availableUnits <= 0) ? "UNPAID" : "ANNUAL")
         if let lastDate = leaveDraftDays.last?.leaveDate {
             let nextDate = LeaveContract.nextIsoDateAfter(lastDate, fallbackDate: fallbackDate)
-            leaveDraftDays.append(LeaveDraftDayInput(leaveDate: nextDate, sessionCode: "FULL"))
+            leaveDraftDays.append(LeaveDraftDayInput(leaveDate: nextDate, sessionCode: "FULL", leaveType: defaultType))
         } else {
             let startDate = LeaveContract.isValidIsoDate(fallbackDate) ? fallbackDate : LeaveContract.todayVietnamIsoDate()
-            leaveDraftDays.append(LeaveDraftDayInput(leaveDate: startDate, sessionCode: "FULL"))
+            leaveDraftDays.append(LeaveDraftDayInput(leaveDate: startDate, sessionCode: "FULL", leaveType: defaultType))
         }
     }
 
@@ -1005,6 +1015,49 @@ public final class MiniBiViewModel: ObservableObject {
             return
         }
         leaveDraftDays[idx].sessionCode = normalized
+    }
+
+    public func updateLeaveDraftDayType(id: String, leaveType: String) {
+        leaveMutationError = nil
+        let normalized = leaveType.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        guard LeaveContract.leaveTypes.contains(normalized),
+              let idx = leaveDraftDays.firstIndex(where: { $0.id == id }) else {
+            return
+        }
+        leaveDraftDays[idx].leaveType = normalized
+    }
+
+    public func splitLeaveDraftDayToHalfDays(id: String) {
+        if leaveDraftDays.count >= 120 {
+            leaveMutationError = "Mỗi đơn chỉ được tối đa 120 dòng ngày/buổi nghỉ."
+            return
+        }
+        leaveMutationError = nil
+        guard let idx = leaveDraftDays.firstIndex(where: { $0.id == id }) else { return }
+        let target = leaveDraftDays[idx]
+        guard target.sessionCode.uppercased() == "FULL" else { return }
+        let rawType = target.leaveType.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        let primaryType = LeaveContract.leaveTypes.contains(rawType) ? rawType : "ANNUAL"
+        let secondaryType = primaryType == "ANNUAL" ? "UNPAID" : "ANNUAL"
+        var amRow = target
+        amRow.sessionCode = "AM"
+        amRow.leaveType = primaryType
+        let pmRow = LeaveDraftDayInput(
+            leaveDate: target.leaveDate,
+            sessionCode: "PM",
+            leaveType: secondaryType
+        )
+        leaveDraftDays[idx] = amRow
+        leaveDraftDays.insert(pmRow, at: idx + 1)
+    }
+
+    public func autoAllocateLeaveDraftDaysByBalance() {
+        leaveMutationError = nil
+        let availableUnits = max(0, myLeaveSummary?.balance.availableUnits ?? 0)
+        leaveDraftDays = LeaveContract.autoAllocateDraftDaysByBalance(
+            days: leaveDraftDays,
+            availableUnits: availableUnits
+        )
     }
 
     public func updateLeaveDraftReason(_ reason: String) {
@@ -1068,10 +1121,13 @@ public final class MiniBiViewModel: ObservableObject {
         guard !isMutatingLeave else { return }
         let daysSnapshot = leaveDraftDays
         let reasonSnapshot = leaveDraftReason
+        let summary = myLeaveSummary
 
         if let validationError = LeaveContract.validateCreateDraftInput(
             days: daysSnapshot,
-            reason: reasonSnapshot
+            reason: reasonSnapshot,
+            leaveYear: summary?.leaveYear,
+            availableUnits: summary?.balance.availableUnits
         ) {
             leaveMutationError = validationError
             showBanner(validationError, isError: true)

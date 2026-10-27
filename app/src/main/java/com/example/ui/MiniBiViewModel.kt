@@ -3149,16 +3149,23 @@ class MiniBiViewModel internal constructor(
     }
 
     fun ensureInitialLeaveDraftDay() {
+        val summary = _myLeaveSummary.value
+        val defaultType = if (summary != null && summary.balance.availableUnits <= 0) "UNPAID" else "ANNUAL"
         if (leaveDraftDays.isEmpty()) {
-            val defaultDate = _myLeaveSummary.value?.asOfDate
+            val defaultDate = summary?.asOfDate
                 ?.takeIf { LeaveContract.isValidIsoDate(it) }
                 ?: LeaveContract.todayVietnamIsoDate()
             leaveDraftDays.add(
                 LeaveDraftDayInput(
                     leaveDate = defaultDate,
-                    sessionCode = "FULL"
+                    sessionCode = "FULL",
+                    leaveType = defaultType
                 )
             )
+        } else if (summary != null && summary.balance.availableUnits <= 0 &&
+            leaveDraftDays.size == 1 && leaveDraftDays[0].leaveType == "ANNUAL"
+        ) {
+            leaveDraftDays[0] = leaveDraftDays[0].copy(leaveType = "UNPAID")
         }
     }
 
@@ -3183,19 +3190,23 @@ class MiniBiViewModel internal constructor(
     }
 
     fun addLeaveDraftDay() {
-        if (leaveDraftDays.size >= 60) {
-            _leaveMutationError.value = "Mỗi đơn chỉ được đăng ký tối đa 60 ngày nghỉ."
+        if (leaveDraftDays.size >= 120) {
+            _leaveMutationError.value = "Mỗi đơn chỉ được tối đa 120 dòng ngày/buổi nghỉ."
             return
         }
         _leaveMutationError.value = null
+        val summary = _myLeaveSummary.value
         val baseDate = leaveDraftDays.lastOrNull()?.leaveDate
-            ?: _myLeaveSummary.value?.asOfDate
+            ?: summary?.asOfDate
             ?: LeaveContract.todayVietnamIsoDate()
         val nextDate = if (leaveDraftDays.isEmpty()) baseDate else nextIsoDateAfter(baseDate)
+        val defaultType = leaveDraftDays.lastOrNull()?.leaveType
+            ?: if (summary != null && summary.balance.availableUnits <= 0) "UNPAID" else "ANNUAL"
         leaveDraftDays.add(
             LeaveDraftDayInput(
                 leaveDate = nextDate,
-                sessionCode = "FULL"
+                sessionCode = "FULL",
+                leaveType = defaultType
             )
         )
     }
@@ -3222,6 +3233,51 @@ class MiniBiViewModel internal constructor(
         if (index >= 0) {
             leaveDraftDays[index] = leaveDraftDays[index].copy(sessionCode = normalized)
         }
+    }
+
+    fun updateLeaveDraftDayType(id: String, leaveType: String) {
+        _leaveMutationError.value = null
+        val normalized = leaveType.trim().uppercase(Locale.ROOT)
+        if (normalized !in LeaveContract.LEAVE_TYPES) return
+        val index = leaveDraftDays.indexOfFirst { it.id == id }
+        if (index >= 0) {
+            leaveDraftDays[index] = leaveDraftDays[index].copy(leaveType = normalized)
+        }
+    }
+
+    fun splitLeaveDraftDayToHalfDays(id: String) {
+        if (leaveDraftDays.size >= 120) {
+            _leaveMutationError.value = "Mỗi đơn chỉ được tối đa 120 dòng ngày/buổi nghỉ."
+            return
+        }
+        _leaveMutationError.value = null
+        val index = leaveDraftDays.indexOfFirst { it.id == id }
+        if (index < 0) return
+        val target = leaveDraftDays[index]
+        if (target.sessionCode != "FULL") return
+        val primaryType = target.leaveType.trim().uppercase(Locale.ROOT).let {
+            if (it in LeaveContract.LEAVE_TYPES) it else "ANNUAL"
+        }
+        val secondaryType = if (primaryType == "ANNUAL") "UNPAID" else "ANNUAL"
+        val amRow = target.copy(sessionCode = "AM", leaveType = primaryType)
+        val pmRow = LeaveDraftDayInput(
+            leaveDate = target.leaveDate,
+            sessionCode = "PM",
+            leaveType = secondaryType
+        )
+        leaveDraftDays[index] = amRow
+        leaveDraftDays.add(index + 1, pmRow)
+    }
+
+    fun autoAllocateLeaveDraftDaysByBalance() {
+        _leaveMutationError.value = null
+        val availableUnits = (_myLeaveSummary.value?.balance?.availableUnits ?: 0).coerceAtLeast(0)
+        val allocated = LeaveContract.autoAllocateDraftDaysByBalance(
+            days = leaveDraftDays.toList(),
+            availableUnits = availableUnits
+        )
+        leaveDraftDays.clear()
+        leaveDraftDays.addAll(allocated)
     }
 
     fun updateLeaveDraftReason(reason: String) {
@@ -3285,9 +3341,12 @@ class MiniBiViewModel internal constructor(
         if (_leaveMutationBusy.value) return
         val daysSnapshot = leaveDraftDays.toList()
         val reasonSnapshot = _leaveDraftReason.value
+        val summary = _myLeaveSummary.value
         val validationError = LeaveContract.validateCreateDraftInput(
             days = daysSnapshot,
-            reason = reasonSnapshot
+            reason = reasonSnapshot,
+            leaveYear = summary?.leaveYear,
+            availableUnits = summary?.balance?.availableUnits
         )
         if (validationError != null) {
             _leaveMutationError.value = validationError

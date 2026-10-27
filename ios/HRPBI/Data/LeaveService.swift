@@ -230,6 +230,9 @@ public struct LeaveBalanceProjection: Equatable, Sendable {
     public let reservedUnits: Int
     public let consumedUnits: Int
     public let expiredUnits: Int
+    public let pendingAnnualUnits: Int
+    public let pendingNonAnnualUnits: Int
+    public let approvedNonAnnualUnits: Int
     public let pendingPaidUnits: Int
     public let pendingUnpaidUnits: Int
     public let approvedUnpaidUnits: Int
@@ -256,6 +259,9 @@ public struct LeaveBalanceProjection: Equatable, Sendable {
         reservedUnits: Int = 0,
         consumedUnits: Int = 0,
         expiredUnits: Int = 0,
+        pendingAnnualUnits: Int = 0,
+        pendingNonAnnualUnits: Int = 0,
+        approvedNonAnnualUnits: Int = 0,
         pendingPaidUnits: Int = 0,
         pendingUnpaidUnits: Int = 0,
         approvedUnpaidUnits: Int = 0,
@@ -281,6 +287,9 @@ public struct LeaveBalanceProjection: Equatable, Sendable {
         self.reservedUnits = reservedUnits
         self.consumedUnits = consumedUnits
         self.expiredUnits = expiredUnits
+        self.pendingAnnualUnits = pendingAnnualUnits
+        self.pendingNonAnnualUnits = pendingNonAnnualUnits
+        self.approvedNonAnnualUnits = approvedNonAnnualUnits
         self.pendingPaidUnits = pendingPaidUnits
         self.pendingUnpaidUnits = pendingUnpaidUnits
         self.approvedUnpaidUnits = approvedUnpaidUnits
@@ -289,10 +298,11 @@ public struct LeaveBalanceProjection: Equatable, Sendable {
 }
 
 public struct LeaveRequestDayProjection: Identifiable, Equatable, Sendable {
-    public var id: String { requestDayId.isEmpty ? "\(leaveDate)-\(sessionCode)" : requestDayId }
+    public var id: String { requestDayId.isEmpty ? "\(leaveDate)-\(sessionCode)-\(leaveType)" : requestDayId }
     public let requestDayId: String
     public let leaveDate: String
     public let sessionCode: String
+    public let leaveType: String
     public let halfDayUnits: Int
     public let isActive: Bool
 
@@ -300,14 +310,27 @@ public struct LeaveRequestDayProjection: Identifiable, Equatable, Sendable {
         requestDayId: String = "",
         leaveDate: String,
         sessionCode: String = "FULL",
+        leaveType: String = "ANNUAL",
         halfDayUnits: Int = 2,
         isActive: Bool = true
     ) {
         self.requestDayId = requestDayId
         self.leaveDate = leaveDate
         self.sessionCode = sessionCode
+        self.leaveType = leaveType
         self.halfDayUnits = halfDayUnits
         self.isActive = isActive
+    }
+}
+
+public struct LeaveRequestTypeBreakdownProjection: Identifiable, Equatable, Sendable {
+    public var id: String { leaveType }
+    public let leaveType: String
+    public let halfDayUnits: Int
+
+    public init(leaveType: String, halfDayUnits: Int) {
+        self.leaveType = leaveType
+        self.halfDayUnits = halfDayUnits
     }
 }
 
@@ -353,6 +376,10 @@ public struct LeaveRequestProjection: Identifiable, Equatable, Sendable {
     public let requester: LeaveAccountProjection?
     public let status: String
     public let payTreatment: String
+    public let leaveTypes: [String]
+    public let typeBreakdown: [LeaveRequestTypeBreakdownProjection]
+    public let requestedAnnualUnits: Int
+    public let requestedNonAnnualUnits: Int
     public let employmentStatusSnapshot: String
     public let unitKindSnapshot: String
     public let profileConfiguredAtSubmit: Bool
@@ -383,6 +410,10 @@ public struct LeaveRequestProjection: Identifiable, Equatable, Sendable {
         requester: LeaveAccountProjection? = nil,
         status: String = "PENDING",
         payTreatment: String = "PAID_LEAVE",
+        leaveTypes: [String] = [],
+        typeBreakdown: [LeaveRequestTypeBreakdownProjection] = [],
+        requestedAnnualUnits: Int = 0,
+        requestedNonAnnualUnits: Int = 0,
         employmentStatusSnapshot: String = "UNCONFIGURED",
         unitKindSnapshot: String = "UNCLASSIFIED",
         profileConfiguredAtSubmit: Bool = false,
@@ -412,6 +443,10 @@ public struct LeaveRequestProjection: Identifiable, Equatable, Sendable {
         self.requester = requester
         self.status = status
         self.payTreatment = payTreatment
+        self.leaveTypes = leaveTypes
+        self.typeBreakdown = typeBreakdown
+        self.requestedAnnualUnits = requestedAnnualUnits
+        self.requestedNonAnnualUnits = requestedNonAnnualUnits
         self.employmentStatusSnapshot = employmentStatusSnapshot
         self.unitKindSnapshot = unitKindSnapshot
         self.profileConfiguredAtSubmit = profileConfiguredAtSubmit
@@ -542,15 +577,49 @@ public struct LeaveDraftDayInput: Identifiable, Equatable, Sendable {
     public let id: String
     public var leaveDate: String
     public var sessionCode: String
+    public var leaveType: String
 
     public init(
         id: String = UUID().uuidString,
         leaveDate: String,
-        sessionCode: String = "FULL"
+        sessionCode: String = "FULL",
+        leaveType: String = "ANNUAL"
     ) {
         self.id = id
         self.leaveDate = leaveDate
         self.sessionCode = sessionCode
+        self.leaveType = leaveType
+    }
+}
+
+public struct LeaveRequestDraftEvaluation: Equatable, Sendable {
+    public let isValid: Bool
+    public let errorMessage: String?
+    public let totalUnits: Int
+    public let annualUnits: Int
+    public let nonAnnualUnits: Int
+    public let excessAnnualUnits: Int
+    public let canSplitExcessAnnualToUnpaid: Bool
+    public let typeBreakdown: [LeaveRequestTypeBreakdownProjection]
+
+    public init(
+        isValid: Bool,
+        errorMessage: String? = nil,
+        totalUnits: Int = 0,
+        annualUnits: Int = 0,
+        nonAnnualUnits: Int = 0,
+        excessAnnualUnits: Int = 0,
+        canSplitExcessAnnualToUnpaid: Bool = false,
+        typeBreakdown: [LeaveRequestTypeBreakdownProjection] = []
+    ) {
+        self.isValid = isValid
+        self.errorMessage = errorMessage
+        self.totalUnits = totalUnits
+        self.annualUnits = annualUnits
+        self.nonAnnualUnits = nonAnnualUnits
+        self.excessAnnualUnits = excessAnnualUnits
+        self.canSplitExcessAnnualToUnpaid = canSplitExcessAnnualToUnpaid
+        self.typeBreakdown = typeBreakdown
     }
 }
 
@@ -558,6 +627,13 @@ public struct LeaveDraftDayInput: Identifiable, Equatable, Sendable {
 
 public enum LeaveContract {
     public static let sessionCodes: [String] = ["FULL", "AM", "PM"]
+    public static let leaveTypes: [String] = ["ANNUAL", "BEREAVEMENT", "MARRIAGE", "SICK", "UNPAID"]
+    public static let leaveTypeMaxUnitsPerRequest: [String: Int] = [
+        "BEREAVEMENT": 6,
+        "MARRIAGE": 6,
+        "SICK": 14,
+        "UNPAID": 14
+    ]
     public static let requestStatusFilters: [String] = [
         "PENDING",
         "APPROVED",
@@ -575,13 +651,16 @@ public enum LeaveContract {
         "LEAVE_SHARED_ACCOUNT_FORBIDDEN": "Tài khoản dùng chung (như tài khoản Marketing chung) không thuộc đối tượng quản lý nghỉ phép cá nhân.",
         "LEAVE_IDEMPOTENCY_KEY_INVALID": "Mã định danh yêu cầu không hợp lệ. Vui lòng thử lại.",
         "LEAVE_IDEMPOTENCY_FINGERPRINT_MISMATCH": "Yêu cầu bị trùng mã phiên cũ với nội dung khác. Vui lòng thử lại.",
-        "LEAVE_REASON_INVALID": "Vui lòng nhập lý do hợp lệ (tối đa 2.000 ký tự).",
-        "LEAVE_REASON_REQUIRED": "Vui lòng nhập lý do hợp lệ (tối đa 2.000 ký tự).",
-        "LEAVE_REQUEST_DAYS_INVALID": "Danh sách ngày xin nghỉ không hợp lệ. Vui lòng chọn từ 1 đến 60 ngày nghỉ hợp lệ.",
+        "LEAVE_REASON_INVALID": "Lý do hoặc ghi chú không hợp lệ (tối đa 2.000 ký tự).",
+        "LEAVE_REASON_REQUIRED": "Lý do hoặc ghi chú không hợp lệ (tối đa 2.000 ký tự).",
+        "LEAVE_REQUEST_DAYS_INVALID": "Danh sách ngày xin nghỉ không hợp lệ. Vui lòng chọn từ 1 đến 120 dòng ngày/buổi nghỉ hợp lệ.",
         "LEAVE_REQUEST_YEAR_OUT_OF_RANGE": "Ngày xin nghỉ phải thuộc năm nghiệp vụ hiện hành.",
-        "LEAVE_REQUEST_DUPLICATE_DATE": "Không được chọn trùng một ngày nhiều lần trong cùng một đơn xin nghỉ.",
+        "LEAVE_REQUEST_DUPLICATE_DATE": "Không được chọn trùng cùng ngày và buổi nghỉ trong cùng một đơn xin nghỉ.",
+        "LEAVE_DATE_SESSION_CONFLICT": "Trong cùng một ngày chỉ được tách tối đa 1 buổi Sáng + 1 buổi Chiều với 2 loại nghỉ khác nhau (hoặc chọn Cả ngày nếu cùng loại nghỉ).",
+        "LEAVE_TYPE_INVALID": "Loại ngày nghỉ không hợp lệ.",
+        "LEAVE_TYPE_LIMIT_EXCEEDED": "Số ngày nghỉ theo loại đã chọn vượt giới hạn tối đa cho phép trên mỗi đơn (Nghỉ tang/cưới tối đa 3 ngày/đơn; Nghỉ ốm/không lương tối đa 7 ngày/đơn).",
         "LEAVE_REQUEST_OVERLAP": "Ngày hoặc buổi xin nghỉ bị trùng với một đơn đang chờ duyệt hoặc đã được duyệt.",
-        "LEAVE_INSUFFICIENT_BALANCE": "Số dư phép khả dụng tại thời điểm ngày nghỉ không đủ để đáp ứng đơn xin nghỉ có lương.",
+        "LEAVE_INSUFFICIENT_BALANCE": "Số dư Phép năm khả dụng không đủ cho các ngày đăng ký loại Phép năm. Vui lòng chuyển phần ngày vượt sang Nghỉ không lương hoặc loại nghỉ phù hợp.",
         "LEAVE_REQUEST_NOT_FOUND": "Không tìm thấy đơn xin nghỉ phép.",
         "LEAVE_REQUEST_OWNERSHIP_FORBIDDEN": "Bạn chỉ được phép rút đơn xin nghỉ phép của chính mình.",
         "LEAVE_ROW_VERSION_CONFLICT": "Dữ liệu vừa được cập nhật bởi thao tác khác. Hệ thống đã làm mới, vui lòng kiểm tra và thử lại.",
@@ -787,6 +866,40 @@ public enum LeaveContract {
         }
     }
 
+    public static func leaveTypeShortLabel(_ leaveType: String) -> String {
+        switch leaveType.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() {
+        case "ANNUAL":
+            return "Phép năm"
+        case "BEREAVEMENT":
+            return "Nghỉ tang"
+        case "MARRIAGE":
+            return "Nghỉ cưới"
+        case "SICK":
+            return "Nghỉ ốm"
+        case "UNPAID":
+            return "Nghỉ không lương"
+        default:
+            return leaveType
+        }
+    }
+
+    public static func leaveTypeLabel(_ leaveType: String) -> String {
+        switch leaveType.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() {
+        case "ANNUAL":
+            return "Phép năm"
+        case "BEREAVEMENT":
+            return "Nghỉ tang (tối đa 3 ngày/đơn)"
+        case "MARRIAGE":
+            return "Nghỉ cưới (tối đa 3 ngày/đơn)"
+        case "SICK":
+            return "Nghỉ ốm (tối đa 7 ngày/đơn)"
+        case "UNPAID":
+            return "Nghỉ không lương (tối đa 7 ngày/đơn)"
+        default:
+            return leaveType
+        }
+    }
+
     public static func leavePayTreatmentLabel(_ payTreatment: String) -> String {
         switch payTreatment.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() {
         case "PAID_LEAVE":
@@ -798,6 +911,274 @@ public enum LeaveContract {
         default:
             return payTreatment
         }
+    }
+
+    public static func resolveRequestTypeBreakdown(
+        _ request: LeaveRequestProjection
+    ) -> [LeaveRequestTypeBreakdownProjection] {
+        if !request.typeBreakdown.isEmpty {
+            return request.typeBreakdown
+        }
+        return resolveRequestTypeBreakdownFromDays(request.days)
+    }
+
+    public static func resolveRequestTypeBreakdownFromDays(
+        _ days: [LeaveRequestDayProjection]
+    ) -> [LeaveRequestTypeBreakdownProjection] {
+        var totals: [String: Int] = [:]
+        for d in days {
+            let normType = d.leaveType.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+            let key = leaveTypes.contains(normType) ? normType : "ANNUAL"
+            let units = d.halfDayUnits > 0 ? d.halfDayUnits : leaveSessionHalfDayUnits(d.sessionCode)
+            totals[key, default: 0] += units
+        }
+        return leaveTypes.compactMap { type in
+            guard let u = totals[type], u > 0 else { return nil }
+            return LeaveRequestTypeBreakdownProjection(leaveType: type, halfDayUnits: u)
+        }
+    }
+
+    public static func autoAllocateDraftDaysByBalance(
+        days: [LeaveDraftDayInput],
+        availableUnits: Int
+    ) -> [LeaveDraftDayInput] {
+        var remainingAnnual = max(0, availableUnits)
+        var result: [LeaveDraftDayInput] = []
+        for row in days {
+            let normType = row.leaveType.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+            let safeType = leaveTypes.contains(normType) ? normType : "ANNUAL"
+            if safeType != "ANNUAL" {
+                result.append(row)
+                continue
+            }
+            let normSession = row.sessionCode.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+            let units = leaveSessionHalfDayUnits(normSession)
+            if remainingAnnual >= units {
+                remainingAnnual -= units
+                result.append(row)
+            } else if remainingAnnual == 1 && normSession == "FULL" {
+                remainingAnnual = 0
+                var amRow = row
+                amRow.sessionCode = "AM"
+                amRow.leaveType = "ANNUAL"
+                result.append(amRow)
+                result.append(
+                    LeaveDraftDayInput(
+                        leaveDate: row.leaveDate,
+                        sessionCode: "PM",
+                        leaveType: "UNPAID"
+                    )
+                )
+            } else {
+                var unpaidRow = row
+                unpaidRow.leaveType = "UNPAID"
+                result.append(unpaidRow)
+            }
+        }
+        return result
+    }
+
+    public static func evaluateLeaveRequestDraft(
+        days: [LeaveDraftDayInput],
+        reason: String,
+        leaveYear: Int? = nil,
+        availableUnits: Int? = nil
+    ) -> LeaveRequestDraftEvaluation {
+        if days.isEmpty {
+            return LeaveRequestDraftEvaluation(
+                isValid: false,
+                errorMessage: "Vui lòng chọn ít nhất 1 dòng ngày/buổi nghỉ."
+            )
+        }
+        if days.count > 120 {
+            return LeaveRequestDraftEvaluation(
+                isValid: false,
+                errorMessage: "Mỗi đơn chỉ được tối đa 120 dòng ngày/buổi nghỉ."
+            )
+        }
+
+        struct DayEntry {
+            let sessionCode: String
+            let leaveType: String
+            let halfDayUnits: Int
+        }
+        var byDateOrder: [String] = []
+        var byDateEntries: [String: [DayEntry]] = [:]
+        var byTypeUnits: [String: Int] = [:]
+        var totalUnits = 0
+
+        for (index, row) in days.enumerated() {
+            let dateStr = row.leaveDate.trimmingCharacters(in: .whitespacesAndNewlines)
+            let sessionStr = row.sessionCode.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+            let typeStr = row.leaveType.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+            let rowNo = index + 1
+
+            if !isValidIsoDate(dateStr) {
+                return LeaveRequestDraftEvaluation(
+                    isValid: false,
+                    errorMessage: "Dòng ngày nghỉ #\(rowNo) chưa đúng định dạng YYYY-MM-DD."
+                )
+            }
+            if let expectedYear = leaveYear {
+                let rowYear = Int(dateStr.prefix(4))
+                if rowYear != nil && rowYear != expectedYear {
+                    return LeaveRequestDraftEvaluation(
+                        isValid: false,
+                        errorMessage: "Ngày nghỉ \(dateStr) không thuộc năm đang chọn (\(expectedYear))."
+                    )
+                }
+            }
+            if !sessionCodes.contains(sessionStr) {
+                return LeaveRequestDraftEvaluation(
+                    isValid: false,
+                    errorMessage: "Buổi nghỉ ở dòng #\(rowNo) không hợp lệ."
+                )
+            }
+            if !leaveTypes.contains(typeStr) {
+                return LeaveRequestDraftEvaluation(
+                    isValid: false,
+                    errorMessage: "Loại nghỉ ở dòng #\(rowNo) không hợp lệ."
+                )
+            }
+
+            let units = leaveSessionHalfDayUnits(sessionStr)
+            totalUnits += units
+            byTypeUnits[typeStr, default: 0] += units
+
+            if byDateEntries[dateStr] == nil {
+                byDateOrder.append(dateStr)
+                byDateEntries[dateStr] = []
+            }
+            byDateEntries[dateStr]?.append(
+                DayEntry(sessionCode: sessionStr, leaveType: typeStr, halfDayUnits: units)
+            )
+        }
+
+        let breakdown: [LeaveRequestTypeBreakdownProjection] = leaveTypes.compactMap { type in
+            guard let u = byTypeUnits[type], u > 0 else { return nil }
+            return LeaveRequestTypeBreakdownProjection(leaveType: type, halfDayUnits: u)
+        }
+        let annualUnits = byTypeUnits["ANNUAL"] ?? 0
+        let nonAnnualUnits = totalUnits - annualUnits
+        let excessAnnualUnits: Int = {
+            guard let avail = availableUnits else { return 0 }
+            return max(0, annualUnits - max(0, avail))
+        }()
+        let currentUnpaidUnits = byTypeUnits["UNPAID"] ?? 0
+        let canSplitExcessAnnualToUnpaid =
+            excessAnnualUnits > 0 && (currentUnpaidUnits + excessAnnualUnits <= 14)
+
+        for dateStr in byDateOrder {
+            guard let entries = byDateEntries[dateStr] else { continue }
+            if entries.count > 2 {
+                return LeaveRequestDraftEvaluation(
+                    isValid: false,
+                    errorMessage: "Ngày \(dateStr) đang có quá 2 dòng buổi nghỉ.",
+                    totalUnits: totalUnits,
+                    annualUnits: annualUnits,
+                    nonAnnualUnits: nonAnnualUnits,
+                    excessAnnualUnits: excessAnnualUnits,
+                    canSplitExcessAnnualToUnpaid: canSplitExcessAnnualToUnpaid,
+                    typeBreakdown: breakdown
+                )
+            }
+            if entries.count == 2 {
+                let first = entries[0]
+                let second = entries[1]
+                if first.sessionCode == "FULL" || second.sessionCode == "FULL" {
+                    return LeaveRequestDraftEvaluation(
+                        isValid: false,
+                        errorMessage: "Ngày \(dateStr) đã chọn 'Cả ngày' nên không thể thêm buổi thứ 2.",
+                        totalUnits: totalUnits,
+                        annualUnits: annualUnits,
+                        nonAnnualUnits: nonAnnualUnits,
+                        excessAnnualUnits: excessAnnualUnits,
+                        canSplitExcessAnnualToUnpaid: canSplitExcessAnnualToUnpaid,
+                        typeBreakdown: breakdown
+                    )
+                }
+                if first.sessionCode == second.sessionCode {
+                    return LeaveRequestDraftEvaluation(
+                        isValid: false,
+                        errorMessage: "Ngày \(dateStr) bị trùng buổi (\(leaveSessionShortLabel(first.sessionCode))).",
+                        totalUnits: totalUnits,
+                        annualUnits: annualUnits,
+                        nonAnnualUnits: nonAnnualUnits,
+                        excessAnnualUnits: excessAnnualUnits,
+                        canSplitExcessAnnualToUnpaid: canSplitExcessAnnualToUnpaid,
+                        typeBreakdown: breakdown
+                    )
+                }
+                if first.leaveType == second.leaveType {
+                    return LeaveRequestDraftEvaluation(
+                        isValid: false,
+                        errorMessage: "Ngày \(dateStr): 2 buổi cùng loại nghỉ phải chọn 'Cả ngày' thay vì tách 2 dòng.",
+                        totalUnits: totalUnits,
+                        annualUnits: annualUnits,
+                        nonAnnualUnits: nonAnnualUnits,
+                        excessAnnualUnits: excessAnnualUnits,
+                        canSplitExcessAnnualToUnpaid: canSplitExcessAnnualToUnpaid,
+                        typeBreakdown: breakdown
+                    )
+                }
+            }
+        }
+
+        for type in leaveTypes {
+            guard let maxUnits = leaveTypeMaxUnitsPerRequest[type] else { continue }
+            let typeUnits = byTypeUnits[type] ?? 0
+            if typeUnits > maxUnits {
+                return LeaveRequestDraftEvaluation(
+                    isValid: false,
+                    errorMessage: "Loại '\(leaveTypeShortLabel(type))' vượt giới hạn tối đa \(formatHalfDayUnits(maxUnits))/đơn (đang chọn \(formatHalfDayUnits(typeUnits))).",
+                    totalUnits: totalUnits,
+                    annualUnits: annualUnits,
+                    nonAnnualUnits: nonAnnualUnits,
+                    excessAnnualUnits: excessAnnualUnits,
+                    canSplitExcessAnnualToUnpaid: canSplitExcessAnnualToUnpaid,
+                    typeBreakdown: breakdown
+                )
+            }
+        }
+
+        if let avail = availableUnits, excessAnnualUnits > 0 {
+            let safeAvail = max(0, avail)
+            return LeaveRequestDraftEvaluation(
+                isValid: false,
+                errorMessage: "Số ngày Phép năm đang chọn (\(formatHalfDayUnits(annualUnits))) vượt quá số dư phép năm khả dụng (\(formatHalfDayUnits(safeAvail))). Vui lòng chuyển \(formatHalfDayUnits(excessAnnualUnits)) vượt sang Nghỉ không lương hoặc loại nghỉ phù hợp.",
+                totalUnits: totalUnits,
+                annualUnits: annualUnits,
+                nonAnnualUnits: nonAnnualUnits,
+                excessAnnualUnits: excessAnnualUnits,
+                canSplitExcessAnnualToUnpaid: canSplitExcessAnnualToUnpaid,
+                typeBreakdown: breakdown
+            )
+        }
+
+        let trimmedReason = reason.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmedReason.count > 2000 {
+            return LeaveRequestDraftEvaluation(
+                isValid: false,
+                errorMessage: "Lý do xin nghỉ không được vượt quá 2000 ký tự.",
+                totalUnits: totalUnits,
+                annualUnits: annualUnits,
+                nonAnnualUnits: nonAnnualUnits,
+                excessAnnualUnits: excessAnnualUnits,
+                canSplitExcessAnnualToUnpaid: canSplitExcessAnnualToUnpaid,
+                typeBreakdown: breakdown
+            )
+        }
+
+        return LeaveRequestDraftEvaluation(
+            isValid: true,
+            errorMessage: nil,
+            totalUnits: totalUnits,
+            annualUnits: annualUnits,
+            nonAnnualUnits: nonAnnualUnits,
+            excessAnnualUnits: excessAnnualUnits,
+            canSplitExcessAnnualToUnpaid: canSplitExcessAnnualToUnpaid,
+            typeBreakdown: breakdown
+        )
     }
 
     public static func leaveRouteKindLabel(
@@ -1012,6 +1393,9 @@ public enum LeaveContract {
         let normalizedDecision = decision.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
         let normalizedStatus = request.status.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
         let trimmedReason = reason.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmedReason.count > 2000 {
+            return (false, "Lý do xử lý không được vượt quá 2000 ký tự.")
+        }
 
         switch normalizedDecision {
         case "APPROVE":
@@ -1023,22 +1407,10 @@ public enum LeaveContract {
             if normalizedStatus != "PENDING" {
                 return (false, "Chỉ có thể từ chối đơn đang ở trạng thái Chờ duyệt.")
             }
-            if trimmedReason.isEmpty {
-                return (false, "Bắt buộc nhập lý do khi từ chối đơn nghỉ phép.")
-            }
-            if trimmedReason.count > 2000 {
-                return (false, "Vui lòng nhập lý do hợp lệ (tối đa 2.000 ký tự).")
-            }
             return (true, nil)
         case "CANCEL_APPROVED":
             if normalizedStatus != "APPROVED" {
                 return (false, "Chỉ có thể hủy đơn đã ở trạng thái Đã duyệt để hoàn lại phép.")
-            }
-            if trimmedReason.isEmpty {
-                return (false, "Bắt buộc nhập lý do khi hủy đơn nghỉ phép đã duyệt.")
-            }
-            if trimmedReason.count > 2000 {
-                return (false, "Vui lòng nhập lý do hợp lệ (tối đa 2.000 ký tự).")
             }
             return (true, nil)
         default:
@@ -1048,43 +1420,16 @@ public enum LeaveContract {
 
     public static func validateCreateDraftInput(
         days: [LeaveDraftDayInput],
-        reason: String
+        reason: String,
+        leaveYear: Int? = nil,
+        availableUnits: Int? = nil
     ) -> String? {
-        if days.isEmpty {
-            return "Vui lòng thêm ít nhất 1 ngày xin nghỉ."
-        }
-        if days.count > 60 {
-            return "Mỗi đơn chỉ được đăng ký tối đa 60 ngày nghỉ."
-        }
-        var seenDates = Set<String>()
-        var duplicateDates: [String] = []
-        for row in days {
-            let dateStr = row.leaveDate.trimmingCharacters(in: .whitespacesAndNewlines)
-            let sessionStr = row.sessionCode.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
-            if !isValidIsoDate(dateStr) {
-                return "Vui lòng chọn đầy đủ ngày nghỉ hợp lệ (YYYY-MM-DD)."
-            }
-            if !sessionCodes.contains(sessionStr) {
-                return "Vui lòng chọn buổi nghỉ hợp lệ (Cả ngày, Buổi sáng hoặc Buổi chiều)."
-            }
-            if !seenDates.insert(dateStr).inserted {
-                if !duplicateDates.contains(dateStr) {
-                    duplicateDates.append(dateStr)
-                }
-            }
-        }
-        if !duplicateDates.isEmpty {
-            let formatted = duplicateDates.map { formatIsoDateVi($0) }.joined(separator: ", ")
-            return "Không được chọn trùng một ngày nhiều lần trong cùng một đơn xin nghỉ (\(formatted))."
-        }
-        let trimmedReason = reason.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmedReason.isEmpty {
-            return "Vui lòng nhập lý do xin nghỉ phép."
-        }
-        if trimmedReason.count > 2000 {
-            return "Vui lòng nhập lý do hợp lệ (tối đa 2.000 ký tự)."
-        }
-        return nil
+        evaluateLeaveRequestDraft(
+            days: days,
+            reason: reason,
+            leaveYear: leaveYear,
+            availableUnits: availableUnits
+        ).errorMessage
     }
 
     // MARK: - JSON Parsing Helpers
@@ -1180,6 +1525,12 @@ public enum LeaveContract {
                 sourceRef: item.optNullableString("source_ref")
             )
         }
+        let pendingPaid = safe.optInt("pending_paid_units", defaultValue: 0)
+        let pendingUnpaid = safe.optInt("pending_unpaid_units", defaultValue: 0)
+        let approvedUnpaid = safe.optInt("approved_unpaid_units", defaultValue: 0)
+        let pendingAnnual = safe.optInt("pending_annual_units", defaultValue: pendingPaid)
+        let pendingNonAnnual = safe.optInt("pending_non_annual_units", defaultValue: pendingUnpaid)
+        let approvedNonAnnual = safe.optInt("approved_non_annual_units", defaultValue: approvedUnpaid)
         return LeaveBalanceProjection(
             leaveYear: safe.optInt("leave_year", defaultValue: defaultYear),
             asOfDate: safe.optString("as_of_date"),
@@ -1201,9 +1552,12 @@ public enum LeaveContract {
             reservedUnits: safe.optInt("reserved_units", defaultValue: 0),
             consumedUnits: safe.optInt("consumed_units", defaultValue: 0),
             expiredUnits: safe.optInt("expired_units", defaultValue: 0),
-            pendingPaidUnits: safe.optInt("pending_paid_units", defaultValue: 0),
-            pendingUnpaidUnits: safe.optInt("pending_unpaid_units", defaultValue: 0),
-            approvedUnpaidUnits: safe.optInt("approved_unpaid_units", defaultValue: 0),
+            pendingAnnualUnits: pendingAnnual,
+            pendingNonAnnualUnits: pendingNonAnnual,
+            approvedNonAnnualUnits: approvedNonAnnual,
+            pendingPaidUnits: pendingPaid,
+            pendingUnpaidUnits: pendingUnpaid,
+            approvedUnpaidUnits: approvedUnpaid,
             lots: lots
         )
     }
@@ -1212,14 +1566,32 @@ public enum LeaveContract {
         let daysArr = obj.optObjectArray("days")
         let days: [LeaveRequestDayProjection] = daysArr.map { d in
             let sessionCode = d.optString("session_code", defaultValue: "FULL").uppercased()
+            let rawType = d.optString("leave_type", defaultValue: "ANNUAL").uppercased()
+            let leaveType = leaveTypes.contains(rawType) ? rawType : "ANNUAL"
             return LeaveRequestDayProjection(
                 requestDayId: d.optString("request_day_id"),
                 leaveDate: d.optString("leave_date"),
                 sessionCode: sessionCode,
+                leaveType: leaveType,
                 halfDayUnits: d.optInt("half_day_units", defaultValue: leaveSessionHalfDayUnits(sessionCode)),
                 isActive: d.optBool("is_active", defaultValue: true)
             )
         }
+        let breakdownArr = obj.optObjectArray("type_breakdown")
+        let parsedBreakdown: [LeaveRequestTypeBreakdownProjection] = breakdownArr.compactMap { tb in
+            let t = tb.optString("leave_type").uppercased()
+            let u = tb.optInt("half_day_units", defaultValue: 0)
+            guard leaveTypes.contains(t), u > 0 else { return nil }
+            return LeaveRequestTypeBreakdownProjection(leaveType: t, halfDayUnits: u)
+        }
+        let effectiveBreakdown = parsedBreakdown.isEmpty
+            ? resolveRequestTypeBreakdownFromDays(days)
+            : parsedBreakdown
+        let leaveTypesArr = (obj["leave_types"] as? [Any])?.compactMap { ($0 as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() } ?? []
+        let parsedLeaveTypes = leaveTypesArr.filter { leaveTypes.contains($0) }
+        let effectiveLeaveTypes = parsedLeaveTypes.isEmpty
+            ? effectiveBreakdown.map(\.leaveType)
+            : parsedLeaveTypes
         let allocArr = obj.optObjectArray("allocations")
         let allocations: [LeaveRequestAllocationProjection] = allocArr.map { a in
             LeaveRequestAllocationProjection(
@@ -1235,12 +1607,18 @@ public enum LeaveContract {
             )
         }
         let defaultRequestedUnits = days.reduce(0) { $0 + $1.halfDayUnits }
+        let defaultAnnualUnits = effectiveBreakdown.filter { $0.leaveType == "ANNUAL" }.reduce(0) { $0 + $1.halfDayUnits }
+        let defaultNonAnnualUnits = max(0, defaultRequestedUnits - defaultAnnualUnits)
         return LeaveRequestProjection(
             requestId: obj.optString("request_id"),
             appUserId: obj.optString("app_user_id"),
             requester: parseAccountProjection(obj["requester"] as? [String: Any]),
             status: obj.optString("status", defaultValue: "PENDING"),
             payTreatment: obj.optString("pay_treatment", defaultValue: "PAID_LEAVE"),
+            leaveTypes: effectiveLeaveTypes,
+            typeBreakdown: effectiveBreakdown,
+            requestedAnnualUnits: obj.optInt("requested_annual_units", defaultValue: defaultAnnualUnits),
+            requestedNonAnnualUnits: obj.optInt("requested_non_annual_units", defaultValue: defaultNonAnnualUnits),
             employmentStatusSnapshot: obj.optString("employment_status_snapshot", defaultValue: "UNCONFIGURED"),
             unitKindSnapshot: obj.optString("unit_kind_snapshot", defaultValue: "UNCLASSIFIED"),
             profileConfiguredAtSubmit: obj.optBool("profile_configured_at_submit", defaultValue: false),
@@ -1337,18 +1715,23 @@ public enum LeaveContract {
 
     public static func buildCreateLeaveRequestPayload(
         days: [LeaveDraftDayInput],
-        reason: String,
+        reason: String?,
         idempotencyKey: String = newClientIdempotencyKey("leave-create")
     ) -> [String: Any] {
         let daysPayload: [[String: String]] = days.map { d in
-            [
+            let rawType = d.leaveType.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+            let cleanType = leaveTypes.contains(rawType) ? rawType : "ANNUAL"
+            return [
                 "leave_date": d.leaveDate.trimmingCharacters(in: .whitespacesAndNewlines),
-                "session_code": d.sessionCode.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+                "session_code": d.sessionCode.trimmingCharacters(in: .whitespacesAndNewlines).uppercased(),
+                "leave_type": cleanType
             ]
         }
+        let cleanReason = reason?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let reasonValue: Any = (cleanReason?.isEmpty == false) ? cleanReason! : NSNull()
         return [
             "days": daysPayload,
-            "reason": reason.trimmingCharacters(in: .whitespacesAndNewlines),
+            "reason": reasonValue,
             "idempotency_key": idempotencyKey.trimmingCharacters(in: .whitespacesAndNewlines)
         ]
     }

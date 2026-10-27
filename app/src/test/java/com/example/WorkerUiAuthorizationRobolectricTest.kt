@@ -3062,11 +3062,12 @@ class WorkerUiAuthorizationRobolectricTest {
         composeTestRule.onNodeWithTag("leave_balance_summary_card").assertIsDisplayed()
         composeTestRule.onNodeWithText("6 ngày").assertIsDisplayed()
 
-        // Select half-day morning ("AM"), set date & reason, and submit
+        // Select half-day morning ("AM"), select leave type ("SICK"), set date & reason, and submit
         composeTestRule.onNodeWithTag("leave_request_lazy_column")
             .performScrollToNode(hasTestTag("leave_create_form_card"))
         composeTestRule.onNodeWithTag("leave_draft_date_input_0").performTextReplacement("2026-10-28")
         composeTestRule.onNodeWithTag("leave_draft_session_AM_0").performClick()
+        composeTestRule.onNodeWithTag("leave_draft_type_SICK_0").performClick()
         composeTestRule.onNodeWithTag("leave_reason_input").performTextReplacement("Đi khám bệnh buổi sáng")
         composeTestRule.onNodeWithTag("leave_submit_request_button").performClick()
 
@@ -3082,6 +3083,7 @@ class WorkerUiAuthorizationRobolectricTest {
         val createJson = capturedCreatePayloads.single()
         assertEquals("Đi khám bệnh buổi sáng", createJson.getString("reason"))
         assertEquals("AM", createJson.getJSONArray("days").getJSONObject(0).getString("session_code"))
+        assertEquals("SICK", createJson.getJSONArray("days").getJSONObject(0).getString("leave_type"))
 
         // 3. Withdraw pending request from history
         composeTestRule.onNodeWithTag("leave_request_lazy_column")
@@ -3280,14 +3282,15 @@ class WorkerUiAuthorizationRobolectricTest {
         composeTestRule.onNodeWithTag("leave_reject_btn_$reqId").assertIsDisplayed().performClick()
         composeTestRule.waitForIdle()
 
-        // 2. Reject without reason displays validation error and does not call backend
+        // 2. Reject with >2000 character reason displays validation error and does not call backend
         composeTestRule.onNodeWithTag("leave_decision_dialog").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("leave_decision_reason_input").performTextReplacement("x".repeat(2001))
         composeTestRule.onNodeWithTag("leave_decision_confirm_button").performClick()
         composeTestRule.waitForIdle()
         composeTestRule.onNodeWithTag("leave_decision_dialog_error").assertIsDisplayed()
         assertTrue(capturedDecisions.isEmpty())
 
-        // 3. Enter rejection reason and confirm -> sends REJECT, expected_row_version = 4, and idempotency_key
+        // 3. Enter valid rejection reason and confirm -> sends REJECT, expected_row_version = 4, and idempotency_key
         composeTestRule.onNodeWithTag("leave_decision_reason_input").performTextReplacement("Nhóm đang cao điểm tuyển dụng")
         composeTestRule.onNodeWithTag("leave_decision_confirm_button").performClick()
 
