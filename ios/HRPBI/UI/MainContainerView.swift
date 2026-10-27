@@ -150,43 +150,72 @@ public struct MainContainerView: View {
                     .frame(height: 1)
             }
 
-            // Global Banner (Success / Error / Deadline Passed)
-            if let message = viewModel.bannerMessage, !message.isEmpty {
-                HStack(spacing: 8) {
-                    Image(systemName: viewModel.bannerIsError ? "exclamationmark.octagon.fill" : "checkmark.circle.fill")
-                        .foregroundColor(viewModel.bannerIsError ? SemanticColors.dangerText : SemanticColors.successText)
-                    Text(message)
-                        .font(.caption.weight(.semibold))
-                        .foregroundColor(viewModel.bannerIsError ? SemanticColors.dangerText : SemanticColors.successText)
-                    Spacer()
-                    Button {
-                        viewModel.dismissBanner()
-                    } label: {
-                        Image(systemName: "xmark")
-                            .font(.caption2.weight(.bold))
-                            .foregroundColor(SemanticColors.textMuted)
+            // Active Screen Content + Floating Toast Layer (does not occupy layout space or shift UI)
+            ZStack(alignment: .top) {
+                Group {
+                    switch viewModel.currentDestination {
+                    case .dashboard:
+                        DashboardScreen(viewModel: viewModel)
+                    case .newEntry:
+                        DirectEntryNewWorkersScreen(viewModel: viewModel)
+                    case .workers:
+                        WorkersScreen(viewModel: viewModel)
+                    case .attendance:
+                        AttendanceScreen(viewModel: viewModel)
+                    case .workReports:
+                        WorkReportsScreen(viewModel: viewModel)
                     }
                 }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 9)
-                .background(viewModel.bannerIsError ? SemanticColors.dangerBg : SemanticColors.successBg)
-            }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-            // Active Screen Content
-            ZStack {
-                switch viewModel.currentDestination {
-                case .dashboard:
-                    DashboardScreen(viewModel: viewModel)
-                case .newEntry:
-                    DirectEntryNewWorkersScreen(viewModel: viewModel)
-                case .workers:
-                    WorkersScreen(viewModel: viewModel)
-                case .attendance:
-                    AttendanceScreen(viewModel: viewModel)
-                case .workReports:
-                    WorkReportsScreen(viewModel: viewModel)
+                if let message = viewModel.bannerMessage, !message.isEmpty {
+                    HStack(alignment: .top, spacing: 10) {
+                        Image(systemName: viewModel.bannerIsError ? "exclamationmark.octagon.fill" : "checkmark.circle.fill")
+                            .font(.subheadline.weight(.bold))
+                            .foregroundColor(viewModel.bannerIsError ? SemanticColors.dangerText : SemanticColors.successText)
+                            .padding(.top, 1)
+
+                        Text(message)
+                            .font(.caption.weight(.semibold))
+                            .foregroundColor(viewModel.bannerIsError ? SemanticColors.dangerText : SemanticColors.successText)
+                            .multilineTextAlignment(.leading)
+                            .fixedSize(horizontal: false, vertical: true)
+
+                        Spacer(minLength: 4)
+
+                        Button {
+                            withAnimation(.easeInOut(duration: 0.2)) {
+                                viewModel.dismissBanner()
+                            }
+                        } label: {
+                            Image(systemName: "xmark")
+                                .font(.caption2.weight(.bold))
+                                .foregroundColor(SemanticColors.textMuted)
+                                .padding(4)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 11)
+                    .background(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .fill(viewModel.bannerIsError ? SemanticColors.dangerBg : SemanticColors.successBg)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .stroke(
+                                viewModel.bannerIsError ? SemanticColors.dangerBorder : SemanticColors.successBorder,
+                                lineWidth: 1
+                            )
+                    )
+                    .shadow(color: Color.black.opacity(0.14), radius: 10, x: 0, y: 4)
+                    .padding(.horizontal, 14)
+                    .padding(.top, 10)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                    .zIndex(999)
                 }
             }
+            .animation(.easeInOut(duration: 0.22), value: viewModel.bannerMessage)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             Divider()

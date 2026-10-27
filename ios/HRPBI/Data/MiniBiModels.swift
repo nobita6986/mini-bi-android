@@ -187,10 +187,10 @@ public struct MiniBiUser: Codable, Equatable, Identifiable, Sendable {
 
 public enum MiniBiNavDestination: String, CaseIterable, Identifiable, Equatable, Sendable {
     case dashboard = "dashboard"
-    case newEntry = "new_entry"
-    case workers = "workers"
-    case attendance = "attendance"
     case workReports = "work_reports"
+    case attendance = "attendance"
+    case workers = "workers"
+    case newEntry = "new_entry"
 
     public var id: String { rawValue }
 
@@ -198,14 +198,14 @@ public enum MiniBiNavDestination: String, CaseIterable, Identifiable, Equatable,
         switch self {
         case .dashboard:
             return "Tổng quan"
-        case .newEntry:
-            return "Cấp mới"
-        case .workers:
-            return "Nhân sự"
+        case .workReports:
+            return "Báo cáo"
         case .attendance:
             return "Chấm công"
-        case .workReports:
-            return "Báo cáo CV"
+        case .workers:
+            return "Nhân sự"
+        case .newEntry:
+            return "Cấp mới"
         }
     }
 
@@ -213,14 +213,14 @@ public enum MiniBiNavDestination: String, CaseIterable, Identifiable, Equatable,
         switch self {
         case .dashboard:
             return "chart.bar.xaxis"
-        case .newEntry:
-            return "person.badge.plus"
-        case .workers:
-            return "person.3.fill"
-        case .attendance:
-            return "camera.viewfinder"
         case .workReports:
             return "doc.text.fill"
+        case .attendance:
+            return "camera.viewfinder"
+        case .workers:
+            return "person.3.fill"
+        case .newEntry:
+            return "person.badge.plus"
         }
     }
 }

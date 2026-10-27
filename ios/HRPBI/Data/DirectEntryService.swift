@@ -444,7 +444,7 @@ public final class DirectEntryService: @unchecked Sendable {
         return .success(items, statusCode: response.statusCode)
     }
 
-    private func buildFullProfileEntryPayload(_ d: NewWorkerEntryDraft) -> [String: Any] {
+    public func buildFullProfileEntryPayload(_ d: NewWorkerEntryDraft) -> [String: Any] {
         let catalog = self.lastLoadedCatalog
 
         let resolvedProjectId: String = {
@@ -475,20 +475,43 @@ public final class DirectEntryService: @unchecked Sendable {
             let explicit = d.laborTypeKey.trimmingCharacters(in: .whitespacesAndNewlines)
             let disp = d.nganhNghe.trimmingCharacters(in: .whitespacesAndNewlines)
             if let matched = catalog.catalogLaborTypes.first(where: {
-                $0.displayName.caseInsensitiveCompare(disp) == .orderedSame ||
-                $0.laborTypeKey.caseInsensitiveCompare(explicit) == .orderedSame
+                (!explicit.isEmpty && $0.laborTypeKey.caseInsensitiveCompare(explicit) == .orderedSame) ||
+                (!disp.isEmpty && $0.displayName.caseInsensitiveCompare(disp) == .orderedSame)
             }) {
                 return matched.laborTypeKey
             }
-            if disp.lowercased().contains("chính thức") || explicit.uppercased() == "OFFICIAL" {
+            if !explicit.isEmpty && explicit != "SEASONAL" {
+                return explicit
+            }
+            if disp.lowercased().contains("chính thức") {
+                if let official = catalog.catalogLaborTypes.first(where: {
+                    $0.displayName.lowercased().contains("chính thức") ||
+                    $0.laborTypeKey.lowercased().contains("official") ||
+                    $0.laborTypeKey.lowercased().contains("chinh_thuc")
+                }) {
+                    return official.laborTypeKey
+                }
                 return "OFFICIAL"
             }
-            return "SEASONAL"
+            if let seasonal = catalog.catalogLaborTypes.first(where: {
+                $0.displayName.lowercased().contains("thời vụ") ||
+                $0.laborTypeKey.uppercased() == "TEMPORARY" ||
+                $0.laborTypeKey.uppercased().contains("SEASONAL") ||
+                $0.laborTypeKey.uppercased().contains("TEMP")
+            }) ?? catalog.catalogLaborTypes.first {
+                return seasonal.laborTypeKey
+            }
+            return !explicit.isEmpty ? explicit : "TEMPORARY"
         }()
 
         let firstWorkDateIso: String = {
             let iso = DirectEntryContract.uiDateToIsoDate(d.ngayVaoLam)
             return iso.isEmpty ? LeaveContract.todayVietnamIsoDate() : iso
+        }()
+
+        let providerType: String = {
+            let raw = d.providerType.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            return raw == "vendor" ? "vendor" : "hrp"
         }()
 
         let statusUpper: String = {
@@ -499,86 +522,103 @@ public final class DirectEntryService: @unchecked Sendable {
             return "ON"
         }()
 
-        func fieldState(_ value: String) -> [String: Any] {
-            let clean = value.trimmingCharacters(in: .whitespacesAndNewlines)
-            return clean.isEmpty ? ["state": "missing"] : ["state": "provided", "value": clean]
+        func optionalTextField(_ value: String, maxLength: Int = 500) -> [String: Any] {
+            let clean = String(value.trimmingCharacters(in: .whitespacesAndNewlines).prefix(maxLength))
+            return clean.isEmpty ? ["state": "omitted"] : ["state": "provided", "value": clean]
         }
 
-        let cccdDigits = d.soCccd.filter(\.isNumber)
-        let genderApiValue: String = {
-            let g = d.gioiTinh.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            if g == "nam" || g == "male" { return "male" }
-            if g == "nữ" || g == "nu" || g == "female" { return "female" }
-            return ""
-        }()
-        let dobIso = DirectEntryContract.uiDateToIsoDate(d.ngaySinh)
-        let issueIso = DirectEntryContract.uiDateToIsoDate(d.ngayCap)
-        let phoneDigits = d.sdt.filter(\.isNumber)
+        func optionalFreeDateField(_ value: String) -> [String: Any] {
+            let clean = String(value.trimmingCharacters(in: .whitespacesAndNewlines).prefix(10))
+            return clean.isEmpty ? ["state": "omitted"] : ["state": "provided", "value": clean]
+        }
 
-        let workerDetails: [String: Any] = [
-            "national_id": fieldState(cccdDigits),
-            "display_name": fieldState(d.hoTen),
-            "gender": fieldState(genderApiValue),
-            "date_of_birth": fieldState(dobIso),
-            "national_id_issued_at": fieldState(issueIso),
-            "address": fieldState(d.queQuan),
-            "phone": fieldState(phoneDigits),
-            "note": fieldState(d.ghiChu)
+        let genderField: [String: Any] = {
+            let g = d.gioiTinh.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if g == "nam" || g == "male" {
+                return ["state": "provided", "value": "MALE"]
+            }
+            if g == "nữ" || g == "nu" || g == "female" {
+                return ["state": "provided", "value": "FEMALE"]
+            }
+            return ["state": "omitted"]
+        }()
+
+        let cccdDigits = d.soCccd.filter(\.isNumber)
+        let cleanDisplayName: Any = {
+            let trimmed = d.hoTen.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? NSNull() : String(trimmed.prefix(256))
+        }()
+
+        let workerObj: [String: Any] = [
+            "gender": genderField,
+            "date_of_birth": optionalFreeDateField(d.ngaySinh),
+            "national_id": [
+                "state": "provided",
+                "value": cccdDigits
+            ],
+            "national_id_issued_at": optionalFreeDateField(d.ngayCap),
+            "national_id_issued_place": ["state": "omitted"],
+            "address": optionalTextField(d.queQuan, maxLength: 500),
+            "phone": optionalTextField(d.sdt, maxLength: 50)
         ]
 
-        let bankDisp = d.nganHang.trimmingCharacters(in: .whitespacesAndNewlines)
-        let resolvedBankValue: String = {
-            if let matched = catalog.catalogBanks.first(where: {
-                $0.displayName.caseInsensitiveCompare(bankDisp) == .orderedSame ||
-                $0.bankId.caseInsensitiveCompare(bankDisp) == .orderedSame
-            }) {
-                return matched.bankId
-            }
-            return bankDisp
-        }()
+        let bankName = d.nganHang.trimmingCharacters(in: .whitespacesAndNewlines)
         let accNum = d.soTaiKhoan.trimmingCharacters(in: .whitespacesAndNewlines)
         let holderName = d.bankAccountHolder.trimmingCharacters(in: .whitespacesAndNewlines)
 
-        let paymentObj: [String: Any] = {
-            if resolvedBankValue.isEmpty && accNum.isEmpty && holderName.isEmpty {
-                return ["state": "missing"]
+        let paymentValue: Any = {
+            if bankName.isEmpty && accNum.isEmpty && holderName.isEmpty {
+                return NSNull()
             }
-            return [
-                "state": "provided",
-                "bank_id": fieldState(resolvedBankValue),
-                "account_number": fieldState(accNum),
-                "account_holder_name": fieldState(holderName)
-            ]
+            var dict: [String: Any] = ["state": "provided"]
+            if !accNum.isEmpty { dict["account_number"] = String(accNum.prefix(64)) }
+            if !bankName.isEmpty { dict["bank_name"] = String(bankName.prefix(256)) }
+            if !holderName.isEmpty { dict["account_holder_name"] = String(holderName.prefix(256)) }
+            return dict
         }()
 
-        return [
-            "client_row_id": d.rowId,
+        var rowObj: [String: Any] = [
             "project_id": resolvedProjectId,
-            "recruiter_id": resolvedRecruiterId,
-            "labor_type": resolvedLaborType,
             "first_work_date": firstWorkDateIso,
-            "employment_status": [
-                "status": statusUpper,
-                "effective_date": firstWorkDateIso
-            ],
-            "worker_details": workerDetails,
-            "payment": paymentObj
+            "provider_type": providerType,
+            "labor_type": resolvedLaborType,
+            "display_name": cleanDisplayName,
+            "worker": workerObj,
+            "general_note": optionalTextField(d.ghiChu, maxLength: 500),
+            "payment": paymentValue,
+            "employment": [
+                "initial_status": statusUpper
+            ]
         ]
+
+        if providerType == "hrp" {
+            rowObj["recruiter_id"] = resolvedRecruiterId
+        } else {
+            rowObj["vendor_id"] = resolvedRecruiterId
+        }
+
+        return rowObj
     }
 
     public func submitBatch(
         drafts: [NewWorkerEntryDraft],
         confirmDuplicates: Bool = false
     ) async -> MiniBiApiResult<DirectEntryBatchSubmitOutcome> {
-        let fullProfileEntries = drafts.map { buildFullProfileEntryPayload($0) }
+        if self.lastLoadedCatalog.catalogProjects.isEmpty && self.lastLoadedCatalog.catalogLaborTypes.isEmpty {
+            _ = await fetchAssigneeOptions()
+        }
+
+        let fullProfileRows = drafts.map { buildFullProfileEntryPayload($0) }
         let fullProfileBody: [String: Any] = [
-            "schema_version": "worker-profile/1.2",
-            "entries": fullProfileEntries
+            "contract_version": "worker-profile/1.2",
+            "rows": fullProfileRows
         ]
+        let batchIdempotencyKey = UUID().uuidString.lowercased()
 
         var response = await httpClient.request(
             method: "POST",
             path: "/api/direct-entry/batches/full-profile",
+            headers: ["Idempotency-Key": batchIdempotencyKey],
             jsonBody: fullProfileBody
         )
 
@@ -596,6 +636,7 @@ public final class DirectEntryService: @unchecked Sendable {
             response = await httpClient.request(
                 method: "POST",
                 path: "/api/direct-entry/batches",
+                headers: ["Idempotency-Key": batchIdempotencyKey],
                 jsonBody: [
                     "rows": legacyRows,
                     "entries": legacyRows,
@@ -623,12 +664,31 @@ public final class DirectEntryService: @unchecked Sendable {
             ?? 0
         let submissionVersion = max(1, dataObj.optInt("version", "submission_version", defaultValue: root.optInt("version", defaultValue: 1)))
 
+        var entryIdByRowId: [String: Int64] = [:]
+        var entryIdUuidByRowId: [String: String] = [:]
+
+        // Parse `entry_ids: ["<uuid>", ...]` returned by `/api/direct-entry/batches/full-profile`
+        let entryIdStringArray: [String] = {
+            if let arr = dataObj["entry_ids"] as? [String], !arr.isEmpty { return arr }
+            if let arr = root["entry_ids"] as? [String], !arr.isEmpty { return arr }
+            return []
+        }()
+
+        if !entryIdStringArray.isEmpty {
+            for (idx, entryUuid) in entryIdStringArray.enumerated() where idx < drafts.count {
+                let cleanUuid = entryUuid.trimmingCharacters(in: .whitespacesAndNewlines)
+                let rowId = drafts[idx].rowId
+                if !cleanUuid.isEmpty && !rowId.isEmpty {
+                    entryIdUuidByRowId[rowId] = cleanUuid
+                    entryIdByRowId[rowId] = Int64(idx + 1)
+                }
+            }
+        }
+
         let createdEntries = root.optObjectArray("entries")
             .ifEmpty(dataObj.optObjectArray("entries"))
             .ifEmpty(dataObj.optObjectArray("rows"))
 
-        var entryIdByRowId: [String: Int64] = [:]
-        var entryIdUuidByRowId: [String: String] = [:]
         for (idx, entryObj) in createdEntries.enumerated() {
             let entryIdInt = entryObj.optInt64("entry_id", "id") ?? Int64(idx + 1)
             let entryUuid = entryObj.optString("entry_id", "id", defaultValue: String(entryIdInt))
@@ -643,33 +703,48 @@ public final class DirectEntryService: @unchecked Sendable {
             }
         }
 
-        // Transition submission from DRAFT -> SUBMITTED (mirrors `DirectEntryService.kt:submitSubmission`)
+        // Transition submission from DRAFT -> SUBMITTED (mirrors `DirectEntryService.kt:transitionSubmissionToSubmitted`)
         if !submissionIdUuid.isEmpty {
             let encodedSub = submissionIdUuid.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? submissionIdUuid
-            var needsDuplicateConfirmation = confirmDuplicates
+            var expectedVersion = submissionVersion
+            var duplicateFingerprint: String? = nil
+            var duplicateConflictCount: Int? = nil
 
             let preflightRes = await httpClient.request(
                 method: "GET",
                 path: "/api/direct-entry/submissions/\(encodedSub)/duplicate-cccd-preflight"
             )
             if preflightRes.isSuccess, let pfRoot = preflightRes.jsonObject {
-                let pfObj = (pfRoot["preflight"] as? [String: Any]) ?? pfRoot
-                if pfObj.optBool("requires_confirmation", defaultValue: false) {
-                    needsDuplicateConfirmation = true
+                let pfObj = (pfRoot["preflight"] as? [String: Any])
+                    ?? (pfRoot["data"] as? [String: Any])
+                    ?? pfRoot
+                expectedVersion = max(1, pfObj.optInt("version", defaultValue: submissionVersion))
+                let fp = pfObj.optString("fingerprint")
+                let cCount = pfObj.optInt(
+                    "conflict_count",
+                    defaultValue: (pfObj["conflicts"] as? [[String: Any]])?.count ?? 0
+                )
+                if cCount > 0 && !fp.isEmpty {
+                    duplicateFingerprint = fp
+                    duplicateConflictCount = cCount
                 }
             }
 
+            let transitionIdemKey = UUID().uuidString.lowercased()
             var transitionBody: [String: Any] = [
+                "expected_version": expectedVersion,
                 "target_state": "SUBMITTED",
-                "expected_submission_version": submissionVersion
+                "idempotency_key": transitionIdemKey
             ]
-            if needsDuplicateConfirmation {
-                transitionBody["duplicate_cccd_confirmation"] = ["confirmed": true]
+            if let fp = duplicateFingerprint, let cCount = duplicateConflictCount, cCount > 0 {
+                transitionBody["duplicate_cccd_fingerprint"] = fp
+                transitionBody["duplicate_cccd_count"] = cCount
             }
 
             let transitionRes = await httpClient.request(
                 method: "POST",
                 path: "/api/direct-entry/submissions/\(encodedSub)/transition",
+                headers: ["Idempotency-Key": transitionIdemKey],
                 jsonBody: transitionBody
             )
             if !transitionRes.isSuccess && transitionRes.statusCode != 404 {
@@ -681,10 +756,11 @@ public final class DirectEntryService: @unchecked Sendable {
             }
         }
 
+        let createdTotal = max(drafts.count, max(entryIdStringArray.count, createdEntries.count))
         let outcome = DirectEntryBatchSubmitOutcome(
             batchId: batchId,
             submissionIdUuid: submissionIdUuid,
-            createdCount: max(drafts.count, createdEntries.count),
+            createdCount: createdTotal,
             entryIdByRowId: entryIdByRowId,
             entryIdUuidByRowId: entryIdUuidByRowId
         )
@@ -706,40 +782,92 @@ public final class DirectEntryService: @unchecked Sendable {
     public func uploadEntryDocumentAttachments(
         entryIdUuid: String,
         docType: String,
-        attachments: [LocalAttachmentItem]
+        attachments: [LocalAttachmentItem],
+        initialEntryVersion: Int? = nil
     ) async -> MiniBiApiResult<String> {
+        let outcome = await uploadEntryDocumentAttachmentsWithVersion(
+            entryIdUuid: entryIdUuid,
+            docType: docType,
+            attachments: attachments,
+            initialEntryVersion: initialEntryVersion
+        )
+        return outcome.result
+    }
+
+    public func uploadEntryDocumentAttachmentsWithVersion(
+        entryIdUuid: String,
+        docType: String,
+        attachments: [LocalAttachmentItem],
+        initialEntryVersion: Int? = nil
+    ) async -> (result: MiniBiApiResult<String>, nextEntryVersion: Int) {
+        let fallbackVersion = max(1, initialEntryVersion ?? 1)
         guard !attachments.isEmpty else {
-            return .failure(message: "Không có tệp đính kèm để tải lên.")
+            return (.failure(message: "Không có tệp đính kèm để tải lên."), fallbackVersion)
         }
 
         let prepared: PreparedContractUploadPayload
         do {
             prepared = try PdfContractMerger.prepareContractUploadPayload(attachments: attachments)
         } catch {
-            return .failure(message: error.localizedDescription)
+            return (.failure(message: error.localizedDescription), fallbackVersion)
         }
 
-        let sha256Digest = SHA256.hash(data: prepared.data)
-        let sha256Hex = sha256Digest.map { String(format: "%02x", $0) }.joined()
-        let encodedEntryId = entryIdUuid.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? entryIdUuid
+        let cleanEntryId = entryIdUuid.trimmingCharacters(in: .whitespacesAndNewlines)
+        let encodedEntryId = cleanEntryId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? cleanEntryId
 
-        // Step 1: Request R2 presigned upload slot (`POST /api/direct-entry/entries/{entryId}/documents`)
-        let initBody: [String: Any] = [
-            "doc_type": docType,
-            "file_name": prepared.fileName,
-            "content_type": prepared.mimeType,
-            "size_bytes": prepared.data.count,
-            "sha256_hex": sha256Hex
-        ]
-        let initRes = await httpClient.request(
-            method: "POST",
-            path: "/api/direct-entry/entries/\(encodedEntryId)/documents",
-            jsonBody: initBody
-        )
+        var expectedEntryVersion = fallbackVersion
+        if initialEntryVersion == nil {
+            let detailRes = await httpClient.request(
+                method: "GET",
+                path: "/api/direct-entry/entries/\(encodedEntryId)"
+            )
+            if detailRes.isSuccess, let dRoot = detailRes.jsonObject {
+                let entryObj = (dRoot["entry"] as? [String: Any]) ?? (dRoot["data"] as? [String: Any]) ?? dRoot
+                expectedEntryVersion = max(1, entryObj.optInt("version", "entry_version", defaultValue: 1))
+            }
+        }
+
+        let baseIdemKey = UUID().uuidString.lowercased()
+
+        func reserveSlot(version: Int, idemSuffix: String) async -> HttpRawResponse {
+            let initBody: [String: Any] = [
+                "document_type": docType,
+                "expected_entry_version": version,
+                "size_bytes": prepared.data.count,
+                "mime_type": prepared.mimeType,
+                "reason": NSNull()
+            ]
+            return await httpClient.request(
+                method: "POST",
+                path: "/api/direct-entry/entries/\(encodedEntryId)/documents",
+                headers: ["Idempotency-Key": "\(baseIdemKey):\(idemSuffix)"],
+                jsonBody: initBody
+            )
+        }
+
+        // Step 1: Reserve R2 presigned upload slot (`POST /api/direct-entry/entries/{entryId}/documents`)
+        var initRes = await reserveSlot(version: expectedEntryVersion, idemSuffix: "reserve")
+        if initRes.statusCode == 409 {
+            let detailRes = await httpClient.request(
+                method: "GET",
+                path: "/api/direct-entry/entries/\(encodedEntryId)"
+            )
+            if detailRes.isSuccess, let dRoot = detailRes.jsonObject {
+                let entryObj = (dRoot["entry"] as? [String: Any]) ?? (dRoot["data"] as? [String: Any]) ?? dRoot
+                let latestVer = max(1, entryObj.optInt("version", "entry_version", defaultValue: expectedEntryVersion))
+                expectedEntryVersion = latestVer
+                initRes = await reserveSlot(version: latestVer, idemSuffix: "reserve:v\(latestVer)")
+            }
+        }
 
         if initRes.isSuccess, let root = initRes.jsonObject {
             let docObj = (root["document"] as? [String: Any]) ?? root
-            let docId = docObj.optString("doc_id", "id")
+            let docId = root.optString("document_id", "doc_id", "id")
+                .ifEmpty(docObj.optString("document_id", "doc_id", "id"))
+            let reservedEntryVersion = max(
+                expectedEntryVersion,
+                root.optInt("entry_version", defaultValue: docObj.optInt("entry_version", defaultValue: expectedEntryVersion))
+            )
             let uploadObj = (root["upload"] as? [String: Any]) ?? (docObj["upload"] as? [String: Any])
             let uploadUrl = uploadObj?.optString("url", "upload_url") ?? ""
 
@@ -757,10 +885,13 @@ public final class DirectEntryService: @unchecked Sendable {
                     additionalHeaders: extraHeaders
                 )
                 guard putRes.isSuccess else {
-                    return .failure(
-                        message: putRes.errorMessage ?? "Tải tệp lên kho lưu trữ thất bại.",
-                        httpStatus: putRes.statusCode,
-                        errorCode: putRes.errorCode
+                    return (
+                        .failure(
+                            message: putRes.errorMessage ?? "Tải tệp lên kho lưu trữ thất bại.",
+                            httpStatus: putRes.statusCode,
+                            errorCode: putRes.errorCode
+                        ),
+                        reservedEntryVersion
                     )
                 }
 
@@ -768,23 +899,27 @@ public final class DirectEntryService: @unchecked Sendable {
                 let finalizeRes = await httpClient.request(
                     method: "POST",
                     path: "/api/direct-entry/entries/\(encodedEntryId)/documents/\(encodedDocId)/finalize",
+                    headers: ["Idempotency-Key": "\(baseIdemKey):finalize"],
                     jsonBody: [
-                        "size_bytes": prepared.data.count,
-                        "sha256_hex": sha256Hex
+                        "expected_entry_version": reservedEntryVersion
                     ]
                 )
                 guard finalizeRes.isSuccess else {
-                    return .failure(
-                        message: finalizeRes.errorMessage ?? "Xác nhận tệp đính kèm thất bại.",
-                        httpStatus: finalizeRes.statusCode,
-                        errorCode: finalizeRes.errorCode
+                    return (
+                        .failure(
+                            message: finalizeRes.errorMessage ?? "Xác nhận tệp đính kèm thất bại.",
+                            httpStatus: finalizeRes.statusCode,
+                            errorCode: finalizeRes.errorCode
+                        ),
+                        reservedEntryVersion
                     )
                 }
-                return .success(docId, statusCode: finalizeRes.statusCode)
+                let finalizedVersion = finalizeRes.jsonObject?.optInt("entry_version", defaultValue: reservedEntryVersion) ?? reservedEntryVersion
+                return (.success(docId, statusCode: finalizeRes.statusCode), max(reservedEntryVersion, finalizedVersion))
             }
 
-            let fileUrl = docObj.optString("file_url", "url", "doc_id", defaultValue: prepared.fileName)
-            return .success(fileUrl, statusCode: initRes.statusCode)
+            let fileUrl = docObj.optString("file_url", "url", "document_id", "doc_id", defaultValue: prepared.fileName)
+            return (.success(fileUrl, statusCode: initRes.statusCode), reservedEntryVersion)
         }
 
         // Fallback to multipart upload for legacy/test servers
@@ -797,15 +932,18 @@ public final class DirectEntryService: @unchecked Sendable {
             extraFields: ["doc_type": docType, "document_type": docType]
         )
         guard response.isSuccess else {
-            return .failure(
-                message: response.errorMessage ?? initRes.errorMessage ?? "Tải tệp hồ sơ cấp mới thất bại.",
-                httpStatus: response.statusCode,
-                errorCode: response.errorCode ?? initRes.errorCode
+            return (
+                .failure(
+                    message: response.errorMessage ?? initRes.errorMessage ?? "Tải tệp hồ sơ cấp mới thất bại.",
+                    httpStatus: response.statusCode,
+                    errorCode: response.errorCode ?? initRes.errorCode
+                ),
+                expectedEntryVersion
             )
         }
 
         let fileUrl = response.jsonObject?.optString("file_url", "url", defaultValue: prepared.fileName) ?? prepared.fileName
-        return .success(fileUrl, statusCode: response.statusCode)
+        return (.success(fileUrl, statusCode: response.statusCode), expectedEntryVersion)
     }
 
     // MARK: - Parser

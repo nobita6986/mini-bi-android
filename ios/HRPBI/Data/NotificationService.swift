@@ -454,34 +454,12 @@ public final class MiniBiRepository {
             return .failure(message: "Vui lòng chọn ít nhất 1 ảnh hoặc tệp PDF hợp đồng.")
         }
 
-        let preparedPayload: PreparedContractUploadPayload
-        do {
-            preparedPayload = try PdfContractMerger.prepareContractUploadPayload(attachments: attachments)
-        } catch {
-            return .failure(message: error.localizedDescription, errorCode: "CONTRACT_MERGE_ERROR")
-        }
-
-        let encoded = maNld.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? maNld
-        let response = await httpClient.uploadMultipart(
-            path: "/api/direct-entry/entries/\(encoded)/documents",
-            fieldName: "file",
-            fileName: preparedPayload.fileName,
-            mimeType: preparedPayload.mimeType,
-            fileData: preparedPayload.data,
-            extraFields: ["doc_type": DirectEntryContract.docTypeSafetyCard]
+        return await DirectEntryService.shared.uploadEntryDocumentAttachments(
+            entryIdUuid: maNld,
+            docType: DirectEntryContract.docTypeEmploymentContract,
+            attachments: attachments,
+            initialEntryVersion: nil
         )
-        guard response.isSuccess else {
-            return .failure(
-                message: response.errorMessage ?? "Tải lên hồ sơ hợp đồng thất bại.",
-                httpStatus: response.statusCode,
-                errorCode: response.errorCode
-            )
-        }
-
-        let root = response.jsonObject ?? [:]
-        let docObj = (root["document"] as? [String: Any]) ?? root
-        let fileUrl = docObj.optString("contract_file_url", "file_url", "url", "id", defaultValue: preparedPayload.fileName)
-        return .success(fileUrl, statusCode: response.statusCode)
     }
 
     public func proposeWorkerChange(

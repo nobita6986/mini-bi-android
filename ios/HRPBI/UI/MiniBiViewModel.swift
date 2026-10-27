@@ -34,6 +34,7 @@ public final class MiniBiViewModel: ObservableObject {
     @Published public var currentDestination: MiniBiNavDestination = .dashboard
     @Published public var bannerMessage: String?
     @Published public var bannerIsError: Bool = false
+    private var bannerDismissTask: Task<Void, Never>?
 
     // MARK: - Notifications (SSE + List)
     @Published public var notifications: [AppNotificationItem] = []
@@ -191,11 +192,19 @@ public final class MiniBiViewModel: ObservableObject {
               trimmed.uppercased() != "REQUEST_CANCELLED" else {
             return
         }
+        bannerDismissTask?.cancel()
         bannerMessage = trimmed
         bannerIsError = isError
+        bannerDismissTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 5_000_000_000)
+            guard !Task.isCancelled else { return }
+            self?.bannerMessage = nil
+        }
     }
 
     public func dismissBanner() {
+        bannerDismissTask?.cancel()
+        bannerDismissTask = nil
         bannerMessage = nil
     }
 
@@ -646,6 +655,21 @@ public final class MiniBiViewModel: ObservableObject {
         }
     }
 
+    public func removeSingleAttachmentFromDraftRow(rowId: String, docType: String) {
+        updateNewWorkerDraftRow(rowId: rowId) { draft in
+            switch docType {
+            case DirectEntryContract.docTypeWorkerPortrait:
+                draft.portraitFile = nil
+            case DirectEntryContract.docTypeCccdFront:
+                draft.cccdFrontFile = nil
+            case DirectEntryContract.docTypeCccdBack:
+                draft.cccdBackFile = nil
+            default:
+                break
+            }
+        }
+    }
+
     public func removeContractAttachmentFromDraftRow(rowId: String, attachmentId: String) {
         updateNewWorkerDraftRow(rowId: rowId) { draft in
             draft.contractFiles.removeAll(where: { $0.id == attachmentId })
@@ -656,6 +680,20 @@ public final class MiniBiViewModel: ObservableObject {
         let res = await directEntryService.fetchAssigneeOptions()
         if case .success(let opts, _) = res {
             directEntryOptions = opts
+            if let defaultLabor = opts.catalogLaborTypes.first(where: {
+                $0.displayName.lowercased().contains("thời vụ") ||
+                $0.laborTypeKey.uppercased() == "TEMPORARY" ||
+                $0.laborTypeKey.uppercased().contains("SEASONAL")
+            }) ?? opts.catalogLaborTypes.first {
+                for idx in newWorkerDraftRows.indices {
+                    if newWorkerDraftRows[idx].laborTypeKey.isEmpty || newWorkerDraftRows[idx].laborTypeKey == "SEASONAL" {
+                        newWorkerDraftRows[idx].laborTypeKey = defaultLabor.laborTypeKey
+                        if newWorkerDraftRows[idx].nganhNghe.isEmpty || newWorkerDraftRows[idx].nganhNghe == "Thời vụ" {
+                            newWorkerDraftRows[idx].nganhNghe = defaultLabor.displayName
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -706,33 +744,42 @@ public final class MiniBiViewModel: ObservableObject {
                 let entryIdUuid = outcome.entryIdUuidByRowId[row.rowId]
                     ?? outcome.entryIdByRowId[row.rowId].map { String($0) }
                 if let entryIdUuid, !entryIdUuid.isEmpty {
+                    var currentEntryVersion: Int = 1
                     if let portrait = row.portraitFile {
-                        _ = await directEntryService.uploadEntryDocumentAttachments(
+                        let up = await directEntryService.uploadEntryDocumentAttachmentsWithVersion(
                             entryIdUuid: entryIdUuid,
                             docType: DirectEntryContract.docTypeWorkerPortrait,
-                            attachments: [portrait]
+                            attachments: [portrait],
+                            initialEntryVersion: currentEntryVersion
                         )
+                        currentEntryVersion = up.nextEntryVersion
                     }
                     if let front = row.cccdFrontFile {
-                        _ = await directEntryService.uploadEntryDocumentAttachments(
+                        let up = await directEntryService.uploadEntryDocumentAttachmentsWithVersion(
                             entryIdUuid: entryIdUuid,
                             docType: DirectEntryContract.docTypeCccdFront,
-                            attachments: [front]
+                            attachments: [front],
+                            initialEntryVersion: currentEntryVersion
                         )
+                        currentEntryVersion = up.nextEntryVersion
                     }
                     if let back = row.cccdBackFile {
-                        _ = await directEntryService.uploadEntryDocumentAttachments(
+                        let up = await directEntryService.uploadEntryDocumentAttachmentsWithVersion(
                             entryIdUuid: entryIdUuid,
                             docType: DirectEntryContract.docTypeCccdBack,
-                            attachments: [back]
+                            attachments: [back],
+                            initialEntryVersion: currentEntryVersion
                         )
+                        currentEntryVersion = up.nextEntryVersion
                     }
                     if !row.contractFiles.isEmpty {
-                        _ = await directEntryService.uploadEntryDocumentAttachments(
+                        let up = await directEntryService.uploadEntryDocumentAttachmentsWithVersion(
                             entryIdUuid: entryIdUuid,
                             docType: DirectEntryContract.docTypeEmploymentContract,
-                            attachments: row.contractFiles
+                            attachments: row.contractFiles,
+                            initialEntryVersion: currentEntryVersion
                         )
+                        currentEntryVersion = up.nextEntryVersion
                     }
                 }
             }

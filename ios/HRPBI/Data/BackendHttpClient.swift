@@ -94,7 +94,7 @@ public final class BackendHttpClient: @unchecked Sendable {
         "ATTENDANCE_SYNC_WINDOW_EXPIRED": "Lượt chấm công ngoại tuyến này đã quá hạn 7 ngày đồng bộ. Vui lòng chấm công lượt mới và thử lại.",
         "GPS_COORDINATES_INVALID": "Tín hiệu vị trí GPS chưa ổn định. Vui lòng bấm làm mới GPS rồi chấm công thử lại.",
         "GPS_ACCURACY_INVALID": "Độ chính xác GPS chưa đạt yêu cầu. Vui lòng bấm làm mới GPS ở nơi thoáng sóng rồi thử lại.",
-        "IDEMPOTENCY_KEY_INVALID": "Mã phiên gửi chấm công không hợp lệ. Vui lòng chụp lại ảnh và bấm chấm công thử lại.",
+        "IDEMPOTENCY_KEY_INVALID": "Mã định danh phiên gửi không hợp lệ. Vui lòng thử lại.",
         "IDEMPOTENCY_CONFLICT": "Phiên gửi bị trùng mã cũ. Vui lòng bấm Chấm công để chụp mới và thử lại.",
         "CONTENT_TYPE_INVALID": "Dữ liệu ảnh gửi lên bị gián đoạn. Vui lòng chụp lại ảnh và bấm chấm công thử lại.",
         "ATTENDANCE_REQUEST_INVALID": "Dữ liệu chấm công gửi lên chưa đầy đủ. Vui lòng chụp lại ảnh, kiểm tra GPS và thử lại.",

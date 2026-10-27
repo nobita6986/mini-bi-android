@@ -150,6 +150,13 @@ public struct DirectEntryNewWorkersScreen: View {
 // MARK: - Single Draft Row Card (Mirrors Android's `WorkerMultiEntryCard` 100%)
 
 struct NewWorkerDraftRowCard: View {
+    private enum DraftCameraTarget: String, Identifiable {
+        case portrait
+        case cccdFront
+        case cccdBack
+        var id: String { rawValue }
+    }
+
     let index: Int
     let draft: NewWorkerEntryDraft
     @ObservedObject var viewModel: MiniBiViewModel
@@ -159,6 +166,7 @@ struct NewWorkerDraftRowCard: View {
     @State private var portraitPhotoPickerItem: PhotosPickerItem?
     @State private var frontPhotoPickerItem: PhotosPickerItem?
     @State private var backPhotoPickerItem: PhotosPickerItem?
+    @State private var activeCameraTarget: DraftCameraTarget?
     @State private var showProjectSearchSheet: Bool = false
     @State private var showRecruiterSearchSheet: Bool = false
     @State private var showBankSearchSheet: Bool = false
@@ -478,19 +486,64 @@ struct NewWorkerDraftRowCard: View {
                 .foregroundColor(SemanticColors.textPrimary)
 
             LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
-                PhotosPicker(selection: $portraitPhotoPickerItem, matching: .images) {
-                    VStack(spacing: 4) {
+                // 1. Ảnh chân dung (Chụp Camera + Chọn Thư viện + Nút bỏ chọn)
+                VStack(spacing: 6) {
+                    HStack(spacing: 4) {
                         Image(systemName: draft.portraitFile != nil ? "checkmark.circle.fill" : "person.crop.rectangle")
                         Text(draft.portraitFile != nil ? "Đã có chân dung" : "Ảnh chân dung")
                             .lineLimit(1)
+                        if draft.portraitFile != nil {
+                            Spacer(minLength: 2)
+                            Button {
+                                portraitPhotoPickerItem = nil
+                                viewModel.removeSingleAttachmentFromDraftRow(
+                                    rowId: draft.rowId,
+                                    docType: DirectEntryContract.docTypeWorkerPortrait
+                                )
+                            } label: {
+                                Image(systemName: "xmark.circle.fill")
+                                    .foregroundColor(SemanticColors.dangerText)
+                            }
+                            .buttonStyle(.plain)
+                        }
                     }
                     .font(.caption2.weight(.semibold))
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 8)
-                    .background(draft.portraitFile != nil ? SemanticColors.successBg : Color(hex: 0xF1F5F9))
                     .foregroundColor(draft.portraitFile != nil ? SemanticColors.successText : SemanticColors.textPrimary)
-                    .cornerRadius(8)
+
+                    HStack(spacing: 4) {
+                        Button {
+                            activeCameraTarget = .portrait
+                        } label: {
+                            HStack(spacing: 2) {
+                                Image(systemName: "camera.fill")
+                                Text("Chụp")
+                            }
+                            .font(.system(size: 10, weight: .semibold))
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 5)
+                            .background(Color.white)
+                            .foregroundColor(SemanticColors.textPrimary)
+                            .cornerRadius(6)
+                        }
+                        .buttonStyle(.plain)
+
+                        PhotosPicker(selection: $portraitPhotoPickerItem, matching: .images) {
+                            HStack(spacing: 2) {
+                                Image(systemName: "photo")
+                                Text("Thư viện")
+                            }
+                            .font(.system(size: 10, weight: .semibold))
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 5)
+                            .background(Color(hex: 0xEBF3FB))
+                            .foregroundColor(Color(hex: 0x1E6BB8))
+                            .cornerRadius(6)
+                        }
+                    }
                 }
+                .padding(7)
+                .background(draft.portraitFile != nil ? SemanticColors.successBg : Color(hex: 0xF1F5F9))
+                .cornerRadius(8)
                 .onChange(of: portraitPhotoPickerItem) { item in
                     guard let item else { return }
                     Task {
@@ -506,22 +559,68 @@ struct NewWorkerDraftRowCard: View {
                                 attachment: att
                             )
                         }
+                        portraitPhotoPickerItem = nil
                     }
                 }
 
-                PhotosPicker(selection: $frontPhotoPickerItem, matching: .images) {
-                    VStack(spacing: 4) {
+                // 2. CCCD mặt trước (Chụp Camera + Chọn Thư viện + Nút bỏ chọn)
+                VStack(spacing: 6) {
+                    HStack(spacing: 4) {
                         Image(systemName: draft.cccdFrontFile != nil ? "checkmark.circle.fill" : "creditcard")
-                        Text(draft.cccdFrontFile != nil ? "Đã chọn CCCD trước" : "CCCD mặt trước")
+                        Text(draft.cccdFrontFile != nil ? "Đã có CCCD trước" : "CCCD mặt trước")
                             .lineLimit(1)
+                        if draft.cccdFrontFile != nil {
+                            Spacer(minLength: 2)
+                            Button {
+                                frontPhotoPickerItem = nil
+                                viewModel.removeSingleAttachmentFromDraftRow(
+                                    rowId: draft.rowId,
+                                    docType: DirectEntryContract.docTypeCccdFront
+                                )
+                            } label: {
+                                Image(systemName: "xmark.circle.fill")
+                                    .foregroundColor(SemanticColors.dangerText)
+                            }
+                            .buttonStyle(.plain)
+                        }
                     }
                     .font(.caption2.weight(.semibold))
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 8)
-                    .background(draft.cccdFrontFile != nil ? SemanticColors.successBg : Color(hex: 0xF1F5F9))
                     .foregroundColor(draft.cccdFrontFile != nil ? SemanticColors.successText : SemanticColors.textPrimary)
-                    .cornerRadius(8)
+
+                    HStack(spacing: 4) {
+                        Button {
+                            activeCameraTarget = .cccdFront
+                        } label: {
+                            HStack(spacing: 2) {
+                                Image(systemName: "camera.fill")
+                                Text("Chụp")
+                            }
+                            .font(.system(size: 10, weight: .semibold))
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 5)
+                            .background(Color.white)
+                            .foregroundColor(SemanticColors.textPrimary)
+                            .cornerRadius(6)
+                        }
+                        .buttonStyle(.plain)
+
+                        PhotosPicker(selection: $frontPhotoPickerItem, matching: .images) {
+                            HStack(spacing: 2) {
+                                Image(systemName: "photo")
+                                Text("Thư viện")
+                            }
+                            .font(.system(size: 10, weight: .semibold))
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 5)
+                            .background(Color(hex: 0xEBF3FB))
+                            .foregroundColor(Color(hex: 0x1E6BB8))
+                            .cornerRadius(6)
+                        }
+                    }
                 }
+                .padding(7)
+                .background(draft.cccdFrontFile != nil ? SemanticColors.successBg : Color(hex: 0xF1F5F9))
+                .cornerRadius(8)
                 .onChange(of: frontPhotoPickerItem) { item in
                     guard let item else { return }
                     Task {
@@ -540,22 +639,68 @@ struct NewWorkerDraftRowCard: View {
                                 _ = viewModel.applyScannedCccdQr(rowId: draft.rowId, rawQr: qrRaw)
                             }
                         }
+                        frontPhotoPickerItem = nil
                     }
                 }
 
-                PhotosPicker(selection: $backPhotoPickerItem, matching: .images) {
-                    VStack(spacing: 4) {
+                // 3. CCCD mặt sau (Chụp Camera + Chọn Thư viện + Nút bỏ chọn)
+                VStack(spacing: 6) {
+                    HStack(spacing: 4) {
                         Image(systemName: draft.cccdBackFile != nil ? "checkmark.circle.fill" : "creditcard.fill")
-                        Text(draft.cccdBackFile != nil ? "Đã chọn CCCD sau" : "CCCD mặt sau")
+                        Text(draft.cccdBackFile != nil ? "Đã có CCCD sau" : "CCCD mặt sau")
                             .lineLimit(1)
+                        if draft.cccdBackFile != nil {
+                            Spacer(minLength: 2)
+                            Button {
+                                backPhotoPickerItem = nil
+                                viewModel.removeSingleAttachmentFromDraftRow(
+                                    rowId: draft.rowId,
+                                    docType: DirectEntryContract.docTypeCccdBack
+                                )
+                            } label: {
+                                Image(systemName: "xmark.circle.fill")
+                                    .foregroundColor(SemanticColors.dangerText)
+                            }
+                            .buttonStyle(.plain)
+                        }
                     }
                     .font(.caption2.weight(.semibold))
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 8)
-                    .background(draft.cccdBackFile != nil ? SemanticColors.successBg : Color(hex: 0xF1F5F9))
                     .foregroundColor(draft.cccdBackFile != nil ? SemanticColors.successText : SemanticColors.textPrimary)
-                    .cornerRadius(8)
+
+                    HStack(spacing: 4) {
+                        Button {
+                            activeCameraTarget = .cccdBack
+                        } label: {
+                            HStack(spacing: 2) {
+                                Image(systemName: "camera.fill")
+                                Text("Chụp")
+                            }
+                            .font(.system(size: 10, weight: .semibold))
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 5)
+                            .background(Color.white)
+                            .foregroundColor(SemanticColors.textPrimary)
+                            .cornerRadius(6)
+                        }
+                        .buttonStyle(.plain)
+
+                        PhotosPicker(selection: $backPhotoPickerItem, matching: .images) {
+                            HStack(spacing: 2) {
+                                Image(systemName: "photo")
+                                Text("Thư viện")
+                            }
+                            .font(.system(size: 10, weight: .semibold))
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 5)
+                            .background(Color(hex: 0xEBF3FB))
+                            .foregroundColor(Color(hex: 0x1E6BB8))
+                            .cornerRadius(6)
+                        }
+                    }
                 }
+                .padding(7)
+                .background(draft.cccdBackFile != nil ? SemanticColors.successBg : Color(hex: 0xF1F5F9))
+                .cornerRadius(8)
                 .onChange(of: backPhotoPickerItem) { item in
                     guard let item else { return }
                     Task {
@@ -571,6 +716,52 @@ struct NewWorkerDraftRowCard: View {
                                 attachment: att
                             )
                         }
+                        backPhotoPickerItem = nil
+                    }
+                }
+            }
+
+            // Danh sách ảnh Chân dung / CCCD đã chọn (kèm nút bỏ chọn giống phần Hồ sơ)
+            if draft.portraitFile != nil || draft.cccdFrontFile != nil || draft.cccdBackFile != nil {
+                VStack(spacing: 6) {
+                    if let portrait = draft.portraitFile {
+                        singleAttachmentSelectedRow(
+                            label: "Ảnh chân dung",
+                            attachment: portrait,
+                            onRemove: {
+                                portraitPhotoPickerItem = nil
+                                viewModel.removeSingleAttachmentFromDraftRow(
+                                    rowId: draft.rowId,
+                                    docType: DirectEntryContract.docTypeWorkerPortrait
+                                )
+                            }
+                        )
+                    }
+                    if let front = draft.cccdFrontFile {
+                        singleAttachmentSelectedRow(
+                            label: "CCCD mặt trước",
+                            attachment: front,
+                            onRemove: {
+                                frontPhotoPickerItem = nil
+                                viewModel.removeSingleAttachmentFromDraftRow(
+                                    rowId: draft.rowId,
+                                    docType: DirectEntryContract.docTypeCccdFront
+                                )
+                            }
+                        )
+                    }
+                    if let back = draft.cccdBackFile {
+                        singleAttachmentSelectedRow(
+                            label: "CCCD mặt sau",
+                            attachment: back,
+                            onRemove: {
+                                backPhotoPickerItem = nil
+                                viewModel.removeSingleAttachmentFromDraftRow(
+                                    rowId: draft.rowId,
+                                    docType: DirectEntryContract.docTypeCccdBack
+                                )
+                            }
+                        )
                     }
                 }
             }
@@ -715,6 +906,78 @@ struct NewWorkerDraftRowCard: View {
                 }
             )
         }
+        .sheet(item: $activeCameraTarget) { target in
+            CameraPhotoCaptureSheet { capturedData in
+                let ts = Int(Date().timeIntervalSince1970)
+                switch target {
+                case .portrait:
+                    let att = LocalAttachmentItem(
+                        fileName: "chup-chan-dung-\(ts).jpg",
+                        mimeType: "image/jpeg",
+                        data: capturedData
+                    )
+                    viewModel.addAttachmentToDraftRow(
+                        rowId: draft.rowId,
+                        docType: DirectEntryContract.docTypeWorkerPortrait,
+                        attachment: att
+                    )
+                case .cccdFront:
+                    let att = LocalAttachmentItem(
+                        fileName: "chup-cccd-truoc-\(ts).jpg",
+                        mimeType: "image/jpeg",
+                        data: capturedData
+                    )
+                    viewModel.addAttachmentToDraftRow(
+                        rowId: draft.rowId,
+                        docType: DirectEntryContract.docTypeCccdFront,
+                        attachment: att
+                    )
+                    if draft.soCccd.isEmpty, let qrRaw = CccdQrScannerSheet.detectQrFromImageData(capturedData) {
+                        _ = viewModel.applyScannedCccdQr(rowId: draft.rowId, rawQr: qrRaw)
+                    }
+                case .cccdBack:
+                    let att = LocalAttachmentItem(
+                        fileName: "chup-cccd-sau-\(ts).jpg",
+                        mimeType: "image/jpeg",
+                        data: capturedData
+                    )
+                    viewModel.addAttachmentToDraftRow(
+                        rowId: draft.rowId,
+                        docType: DirectEntryContract.docTypeCccdBack,
+                        attachment: att
+                    )
+                }
+            }
+        }
+    }
+
+    private func singleAttachmentSelectedRow(
+        label: String,
+        attachment: LocalAttachmentItem,
+        onRemove: @escaping () -> Void
+    ) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "photo.fill")
+                .foregroundColor(Color(hex: 0x1E6BB8))
+                .font(.caption)
+            Text("\(label): \(attachment.fileName)")
+                .font(.caption2.weight(.medium))
+                .foregroundColor(SemanticColors.textPrimary)
+                .lineLimit(1)
+            Spacer()
+            Text(String(format: "%.0f KB", Double(attachment.fileSizeBytes) / 1024.0))
+                .font(.caption2)
+                .foregroundColor(SemanticColors.textMuted)
+            Button(action: onRemove) {
+                Image(systemName: "xmark.circle.fill")
+                    .foregroundColor(SemanticColors.dangerText)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .background(Color(hex: 0xF8FAFC))
+        .cornerRadius(6)
     }
 
     private func draftTextField(

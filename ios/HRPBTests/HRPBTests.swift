@@ -815,6 +815,58 @@ final class HRPBTests: XCTestCase {
             URLQueryItem(name: "from", value: "2026-10-01"),
             URLQueryItem(name: "to", value: "2026-10-27")
         ])
+
+        // Navigation menu order: Tổng quan - Báo cáo - Chấm công - Nhân sự - Cấp mới
+        XCTAssertEqual(
+            MiniBiNavDestination.allCases,
+            [.dashboard, .workReports, .attendance, .workers, .newEntry]
+        )
+        XCTAssertEqual(
+            MiniBiNavDestination.allCases.map(\.titleVi),
+            ["Tổng quan", "Báo cáo", "Chấm công", "Nhân sự", "Cấp mới"]
+        )
+
+        // DirectEntry worker-profile/1.2 row payload contract
+        var draftRow = NewWorkerEntryDraft(
+            hoTen: "Nguyễn Văn A",
+            soCccd: "034098001234",
+            ngaySinh: "15/08/1998",
+            gioiTinh: "Nam",
+            queQuan: "Thái Bình",
+            ngayCap: "20/10/2021",
+            sdt: "0987654321",
+            duAn: "Luxshare Bắc Giang",
+            nganhNghe: "Thời vụ",
+            nguoiTuyen: "Phạm Thị Sâm",
+            ngayVaoLam: "27/10/2026",
+            trangThai: "Đang làm",
+            nganHang: "MB Bank",
+            soTaiKhoan: "123456789",
+            ghiChu: "Ghi chú test"
+        )
+        draftRow.projectId = "LUXSHARE-BG"
+        draftRow.recruiterId = "11111111-2222-4333-8444-555555555555"
+        draftRow.laborTypeKey = "TEMPORARY"
+        draftRow.bankAccountHolder = "NGUYEN VAN A"
+
+        let builtRow = DirectEntryService.shared.buildFullProfileEntryPayload(draftRow)
+        XCTAssertEqual(builtRow["project_id"] as? String, "LUXSHARE-BG")
+        XCTAssertEqual(builtRow["first_work_date"] as? String, "2026-10-27")
+        XCTAssertEqual(builtRow["provider_type"] as? String, "hrp")
+        XCTAssertEqual(builtRow["recruiter_id"] as? String, "11111111-2222-4333-8444-555555555555")
+        XCTAssertEqual(builtRow["labor_type"] as? String, "TEMPORARY")
+        XCTAssertEqual(builtRow["display_name"] as? String, "Nguyễn Văn A")
+        let workerDict = try XCTUnwrap(builtRow["worker"] as? [String: Any])
+        XCTAssertEqual((workerDict["gender"] as? [String: Any])?["value"] as? String, "MALE")
+        XCTAssertEqual((workerDict["national_id"] as? [String: Any])?["value"] as? String, "034098001234")
+        XCTAssertEqual((workerDict["date_of_birth"] as? [String: Any])?["value"] as? String, "15/08/1998")
+        XCTAssertEqual((workerDict["national_id_issued_place"] as? [String: Any])?["state"] as? String, "omitted")
+        let employmentDict = try XCTUnwrap(builtRow["employment"] as? [String: Any])
+        XCTAssertEqual(employmentDict["initial_status"] as? String, "ON")
+        let paymentDict = try XCTUnwrap(builtRow["payment"] as? [String: Any])
+        XCTAssertEqual(paymentDict["bank_name"] as? String, "MB Bank")
+        XCTAssertEqual(paymentDict["account_number"] as? String, "123456789")
+        XCTAssertEqual(paymentDict["account_holder_name"] as? String, "NGUYEN VAN A")
     }
 
     // MARK: - Helper
