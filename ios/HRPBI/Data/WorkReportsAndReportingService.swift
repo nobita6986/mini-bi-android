@@ -766,43 +766,91 @@ public final class WorkReportsAndReportingService {
 
     // MARK: - 4. Dashboard Overview & Workforce Deep Metrics & Team & Duplicate CCCD
 
-    private func buildWorkforceDeepQueryItems(startDate: String?, endDate: String?) -> [URLQueryItem] {
+    public static func buildWorkforceDeepQueryItems(startDate: String?, endDate: String?) -> [URLQueryItem] {
         var queryItems: [URLQueryItem] = [URLQueryItem(name: "mode", value: "deep")]
         let cleanStart = (startDate ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         let cleanEnd = (endDate ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        if !cleanStart.isEmpty && !cleanEnd.isEmpty {
-            queryItems.append(URLQueryItem(name: "from_date", value: cleanStart))
-            queryItems.append(URLQueryItem(name: "to_date", value: cleanEnd))
+        if cleanStart.isEmpty && cleanEnd.isEmpty {
+            queryItems.append(URLQueryItem(name: "range", value: "all"))
+        } else {
+            if !cleanStart.isEmpty {
+                queryItems.append(URLQueryItem(name: "from", value: cleanStart))
+            }
+            if !cleanEnd.isEmpty {
+                queryItems.append(URLQueryItem(name: "to", value: cleanEnd))
+            }
         }
         return queryItems
     }
 
-    private func fetchMergedWorkersForScopedFallback(preferredScope: String) async -> (items: [WorkerItem], total: Int, statusCode: Int)? {
+    private static func normalizeWorkerDateIso(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "" }
+        let prefix10 = String(trimmed.prefix(10))
+        let parts = prefix10.split(separator: "/")
+        if parts.count == 3, parts[0].count == 2, parts[1].count == 2, parts[2].count == 4 {
+            return "\(parts[2])-\(parts[1])-\(parts[0])"
+        }
+        return prefix10
+    }
+
+    private func fetchMergedWorkersForScopedFallback(
+        preferredScope: String,
+        startDate: String? = nil,
+        endDate: String? = nil
+    ) async -> (items: [WorkerItem], total: Int, statusCode: Int)? {
+        let norm = preferredScope.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let scopesToTry: [String] = {
-            let norm = preferredScope.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            if !norm.isEmpty && norm != "all" {
+            switch norm {
+            case "", "all":
+                return ["all", "team", "managed", "recruited"]
+            case "team":
+                return ["team", "managed", "recruited"]
+            case "own", "personal":
+                return ["managed", "recruited"]
+            default:
                 return [norm, "team", "managed", "recruited"]
             }
-            return ["team", "managed", "recruited"]
         }()
+
+        let cleanStart = (startDate ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanEnd = (endDate ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let hasDateFilter = !cleanStart.isEmpty || !cleanEnd.isEmpty
 
         var seenIds: Set<String> = []
         var merged: [WorkerItem] = []
+        var reportedTotal = 0
         var anySuccessStatus: Int?
 
         for sc in scopesToTry {
             let res = await MiniBiRepository.shared.fetchWorkers(scope: sc, pageSize: 100)
             if case .success(let wData, let status) = res {
                 anySuccessStatus = status
+                reportedTotal = max(reportedTotal, wData.total)
                 for item in wData.items where !seenIds.contains(item.maNld) {
                     seenIds.insert(item.maNld)
                     merged.append(item)
+                }
+                if sc == "all" || (sc == "team" && norm == "team" && !wData.items.isEmpty) {
+                    break
                 }
             }
         }
 
         guard let statusCode = anySuccessStatus else { return nil }
-        return (merged, merged.count, statusCode)
+
+        if hasDateFilter {
+            let filtered = merged.filter { item in
+                let dateIso = Self.normalizeWorkerDateIso(item.ngayVaoLam)
+                guard !dateIso.isEmpty else { return false }
+                if !cleanStart.isEmpty && dateIso < cleanStart { return false }
+                if !cleanEnd.isEmpty && dateIso > cleanEnd { return false }
+                return true
+            }
+            return (filtered, filtered.count, statusCode)
+        }
+
+        return (merged, max(reportedTotal, merged.count), statusCode)
     }
 
     public func fetchGeneralOverview(
@@ -815,7 +863,10 @@ public final class WorkReportsAndReportingService {
         projectsPageSize: Int = 20
     ) async -> MiniBiApiResult<GeneralOverviewData> {
         let normalizedScope = scope.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let queryItems = buildWorkforceDeepQueryItems(startDate: startDate, endDate: endDate)
+        let cleanStart = (startDate ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanEnd = (endDate ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let hasDateFilter = !cleanStart.isEmpty || !cleanEnd.isEmpty
+        let queryItems = Self.buildWorkforceDeepQueryItems(startDate: startDate, endDate: endDate)
 
         if normalizedScope == "all" || normalizedScope.isEmpty {
             let response = await httpClient.request(
@@ -828,31 +879,50 @@ public final class WorkReportsAndReportingService {
                 if let wfObj = root["workforce"] as? [String: Any] {
                     let snapshotObj = (wfObj["snapshot"] as? [String: Any]) ?? [:]
                     let balanceObj = (wfObj["balance"] as? [String: Any]) ?? [:]
+                    let balanceApplicable = balanceObj.optBool("applicable", defaultValue: false)
                     let newEpObj = (balanceObj["new_episodes_in_period"] as? [String: Any])
                         ?? (balanceObj["newEpisodesInPeriod"] as? [String: Any]) ?? [:]
                     let byStatusObj = (balanceObj["by_status"] as? [String: Any])
                         ?? (balanceObj["byStatus"] as? [String: Any]) ?? [:]
+                    let onFlowObj = (byStatusObj["on"] as? [String: Any]) ?? [:]
                     let offFlowObj = (byStatusObj["off"] as? [String: Any]) ?? [:]
+                    let waitingFlowObj = (byStatusObj["unconfirmed"] as? [String: Any]) ?? [:]
                     let retentionObj = (wfObj["retention"] as? [String: Any]) ?? [:]
                     let checkpointsObj = (retentionObj["checkpoints"] as? [String: Any]) ?? [:]
                     let d30Obj = (checkpointsObj["d30"] as? [String: Any]) ?? [:]
 
-                    let totalWorkers = snapshotObj.optInt("eligible_episode_total", "eligibleEpisodeTotal", "total")
-                    let activeCount = snapshotObj.optInt("on_count", "onCount", "active_count")
-                    let inactiveCount = snapshotObj.optInt("off_count", "offCount", "inactive_count")
-                    let unconfirmedCount = snapshotObj.optInt("unconfirmed_count", "unconfirmedCount", "interview_count")
+                    let snapshotTotal = snapshotObj.optInt("eligible_episode_total", "eligibleEpisodeTotal", "total")
+                    let snapshotOn = snapshotObj.optInt("on_count", "onCount", "active_count")
+                    let snapshotOff = snapshotObj.optInt("off_count", "offCount", "inactive_count")
+                    let snapshotUnconfirmed = snapshotObj.optInt("unconfirmed_count", "unconfirmedCount", "interview_count")
                     let newCount = newEpObj.optInt("total", "count")
                     let resignedInPeriodCount = offFlowObj.optInt("total_inflow_count", "totalInflowCount", "count")
+
+                    let totalWorkers: Int
+                    let activeCount: Int
+                    let inactiveCount: Int
+                    let unconfirmedCount: Int
+                    if hasDateFilter && balanceApplicable {
+                        totalWorkers = newCount
+                        activeCount = onFlowObj.optInt("total_inflow_count", "totalInflowCount", "count")
+                        inactiveCount = resignedInPeriodCount
+                        unconfirmedCount = waitingFlowObj.optInt("total_inflow_count", "totalInflowCount", "count")
+                    } else {
+                        totalWorkers = snapshotTotal
+                        activeCount = snapshotOn
+                        inactiveCount = snapshotOff
+                        unconfirmedCount = snapshotUnconfirmed
+                    }
 
                     let d30RetentionRatio = d30Obj.optNullableDouble("retention_rate", "retentionRate")
                     let retentionRate: Double = {
                         if let r = d30RetentionRatio {
                             return r <= 1.0 && r > 0.0 ? r * 100.0 : r
                         }
-                        return totalWorkers > 0 ? (Double(activeCount) * 100.0 / Double(totalWorkers)) : 0.0
+                        return snapshotTotal > 0 ? (Double(snapshotOn) * 100.0 / Double(snapshotTotal)) : 0.0
                     }()
-                    let turnoverRate = totalWorkers > 0
-                        ? (Double(inactiveCount) * 100.0 / Double(totalWorkers))
+                    let turnoverRate = snapshotTotal > 0
+                        ? (Double(snapshotOff) * 100.0 / Double(snapshotTotal))
                         : 0.0
 
                     let kpis = GeneralOverviewKpis(
@@ -870,6 +940,11 @@ public final class WorkReportsAndReportingService {
                     let byProjectObj = (dimsObj["by_project"] as? [String: Any])
                         ?? (dimsObj["byProject"] as? [String: Any]) ?? [:]
                     let projectsBuckets = byProjectObj.optObjectArray("buckets")
+                    let projectPaginationObj = (byProjectObj["pagination"] as? [String: Any]) ?? [:]
+                    let totalProjectCount = max(
+                        projectPaginationObj.optInt("total_count", "totalCount"),
+                        projectsBuckets.count
+                    )
 
                     let projects: [ProjectBreakdownRow] = projectsBuckets.enumerated().map { idx, p in
                         let name = p.optString("display", "project_display", "du_an", "project_name", "name", "key", defaultValue: "Dự án #\(idx + 1)")
@@ -934,7 +1009,7 @@ public final class WorkReportsAndReportingService {
                             scope: scope,
                             kpis: kpis,
                             projects: projects,
-                            projectsTotal: projects.count,
+                            projectsTotal: totalProjectCount,
                             projectsPage: projectsPage,
                             projectsTotalPages: 1,
                             recruiters: recruiters,
@@ -1025,7 +1100,11 @@ public final class WorkReportsAndReportingService {
         }
 
         // Scoped or non-Admin fallback: aggregate from `/api/direct-entry/workers`
-        if let fallbackData = await fetchMergedWorkersForScopedFallback(preferredScope: scope) {
+        if let fallbackData = await fetchMergedWorkersForScopedFallback(
+            preferredScope: scope,
+            startDate: startDate,
+            endDate: endDate
+        ) {
             let items = fallbackData.items
             let isWorking: (WorkerItem) -> Bool = { w in
                 let st = w.trangThai.lowercased()
@@ -1089,8 +1168,8 @@ public final class WorkReportsAndReportingService {
                         activeCount: active,
                         inactiveCount: inactive,
                         interviewCount: interview,
-                        newCount: 0,
-                        resignedInPeriodCount: 0,
+                        newCount: hasDateFilter ? total : 0,
+                        resignedInPeriodCount: hasDateFilter ? inactive : 0,
                         retentionRate: retention,
                         turnoverRate: turnover
                     ),
@@ -1113,7 +1192,7 @@ public final class WorkReportsAndReportingService {
         startDate: String? = nil,
         endDate: String? = nil
     ) async -> MiniBiApiResult<WorkforceDeepMetricsData> {
-        let queryItems = buildWorkforceDeepQueryItems(startDate: startDate, endDate: endDate)
+        let queryItems = Self.buildWorkforceDeepQueryItems(startDate: startDate, endDate: endDate)
 
         let response = await httpClient.request(
             method: "GET",
@@ -1226,7 +1305,11 @@ public final class WorkReportsAndReportingService {
             return .success(deepData, statusCode: response.statusCode)
         }
 
-        if let fallbackData = await fetchMergedWorkersForScopedFallback(preferredScope: scope) {
+        if let fallbackData = await fetchMergedWorkersForScopedFallback(
+            preferredScope: scope,
+            startDate: startDate,
+            endDate: endDate
+        ) {
             let items = fallbackData.items
             let total = max(1, items.count)
             var byStatus: [String: Int] = [:]
@@ -1262,7 +1345,7 @@ public final class WorkReportsAndReportingService {
         endDate: String? = nil,
         teamCode: String? = nil
     ) async -> MiniBiApiResult<TeamReportData> {
-        let queryItems = buildWorkforceDeepQueryItems(startDate: startDate, endDate: endDate)
+        let queryItems = Self.buildWorkforceDeepQueryItems(startDate: startDate, endDate: endDate)
         let deepResponse = await httpClient.request(
             method: "GET",
             path: "/api/reporting/workforce-deep",
@@ -1304,7 +1387,11 @@ public final class WorkReportsAndReportingService {
         }
 
         // Fallback for Team Leader / Scoped accounts: build team summary from `team` scope workers
-        if let fallbackData = await fetchMergedWorkersForScopedFallback(preferredScope: "team"), !fallbackData.items.isEmpty {
+        if let fallbackData = await fetchMergedWorkersForScopedFallback(
+            preferredScope: "team",
+            startDate: startDate,
+            endDate: endDate
+        ), !fallbackData.items.isEmpty {
             let items = fallbackData.items
             var byRecruiter: [String: (total: Int, active: Int, inactive: Int)] = [:]
             var activeTotal = 0
@@ -1442,14 +1529,16 @@ public final class WorkReportsAndReportingService {
         maNld: String,
         entryVersion: Int = 1
     ) async -> MiniBiApiResult<Bool> {
-        let encoded = maNld.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? maNld
+        let idempotencyKey = UUID().uuidString.lowercased()
         let body: [String: Any] = [
+            "entry_id": maNld,
             "expected_entry_version": max(1, entryVersion),
+            "idempotency_key": idempotencyKey,
             "reason": NSNull()
         ]
         let response = await httpClient.request(
             method: "POST",
-            path: "/api/direct-entry/entries/\(encoded)/duplicate-cccd/self-withdraw",
+            path: "/api/direct-entry/duplicate-cccd-report/self-withdraw",
             jsonBody: body
         )
         guard response.isSuccess else {

@@ -179,7 +179,7 @@ public struct DashboardScreen: View {
                         .font(.headline)
                         .foregroundColor(SemanticColors.textPrimary)
                     Spacer()
-                    Text("\(viewModel.generalOverview.projects.count) dự án")
+                    Text("\(max(viewModel.generalOverview.projectsTotal, viewModel.generalOverview.projects.count)) dự án")
                         .font(.caption)
                         .foregroundColor(SemanticColors.textMuted)
                 }

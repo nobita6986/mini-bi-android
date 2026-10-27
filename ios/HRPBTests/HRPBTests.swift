@@ -798,6 +798,23 @@ final class HRPBTests: XCTestCase {
         XCTAssertEqual((typedPayload["interview_count"] as? NSNumber)?.intValue, 15)
         XCTAssertEqual(typedPayload["shift_type"] as? String, "DAY")
         XCTAssertEqual(typedPayload["has_issue"] as? Bool, true)
+
+        // Workforce-deep query item contract: all-time requires `mode=deep&range=all`, date-filtered uses `from` & `to`
+        let allTimeQuery = WorkReportsAndReportingService.buildWorkforceDeepQueryItems(startDate: "", endDate: "")
+        XCTAssertEqual(allTimeQuery, [
+            URLQueryItem(name: "mode", value: "deep"),
+            URLQueryItem(name: "range", value: "all")
+        ])
+
+        let periodQuery = WorkReportsAndReportingService.buildWorkforceDeepQueryItems(
+            startDate: "2026-10-01",
+            endDate: "2026-10-27"
+        )
+        XCTAssertEqual(periodQuery, [
+            URLQueryItem(name: "mode", value: "deep"),
+            URLQueryItem(name: "from", value: "2026-10-01"),
+            URLQueryItem(name: "to", value: "2026-10-27")
+        ])
     }
 
     // MARK: - Helper
