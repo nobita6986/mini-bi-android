@@ -40,8 +40,8 @@ public struct AppEnvironmentConfig: Equatable, Sendable {
 
     public static func forVariant(
         _ variant: AppEnvironmentVariant,
-        marketingVersion: String = "1.0.2.27102026",
-        buildNumber: String = "6"
+        marketingVersion: String = "1.0.4.29102026",
+        buildNumber: String = "8"
     ) -> AppEnvironmentConfig {
         switch variant {
         case .release:
@@ -80,8 +80,8 @@ public struct AppEnvironmentConfig: Equatable, Sendable {
         let build = (info["CFBundleVersion"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
         let resolvedMarketing = (displayVer?.isEmpty == false)
             ? displayVer!
-            : ((marketing?.isEmpty == false) ? marketing! : "1.0.2.27102026")
-        let resolvedBuild = (build?.isEmpty == false) ? build! : "6"
+            : ((marketing?.isEmpty == false) ? marketing! : "1.0.4.29102026")
+        let resolvedBuild = (build?.isEmpty == false) ? build! : "8"
 
         let bundleId = (bundle.bundleIdentifier ?? (info["CFBundleIdentifier"] as? String) ?? "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
