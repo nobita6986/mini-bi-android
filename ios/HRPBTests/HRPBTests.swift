@@ -842,6 +842,107 @@ final class HRPBTests: XCTestCase {
         XCTAssertEqual(typedPayload["shift_type"] as? String, "DAY")
         XCTAssertEqual(typedPayload["has_issue"] as? Bool, true)
 
+        // Daily work-report detail envelope parsing + boolean "Không" (false) validation & mutation body contract
+        let detailEnvelope: [String: Any] = [
+            "ok": true,
+            "data": [
+                "obligation": [
+                    "obligation_id": "3a420bf0-1111-4222-8333-444455556666",
+                    "template_id": "tpl-daily-1",
+                    "period_type": "DAILY",
+                    "period_key": "2026-10-29",
+                    "due_at": "2026-10-29T16:59:59Z",
+                    "submission_state": "NOT_STARTED",
+                    "submission_version": NSNull(),
+                    "version": 1,
+                    "is_overdue": false
+                ],
+                "template": [
+                    "template_code": "DAILY_RECRUITER",
+                    "display_name": "Báo cáo công việc hằng ngày",
+                    "schema_json": [
+                        "sections": [
+                            ["section_key": "s1", "label": "7h30-9h30", "sort_order": 1]
+                        ],
+                        "fields": [
+                            [
+                                "field_key": "guide_contract",
+                                "section_key": "s1",
+                                "label": "Hướng dẫn người lao động ký cam kết và hợp đồng lao động.",
+                                "field_type": "boolean",
+                                "required": true,
+                                "sort_order": 1
+                            ],
+                            [
+                                "field_key": "support_interview",
+                                "section_key": "s1",
+                                "label": "Hỗ trợ người lao động trong quá trình phỏng vấn tại hiện trường.",
+                                "field_type": "boolean",
+                                "required": true,
+                                "sort_order": 2
+                            ]
+                        ]
+                    ]
+                ],
+                "submission": NSNull(),
+                "revisions": []
+            ]
+        ]
+        let dataObj = try XCTUnwrap(detailEnvelope["data"] as? [String: Any])
+        let obObj = try XCTUnwrap(dataObj["obligation"] as? [String: Any])
+        let parsedDetail = WorkReportsAndReportingService.parseObligationItem(obObj, fallbackRoot: dataObj)
+        XCTAssertEqual(parsedDetail.obligationIdUuid, "3a420bf0-1111-4222-8333-444455556666")
+        XCTAssertEqual(parsedDetail.templateName, "Báo cáo công việc hằng ngày")
+        XCTAssertEqual(parsedDetail.periodKey, "2026-10-29")
+        XCTAssertEqual(parsedDetail.dueAt, "2026-10-29T16:59:59Z")
+        // NOT_STARTED obligation must keep submissionVersion == nil even when obligation.version == 1
+        XCTAssertNil(parsedDetail.submissionVersion)
+        // Untouched boolean toggles default to "false" ("Không")
+        XCTAssertEqual(parsedDetail.formPayload["guide_contract"], "false")
+        XCTAssertEqual(parsedDetail.formPayload["support_interview"], "false")
+        // Required boolean toggles left at "Không" ("false") must pass submit validation!
+        XCTAssertNil(
+            WorkReportsContract.validateFormPayloadForSubmit(
+                formPayload: parsedDetail.formPayload,
+                sections: parsedDetail.sections
+            )
+        )
+        let boolPayloadJson = WorkReportsContract.buildTypedPayloadJson(
+            formPayload: ["guide_contract": "false", "support_interview": "true"],
+            sections: parsedDetail.sections
+        )
+        XCTAssertEqual(boolPayloadJson["guide_contract"] as? Bool, false)
+        XCTAssertEqual(boolPayloadJson["support_interview"] as? Bool, true)
+        let mutationBody = WorkReportsContract.buildSubmissionMutationBody(
+            payloadJson: boolPayloadJson,
+            expectedVersion: parsedDetail.submissionVersion,
+            idempotencyKey: "idem-123"
+        )
+        XCTAssertEqual(Set(mutationBody.keys), Set(["payload_json", "expected_version", "idempotency_key"]))
+        XCTAssertTrue(mutationBody["expected_version"] is NSNull)
+
+        // AttendanceOutboxService deduplication collapses duplicate server history items into 1 entry
+        let dupItems: [AttendanceOutboxItem] = (0..<15).map { _ in
+            AttendanceOutboxItem(
+                localId: "srv-1761708312000",
+                userKey: "khanhhv.td",
+                idempotencyKey: "srv-1761708312000",
+                clientCapturedAt: "2026-10-29T03:25:12.000Z",
+                timeSource: AttendanceTimeContract.sourceServerAnchored,
+                lat: 21.31381,
+                lng: 105.68087,
+                photoSha256: "abc",
+                photoSizeBytes: 1024,
+                status: AttendanceContract.statusSynced,
+                attemptCount: 1,
+                serverCheckinId: "checkin-uuid-1",
+                createdAtEpochMs: 1761708312000
+            )
+        }
+        let deduplicated = AttendanceOutboxService.deduplicateItems(dupItems)
+        XCTAssertEqual(deduplicated.count, 1)
+        XCTAssertEqual(deduplicated.first?.serverCheckinId, "checkin-uuid-1")
+
         // Workforce-deep query item contract: all-time requires `mode=deep&range=all`, date-filtered uses `from` & `to`
         let allTimeQuery = WorkReportsAndReportingService.buildWorkforceDeepQueryItems(startDate: "", endDate: "")
         XCTAssertEqual(allTimeQuery, [

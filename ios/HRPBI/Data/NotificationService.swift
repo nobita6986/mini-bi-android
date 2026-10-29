@@ -135,7 +135,7 @@ public final class NotificationService {
                                     let notifObj = (json["notification"] as? [String: Any])
                                         ?? (json["item"] as? [String: Any])
                                         ?? json
-                                    if notifObj["id"] != nil || notifObj["title"] != nil || notifObj["message"] != nil {
+                                    if notifObj["id"] != nil || notifObj["notification_id"] != nil || notifObj["title"] != nil || notifObj["message"] != nil {
                                         let parsed = Self.parseNotificationItem(notifObj, fallbackIndex: 0)
                                         onEvent(parsed)
                                     } else {
@@ -155,6 +155,8 @@ public final class NotificationService {
                             }
                         }
                     }
+                    if Task.isCancelled { break }
+                    try? await Task.sleep(nanoseconds: retryDelayNs)
                 } catch {
                     if Task.isCancelled { break }
                     try? await Task.sleep(nanoseconds: retryDelayNs)
@@ -170,12 +172,25 @@ public final class NotificationService {
     }
 
     public static func parseNotificationItem(_ obj: [String: Any], fallbackIndex: Int) -> AppNotificationItem {
-        let id = obj.optInt64("id", "notification_id") ?? Int64(Date().timeIntervalSince1970 * 1000) + Int64(fallbackIndex)
         let title = obj.optString("title", "subject", defaultValue: "Thông báo hệ thống")
         let body = obj.optString("body", "message", "content")
         let type = obj.optString("type", "event_type", "category", defaultValue: "GENERAL")
         let isRead = obj.optBool("is_read", "read", defaultValue: obj["read_at"] != nil && !(obj["read_at"] is NSNull))
         let createdAt = obj.optString("created_at", "timestamp")
+
+        let id: Int64 = {
+            if let numericId = obj.optInt64("id", "notification_id") {
+                return numericId
+            }
+            let rawStrKey = obj.optString("id", "notification_id", "event_id")
+            let seed = rawStrKey.isEmpty ? "\(type)|\(title)|\(body)|\(createdAt)|\(fallbackIndex)" : rawStrKey
+            var hash: UInt64 = 14695981039346656037
+            for byte in seed.utf8 {
+                hash ^= UInt64(byte)
+                hash &*= 1099511628211
+            }
+            return Int64(hash & 0x7FFF_FFFF_FFFF_FFFF)
+        }()
 
         let metaObj = (obj["metadata"] as? [String: Any]) ?? (obj["payload"] as? [String: Any]) ?? obj
         let targetRoute = metaObj.optNullableString("target_route", "route", "screen", "action_url")

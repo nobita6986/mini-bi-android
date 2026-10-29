@@ -1132,6 +1132,7 @@ public struct AttendanceOutboxItem: Identifiable, Codable, Equatable, Sendable {
     public var lastErrorCode: String?
     public var lastErrorMessage: String?
     public var serverRecordId: Int64?
+    public var serverCheckinId: String?
     public var serverReceivedAt: String?
     public let createdAtEpochMs: Int64
 
@@ -1160,6 +1161,7 @@ public struct AttendanceOutboxItem: Identifiable, Codable, Equatable, Sendable {
         lastErrorCode: String? = nil,
         lastErrorMessage: String? = nil,
         serverRecordId: Int64? = nil,
+        serverCheckinId: String? = nil,
         serverReceivedAt: String? = nil,
         createdAtEpochMs: Int64
     ) {
@@ -1187,6 +1189,7 @@ public struct AttendanceOutboxItem: Identifiable, Codable, Equatable, Sendable {
         self.lastErrorCode = lastErrorCode
         self.lastErrorMessage = lastErrorMessage
         self.serverRecordId = serverRecordId
+        self.serverCheckinId = serverCheckinId
         self.serverReceivedAt = serverReceivedAt
         self.createdAtEpochMs = createdAtEpochMs
     }
@@ -1211,9 +1214,14 @@ public struct WorkReportFieldSchema: Identifiable, Equatable, Sendable {
     public let type: String
     public let required: Bool
     public let placeholder: String?
+    public let defaultValue: String?
     public let options: [WorkReportFieldOption]
     public let min: Double?
     public let max: Double?
+
+    public var isBooleanType: Bool {
+        ["boolean", "bool", "checkbox", "switch"].contains(type.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+    }
 
     public init(
         id: String,
@@ -1221,6 +1229,7 @@ public struct WorkReportFieldSchema: Identifiable, Equatable, Sendable {
         type: String = "text",
         required: Bool = false,
         placeholder: String? = nil,
+        defaultValue: String? = nil,
         options: [WorkReportFieldOption] = [],
         min: Double? = nil,
         max: Double? = nil
@@ -1230,6 +1239,7 @@ public struct WorkReportFieldSchema: Identifiable, Equatable, Sendable {
         self.type = type
         self.required = required
         self.placeholder = placeholder
+        self.defaultValue = defaultValue
         self.options = options
         self.min = min
         self.max = max

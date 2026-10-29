@@ -23,9 +23,9 @@ public enum WorkReportsContract {
             return "Chưa bắt đầu"
         case stateDraft:
             return "Bản nháp"
-        case stateSubmitted:
+        case stateSubmitted, "PENDING_REVIEW":
             return "Đã nộp · Chờ duyệt"
-        case stateApproved:
+        case stateApproved, "COMPLETED":
             return "Đã phê duyệt"
         case stateRejected:
             return "Cần bổ sung / Từ chối"
@@ -137,6 +137,21 @@ public enum WorkReportsContract {
             let type = fObj.optString("field_type", "type", defaultValue: "text").lowercased()
             let required = fObj.optBool("required", "is_required", defaultValue: false)
             let placeholder = fObj.optNullableString("description", "placeholder", "hint", "help_text")
+            let defaultValue: String? = {
+                if let rawDefault = fObj["default_value"], !(rawDefault is NSNull) {
+                    if let b = rawDefault as? Bool {
+                        return b ? "true" : "false"
+                    } else if let n = rawDefault as? NSNumber {
+                        if CFGetTypeID(n) == CFBooleanGetTypeID() {
+                            return n.boolValue ? "true" : "false"
+                        }
+                        return n.stringValue
+                    } else if let s = rawDefault as? String {
+                        return s
+                    }
+                }
+                return nil
+            }()
             var options: [WorkReportFieldOption] = []
             if let optObjs = fObj["options"] as? [[String: Any]] {
                 options = optObjs.compactMap { o in
@@ -154,6 +169,7 @@ public enum WorkReportsContract {
                 type: type,
                 required: required,
                 placeholder: placeholder,
+                defaultValue: defaultValue,
                 options: options,
                 min: fObj.optNullableDouble("min", "min_value"),
                 max: fObj.optNullableDouble("max", "max_value")
@@ -261,59 +277,161 @@ public enum WorkReportsContract {
         return []
     }
 
+    public static func normalizeIsoDateInput(_ raw: String) -> String? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let dashParts = trimmed.split(separator: "-")
+        if dashParts.count == 3, dashParts[0].count == 4, dashParts[1].count == 2, dashParts[2].count == 2,
+           let m = Int(dashParts[1]), (1...12).contains(m),
+           let d = Int(dashParts[2]), (1...31).contains(d) {
+            return trimmed
+        }
+        let slashParts = trimmed.split(separator: "/")
+        if slashParts.count == 3, slashParts[2].count == 4,
+           let d = Int(slashParts[0]), (1...31).contains(d),
+           let m = Int(slashParts[1]), (1...12).contains(m) {
+            let dd = String(format: "%02d", d)
+            let mm = String(format: "%02d", m)
+            return "\(slashParts[2])-\(mm)-\(dd)"
+        }
+        return nil
+    }
+
+    /// Validates dynamic work-report form fields before final submit (`Nộp báo cáo`).
+    /// Note: Boolean toggle fields (`Có / Đạt` vs `Không`) are always valid whether `true` or `false` (`Không`),
+    /// matching Android's `DynamicWorkReportFormCard.buildPayloadJson(strictForSubmit = true)`.
+    public static func validateFormPayloadForSubmit(
+        formPayload: [String: String],
+        sections: [WorkReportSectionSchema]
+    ) -> String? {
+        let allFields = sections.flatMap(\.fields)
+        for field in allFields {
+            let raw = (formPayload[field.id] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            let typeLower = field.type.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            let isBoolean = field.isBooleanType
+            if field.required && raw.isEmpty && !isBoolean {
+                return "Vui lòng nhập trường bắt buộc: \(field.label)"
+            }
+            if raw.isEmpty { continue }
+            switch typeLower {
+            case "integer":
+                if Int64(raw) == nil {
+                    return "Trường \"\(field.label)\" phải là số nguyên hợp lệ."
+                }
+            case "decimal", "number", "numeric", "float":
+                let normalized = raw.replacingOccurrences(of: ",", with: ".")
+                if let d = Double(normalized), d.isFinite {
+                    // valid
+                } else {
+                    return "Trường \"\(field.label)\" phải là số hợp lệ."
+                }
+            case "date":
+                if normalizeIsoDateInput(raw) == nil {
+                    return "Trường \"\(field.label)\" phải có định dạng ngày YYYY-MM-DD hoặc DD/MM/YYYY."
+                }
+            case "single_select", "select", "dropdown", "radio":
+                if !field.options.isEmpty && !field.options.contains(where: { $0.value == raw }) {
+                    return "Giá trị đã chọn cho \"\(field.label)\" không hợp lệ."
+                }
+            case "multi_select", "multiselect":
+                let items = raw
+                    .split(separator: ",")
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty }
+                if field.required && items.isEmpty {
+                    return "Vui lòng chọn ít nhất 1 mục cho: \(field.label)"
+                }
+            default:
+                break
+            }
+        }
+        return nil
+    }
+
     public static func buildTypedPayloadJson(
         formPayload: [String: String],
         sections: [WorkReportSectionSchema]
     ) -> [String: Any] {
-        var fieldTypeById: [String: String] = [:]
+        var payloadJson: [String: Any] = [:]
+        var processedKeys: Set<String> = []
+
         for sec in sections {
             for field in sec.fields {
-                fieldTypeById[field.id] = field.type.lowercased()
+                let key = field.id
+                processedKeys.insert(key)
+                let rawVal = formPayload[key] ?? field.defaultValue ?? ""
+                let trimmed = rawVal.trimmingCharacters(in: .whitespacesAndNewlines)
+                let fieldType = field.type.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+
+                switch fieldType {
+                case "boolean", "bool", "checkbox", "switch":
+                    let lower = trimmed.lowercased()
+                    payloadJson[key] = ["true", "1", "yes", "có"].contains(lower)
+
+                case "integer":
+                    if trimmed.isEmpty { continue }
+                    if let intVal = Int64(trimmed) {
+                        payloadJson[key] = intVal
+                    }
+
+                case "number", "numeric", "decimal", "float":
+                    if trimmed.isEmpty { continue }
+                    let normalized = trimmed.replacingOccurrences(of: ",", with: ".")
+                    if let intVal = Int64(normalized), !normalized.contains(".") {
+                        payloadJson[key] = intVal
+                    } else if let dblVal = Double(normalized), dblVal.isFinite {
+                        payloadJson[key] = dblVal
+                    }
+
+                case "date":
+                    if trimmed.isEmpty { continue }
+                    payloadJson[key] = normalizeIsoDateInput(trimmed) ?? trimmed
+
+                case "multi_select", "multiselect":
+                    if trimmed.isEmpty {
+                        if field.required {
+                            payloadJson[key] = [String]()
+                        }
+                    } else if trimmed.hasPrefix("["),
+                              let data = trimmed.data(using: .utf8),
+                              let arr = try? JSONSerialization.jsonObject(with: data) as? [String] {
+                        payloadJson[key] = arr.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+                    } else {
+                        let parts = trimmed
+                            .split(separator: ",")
+                            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                            .filter { !$0.isEmpty }
+                        payloadJson[key] = parts
+                    }
+
+                default:
+                    if !trimmed.isEmpty {
+                        payloadJson[key] = trimmed
+                    }
+                }
             }
         }
 
-        var payloadJson: [String: Any] = [:]
-        for (key, rawVal) in formPayload {
+        // Preserve any extra/untyped keys when sections is empty or contains custom keys
+        for (key, rawVal) in formPayload where !processedKeys.contains(key) {
             let trimmed = rawVal.trimmingCharacters(in: .whitespacesAndNewlines)
-            let fieldType = fieldTypeById[key] ?? "text"
-            switch fieldType {
-            case "number", "numeric", "integer", "decimal", "float":
-                if trimmed.isEmpty { continue }
-                let normalized = trimmed.replacingOccurrences(of: ",", with: ".")
-                if let intVal = Int64(normalized), !normalized.contains(".") {
-                    payloadJson[key] = intVal
-                } else if let dblVal = Double(normalized), dblVal.isFinite {
-                    payloadJson[key] = dblVal
-                }
-            case "boolean", "bool", "checkbox", "switch":
-                if trimmed.isEmpty { continue }
-                let lower = trimmed.lowercased()
-                if ["true", "1", "yes", "có"].contains(lower) {
-                    payloadJson[key] = true
-                } else if ["false", "0", "no", "không"].contains(lower) {
-                    payloadJson[key] = false
-                }
-            case "multi_select", "multiselect":
-                if trimmed.isEmpty {
-                    payloadJson[key] = [String]()
-                } else if trimmed.hasPrefix("["),
-                          let data = trimmed.data(using: .utf8),
-                          let arr = try? JSONSerialization.jsonObject(with: data) as? [String] {
-                    payloadJson[key] = arr.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
-                } else {
-                    let parts = trimmed
-                        .split(separator: ",")
-                        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                        .filter { !$0.isEmpty }
-                    payloadJson[key] = parts
-                }
-            default:
-                if !trimmed.isEmpty {
-                    payloadJson[key] = trimmed
-                }
+            if !trimmed.isEmpty {
+                payloadJson[key] = trimmed
             }
         }
         return payloadJson
+    }
+
+    public static func buildSubmissionMutationBody(
+        payloadJson: [String: Any],
+        expectedVersion: Int?,
+        idempotencyKey: String
+    ) -> [String: Any] {
+        return [
+            "payload_json": payloadJson,
+            "expected_version": expectedVersion ?? NSNull(),
+            "idempotency_key": idempotencyKey
+        ]
     }
 }
 
@@ -368,7 +486,10 @@ public final class WorkReportsAndReportingService {
         await fetchObligationDetail(obligationIdUuid: String(obligationId))
     }
 
-    public func fetchObligationDetail(obligationIdUuid: String) async -> MiniBiApiResult<WorkReportObligationItem> {
+    public func fetchObligationDetail(
+        obligationIdUuid: String,
+        fallback: WorkReportObligationItem? = nil
+    ) async -> MiniBiApiResult<WorkReportObligationItem> {
         let encoded = obligationIdUuid.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? obligationIdUuid
         let response = await httpClient.request(
             method: "GET",
@@ -383,12 +504,13 @@ public final class WorkReportsAndReportingService {
         }
 
         let root = response.jsonObject ?? [:]
-        let obj = (root["obligation"] as? [String: Any])
+        let dataObj = (root["data"] as? [String: Any]) ?? root
+        let obObj = (dataObj["obligation"] as? [String: Any])
+            ?? (root["obligation"] as? [String: Any])
             ?? (root["item"] as? [String: Any])
-            ?? (root["data"] as? [String: Any])
-            ?? root
+            ?? dataObj
 
-        let parsed = Self.parseObligationItem(obj, fallbackRoot: root)
+        let parsed = Self.parseObligationItem(obObj, fallbackRoot: dataObj, fallback: fallback)
         return .success(parsed, statusCode: response.statusCode)
     }
 
@@ -411,23 +533,23 @@ public final class WorkReportsAndReportingService {
         obligationIdUuid: String,
         expectedVersion: Int?,
         formPayload: [String: String],
-        sections: [WorkReportSectionSchema] = []
+        sections: [WorkReportSectionSchema] = [],
+        fallback: WorkReportObligationItem? = nil
     ) async -> MiniBiApiResult<WorkReportObligationItem> {
         let typedPayload = WorkReportsContract.buildTypedPayloadJson(formPayload: formPayload, sections: sections)
-        let body: [String: Any] = [
-            "payload_json": typedPayload,
-            "expected_version": expectedVersion ?? NSNull(),
-            "idempotency_key": UUID().uuidString.lowercased(),
-            "version": expectedVersion ?? 1,
-            "payload": formPayload,
-            "form_payload": formPayload
-        ]
+        let idempotencyKey = UUID().uuidString.lowercased()
+        let body = WorkReportsContract.buildSubmissionMutationBody(
+            payloadJson: typedPayload,
+            expectedVersion: expectedVersion,
+            idempotencyKey: idempotencyKey
+        )
 
         let encoded = obligationIdUuid.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? obligationIdUuid
         let response = await httpClient.request(
             method: "POST",
             path: "/api/work-reports/submissions/\(encoded)/draft",
-            jsonBody: body
+            jsonBody: body,
+            additionalHeaders: ["Idempotency-Key": idempotencyKey]
         )
 
         if response.statusCode == 409 {
@@ -442,16 +564,18 @@ public final class WorkReportsAndReportingService {
             )
         }
 
-        if case .success(let refreshed, _) = await fetchObligationDetail(obligationIdUuid: obligationIdUuid) {
+        if case .success(let refreshed, _) = await fetchObligationDetail(obligationIdUuid: obligationIdUuid, fallback: fallback) {
             return .success(refreshed, statusCode: response.statusCode)
         }
 
         let root = response.jsonObject ?? [:]
-        let obj = (root["submission"] as? [String: Any])
+        let dataObj = (root["data"] as? [String: Any]) ?? root
+        let obj = (dataObj["obligation"] as? [String: Any])
+            ?? (dataObj["submission"] as? [String: Any])
+            ?? (root["submission"] as? [String: Any])
             ?? (root["obligation"] as? [String: Any])
-            ?? (root["data"] as? [String: Any])
-            ?? root
-        var item = Self.parseObligationItem(obj, fallbackRoot: root)
+            ?? dataObj
+        var item = Self.parseObligationItem(obj, fallbackRoot: dataObj, fallback: fallback)
         if item.sections.isEmpty && !sections.isEmpty {
             item.sections = sections
         }
@@ -478,23 +602,23 @@ public final class WorkReportsAndReportingService {
         obligationIdUuid: String,
         expectedVersion: Int?,
         formPayload: [String: String],
-        sections: [WorkReportSectionSchema] = []
+        sections: [WorkReportSectionSchema] = [],
+        fallback: WorkReportObligationItem? = nil
     ) async -> MiniBiApiResult<WorkReportObligationItem> {
         let typedPayload = WorkReportsContract.buildTypedPayloadJson(formPayload: formPayload, sections: sections)
-        let body: [String: Any] = [
-            "payload_json": typedPayload,
-            "expected_version": expectedVersion ?? NSNull(),
-            "idempotency_key": UUID().uuidString.lowercased(),
-            "version": expectedVersion ?? 1,
-            "payload": formPayload,
-            "form_payload": formPayload
-        ]
+        let idempotencyKey = UUID().uuidString.lowercased()
+        let body = WorkReportsContract.buildSubmissionMutationBody(
+            payloadJson: typedPayload,
+            expectedVersion: expectedVersion,
+            idempotencyKey: idempotencyKey
+        )
 
         let encoded = obligationIdUuid.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? obligationIdUuid
         let response = await httpClient.request(
             method: "POST",
             path: "/api/work-reports/submissions/\(encoded)/submit",
-            jsonBody: body
+            jsonBody: body,
+            additionalHeaders: ["Idempotency-Key": idempotencyKey]
         )
 
         if response.statusCode == 409 {
@@ -509,16 +633,18 @@ public final class WorkReportsAndReportingService {
             )
         }
 
-        if case .success(let refreshed, _) = await fetchObligationDetail(obligationIdUuid: obligationIdUuid) {
+        if case .success(let refreshed, _) = await fetchObligationDetail(obligationIdUuid: obligationIdUuid, fallback: fallback) {
             return .success(refreshed, statusCode: response.statusCode)
         }
 
         let root = response.jsonObject ?? [:]
-        let obj = (root["submission"] as? [String: Any])
+        let dataObj = (root["data"] as? [String: Any]) ?? root
+        let obj = (dataObj["obligation"] as? [String: Any])
+            ?? (dataObj["submission"] as? [String: Any])
+            ?? (root["submission"] as? [String: Any])
             ?? (root["obligation"] as? [String: Any])
-            ?? (root["data"] as? [String: Any])
-            ?? root
-        var item = Self.parseObligationItem(obj, fallbackRoot: root)
+            ?? dataObj
+        var item = Self.parseObligationItem(obj, fallbackRoot: dataObj, fallback: fallback)
         if item.sections.isEmpty && !sections.isEmpty {
             item.sections = sections
         }
@@ -609,26 +735,24 @@ public final class WorkReportsAndReportingService {
     ) async -> MiniBiApiResult<Bool> {
         let normalizedDecision: String = {
             let upper = decision.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
-            if upper == "APPROVE" || upper == "APPROVED" { return "approve" }
-            if upper == "REJECT" || upper == "REJECTED" { return "reject" }
-            return decision.lowercased()
+            if upper == "APPROVE" || upper == "APPROVED" { return "APPROVED" }
+            if upper == "REJECT" || upper == "REJECTED" { return "REJECTED" }
+            return upper
         }()
         let cleanComment = comment.trimmingCharacters(in: .whitespacesAndNewlines)
-        var body: [String: Any] = [
+        let idempotencyKey = UUID().uuidString.lowercased()
+        let body: [String: Any] = [
             "decision": normalizedDecision,
+            "reason": cleanComment.isEmpty ? NSNull() : cleanComment,
             "expected_version": max(1, expectedVersion),
-            "version": max(1, expectedVersion)
+            "idempotency_key": idempotencyKey
         ]
-        if !cleanComment.isEmpty {
-            body["review_note"] = cleanComment
-            body["comment"] = cleanComment
-            body["review_comment"] = cleanComment
-        }
         let encoded = submissionIdUuid.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? submissionIdUuid
         let response = await httpClient.request(
             method: "POST",
-            path: "/api/work-reports/submissions/\(encoded)/review",
-            jsonBody: body
+            path: "/api/work-reports/reviews/\(encoded)/decision",
+            jsonBody: body,
+            additionalHeaders: ["Idempotency-Key": idempotencyKey]
         )
         guard response.isSuccess else {
             return .failure(
@@ -1579,88 +1703,172 @@ public final class WorkReportsAndReportingService {
         return formPayload
     }
 
+    private static func deterministicIdHash(_ rawUuid: String) -> Int64 {
+        let trimmed = rawUuid.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return 0 }
+        var hash: UInt64 = 14695981039346656037
+        for byte in trimmed.utf8 {
+            hash ^= UInt64(byte)
+            hash &*= 1099511628211
+        }
+        return Int64(hash & 0x7FFF_FFFF_FFFF_FFFF)
+    }
+
     public static func parseObligationItem(
         _ obj: [String: Any],
-        fallbackRoot: [String: Any]? = nil
+        fallbackRoot: [String: Any]? = nil,
+        fallback: WorkReportObligationItem? = nil
     ) -> WorkReportObligationItem {
-        let obligationIdUuid = obj.optString("obligation_id", "id")
-            .ifEmpty(fallbackRoot?.optString("obligation_id", "id") ?? "")
-        let obligationId = obj.optInt64("obligation_id", "id")
-            ?? fallbackRoot?.optInt64("obligation_id", "id")
-            ?? 0
+        let dataRoot = (fallbackRoot?["data"] as? [String: Any])
+            ?? (obj["data"] as? [String: Any])
+            ?? fallbackRoot
+            ?? obj
+        let obObj = (obj["obligation"] as? [String: Any])
+            ?? (dataRoot["obligation"] as? [String: Any])
+            ?? obj
 
-        let templateObj = (obj["template"] as? [String: Any]) ?? (fallbackRoot?["template"] as? [String: Any])
-        let submissionObj = (obj["submission"] as? [String: Any]) ?? (fallbackRoot?["submission"] as? [String: Any])
+        let obligationIdUuid = obObj.optString("obligation_id", "id")
+            .ifEmpty(dataRoot.optString("obligation_id", "id"))
+            .ifEmpty(fallback?.obligationIdUuid ?? "")
+        let obligationId: Int64 = obObj.optInt64("obligation_id", "id")
+            ?? dataRoot.optInt64("obligation_id", "id")
+            ?? (fallback?.id != 0 ? fallback?.id : nil)
+            ?? deterministicIdHash(obligationIdUuid)
 
-        let submissionIdUuid = obj.optNullableString("submission_id")
+        let templateObj = (obObj["template"] as? [String: Any])
+            ?? (dataRoot["template"] as? [String: Any])
+        let submissionObj = (obObj["submission"] as? [String: Any])
+            ?? (dataRoot["submission"] as? [String: Any])
+        let latestReviewObj = (obObj["latest_review_event"] as? [String: Any])
+            ?? (dataRoot["latest_review_event"] as? [String: Any])
+        let revisionsArr = dataRoot.optObjectArray("revisions")
+            .ifEmpty(obObj.optObjectArray("revisions"))
+
+        let submissionIdUuid = obObj.optNullableString("submission_id")
             ?? submissionObj?.optNullableString("submission_id", "id")
-            ?? fallbackRoot?.optNullableString("submission_id")
-        let submissionId = obj.optInt64("submission_id")
+            ?? dataRoot.optNullableString("submission_id")
+            ?? fallback?.submissionIdUuid
+        let submissionId = obObj.optInt64("submission_id")
             ?? submissionObj?.optInt64("id", "submission_id")
-            ?? fallbackRoot?.optInt64("submission_id")
+            ?? dataRoot.optInt64("submission_id")
+            ?? fallback?.submissionId
 
-        let templateCode = obj.optString("template_code", defaultValue: templateObj?.optString("code", "template_code") ?? "")
-        let templateName = obj.optString("template_name", "title", defaultValue: templateObj?.optString("name", "title") ?? "Báo cáo công việc")
-        let periodType = obj.optString("period_type", defaultValue: templateObj?.optString("period_type") ?? "WEEKLY")
-        let periodKey = obj.optString("period_key", "period")
-        let dueAt = obj.optNullableString("due_at", "deadline_at")
-        let submissionState = obj.optString(
-            "submission_state",
-            "state",
-            "status",
-            defaultValue: submissionObj?.optString("submission_state", "state", "status", defaultValue: WorkReportsContract.stateNotStarted)
-                ?? WorkReportsContract.stateNotStarted
+        let templateCode = obObj.optString(
+            "template_code",
+            defaultValue: templateObj?.optString("template_code", "code")
+                .ifEmpty(fallback?.templateCode ?? "") ?? ""
+        )
+        let templateName = obObj.optString(
+            "template_display_name",
+            "template_name",
+            "display_name",
+            "title",
+            defaultValue: templateObj?.optString("display_name", "template_display_name", "name", "title")
+                .ifEmpty(fallback?.templateName ?? "Báo cáo công việc")
+                ?? "Báo cáo công việc"
+        )
+        let periodType = obObj.optString(
+            "period_type",
+            defaultValue: templateObj?.optString("period_type")
+                .ifEmpty(fallback?.periodType ?? "WEEKLY")
+                ?? "WEEKLY"
+        )
+        let periodKey = obObj.optString("period_key", "period")
+            .ifEmpty(fallback?.periodKey ?? "")
+        let dueAt = obObj.optNullableString("due_at", "deadline_at")
+            ?? fallback?.dueAt
+        let submissionState = (
+            submissionObj?.optNullableString("state", "submission_state", "status")
+            ?? obObj.optNullableString("submission_state", "state", "status")
+            ?? fallback?.submissionState
+            ?? WorkReportsContract.stateNotStarted
         ).uppercased()
 
         // Strictly read `is_overdue` from server (backward compatible default `false`)
-        let isOverdue = obj.optBool(
+        let isOverdue = obObj.optBool(
             "is_overdue",
-            defaultValue: fallbackRoot?.optBool("is_overdue", defaultValue: false) ?? false
+            defaultValue: dataRoot.optBool("is_overdue", defaultValue: fallback?.isOverdue ?? false)
         )
 
+        // Never fall back to `obObj["version"]` because `obligation.version` is 1 even when `submission_version` is null!
         let explicitSubVersion: Int? = {
             if let v = submissionObj?.optInt("version", "submission_version", defaultValue: -1), v > 0 {
                 return v
             }
-            if let v = obj.optInt("submission_version", "version", defaultValue: -1) as Int?, v > 0 {
+            if let v = obObj.optInt("submission_version", defaultValue: -1) as Int?, v > 0 {
                 return v
             }
             return nil
         }()
-        let version = explicitSubVersion ?? 1
+        let version = explicitSubVersion ?? obObj.optInt("version", defaultValue: fallback?.version ?? 1)
 
-        let submittedAt = obj.optNullableString("submitted_at")
-            ?? submissionObj?.optNullableString("submitted_at")
-        let reviewedAt = obj.optNullableString("reviewed_at")
+        let submittedAt = submissionObj?.optNullableString("submitted_at", "last_submitted_at", "updated_at")
+            ?? obObj.optNullableString("submitted_at", "last_submitted_at")
+            ?? fallback?.submittedAt
+        let reviewedAt = latestReviewObj?.optNullableString("created_at", "reviewed_at")
             ?? submissionObj?.optNullableString("reviewed_at")
-        let reviewerName = obj.optNullableString("reviewer_name", "reviewed_by_name", "reviewer_display_name")
+            ?? obObj.optNullableString("reviewed_at")
+            ?? fallback?.reviewedAt
+        let reviewerName = latestReviewObj?.optNullableString("actor_display_name", "reviewer_name", "reviewed_by_name")
+            ?? obObj.optNullableString("reviewer_name", "reviewed_by_name", "reviewer_display_name")
             ?? submissionObj?.optNullableString("reviewer_name", "reviewed_by_name", "reviewer_display_name")
-        let reviewComment = obj.optNullableString("review_note", "review_comment", "reject_reason", "comment")
-            ?? submissionObj?.optNullableString("review_note", "review_comment", "reject_reason", "comment")
-        let unitName = obj.optNullableString("org_unit_name", "unit_name", "department_name")
+            ?? fallback?.reviewerName
+        let reviewComment = latestReviewObj?.optNullableString("reason", "review_note", "comment")
+            ?? obObj.optNullableString("latest_rejection_reason", "review_note", "review_comment", "reject_reason", "comment")
+            ?? submissionObj?.optNullableString("latest_rejection_reason", "review_note", "review_comment", "reject_reason", "comment")
+            ?? fallback?.reviewComment
+        let unitName = obObj.optNullableString("org_unit_name", "unit_name", "department_name")
+            ?? fallback?.unitName
 
-        let schemaRaw: Any? = obj["schema_json"]
-            ?? obj["schema"]
-            ?? obj["form_schema"]
+        let schemaRaw: Any? = obObj["schema_json"]
+            ?? obObj["schema"]
+            ?? obObj["form_schema"]
             ?? templateObj?["schema_json"]
             ?? templateObj?["schema"]
             ?? templateObj?["form_schema"]
-            ?? fallbackRoot?["schema_json"]
-            ?? fallbackRoot?["schema"]
-            ?? fallbackRoot?["form_schema"]
-        let sections = WorkReportsContract.parseDynamicSections(schemaRaw)
+            ?? dataRoot["schema_json"]
+            ?? dataRoot["schema"]
+            ?? dataRoot["form_schema"]
+        let parsedSections = WorkReportsContract.parseDynamicSections(schemaRaw)
+        let sections = parsedSections.isEmpty ? (fallback?.sections ?? []) : parsedSections
 
-        let rawPayloadDict = (submissionObj?["payload_json"] as? [String: Any])
+        let latestRevisionPayload: [String: Any]? = {
+            guard !revisionsArr.isEmpty else { return nil }
+            let bestRev = revisionsArr.max {
+                $0.optInt("revision_no", defaultValue: 0) < $1.optInt("revision_no", defaultValue: 0)
+            }
+            return (bestRev?["payload_json"] as? [String: Any])
+                ?? (bestRev?["payload"] as? [String: Any])
+        }()
+
+        let rawPayloadDict = (submissionObj?["draft_payload_json"] as? [String: Any])
+            ?? (submissionObj?["payload_json"] as? [String: Any])
             ?? (submissionObj?["form_payload"] as? [String: Any])
             ?? (submissionObj?["payload"] as? [String: Any])
             ?? (submissionObj?["answers"] as? [String: Any])
-            ?? (obj["payload_json"] as? [String: Any])
-            ?? (obj["form_payload"] as? [String: Any])
-            ?? (obj["payload"] as? [String: Any])
-            ?? (obj["answers"] as? [String: Any])
+            ?? latestRevisionPayload
+            ?? (obObj["draft_payload_json"] as? [String: Any])
+            ?? (obObj["payload_json"] as? [String: Any])
+            ?? (obObj["form_payload"] as? [String: Any])
+            ?? (obObj["payload"] as? [String: Any])
+            ?? (obObj["answers"] as? [String: Any])
             ?? [:]
 
-        let formPayload = Self.extractFormPayloadStrings(rawPayloadDict)
+        var formPayload = Self.extractFormPayloadStrings(rawPayloadDict)
+        if formPayload.isEmpty, let fbPayload = fallback?.formPayload, !fbPayload.isEmpty {
+            formPayload = fbPayload
+        }
+
+        // Seed schema defaults (and "false" for boolean toggles so untouched "Không" toggles are always explicit)
+        for sec in sections {
+            for field in sec.fields where formPayload[field.id] == nil {
+                if let def = field.defaultValue, !def.isEmpty {
+                    formPayload[field.id] = def
+                } else if field.isBooleanType {
+                    formPayload[field.id] = "false"
+                }
+            }
+        }
 
         return WorkReportObligationItem(
             id: obligationId,
@@ -1689,15 +1897,15 @@ public final class WorkReportsAndReportingService {
     public static func parseReviewItem(_ obj: [String: Any]) -> WorkReportReviewItem {
         let submissionIdUuid = obj.optString("submission_id", "id")
         let obligationIdUuid = obj.optString("obligation_id", defaultValue: submissionIdUuid)
-        let submissionId = obj.optInt64("submission_id", "id") ?? 0
-        let obligationId = obj.optInt64("obligation_id") ?? submissionId
-        let templateName = obj.optString("template_name", "title", defaultValue: "Báo cáo công việc")
+        let submissionId = obj.optInt64("submission_id", "id") ?? deterministicIdHash(submissionIdUuid)
+        let obligationId = obj.optInt64("obligation_id") ?? deterministicIdHash(obligationIdUuid)
+        let templateName = obj.optString("template_display_name", "template_name", "display_name", "title", defaultValue: "Báo cáo công việc")
         let periodType = obj.optString("period_type", defaultValue: "WEEKLY")
         let periodKey = obj.optString("period_key", "period")
         let reporterName = obj.optString("subject_display_name", "reporter_name", "author_name", "user_name", defaultValue: "Nhân sự")
         let reporterCode = obj.optString("subject_user_id", "reporter_code", "author_code", "username")
         let unitName = obj.optString("org_unit_name", "unit_name", "department_name")
-        let submittedAt = obj.optNullableString("submitted_at", "created_at")
+        let submittedAt = obj.optNullableString("submitted_at", "last_submitted_at", "created_at")
         let submissionState = obj.optString("submission_state", "state", "status", defaultValue: WorkReportsContract.stateSubmitted)
         let version = max(1, obj.optInt("submission_version", "version", defaultValue: 1))
         let sections = WorkReportsContract.parseDynamicSections(
@@ -1705,6 +1913,7 @@ public final class WorkReportsAndReportingService {
         )
 
         let rawPayloadDict = (obj["payload_json"] as? [String: Any])
+            ?? (obj["draft_payload_json"] as? [String: Any])
             ?? (obj["form_payload"] as? [String: Any])
             ?? (obj["payload"] as? [String: Any])
             ?? (obj["answers"] as? [String: Any])

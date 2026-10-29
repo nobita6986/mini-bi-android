@@ -215,9 +215,9 @@ public struct WorkReportsScreen: View {
             return SemanticColors.dangerBg
         }
         switch ob.submissionState.uppercased() {
-        case WorkReportsContract.stateApproved:
+        case WorkReportsContract.stateApproved, "COMPLETED":
             return SemanticColors.successBg
-        case WorkReportsContract.stateSubmitted:
+        case WorkReportsContract.stateSubmitted, "PENDING_REVIEW":
             return SemanticColors.infoBg
         case WorkReportsContract.stateRejected:
             return SemanticColors.dangerBg
@@ -233,9 +233,9 @@ public struct WorkReportsScreen: View {
             return SemanticColors.dangerText
         }
         switch ob.submissionState.uppercased() {
-        case WorkReportsContract.stateApproved:
+        case WorkReportsContract.stateApproved, "COMPLETED":
             return SemanticColors.successText
-        case WorkReportsContract.stateSubmitted:
+        case WorkReportsContract.stateSubmitted, "PENDING_REVIEW":
             return SemanticColors.infoText
         case WorkReportsContract.stateRejected:
             return SemanticColors.dangerText
@@ -392,7 +392,9 @@ public struct WorkReportEditorSheet: View {
                                 .clipShape(Capsule())
                         }
 
-                        Text("Kỳ báo cáo: \(WorkReportsContract.formatPeriodKeyVi(currentOb.periodKey)) · Hạn nộp: \(WorkReportsContract.formatIsoDateTimeVi(currentOb.dueAt))")
+                        let displayPeriodKey = currentOb.periodKey.isEmpty ? obligation.periodKey : currentOb.periodKey
+                        let displayDueAt = currentOb.dueAt ?? obligation.dueAt
+                        Text("Kỳ báo cáo: \(WorkReportsContract.formatPeriodKeyVi(displayPeriodKey)) · Hạn nộp: \(WorkReportsContract.formatIsoDateTimeVi(displayDueAt))")
                             .font(.caption)
                             .foregroundColor(SemanticColors.textSecondary)
 
@@ -476,7 +478,7 @@ public struct WorkReportEditorSheet: View {
                                         Text(field.label)
                                             .font(.caption.weight(.semibold))
                                             .foregroundColor(SemanticColors.textPrimary)
-                                        if field.required {
+                                        if field.required && !field.isBooleanType {
                                             Text("*")
                                                 .font(.caption.weight(.bold))
                                                 .foregroundColor(SemanticColors.dangerText)
@@ -750,11 +752,19 @@ struct WorkReportReviewDetailSheet: View {
                             Text(sec.title)
                                 .font(.headline)
                             ForEach(sec.fields) { f in
+                                let rawVal = review.formPayload[f.id] ?? ""
+                                let displayVal: String = {
+                                    if f.isBooleanType {
+                                        let lower = rawVal.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                                        return ["true", "1", "yes", "có"].contains(lower) ? "Có / Đạt" : "Không"
+                                    }
+                                    return rawVal.isEmpty ? "—" : rawVal
+                                }()
                                 VStack(alignment: .leading, spacing: 3) {
                                     Text(f.label)
                                         .font(.caption.weight(.semibold))
                                         .foregroundColor(SemanticColors.textSecondary)
-                                    Text(review.formPayload[f.id] ?? "—")
+                                    Text(displayVal)
                                         .font(.subheadline)
                                         .padding(8)
                                         .frame(maxWidth: .infinity, alignment: .leading)

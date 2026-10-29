@@ -81,6 +81,7 @@ public final class AttendanceOutboxService {
     private let photosDirectory: URL
     private let lock = NSLock()
     private var items: [AttendanceOutboxItem] = []
+    private var inFlightLocalIds: Set<String> = []
     private var pathMonitor: NWPathMonitor?
     private let monitorQueue = DispatchQueue(label: "com.aistudio.minibi.attendance.outbox.monitor")
 
@@ -110,7 +111,12 @@ public final class AttendanceOutboxService {
         try? FileManager.default.createDirectory(at: baseDir, withIntermediateDirectories: true)
         try? FileManager.default.createDirectory(at: photosDirectory, withIntermediateDirectories: true)
 
-        self.items = Self.loadItems(from: outboxFileUrl)
+        let loaded = Self.loadItems(from: outboxFileUrl)
+        let deduplicated = Self.deduplicateItems(loaded)
+        self.items = deduplicated
+        if deduplicated.count != loaded.count {
+            Self.saveItems(deduplicated, to: outboxFileUrl)
+        }
         recoverInterruptedUploads()
     }
 
@@ -146,6 +152,10 @@ public final class AttendanceOutboxService {
         listItemsForUser(userKey: userKey).filter {
             AttendanceContract.isRetryableStatus($0.status) || $0.status == AttendanceContract.statusUploading
         }.count
+    }
+
+    public func todaySyncedCountForUser(userKey: String) -> Int {
+        countTodaySyncedItems(listItemsForUser(userKey: userKey))
     }
 
     // MARK: - Enqueue & Immediate Attempt
@@ -228,6 +238,23 @@ public final class AttendanceOutboxService {
     // MARK: - Process Single Item
 
     public func processSingleOutboxItem(localId: String) async -> MiniBiApiResult<AttendanceOutboxItem> {
+        lock.lock()
+        if inFlightLocalIds.contains(localId) {
+            let current = items.first(where: { $0.localId == localId })
+            lock.unlock()
+            if let current {
+                return .success(current)
+            }
+            return .failure(message: "Bản ghi chấm công đang được đồng bộ.")
+        }
+        inFlightLocalIds.insert(localId)
+        lock.unlock()
+        defer {
+            lock.lock()
+            inFlightLocalIds.remove(localId)
+            lock.unlock()
+        }
+
         guard var item = getItem(localId: localId) else {
             return .failure(message: "Không tìm thấy bản ghi chấm công trong hàng đợi.")
         }
@@ -311,7 +338,8 @@ public final class AttendanceOutboxService {
                 ?? response.jsonObject
 
             item.status = AttendanceContract.statusSynced
-            item.serverRecordId = recordObj?.optInt64("id", "check_in_id")
+            item.serverRecordId = recordObj?.optInt64("checkin_id", "id", "check_in_id")
+            item.serverCheckinId = recordObj?.optNullableString("checkin_id", "check_in_id", "id")
             item.serverReceivedAt = recordObj?.optNullableString("server_received_at", "created_at", "received_at")
                 ?? AttendanceTimeAnchorManager.formatEpochMsAsIso8601Utc(Int64(Date().timeIntervalSince1970 * 1000))
             item.lastErrorCode = nil
@@ -385,30 +413,43 @@ public final class AttendanceOutboxService {
         var currentList = items
         for obj in rawItems {
             let idempKey = obj.optString("idempotency_key", "client_id")
-            let serverId = obj.optInt64("id", "check_in_id")
+            let checkinId = obj.optString("checkin_id", "check_in_id", "id")
+            let serverId = obj.optInt64("checkin_id", "id", "check_in_id")
             let capturedAt = obj.optString("client_captured_at", "captured_at", "created_at")
             let receivedAt = obj.optNullableString("server_received_at", "received_at", "created_at")
             let lat = obj.optDouble("lat", "latitude")
             let lng = obj.optDouble("lng", "longitude")
-            let acc = obj.optNullableDouble("accuracy_m", "accuracy")
+            let acc = obj.optNullableDouble("accuracy_m", "accuracy_meters", "accuracy")
             let note = obj.optString("note")
             let timeSource = obj.optString("time_source", defaultValue: AttendanceTimeContract.sourceServerAnchored)
             let photoSha = obj.optString("photo_sha256")
+            let epochMs = AttendanceTimeAnchorManager.parseIso8601ToEpochMs(capturedAt)
+                ?? Int64(Date().timeIntervalSince1970 * 1000)
+            let stableSrvKey = !checkinId.isEmpty
+                ? "srv-\(checkinId)"
+                : "srv-\(serverId.map(String.init) ?? String(epochMs))"
 
-            if let existingIdx = currentList.firstIndex(where: {
-                (!idempKey.isEmpty && $0.idempotencyKey == idempKey) ||
-                (serverId != nil && $0.serverRecordId == serverId)
+            if let existingIdx = currentList.firstIndex(where: { existing in
+                guard existing.userKey.lowercased() == normalizedKey else { return false }
+                if !idempKey.isEmpty && existing.idempotencyKey == idempKey { return true }
+                if !checkinId.isEmpty && (existing.serverCheckinId == checkinId || existing.localId == "srv-\(checkinId)" || existing.idempotencyKey == "srv-\(checkinId)") { return true }
+                if let serverId, existing.serverRecordId == serverId { return true }
+                if existing.localId == stableSrvKey || existing.localId == "srv-\(epochMs)" || existing.idempotencyKey == "srv-\(epochMs)" { return true }
+                if !capturedAt.isEmpty && existing.clientCapturedAt == capturedAt { return true }
+                if existing.status == AttendanceContract.statusSynced && abs(existing.createdAtEpochMs - epochMs) <= 2_000 { return true }
+                return false
             }) {
                 currentList[existingIdx].status = AttendanceContract.statusSynced
                 currentList[existingIdx].serverRecordId = serverId ?? currentList[existingIdx].serverRecordId
+                if !checkinId.isEmpty {
+                    currentList[existingIdx].serverCheckinId = checkinId
+                }
                 currentList[existingIdx].serverReceivedAt = receivedAt ?? currentList[existingIdx].serverReceivedAt
             } else {
-                let epochMs = AttendanceTimeAnchorManager.parseIso8601ToEpochMs(capturedAt)
-                    ?? Int64(Date().timeIntervalSince1970 * 1000)
                 let syncedItem = AttendanceOutboxItem(
-                    localId: "srv-\(serverId ?? epochMs)",
+                    localId: stableSrvKey,
                     userKey: normalizedKey,
-                    idempotencyKey: idempKey.isEmpty ? "srv-\(serverId ?? epochMs)" : idempKey,
+                    idempotencyKey: idempKey.isEmpty ? stableSrvKey : idempKey,
                     clientCapturedAt: capturedAt,
                     timeSource: timeSource,
                     lat: lat,
@@ -421,13 +462,14 @@ public final class AttendanceOutboxService {
                     status: AttendanceContract.statusSynced,
                     attemptCount: 1,
                     serverRecordId: serverId,
+                    serverCheckinId: checkinId.isEmpty ? nil : checkinId,
                     serverReceivedAt: receivedAt,
                     createdAtEpochMs: epochMs
                 )
                 currentList.append(syncedItem)
             }
         }
-        items = currentList
+        items = Self.deduplicateItems(currentList)
         Self.saveItems(items, to: outboxFileUrl)
         lock.unlock()
 
@@ -594,10 +636,10 @@ public final class AttendanceOutboxService {
 
     private func isPermanentError(httpStatus: Int?, errorCode: String?) -> Bool {
         guard let httpStatus else { return false }
-        if httpStatus == 401 || httpStatus == 408 || httpStatus == 429 || httpStatus >= 500 || httpStatus == 0 {
+        if httpStatus == 408 || httpStatus == 429 || httpStatus >= 500 || httpStatus == 0 {
             return false
         }
-        if httpStatus == 400 || httpStatus == 403 || httpStatus == 422 {
+        if httpStatus == 400 || httpStatus == 401 || httpStatus == 403 || httpStatus == 404 || httpStatus == 409 || httpStatus == 413 || httpStatus == 422 {
             return true
         }
         if let code = errorCode?.uppercased() {
@@ -613,7 +655,7 @@ public final class AttendanceOutboxService {
         if code.contains("ALREADY") || code.contains("DUPLICATE") || code.contains("IDEMPOTENT") {
             return true
         }
-        if let obj = response.jsonObject, obj["check_in"] != nil || obj["already_recorded"] as? Bool == true {
+        if let obj = response.jsonObject, obj["check_in"] != nil || obj["checkin"] != nil || obj["already_recorded"] as? Bool == true {
             return true
         }
         return false
@@ -624,7 +666,7 @@ public final class AttendanceOutboxService {
         cal.timeZone = TimeZone(identifier: "Asia/Ho_Chi_Minh") ?? .current
         let todayComponents = cal.dateComponents([.year, .month, .day], from: Date())
 
-        return list.filter { item in
+        return Self.deduplicateItems(list).filter { item in
             guard item.status == AttendanceContract.statusSynced else { return false }
             let epochMs = AttendanceTimeAnchorManager.parseIso8601ToEpochMs(item.clientCapturedAt) ?? item.createdAtEpochMs
             let date = Date(timeIntervalSince1970: Double(epochMs) / 1000.0)
@@ -633,6 +675,53 @@ public final class AttendanceOutboxService {
                 && comps.month == todayComponents.month
                 && comps.day == todayComponents.day
         }.count
+    }
+
+    public static func deduplicateItems(_ list: [AttendanceOutboxItem]) -> [AttendanceOutboxItem] {
+        var result: [AttendanceOutboxItem] = []
+        for item in list {
+            let normUser = item.userKey.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if let existingIdx = result.firstIndex(where: { existing in
+                guard existing.userKey.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == normUser else {
+                    return false
+                }
+                if existing.localId == item.localId { return true }
+                if !item.idempotencyKey.isEmpty && existing.idempotencyKey == item.idempotencyKey { return true }
+                if let cid = item.serverCheckinId, !cid.isEmpty, existing.serverCheckinId == cid { return true }
+                if let sid = item.serverRecordId, existing.serverRecordId == sid { return true }
+                if !item.clientCapturedAt.isEmpty && existing.clientCapturedAt == item.clientCapturedAt { return true }
+                if existing.status == AttendanceContract.statusSynced &&
+                    item.status == AttendanceContract.statusSynced &&
+                    abs(existing.createdAtEpochMs - item.createdAtEpochMs) <= 2_000 {
+                    return true
+                }
+                return false
+            }) {
+                var merged = result[existingIdx]
+                // Prefer non-srv local item identity when merging a local item and a server-synced copy
+                if merged.localId.hasPrefix("srv-") && !item.localId.hasPrefix("srv-") {
+                    var preferred = item
+                    if merged.status == AttendanceContract.statusSynced {
+                        preferred.status = AttendanceContract.statusSynced
+                    }
+                    preferred.serverRecordId = item.serverRecordId ?? merged.serverRecordId
+                    preferred.serverCheckinId = item.serverCheckinId ?? merged.serverCheckinId
+                    preferred.serverReceivedAt = item.serverReceivedAt ?? merged.serverReceivedAt
+                    merged = preferred
+                } else {
+                    if item.status == AttendanceContract.statusSynced {
+                        merged.status = AttendanceContract.statusSynced
+                    }
+                    merged.serverRecordId = merged.serverRecordId ?? item.serverRecordId
+                    merged.serverCheckinId = merged.serverCheckinId ?? item.serverCheckinId
+                    merged.serverReceivedAt = merged.serverReceivedAt ?? item.serverReceivedAt
+                }
+                result[existingIdx] = merged
+            } else {
+                result.append(item)
+            }
+        }
+        return result
     }
 
     private func recoverInterruptedUploads() {
@@ -663,6 +752,7 @@ public final class AttendanceOutboxService {
         } else {
             items.append(item)
         }
+        items = Self.deduplicateItems(items)
         Self.saveItems(items, to: outboxFileUrl)
         lock.unlock()
         onOutboxChanged?()

@@ -40,6 +40,7 @@ public final class MiniBiViewModel: ObservableObject {
     @Published public var notifications: [AppNotificationItem] = []
     @Published public var unreadNotificationCount: Int = 0
     @Published public var isNotificationSheetPresented: Bool = false
+    private var announcedNotificationIds: Set<Int64> = []
 
     // MARK: - Dashboard & CCCD Review State
     @Published public var selectedDashboardSubTab: DashboardSubTab = .overview
@@ -319,11 +320,16 @@ public final class MiniBiViewModel: ObservableObject {
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 if let incomingItem {
-                    if !self.notifications.contains(where: { $0.id == incomingItem.id }) {
+                    let isNew = !self.notifications.contains(where: { $0.id == incomingItem.id })
+                        && !self.announcedNotificationIds.contains(incomingItem.id)
+                    self.announcedNotificationIds.insert(incomingItem.id)
+                    if isNew {
                         self.notifications.insert(incomingItem, at: 0)
+                        self.unreadNotificationCount = self.notifications.filter { !$0.isRead }.count
+                        if !incomingItem.isRead {
+                            self.showBanner("Thông báo mới: \(incomingItem.title)", isError: false)
+                        }
                     }
-                    self.unreadNotificationCount = self.notifications.filter { !$0.isRead }.count
-                    self.showBanner("Thông báo mới: \(incomingItem.title)", isError: false)
                 } else {
                     await self.refreshNotifications()
                 }
@@ -353,6 +359,7 @@ public final class MiniBiViewModel: ObservableObject {
         editorFieldValues = [:]
         notifications = []
         unreadNotificationCount = 0
+        announcedNotificationIds = []
         activeAttendanceTab = .checkIn
         leaveYear = LeaveContract.currentVietnamLeaveYear()
         myLeaveSummary = nil
@@ -378,6 +385,9 @@ public final class MiniBiViewModel: ObservableObject {
         if case .success(let data, _) = res {
             notifications = data.items
             unreadNotificationCount = data.unreadCount
+            for item in data.items {
+                announcedNotificationIds.insert(item.id)
+            }
         }
     }
 
@@ -872,7 +882,7 @@ public final class MiniBiViewModel: ObservableObject {
     ) async {
         let userKey = currentUser?.username ?? "guest"
         isSubmittingAttendance = true
-        let (_, apiResult) = await attendanceOutboxService.submitCheckIn(
+        let (item, apiResult) = await attendanceOutboxService.submitCheckIn(
             userKey: userKey,
             lat: lat,
             lng: lng,
@@ -888,10 +898,17 @@ public final class MiniBiViewModel: ObservableObject {
 
         switch apiResult {
         case .success:
-            todayServerAttendanceCount += 1
+            todayServerAttendanceCount = max(
+                todayServerAttendanceCount,
+                attendanceOutboxService.todaySyncedCountForUser(userKey: userKey)
+            )
             showBanner("Chấm công thành công! Đã đồng bộ lên máy chủ.")
         case .failure(let message, _, _, _):
-            showBanner("Đã lưu chấm công vào hàng đợi ngoại tuyến (\(message)). Sẽ tự động gửi bù khi có mạng.", isError: false)
+            if item.status == AttendanceContract.statusFailedPermanent {
+                showBanner(message, isError: true)
+            } else {
+                showBanner("Đã lưu chấm công vào hàng đợi ngoại tuyến (\(message)). Sẽ tự động gửi bù khi có mạng.", isError: false)
+            }
         }
     }
 
@@ -1378,26 +1395,58 @@ public final class MiniBiViewModel: ObservableObject {
             workReportObligations = list
             // Keep open editor synchronized if present
             if let currentEditor = selectedObligationEditor,
-               let refreshed = list.first(where: { $0.id == currentEditor.id }) {
+               let refreshed = list.first(where: {
+                   (!currentEditor.obligationIdUuid.isEmpty && $0.obligationIdUuid == currentEditor.obligationIdUuid)
+                   || ($0.id != 0 && $0.id == currentEditor.id)
+               }) {
                 var merged = refreshed
                 if merged.sections.isEmpty {
                     merged.sections = currentEditor.sections
+                }
+                if merged.formPayload.isEmpty {
+                    merged.formPayload = currentEditor.formPayload
+                }
+                if merged.submissionVersion == nil {
+                    merged.submissionVersion = currentEditor.submissionVersion
                 }
                 selectedObligationEditor = merged
             }
         }
     }
 
+    private static func seedDefaultFieldValues(
+        base: [String: String],
+        sections: [WorkReportSectionSchema]
+    ) -> [String: String] {
+        var result = base
+        for section in sections {
+            for field in section.fields where result[field.id] == nil {
+                if let def = field.defaultValue, !def.isEmpty {
+                    result[field.id] = def
+                } else if field.isBooleanType {
+                    result[field.id] = "false"
+                }
+            }
+        }
+        return result
+    }
+
     public func openObligationEditor(_ obligation: WorkReportObligationItem) async {
         selectedObligationEditor = obligation
-        editorFieldValues = obligation.formPayload
+        editorFieldValues = Self.seedDefaultFieldValues(base: obligation.formPayload, sections: obligation.sections)
 
         // Fetch full detail to ensure latest schema_json, payload_json, submission_version, and `is_overdue`
-        let detailRes = await workReportsService.fetchObligationDetail(obligationIdUuid: obligation.obligationIdUuid)
+        let detailRes = await workReportsService.fetchObligationDetail(
+            obligationIdUuid: obligation.obligationIdUuid,
+            fallback: obligation
+        )
         if case .success(let detail, _) = detailRes {
             selectedObligationEditor = detail
-            editorFieldValues = detail.formPayload
-            if let idx = workReportObligations.firstIndex(where: { $0.id == detail.id || $0.obligationIdUuid == detail.obligationIdUuid }) {
+            editorFieldValues = Self.seedDefaultFieldValues(base: detail.formPayload, sections: detail.sections)
+            if let idx = workReportObligations.firstIndex(where: {
+                (!detail.obligationIdUuid.isEmpty && $0.obligationIdUuid == detail.obligationIdUuid)
+                || ($0.id != 0 && $0.id == detail.id)
+            }) {
                 workReportObligations[idx] = detail
             }
         }
@@ -1420,7 +1469,8 @@ public final class MiniBiViewModel: ObservableObject {
             obligationIdUuid: editor.obligationIdUuid,
             expectedVersion: editor.submissionVersion,
             formPayload: editorFieldValues,
-            sections: editor.sections
+            sections: editor.sections,
+            fallback: editor
         )
         isSavingWorkReport = false
 
@@ -1434,15 +1484,13 @@ public final class MiniBiViewModel: ObservableObject {
             return
         }
 
-        // Validate required fields
-        for section in editor.sections {
-            for field in section.fields where field.required {
-                let val = (editorFieldValues[field.id] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-                if val.isEmpty {
-                    showBanner("Vui lòng nhập trường bắt buộc: \(field.label)", isError: true)
-                    return
-                }
-            }
+        // Validate required fields (boolean toggle fields are valid at both "Có / Đạt" and "Không")
+        if let validationError = WorkReportsContract.validateFormPayloadForSubmit(
+            formPayload: editorFieldValues,
+            sections: editor.sections
+        ) {
+            showBanner(validationError, isError: true)
+            return
         }
 
         isSavingWorkReport = true
@@ -1450,7 +1498,8 @@ public final class MiniBiViewModel: ObservableObject {
             obligationIdUuid: editor.obligationIdUuid,
             expectedVersion: editor.submissionVersion,
             formPayload: editorFieldValues,
-            sections: editor.sections
+            sections: editor.sections,
+            fallback: editor
         )
         isSavingWorkReport = false
 
@@ -1465,7 +1514,7 @@ public final class MiniBiViewModel: ObservableObject {
         switch result {
         case .success(let updated, _):
             var merged = updated
-            if merged.id == 0 { merged = currentEditor }
+            if merged.id == 0 && merged.obligationIdUuid.isEmpty { merged = currentEditor }
             if merged.sections.isEmpty { merged.sections = currentEditor.sections }
             if merged.formPayload.isEmpty { merged.formPayload = editorFieldValues }
             if isFinalSubmit {
@@ -1474,8 +1523,11 @@ public final class MiniBiViewModel: ObservableObject {
                 merged.submissionState = WorkReportsContract.stateDraft
             }
             selectedObligationEditor = merged
-            editorFieldValues = merged.formPayload
-            if let idx = workReportObligations.firstIndex(where: { $0.id == currentEditor.id || $0.obligationIdUuid == currentEditor.obligationIdUuid }) {
+            editorFieldValues = Self.seedDefaultFieldValues(base: merged.formPayload, sections: merged.sections)
+            if let idx = workReportObligations.firstIndex(where: {
+                (!currentEditor.obligationIdUuid.isEmpty && $0.obligationIdUuid == currentEditor.obligationIdUuid)
+                || ($0.id != 0 && $0.id == currentEditor.id)
+            }) {
                 workReportObligations[idx] = merged
             }
             showBanner(isFinalSubmit ? "Đã nộp báo cáo công việc thành công." : "Đã lưu bản nháp báo cáo.")
@@ -1492,18 +1544,27 @@ public final class MiniBiViewModel: ObservableObject {
                 lockedEditor.isOverdue = true
                 selectedObligationEditor = lockedEditor
                 // 3. Move item in obligations list to History tab and reload from server
-                if let idx = workReportObligations.firstIndex(where: { $0.id == currentEditor.id || $0.obligationIdUuid == currentEditor.obligationIdUuid }) {
+                if let idx = workReportObligations.firstIndex(where: {
+                    (!currentEditor.obligationIdUuid.isEmpty && $0.obligationIdUuid == currentEditor.obligationIdUuid)
+                    || ($0.id != 0 && $0.id == currentEditor.id)
+                }) {
                     workReportObligations[idx].isOverdue = true
                 }
                 await loadWorkReportObligations()
             } else if httpStatus == 409 {
                 // Version conflict (NOT deadline passed): reload latest version without locking as overdue
                 showBanner(message, isError: true)
-                let detailRes = await workReportsService.fetchObligationDetail(obligationIdUuid: currentEditor.obligationIdUuid)
+                let detailRes = await workReportsService.fetchObligationDetail(
+                    obligationIdUuid: currentEditor.obligationIdUuid,
+                    fallback: currentEditor
+                )
                 if case .success(let refreshed, _) = detailRes {
                     selectedObligationEditor = refreshed
-                    editorFieldValues = refreshed.formPayload
-                    if let idx = workReportObligations.firstIndex(where: { $0.id == refreshed.id || $0.obligationIdUuid == refreshed.obligationIdUuid }) {
+                    editorFieldValues = Self.seedDefaultFieldValues(base: refreshed.formPayload, sections: refreshed.sections)
+                    if let idx = workReportObligations.firstIndex(where: {
+                        (!refreshed.obligationIdUuid.isEmpty && $0.obligationIdUuid == refreshed.obligationIdUuid)
+                        || ($0.id != 0 && $0.id == refreshed.id)
+                    }) {
                         workReportObligations[idx] = refreshed
                     }
                 }
@@ -1518,8 +1579,9 @@ public final class MiniBiViewModel: ObservableObject {
         decision: String,
         comment: String
     ) async {
+        let targetObligationId = review.obligationIdUuid.isEmpty ? review.submissionIdUuid : review.obligationIdUuid
         let res = await workReportsService.decideReview(
-            submissionIdUuid: review.submissionIdUuid,
+            submissionIdUuid: targetObligationId,
             decision: decision,
             comment: comment,
             expectedVersion: review.version
