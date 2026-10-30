@@ -693,12 +693,40 @@ public final class MiniBiRepository {
         let entryId = obj.optString("entry_id", "id", "employee_code", "ma_nld", "worker_code")
         let entryVersion = obj.optInt("entry_version", "version", defaultValue: 1)
 
-        let projectName = projectObj?.optString("display", "display_name", "name", "project_id")
+        let projectId = projectObj?.optString("project_id", "id") ?? obj.optString("project_id")
+        let recruiterId = recruiterObj?.optString("recruiter_id", "id") ?? obj.optString("recruiter_id")
+        let laborTypeKey = obj.optString("labor_type", "labor_type_key")
+        let catalog = DirectEntryService.shared.lastLoadedCatalog
+
+        let rawProjectName = projectObj?.optString("display", "display_name", "name", "project_id")
             ?? obj.optString("project_display", "du_an", "project_name", "project", "project_id")
-        let recruiterName = recruiterObj?.optString("display", "display_name", "name", "recruiter_id")
-            ?? obj.optString("recruiter_display", "nguoi_tuyen", "recruiter_name", "recruiter", "recruiter_id")
+        let projectName: String = {
+            if (rawProjectName.isEmpty || rawProjectName == projectId),
+               let matchedProj = catalog?.projects.first(where: { $0.id.caseInsensitiveCompare(projectId) == .orderedSame }) {
+                return matchedProj.name
+            }
+            return rawProjectName
+        }()
+
+        let rawRecruiterName = recruiterObj?.optString("display", "display_name", "name")
+            ?? obj.optString("recruiter_display", "nguoi_tuyen", "recruiter_name", "recruiter")
+        let recruiterName: String = {
+            if !rawRecruiterName.isEmpty && !WorkerItem.isUuidLike(rawRecruiterName) {
+                return rawRecruiterName
+            }
+            if !recruiterId.isEmpty,
+               let matchedRec = catalog?.recruiters.first(where: { $0.id.caseInsensitiveCompare(recruiterId) == .orderedSame }) {
+                return matchedRec.name
+            }
+            return ""
+        }()
+
         let managerName = managerObj?.optString("display", "display_name", "name", "manager_id")
             ?? obj.optString("quan_ly", "manager_name", "manager")
+        let cleanManagerName = WorkerItem.isUuidLike(managerName) ? "" : managerName
+
+        let displayName = Self.extractProvidedFieldValue(workerDetailsObj, "display_name", "ho_ten", "full_name", "name")
+            .ifEmpty(obj.optString("display_name", "ho_ten", "full_name", "name"))
 
         let phone = Self.extractProvidedFieldValue(workerDetailsObj, "phone", "phone_number", "sdt")
             .ifEmpty(obj.optString("phone_number", "sdt", "so_dien_thoai", "phone"))
@@ -731,8 +759,10 @@ public final class MiniBiRepository {
         var frontUrl = obj.optNullableString("cccd_front_url", "mat_truoc_cccd_url")
         var backUrl = obj.optNullableString("cccd_back_url", "mat_sau_cccd_url")
         for doc in obj.optObjectArray("documents") {
-            let docType = doc.optString("doc_type", "type").uppercased()
+            let docType = doc.optString("doc_type", "type", "document_type").uppercased()
+            let docId = doc.optString("document_id", "doc_id", "id")
             let url = doc.optNullableString("download_url", "file_url", "url", "file_name")
+                ?? (!entryId.isEmpty && !docId.isEmpty ? "/api/direct-entry/entries/\(entryId)/documents/\(docId)/download" : nil)
             if let url {
                 if docType == "CCCD_FRONT" && frontUrl == nil { frontUrl = url }
                 else if docType == "CCCD_BACK" && backUrl == nil { backUrl = url }
@@ -746,18 +776,22 @@ public final class MiniBiRepository {
         let canProposeChange = allowedActionsObj?.optBool("propose_change", defaultValue: false) ?? false
         let canDirectEdit = allowedActionsObj?.optBool("direct_edit", defaultValue: false) ?? false
         let isProjectManager = obj.optBool("is_project_manager", defaultValue: false)
-        let projectId = projectObj?.optString("project_id", "id") ?? obj.optString("project_id")
-        let recruiterId = recruiterObj?.optString("recruiter_id", "id") ?? obj.optString("recruiter_id")
-        let laborTypeKey = obj.optString("labor_type", "labor_type_key")
         let cleanStatusCode = ["ON", "OFF", "UNCONFIRMED"].contains(employmentStatusRaw) ? employmentStatusRaw : "ON"
+
+        let rawLaborTypeDisplay = obj.optString("labor_type_display", "labor_type", "nganh_nghe", "job_title")
+        let laborTypeDisplay: String = {
+            if rawLaborTypeDisplay.lowercased() == "thoi_vu" { return "Thời vụ" }
+            if rawLaborTypeDisplay.lowercased() == "chinh_thuc" { return "Chính thức" }
+            return rawLaborTypeDisplay
+        }()
 
         return WorkerItem(
             maNld: entryId,
             employeeCode: cleanEmployeeCode,
             entryVersion: entryVersion,
-            hoTen: obj.optString("display_name", "ho_ten", "full_name", "name"),
+            hoTen: displayName,
             duAn: projectName,
-            quanLy: managerName,
+            quanLy: cleanManagerName,
             nguoiTuyen: recruiterName,
             ngayVaoLam: obj.optString("first_work_date", "ngay_vao_lam", "start_date"),
             ngayNghiViec: obj.optString("ngay_nghi_viec", "resign_date", "off_date").ifEmpty(employmentStatusRaw == "OFF" ? offDate : ""),
@@ -768,7 +802,7 @@ public final class MiniBiRepository {
             gioiTinh: genderDisplay,
             queQuan: address,
             ngayCap: issueDate,
-            nganhNghe: obj.optString("labor_type_display", "labor_type", "nganh_nghe", "job_title"),
+            nganhNghe: laborTypeDisplay,
             nhom: obj.optString("nhom", "team_name", "team_display"),
             soTaiKhoan: accountNumber,
             nganHang: bankName,

@@ -1249,6 +1249,71 @@ final class HRPBTests: XCTestCase {
         XCTAssertEqual(historyResp.totalAmountVnd, "3500000")
         XCTAssertEqual(historyResp.items.first?.requestId, "SA-202610-0001")
         XCTAssertTrue(historyResp.hasMore)
+
+        // 4. Portrait in `entry.worker_portrait.current` (outside `entry.documents`) must populate `WORKER_PORTRAIT` in `detail.documents`
+        let prodEntryWithPortraitCurrent: [String: Any] = [
+            "entry": [
+                "entry_id": "entry-uuid-portrait-1",
+                "version": 4,
+                "employee_code": "hrp-2026-002072",
+                "project_id": "proj-dkt",
+                "recruiter_id": "09a6060b-3c44-4a1e-8b5c-fab2dd1ccb13",
+                "worker_details": [
+                    "display_name": "Nguyễn Duy Minh Anh",
+                    "national_id": ["state": "provided", "value": "026208007813"]
+                ],
+                "worker_portrait": [
+                    "current": [
+                        "document_id": "doc-portrait-uuid-99",
+                        "version": 2,
+                        "upload_status": "READY"
+                    ]
+                ],
+                "documents": [
+                    [
+                        "document_id": "doc-front-uuid-1",
+                        "document_type": "CCCD_FRONT",
+                        "upload_status": "READY",
+                        "version": 1
+                    ],
+                    [
+                        "document_id": "doc-back-uuid-2",
+                        "document_type": "CCCD_BACK",
+                        "upload_status": "READY",
+                        "version": 1
+                    ]
+                ]
+            ]
+        ]
+        let parsedWithPortrait = DirectEntryService.parseWorkerEntryDetail(prodEntryWithPortraitCurrent)
+        XCTAssertEqual(parsedWithPortrait.hoTen, "Nguyễn Duy Minh Anh")
+        XCTAssertEqual(
+            parsedWithPortrait.portraitPreviewPath,
+            "/api/direct-entry/entries/entry-uuid-portrait-1/documents/doc-portrait-uuid-99/preview"
+        )
+        let portraitDoc = parsedWithPortrait.documents.first(where: { $0.docType == "WORKER_PORTRAIT" })
+        XCTAssertNotNil(portraitDoc)
+        XCTAssertEqual(portraitDoc?.hasFile, true)
+        XCTAssertEqual(
+            portraitDoc?.previewPath,
+            "/api/direct-entry/entries/entry-uuid-portrait-1/documents/doc-portrait-uuid-99/preview"
+        )
+
+        // 5. Accent-insensitive worker search & Request Detail / Attention evaluation
+        XCTAssertTrue(
+            SalaryAdvanceContract.matchesWorkerSearchQuery(
+                worker: selectable[0],
+                query: "nguyen hop le",
+                eligibilityFilter: "ELIGIBLE"
+            )
+        )
+        XCTAssertFalse(
+            SalaryAdvanceContract.matchesWorkerSearchQuery(
+                worker: selectable[0],
+                query: "nguyen hop le",
+                eligibilityFilter: "INELIGIBLE"
+            )
+        )
     }
 
     // MARK: - Helper

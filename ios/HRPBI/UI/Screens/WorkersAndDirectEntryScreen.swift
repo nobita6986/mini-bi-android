@@ -112,6 +112,9 @@ public struct DirectEntryNewWorkersScreen: View {
                 }
                 .padding(14)
             }
+            .refreshable {
+                await viewModel.loadDirectEntryAssigneeOptions()
+            }
         }
         .background(theme.background)
         .dismissKeyboardOnTapOutside()
@@ -1366,6 +1369,122 @@ struct DirectEntryBatchHistorySheet: View {
     }
 }
 
+// MARK: - Authenticated Remote Image View (Loads Backend Image Bytes with Session Cookie)
+
+public struct AuthenticatedRemoteImageView: View {
+    public let path: String
+    public let maxHeight: CGFloat
+    public let contentMode: ContentMode
+
+    @State private var loadedImage: UIImage?
+    @State private var isLoading: Bool = false
+    @State private var loadFailed: Bool = false
+    @State private var showFullPreview: Bool = false
+
+    public init(path: String, maxHeight: CGFloat = 180, contentMode: ContentMode = .fit) {
+        self.path = path
+        self.maxHeight = maxHeight
+        self.contentMode = contentMode
+    }
+
+    public var body: some View {
+        Group {
+            if let img = loadedImage {
+                Button {
+                    showFullPreview = true
+                } label: {
+                    Image(uiImage: img)
+                        .resizable()
+                        .aspectRatio(contentMode: contentMode)
+                        .frame(maxWidth: .infinity, maxHeight: maxHeight)
+                        .clipped()
+                        .background(Color(hex: 0xF8FAFC))
+                        .cornerRadius(8)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8)
+                                .stroke(SemanticColors.borderSubtle, lineWidth: 1)
+                        )
+                }
+                .buttonStyle(.plain)
+                .sheet(isPresented: $showFullPreview) {
+                    NavigationStack {
+                        ZStack {
+                            Color.black.ignoresSafeArea()
+                            Image(uiImage: img)
+                                .resizable()
+                                .aspectRatio(contentMode: .fit)
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                                .padding(8)
+                        }
+                        .navigationTitle("Xem ảnh đính kèm")
+                        .navigationBarTitleDisplayMode(.inline)
+                        .toolbar {
+                            ToolbarItem(placement: .cancellationAction) {
+                                Button("Đóng") { showFullPreview = false }
+                            }
+                        }
+                    }
+                }
+            } else if isLoading {
+                HStack(spacing: 8) {
+                    ProgressView()
+                        .scaleEffect(0.85)
+                    Text("Đang tải ảnh từ hệ thống...")
+                        .font(.caption)
+                        .foregroundColor(SemanticColors.textSecondary)
+                }
+                .frame(maxWidth: .infinity)
+                .frame(height: min(maxHeight, 100))
+                .background(Color(hex: 0xF8FAFC))
+                .cornerRadius(8)
+            } else if loadFailed {
+                HStack(spacing: 6) {
+                    Image(systemName: "photo.badge.exclamationmark")
+                        .foregroundColor(SemanticColors.textMuted)
+                    Text("Không tải được ảnh xem trước")
+                        .font(.caption)
+                        .foregroundColor(SemanticColors.textMuted)
+                    Spacer()
+                    Button("Thử lại") {
+                        Task { await loadRemoteImage(forceReload: true) }
+                    }
+                    .font(.caption2.weight(.bold))
+                }
+                .padding(10)
+                .frame(maxWidth: .infinity)
+                .background(Color(hex: 0xF8FAFC))
+                .cornerRadius(8)
+            } else {
+                Color.clear.frame(height: 1)
+            }
+        }
+        .task(id: path) {
+            await loadRemoteImage(forceReload: false)
+        }
+    }
+
+    private func loadRemoteImage(forceReload: Bool) async {
+        let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            loadedImage = nil
+            isLoading = false
+            loadFailed = false
+            return
+        }
+        isLoading = true
+        loadFailed = false
+        let res = await BackendHttpClient.shared.fetchBinaryData(path: trimmed, useCache: !forceReload)
+        isLoading = false
+        if case .success(let (data, _), _) = res, let uiImg = UIImage(data: data) {
+            loadedImage = uiImg
+            loadFailed = false
+        } else {
+            loadedImage = nil
+            loadFailed = true
+        }
+    }
+}
+
 // MARK: - Workers Management Screen ("Nhân sự")
 
 public struct WorkersScreen: View {
@@ -1387,221 +1506,237 @@ public struct WorkersScreen: View {
     public var body: some View {
         let theme = viewModel.selectedTheme
 
-        VStack(spacing: 0) {
-            // Scope Chips
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
-                    ForEach(scopes, id: \.0) { code, label in
-                        let selected = viewModel.selectedWorkerScope == code
-                        Button {
-                            viewModel.selectedWorkerScope = code
-                            Task { await viewModel.loadWorkers(resetPage: true) }
-                        } label: {
-                            Text(label)
-                                .font(.caption.weight(selected ? .bold : .medium))
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 7)
-                                .background(selected ? theme.primary : Color(hex: 0xF1F5F9))
-                                .foregroundColor(selected ? .white : SemanticColors.textSecondary)
-                                .clipShape(Capsule())
+        Group {
+            if viewModel.salaryAdvanceSheetOpen {
+                SalaryAdvanceWorkspaceView(viewModel: viewModel)
+            } else {
+                VStack(spacing: 0) {
+                    // Scope Chips
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 8) {
+                            ForEach(scopes, id: \.0) { code, label in
+                                let selected = viewModel.selectedWorkerScope == code
+                                Button {
+                                    viewModel.selectedWorkerScope = code
+                                    Task { await viewModel.loadWorkers(resetPage: true) }
+                                } label: {
+                                    Text(label)
+                                        .font(.caption.weight(selected ? .bold : .medium))
+                                        .padding(.horizontal, 12)
+                                        .padding(.vertical, 7)
+                                        .background(selected ? theme.primary : Color(hex: 0xF1F5F9))
+                                        .foregroundColor(selected ? .white : SemanticColors.textSecondary)
+                                        .clipShape(Capsule())
+                                }
+                                .buttonStyle(.plain)
+                            }
                         }
-                        .buttonStyle(.plain)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 10)
                     }
-                }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
-            }
-            .background(Color.white)
+                    .background(Color.white)
 
-            // QLDA Salary Advance Entry Button (Right below scope chips, right above search input)
-            if viewModel.canShowPmSalaryAdvanceButton {
-                HStack {
-                    Button {
-                        KeyboardDismissal.dismiss()
-                        Task { await viewModel.openSalaryAdvanceSheet() }
-                    } label: {
-                        HStack(spacing: 6) {
-                            Image(systemName: "banknote.fill")
-                            Text("Ứng lương")
-                                .font(.caption.weight(.bold))
-                            Spacer()
-                            Text("Tạo đề nghị ứng lương cho NLĐ dự án quản lý")
-                                .font(.caption2)
-                                .opacity(0.9)
-                            Image(systemName: "chevron.right")
-                                .font(.caption2.weight(.bold))
+                    // QLDA Salary Advance Entry Button (Right below scope chips, right above search input)
+                    if viewModel.canShowPmSalaryAdvanceButton {
+                        HStack {
+                            Button {
+                                KeyboardDismissal.dismiss()
+                                Task { await viewModel.openSalaryAdvanceSheet() }
+                            } label: {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "banknote.fill")
+                                    Text("Ứng lương")
+                                        .font(.caption.weight(.bold))
+                                    if viewModel.salaryAdvancePmBadgeCount > 0 {
+                                        Text("\(viewModel.salaryAdvancePmBadgeCount) cần xử lý")
+                                            .font(.caption2.weight(.bold))
+                                            .padding(.horizontal, 7)
+                                            .padding(.vertical, 2)
+                                            .background(Color.white.opacity(0.22))
+                                            .foregroundColor(.white)
+                                            .clipShape(Capsule())
+                                    }
+                                    Spacer()
+                                    Text("Tạo đề nghị & quản lý ứng lương")
+                                        .font(.caption2)
+                                        .opacity(0.9)
+                                        .lineLimit(1)
+                                    Image(systemName: "chevron.right")
+                                        .font(.caption2.weight(.bold))
+                                }
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 9)
+                                .background(theme.primary)
+                                .foregroundColor(.white)
+                                .cornerRadius(8)
+                            }
+                            .buttonStyle(.plain)
                         }
+                        .padding(.horizontal, 14)
+                        .padding(.bottom, 8)
+                        .background(Color.white)
+                    }
+
+                    // Search & Export Bar
+                    HStack(spacing: 8) {
+                        HStack {
+                            Image(systemName: "magnifyingglass")
+                                .foregroundColor(SemanticColors.textMuted)
+                            TextField("Tìm họ tên, mã NLĐ, CCCD, SĐT...", text: $viewModel.workerSearchQuery)
+                                .submitLabel(.search)
+                                .font(.caption)
+                                .foregroundColor(SemanticColors.textPrimary)
+                                .onSubmit {
+                                    KeyboardDismissal.dismiss()
+                                    Task { await viewModel.loadWorkers(resetPage: true) }
+                                }
+                        }
+                        .padding(9)
+                        .background(Color(hex: 0xF8FAFC))
+                        .cornerRadius(8)
+
+                        Button("Tìm") {
+                            KeyboardDismissal.dismiss()
+                            Task { await viewModel.loadWorkers(resetPage: true) }
+                        }
+                        .font(.caption.weight(.bold))
                         .padding(.horizontal, 12)
                         .padding(.vertical, 9)
                         .background(theme.primary)
                         .foregroundColor(.white)
                         .cornerRadius(8)
-                    }
-                    .buttonStyle(.plain)
-                }
-                .padding(.horizontal, 14)
-                .padding(.bottom, 8)
-                .background(Color.white)
-            }
 
-            // Search & Export Bar
-            HStack(spacing: 8) {
-                HStack {
-                    Image(systemName: "magnifyingglass")
-                        .foregroundColor(SemanticColors.textMuted)
-                    TextField("Tìm họ tên, mã NLĐ, CCCD, SĐT...", text: $viewModel.workerSearchQuery)
-                        .submitLabel(.search)
-                        .font(.caption)
-                        .foregroundColor(SemanticColors.textPrimary)
-                        .onSubmit {
-                            KeyboardDismissal.dismiss()
-                            Task { await viewModel.loadWorkers(resetPage: true) }
-                        }
-                }
-                .padding(9)
-                .background(Color(hex: 0xF8FAFC))
-                .cornerRadius(8)
-
-                Button("Tìm") {
-                    KeyboardDismissal.dismiss()
-                    Task { await viewModel.loadWorkers(resetPage: true) }
-                }
-                .font(.caption.weight(.bold))
-                .padding(.horizontal, 12)
-                .padding(.vertical, 9)
-                .background(theme.primary)
-                .foregroundColor(.white)
-                .cornerRadius(8)
-
-                Button {
-                    Task {
-                        let res = await viewModel.repository.exportWorkersExcel(
-                            scope: viewModel.selectedWorkerScope,
-                            search: viewModel.workerSearchQuery,
-                            project: viewModel.workerProjectFilter
-                        )
-                        if case .success(let url, _) = res {
-                            exportedShareUrl = url
-                        } else if case .failure(let msg, _, _, _) = res {
-                            viewModel.showBanner(msg, isError: true)
-                        }
-                    }
-                } label: {
-                    Image(systemName: "square.and.arrow.up")
-                        .font(.caption.weight(.bold))
-                        .padding(9)
-                        .background(theme.primaryLight)
-                        .foregroundColor(theme.primary)
-                        .cornerRadius(8)
-                }
-            }
-            .padding(.horizontal, 14)
-            .padding(.bottom, 10)
-            .background(Color.white)
-
-            Divider()
-
-            // Workers List
-            ScrollView {
-                VStack(spacing: 10) {
-                    if viewModel.isLoadingWorkers {
-                        ProgressView("Đang tải danh sách nhân sự...")
-                            .padding(.vertical, 20)
-                    } else if viewModel.workers.isEmpty {
-                        Text("Không tìm thấy hồ sơ người lao động phù hợp.")
-                            .font(.subheadline)
-                            .foregroundColor(SemanticColors.textSecondary)
-                            .padding(.vertical, 32)
-                    } else {
-                        ForEach(viewModel.workers) { worker in
-                            VStack(alignment: .leading, spacing: 8) {
-                                HStack {
-                                    Text(worker.displayEmployeeCode.isEmpty ? worker.hoTen : "\(worker.hoTen) (\(worker.displayEmployeeCode))")
-                                        .font(.subheadline.weight(.bold))
-                                        .foregroundColor(SemanticColors.textPrimary)
-                                    Spacer()
-                                    Text(worker.trangThai)
-                                        .font(.caption2.weight(.bold))
-                                        .padding(.horizontal, 8)
-                                        .padding(.vertical, 4)
-                                        .background(worker.trangThai.contains("Đang") ? SemanticColors.successBg : SemanticColors.warningBg)
-                                        .foregroundColor(worker.trangThai.contains("Đang") ? SemanticColors.successText : SemanticColors.warningText)
-                                        .clipShape(Capsule())
-                                }
-
-                                Text("Dự án: \(worker.duAn) · Quản lý: \(worker.quanLy) · Tuyển: \(worker.nguoiTuyen)")
-                                    .font(.caption)
-                                    .foregroundColor(SemanticColors.textSecondary)
-
-                                HStack(spacing: 12) {
-                                    Text("CCCD: \(worker.soCccd.isEmpty ? "—" : worker.soCccd)")
-                                        .font(.caption2)
-                                        .foregroundColor(SemanticColors.textMuted)
-                                    Text("SĐT: \(worker.sdt.isEmpty ? "—" : worker.sdt)")
-                                        .font(.caption2)
-                                        .foregroundColor(SemanticColors.textMuted)
-                                    Spacer()
-                                    if worker.contractFileUrl != nil {
-                                        Label("Có HĐ", systemImage: "doc.text.fill")
-                                            .font(.caption2.weight(.semibold))
-                                            .foregroundColor(SemanticColors.successText)
-                                    }
-                                }
-
-                                Divider()
-
-                                HStack(spacing: 8) {
-                                    if worker.canView {
-                                        Button {
-                                            KeyboardDismissal.dismiss()
-                                            viewModel.selectedWorkerDetail = worker
-                                        } label: {
-                                            HStack(spacing: 4) {
-                                                Image(systemName: "eye")
-                                                Text("Xem chi tiết")
-                                            }
-                                            .font(.caption.weight(.semibold))
-                                            .padding(.horizontal, 12)
-                                            .padding(.vertical, 7)
-                                            .background(Color(hex: 0xF1F5F9))
-                                            .foregroundColor(SemanticColors.textPrimary)
-                                            .cornerRadius(8)
-                                        }
-                                        .buttonStyle(.plain)
-                                    }
-
-                                    if worker.canDirectEdit {
-                                        Button {
-                                            KeyboardDismissal.dismiss()
-                                            Task { await viewModel.openDirectEdit(worker) }
-                                        } label: {
-                                            HStack(spacing: 4) {
-                                                Image(systemName: "square.and.pencil")
-                                                Text("Sửa trực tiếp")
-                                            }
-                                            .font(.caption.weight(.bold))
-                                            .padding(.horizontal, 12)
-                                            .padding(.vertical, 7)
-                                            .background(theme.primary)
-                                            .foregroundColor(.white)
-                                            .cornerRadius(8)
-                                        }
-                                        .buttonStyle(.plain)
-                                    }
-
-                                    Spacer()
+                        Button {
+                            Task {
+                                let res = await viewModel.repository.exportWorkersExcel(
+                                    scope: viewModel.selectedWorkerScope,
+                                    search: viewModel.workerSearchQuery,
+                                    project: viewModel.workerProjectFilter
+                                )
+                                if case .success(let url, _) = res {
+                                    exportedShareUrl = url
+                                } else if case .failure(let msg, _, _, _) = res {
+                                    viewModel.showBanner(msg, isError: true)
                                 }
                             }
-                            .padding(14)
-                            .background(Color.white)
-                            .cornerRadius(12)
+                        } label: {
+                            Image(systemName: "square.and.arrow.up")
+                                .font(.caption.weight(.bold))
+                                .padding(9)
+                                .background(theme.primaryLight)
+                                .foregroundColor(theme.primary)
+                                .cornerRadius(8)
                         }
                     }
+                    .padding(.horizontal, 14)
+                    .padding(.bottom, 10)
+                    .background(Color.white)
+
+                    Divider()
+
+                    // Workers List
+                    ScrollView {
+                        VStack(spacing: 10) {
+                            if viewModel.isLoadingWorkers {
+                                ProgressView("Đang tải danh sách nhân sự...")
+                                    .padding(.vertical, 20)
+                            } else if viewModel.workers.isEmpty {
+                                Text("Không tìm thấy hồ sơ người lao động phù hợp.")
+                                    .font(.subheadline)
+                                    .foregroundColor(SemanticColors.textSecondary)
+                                    .padding(.vertical, 32)
+                            } else {
+                                ForEach(viewModel.workers) { worker in
+                                    VStack(alignment: .leading, spacing: 8) {
+                                        HStack {
+                                            Text(worker.displayEmployeeCode.isEmpty ? worker.hoTen : "\(worker.hoTen) (\(worker.displayEmployeeCode))")
+                                                .font(.subheadline.weight(.bold))
+                                                .foregroundColor(SemanticColors.textPrimary)
+                                            Spacer()
+                                            Text(worker.trangThai)
+                                                .font(.caption2.weight(.bold))
+                                                .padding(.horizontal, 8)
+                                                .padding(.vertical, 4)
+                                                .background(worker.trangThai.contains("Đang") ? SemanticColors.successBg : SemanticColors.warningBg)
+                                                .foregroundColor(worker.trangThai.contains("Đang") ? SemanticColors.successText : SemanticColors.warningText)
+                                                .clipShape(Capsule())
+                                        }
+
+                                        Text("Dự án: \(worker.duAn.isEmpty ? "—" : worker.duAn) · Tuyển: \(worker.nguoiTuyen.isEmpty ? "—" : worker.nguoiTuyen)")
+                                            .font(.caption)
+                                            .foregroundColor(SemanticColors.textSecondary)
+
+                                        HStack(spacing: 12) {
+                                            Text("CCCD: \(worker.soCccd.isEmpty ? "—" : worker.soCccd)")
+                                                .font(.caption2)
+                                                .foregroundColor(SemanticColors.textMuted)
+                                            Text("SĐT: \(worker.sdt.isEmpty ? "—" : worker.sdt)")
+                                                .font(.caption2)
+                                                .foregroundColor(SemanticColors.textMuted)
+                                            Spacer()
+                                            if worker.contractFileUrl != nil {
+                                                Label("Có HĐ", systemImage: "doc.text.fill")
+                                                    .font(.caption2.weight(.semibold))
+                                                    .foregroundColor(SemanticColors.successText)
+                                            }
+                                        }
+
+                                        Divider()
+
+                                        HStack(spacing: 8) {
+                                            if worker.canView {
+                                                Button {
+                                                    KeyboardDismissal.dismiss()
+                                                    viewModel.selectedWorkerDetail = worker
+                                                } label: {
+                                                    HStack(spacing: 4) {
+                                                        Image(systemName: "eye")
+                                                        Text("Xem chi tiết")
+                                                    }
+                                                    .font(.caption.weight(.semibold))
+                                                    .padding(.horizontal, 12)
+                                                    .padding(.vertical, 7)
+                                                    .background(Color(hex: 0xF1F5F9))
+                                                    .foregroundColor(SemanticColors.textPrimary)
+                                                    .cornerRadius(8)
+                                                }
+                                                .buttonStyle(.plain)
+                                            }
+
+                                            if worker.canDirectEdit {
+                                                Button {
+                                                    KeyboardDismissal.dismiss()
+                                                    Task { await viewModel.openDirectEdit(worker) }
+                                                } label: {
+                                                    HStack(spacing: 4) {
+                                                        Image(systemName: "square.and.pencil")
+                                                        Text("Sửa trực tiếp")
+                                                    }
+                                                    .font(.caption.weight(.bold))
+                                                    .padding(.horizontal, 12)
+                                                    .padding(.vertical, 7)
+                                                    .background(theme.primary)
+                                                    .foregroundColor(.white)
+                                                    .cornerRadius(8)
+                                                }
+                                                .buttonStyle(.plain)
+                                            }
+
+                                            Spacer()
+                                        }
+                                    }
+                                    .padding(14)
+                                    .background(Color.white)
+                                    .cornerRadius(12)
+                                }
+                            }
+                        }
+                        .padding(14)
+                    }
+                    .refreshable {
+                        await viewModel.loadWorkers(resetPage: false)
+                    }
                 }
-                .padding(14)
-            }
-            .refreshable {
-                await viewModel.loadWorkers(resetPage: false)
             }
         }
         .background(theme.background)
@@ -1619,9 +1754,6 @@ public struct WorkersScreen: View {
         }
         .sheet(item: $viewModel.directEditWorkerTarget) { worker in
             WorkerDirectEditSheet(viewModel: viewModel, worker: worker)
-        }
-        .sheet(isPresented: $viewModel.salaryAdvanceSheetOpen) {
-            SalaryAdvanceCreateRequestSheet(viewModel: viewModel)
         }
         .sheet(isPresented: Binding(
             get: { exportedShareUrl != nil },
@@ -1641,55 +1773,168 @@ struct WorkerDetailSheet: View {
     let worker: WorkerItem
     @Environment(\.dismiss) private var dismiss
 
+    @State private var entryDetail: WorkerEntryDetail?
+    @State private var isLoadingEntryDetail: Bool = false
+    @State private var downloadingDocType: String?
+    @State private var downloadedShareUrl: URL?
+
+    private func pickNonEmpty(_ candidates: String?...) -> String {
+        for candidate in candidates {
+            if let val = candidate?.trimmingCharacters(in: .whitespacesAndNewlines), !val.isEmpty {
+                return val
+            }
+        }
+        return ""
+    }
+
     var body: some View {
         let theme = viewModel.selectedTheme
+        let resolvedCode = pickNonEmpty(entryDetail?.maNld, worker.displayEmployeeCode, worker.maNld)
+        let resolvedName = pickNonEmpty(entryDetail?.hoTen, worker.hoTen)
+        let resolvedCccd = pickNonEmpty(entryDetail?.soCccd, worker.soCccd)
+        let resolvedDob = pickNonEmpty(entryDetail?.ngaySinh, worker.ngaySinh)
+        let resolvedGender = pickNonEmpty(entryDetail?.gioiTinh, worker.gioiTinh)
+        let resolvedIssueDate = pickNonEmpty(entryDetail?.ngayCapCccd, worker.ngayCapCccd)
+        let resolvedIssuePlace = pickNonEmpty(entryDetail?.noiCapCccd, worker.noiCapCccd)
+        let resolvedHometown = pickNonEmpty(entryDetail?.queQuan, worker.queQuan)
+        let resolvedPhone = pickNonEmpty(entryDetail?.sdt, worker.sdt)
+        let resolvedProject = pickNonEmpty(entryDetail?.duAn, worker.duAn)
+        let resolvedLaborType = pickNonEmpty(entryDetail?.nganhNghe, worker.nganhNghe)
+        let resolvedManager = pickNonEmpty(worker.quanLy)
+        let resolvedRecruiter = pickNonEmpty(entryDetail?.nguoiTuyen, worker.nguoiTuyen)
+        let resolvedStartDate = pickNonEmpty(entryDetail?.ngayVaoLam, worker.ngayVaoLam)
+        let resolvedStatus = pickNonEmpty(entryDetail?.trangThaiLabel, worker.trangThai)
+        let resolvedEffectiveDate = pickNonEmpty(entryDetail?.employmentEffectiveDate, worker.employmentEffectiveDate)
+        let resolvedHolder = pickNonEmpty(entryDetail?.chuTaiKhoan, worker.chuTaiKhoan)
+        let resolvedAccount = pickNonEmpty(entryDetail?.soTaiKhoan, worker.soTaiKhoan)
+        let resolvedBank = pickNonEmpty(entryDetail?.nganHang, worker.nganHang)
+
+        let portraitDoc = entryDetail?.documents.first(where: { $0.docType == DirectEntryContract.docTypeWorkerPortrait })
+        let portraitPreviewPath = pickNonEmpty(entryDetail?.portraitPreviewPath, portraitDoc?.previewPath)
 
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text(worker.displayEmployeeCode.isEmpty ? worker.hoTen : "\(worker.hoTen) (\(worker.displayEmployeeCode))")
-                            .font(.title3.weight(.bold))
-                            .foregroundColor(SemanticColors.textPrimary)
-                        Text("Dự án: \(worker.duAn) · Trạng thái: \(worker.trangThai)")
-                            .font(.subheadline)
-                            .foregroundColor(SemanticColors.textSecondary)
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack(alignment: .top, spacing: 12) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(resolvedName.isEmpty ? "(\(resolvedCode))" : (resolvedCode.isEmpty ? resolvedName : "\(resolvedName) (\(resolvedCode))"))
+                                    .font(.title3.weight(.bold))
+                                    .foregroundColor(SemanticColors.textPrimary)
+                                Text("Dự án: \(resolvedProject.isEmpty ? "—" : resolvedProject) · Trạng thái: \(resolvedStatus.isEmpty ? "—" : resolvedStatus)")
+                                    .font(.subheadline)
+                                    .foregroundColor(SemanticColors.textSecondary)
+                            }
+                            Spacer()
+                            if isLoadingEntryDetail {
+                                ProgressView()
+                                    .scaleEffect(0.85)
+                            }
+                        }
+
+                        if !portraitPreviewPath.isEmpty {
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text("Ảnh chân dung NLĐ")
+                                    .font(.caption.weight(.bold))
+                                    .foregroundColor(theme.primary)
+                                AuthenticatedRemoteImageView(
+                                    path: portraitPreviewPath,
+                                    maxHeight: 220,
+                                    contentMode: .fit
+                                )
+                            }
+                            .padding(.top, 4)
+                        }
+
                         Divider()
                         Group {
-                            detailRow("Mã NLĐ", worker.displayEmployeeCode)
-                            detailRow("Họ và tên", worker.hoTen)
-                            detailRow("Số CCCD", worker.soCccd)
-                            detailRow("Ngày sinh", worker.ngaySinh)
-                            detailRow("Giới tính", worker.gioiTinh)
-                            detailRow("Ngày cấp CCCD", worker.ngayCapCccd)
-                            detailRow("Nơi cấp CCCD", worker.noiCapCccd)
-                            detailRow("Địa chỉ / Quê quán", worker.queQuan)
-                            detailRow("Số điện thoại", worker.sdt)
+                            detailRow("Mã NLĐ", resolvedCode)
+                            detailRow("Họ và tên", resolvedName)
+                            detailRow("Số CCCD", resolvedCccd)
+                            detailRow("Ngày sinh", resolvedDob)
+                            detailRow("Giới tính", resolvedGender)
+                            detailRow("Ngày cấp CCCD", resolvedIssueDate)
+                            detailRow("Nơi cấp CCCD", resolvedIssuePlace)
+                            detailRow("Địa chỉ / Quê quán", resolvedHometown)
+                            detailRow("Số điện thoại", resolvedPhone)
                         }
                         Divider()
                         Group {
-                            detailRow("Dự án", worker.duAn)
-                            detailRow("Loại hình lao động", worker.nganhNghe)
-                            detailRow("Quản lý", worker.quanLy)
-                            detailRow("Người tuyển", worker.nguoiTuyen)
-                            detailRow("Ngày vào làm", worker.ngayVaoLam)
-                            detailRow("Trạng thái", worker.trangThai)
-                            if !worker.employmentEffectiveDate.isEmpty {
-                                detailRow("Ngày hiệu lực", worker.employmentEffectiveDate)
+                            detailRow("Dự án", resolvedProject)
+                            detailRow("Loại hình lao động", resolvedLaborType)
+                            detailRow("Quản lý", resolvedManager)
+                            detailRow("Người tuyển", resolvedRecruiter)
+                            detailRow("Ngày vào làm", resolvedStartDate)
+                            detailRow("Trạng thái", resolvedStatus)
+                            if !resolvedEffectiveDate.isEmpty {
+                                detailRow("Ngày hiệu lực", resolvedEffectiveDate)
                             }
                         }
                         Divider()
                         Group {
-                            detailRow("Chủ tài khoản", worker.chuTaiKhoan)
-                            detailRow("Số tài khoản", worker.soTaiKhoan)
-                            detailRow("Ngân hàng", worker.nganHang)
+                            detailRow("Chủ tài khoản", resolvedHolder)
+                            detailRow("Số tài khoản", resolvedAccount)
+                            detailRow("Ngân hàng", resolvedBank)
                         }
+                    }
+                    .padding(14)
+                    .background(Color.white)
+                    .cornerRadius(12)
+
+                    // Hồ sơ & Ảnh đính kèm
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack {
+                            Text("Hồ sơ & Ảnh đính kèm")
+                                .font(.subheadline.weight(.bold))
+                                .foregroundColor(theme.primary)
+                            Spacer()
+                            if isLoadingEntryDetail {
+                                Text("Đang tải...")
+                                    .font(.caption2)
+                                    .foregroundColor(SemanticColors.textMuted)
+                            }
+                        }
+
+                        workerDetailDocumentCard(
+                            title: "1. Ảnh chân dung NLĐ",
+                            docType: DirectEntryContract.docTypeWorkerPortrait,
+                            doc: portraitDoc,
+                            fallbackPreviewPath: portraitPreviewPath,
+                            fallbackDownloadPath: entryDetail?.portraitDownloadPath
+                        )
+
+                        workerDetailDocumentCard(
+                            title: "2. CCCD mặt trước",
+                            docType: DirectEntryContract.docTypeCccdFront,
+                            doc: entryDetail?.documents.first(where: { $0.docType == DirectEntryContract.docTypeCccdFront }),
+                            fallbackPreviewPath: nil,
+                            fallbackDownloadPath: nil
+                        )
+
+                        workerDetailDocumentCard(
+                            title: "3. CCCD mặt sau",
+                            docType: DirectEntryContract.docTypeCccdBack,
+                            doc: entryDetail?.documents.first(where: { $0.docType == DirectEntryContract.docTypeCccdBack }),
+                            fallbackPreviewPath: nil,
+                            fallbackDownloadPath: nil
+                        )
+
+                        workerDetailDocumentCard(
+                            title: "4. Hợp đồng lao động",
+                            docType: DirectEntryContract.docTypeEmploymentContract,
+                            doc: entryDetail?.documents.first(where: { $0.docType == DirectEntryContract.docTypeEmploymentContract }),
+                            fallbackPreviewPath: nil,
+                            fallbackDownloadPath: worker.contractFileUrl
+                        )
                     }
                     .padding(14)
                     .background(Color.white)
                     .cornerRadius(12)
                 }
                 .padding(14)
+            }
+            .refreshable {
+                await loadFullWorkerDetail()
             }
             .background(theme.background)
             .navigationTitle("Chi tiết hồ sơ NLĐ")
@@ -1701,16 +1946,137 @@ struct WorkerDetailSheet: View {
                     }
                 }
             }
-            .onAppear {
-                if worker.soCccd.isEmpty && !worker.maNld.isEmpty {
-                    Task {
-                        let detailRes = await viewModel.repository.fetchWorkerDetail(maNld: worker.maNld)
-                        if case .success(let detailed, _) = detailRes {
-                            viewModel.selectedWorkerDetail = detailed
-                        }
-                    }
+            .task {
+                await loadFullWorkerDetail()
+            }
+            .sheet(isPresented: Binding(
+                get: { downloadedShareUrl != nil },
+                set: { if !$0 { downloadedShareUrl = nil } }
+            )) {
+                if let url = downloadedShareUrl {
+                    ActivityShareSheet(activityItems: [url])
                 }
             }
+        }
+    }
+
+    private func loadFullWorkerDetail() async {
+        let entryKey = worker.maNld.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? worker.id.trimmingCharacters(in: .whitespacesAndNewlines)
+            : worker.maNld.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !entryKey.isEmpty else { return }
+
+        isLoadingEntryDetail = true
+        let detailRes = await viewModel.directEntryService.fetchWorkerEntryDetail(entryId: entryKey)
+        isLoadingEntryDetail = false
+
+        if case .success(let loadedDetail, _) = detailRes {
+            entryDetail = loadedDetail
+        }
+    }
+
+    @ViewBuilder
+    private func workerDetailDocumentCard(
+        title: String,
+        docType: String,
+        doc: WorkerDocumentSummary?,
+        fallbackPreviewPath: String?,
+        fallbackDownloadPath: String?
+    ) -> some View {
+        let previewPath = pickNonEmpty(doc?.previewPath, fallbackPreviewPath)
+        let downloadPath = pickNonEmpty(doc?.downloadPath, fallbackDownloadPath, previewPath)
+        let hasFile = (doc?.hasFile == true) || !previewPath.isEmpty || !downloadPath.isEmpty
+
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text(title)
+                    .font(.caption.weight(.bold))
+                    .foregroundColor(SemanticColors.textPrimary)
+                Spacer()
+                Text(hasFile ? "Đã có tệp trên hệ thống" : "Chưa có tệp")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundColor(hasFile ? SemanticColors.successText : SemanticColors.textMuted)
+            }
+
+            if !previewPath.isEmpty && docType != DirectEntryContract.docTypeEmploymentContract {
+                AuthenticatedRemoteImageView(
+                    path: previewPath,
+                    maxHeight: 190,
+                    contentMode: .fit
+                )
+            }
+
+            if hasFile && !downloadPath.isEmpty {
+                HStack {
+                    Button {
+                        Task {
+                            await downloadAndShareDocument(
+                                docType: docType,
+                                path: downloadPath,
+                                suggestedFileName: doc?.fileName
+                            )
+                        }
+                    } label: {
+                        HStack(spacing: 5) {
+                            if downloadingDocType == docType {
+                                ProgressView().scaleEffect(0.75)
+                            } else {
+                                Image(systemName: "arrow.down.doc.fill")
+                            }
+                            Text(docType == DirectEntryContract.docTypeEmploymentContract ? "Xem / Tải hợp đồng" : "Tải / Chia sẻ ảnh")
+                        }
+                        .font(.caption2.weight(.semibold))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(Color.white)
+                        .foregroundColor(viewModel.selectedTheme.primary)
+                        .cornerRadius(6)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 6)
+                                .stroke(viewModel.selectedTheme.primary.opacity(0.35), lineWidth: 1)
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(downloadingDocType == docType)
+
+                    Spacer()
+                }
+            }
+        }
+        .padding(10)
+        .background(Color(hex: 0xF8FAFC))
+        .cornerRadius(8)
+    }
+
+    private func downloadAndShareDocument(
+        docType: String,
+        path: String,
+        suggestedFileName: String?
+    ) async {
+        downloadingDocType = docType
+        let res = await BackendHttpClient.shared.fetchBinaryData(path: path, useCache: false)
+        downloadingDocType = nil
+        switch res {
+        case .success(let (data, mime), _):
+            let ext: String
+            if mime.lowercased().contains("pdf") || docType == DirectEntryContract.docTypeEmploymentContract {
+                ext = "pdf"
+            } else if mime.lowercased().contains("png") {
+                ext = "png"
+            } else {
+                ext = "jpg"
+            }
+            let baseName = (suggestedFileName ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            let fileName = baseName.isEmpty ? "\(docType.lowercased())-\(Int(Date().timeIntervalSince1970)).\(ext)" : baseName
+            let tempUrl = FileManager.default.temporaryDirectory.appendingPathComponent(fileName)
+            do {
+                try data.write(to: tempUrl, options: .atomic)
+                downloadedShareUrl = tempUrl
+            } catch {
+                viewModel.showBanner("Không thể lưu tệp tạm để mở.", isError: true)
+            }
+        case .failure(let msg, _, _, _):
+            viewModel.showBanner(msg, isError: true)
         }
     }
 
@@ -1761,7 +2127,8 @@ struct WorkerDirectEditSheet: View {
                         VStack(alignment: .leading, spacing: 4) {
                             let code = detail?.maNld ?? worker.displayEmployeeCode
                             let ver = detail?.entryVersion ?? worker.entryVersion
-                            Text("\(detail?.hoTen ?? worker.hoTen)\(code.isEmpty ? "" : " (\(code))") · v\(ver)")
+                            let name = (detail?.hoTen ?? "").isEmpty ? worker.hoTen : (detail?.hoTen ?? "")
+                            Text("\(name)\(code.isEmpty ? "" : " (\(code))") · v\(ver)")
                                 .font(.caption.weight(.semibold))
                                 .foregroundColor(SemanticColors.textSecondary)
                         }
@@ -2227,6 +2594,7 @@ struct WorkerDirectEditSheet: View {
                 title: "1. Ảnh chân dung NLĐ",
                 docType: DirectEntryContract.docTypeWorkerPortrait,
                 existingDoc: detail.documents.first(where: { $0.docType == DirectEntryContract.docTypeWorkerPortrait }),
+                fallbackPreviewPath: detail.portraitPreviewPath,
                 pickerItem: $portraitPhotoItem
             )
 
@@ -2234,6 +2602,7 @@ struct WorkerDirectEditSheet: View {
                 title: "2. CCCD mặt trước",
                 docType: DirectEntryContract.docTypeCccdFront,
                 existingDoc: detail.documents.first(where: { $0.docType == DirectEntryContract.docTypeCccdFront }),
+                fallbackPreviewPath: nil,
                 pickerItem: $cccdFrontPhotoItem
             )
 
@@ -2241,6 +2610,7 @@ struct WorkerDirectEditSheet: View {
                 title: "3. CCCD mặt sau",
                 docType: DirectEntryContract.docTypeCccdBack,
                 existingDoc: detail.documents.first(where: { $0.docType == DirectEntryContract.docTypeCccdBack }),
+                fallbackPreviewPath: nil,
                 pickerItem: $cccdBackPhotoItem
             )
 
@@ -2355,18 +2725,51 @@ struct WorkerDirectEditSheet: View {
         title: String,
         docType: String,
         existingDoc: WorkerDocumentSummary?,
+        fallbackPreviewPath: String?,
         pickerItem: Binding<PhotosPickerItem?>
     ) -> some View {
         let currentStaged = stagedFiles[docType]?.first
-        return VStack(alignment: .leading, spacing: 6) {
+        let remotePreviewPath: String = {
+            if let p = existingDoc?.previewPath, !p.isEmpty { return p }
+            if let f = fallbackPreviewPath, !f.isEmpty { return f }
+            return ""
+        }()
+        let hasServerFile = (existingDoc?.hasFile == true) || !remotePreviewPath.isEmpty
+
+        return VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Text(title)
                     .font(.caption.weight(.bold))
                     .foregroundColor(SemanticColors.textPrimary)
                 Spacer()
-                Text(existingDoc?.hasFile == true ? "Đã có tệp trên hệ thống" : "Chưa có tệp")
-                    .font(.caption2.weight(.semibold))
-                    .foregroundColor(existingDoc?.hasFile == true ? SemanticColors.successText : SemanticColors.textMuted)
+                if currentStaged != nil {
+                    Text("Đã chọn tệp mới")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundColor(viewModel.selectedTheme.primary)
+                } else {
+                    Text(hasServerFile ? "Đã có tệp trên hệ thống" : "Chưa có tệp")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundColor(hasServerFile ? SemanticColors.successText : SemanticColors.textMuted)
+                }
+            }
+
+            if let currentStaged, let localUiImage = UIImage(data: currentStaged.data) {
+                Image(uiImage: localUiImage)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(maxWidth: .infinity, maxHeight: 150)
+                    .background(Color.white)
+                    .cornerRadius(8)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8)
+                            .stroke(viewModel.selectedTheme.primary.opacity(0.4), lineWidth: 1)
+                    )
+            } else if !remotePreviewPath.isEmpty {
+                AuthenticatedRemoteImageView(
+                    path: remotePreviewPath,
+                    maxHeight: 150,
+                    contentMode: .fit
+                )
             }
 
             HStack(spacing: 8) {
@@ -2483,419 +2886,1655 @@ struct WorkerDirectEditSheet: View {
     }
 }
 
-// MARK: - Salary Advance Create Request Sheet ("Ứng lương" for QLDA)
+// MARK: - Salary Advance Standalone Workspace ("Ứng lương" for QLDA)
 
-struct SalaryAdvanceCreateRequestSheet: View {
+struct SalaryAdvanceWorkspaceView: View {
     @ObservedObject var viewModel: MiniBiViewModel
-    @Environment(\.dismiss) private var dismiss
+
+    private enum FocusedField: Hashable {
+        case workerSearch
+        case amount
+        case initialContent
+        case listSearch
+        case actionNote
+        case evidenceCaption
+        case messageDraft
+    }
+
+    @FocusState private var focusedField: FocusedField?
+    @State private var listFilterExpanded: Bool = false
+    @State private var showWithdrawConfirmAlert: Bool = false
+    @State private var evidencePhotoItem: PhotosPickerItem?
+    @State private var showEvidenceCamera: Bool = false
 
     var body: some View {
         let theme = viewModel.selectedTheme
+        let activeTab = viewModel.salaryAdvanceWorkspaceTab
+        let isListMode = activeTab == "LIST" || activeTab == "DETAIL"
+        let requestCount = viewModel.salaryAdvanceRequests.count
+        let badgeCount = viewModel.salaryAdvancePmBadgeCount
+
+        VStack(spacing: 0) {
+            // Compact 2-Tab Navigation Bar (+ Tạo yêu cầu | Yêu cầu (N))
+            HStack(spacing: 8) {
+                Button {
+                    KeyboardDismissal.dismiss()
+                    viewModel.selectSalaryAdvanceWorkspaceTab("CREATE")
+                } label: {
+                    Text("+ Tạo yêu cầu")
+                        .font(.subheadline.weight(.bold))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 9)
+                        .background(!isListMode ? theme.primary : Color.white)
+                        .foregroundColor(!isListMode ? .white : SemanticColors.textPrimary)
+                        .cornerRadius(9)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 9)
+                                .stroke(!isListMode ? theme.primary : SemanticColors.borderSubtle, lineWidth: 1)
+                        )
+                }
+                .buttonStyle(.plain)
+
+                let listTabLabel: String = {
+                    if badgeCount > 0 {
+                        return "Yêu cầu (\(requestCount)) · \(badgeCount) cần xử lý"
+                    } else if requestCount > 0 {
+                        return "Yêu cầu (\(requestCount))"
+                    } else {
+                        return "Yêu cầu dự án"
+                    }
+                }()
+
+                Button {
+                    KeyboardDismissal.dismiss()
+                    viewModel.selectSalaryAdvanceWorkspaceTab("LIST")
+                } label: {
+                    Text(listTabLabel)
+                        .font(.subheadline.weight(.bold))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.85)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 9)
+                        .background(isListMode ? theme.primary : Color.white)
+                        .foregroundColor(isListMode ? .white : SemanticColors.textPrimary)
+                        .cornerRadius(9)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 9)
+                                .stroke(isListMode ? theme.primary : SemanticColors.borderSubtle, lineWidth: 1)
+                        )
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+            .background(Color.white)
+
+            Divider()
+
+            switch activeTab {
+            case "LIST":
+                requestListTab(theme: theme)
+            case "DETAIL":
+                requestDetailTab(theme: theme)
+            default:
+                createRequestTab(theme: theme)
+            }
+        }
+        .background(theme.background)
+        .sheet(isPresented: $viewModel.salaryAdvanceHistoryOpen) {
+            SalaryAdvanceWorkerHistorySheet(viewModel: viewModel)
+        }
+        .sheet(isPresented: $showEvidenceCamera) {
+            CameraPhotoCaptureSheet { capturedData in
+                Task {
+                    await viewModel.uploadSalaryAdvanceEvidenceData(
+                        capturedData,
+                        fileName: "chup-chung-tu-\(Int(Date().timeIntervalSince1970)).jpg"
+                    )
+                }
+            }
+        }
+        .alert("Xác nhận rút yêu cầu ứng lương?", isPresented: $showWithdrawConfirmAlert) {
+            Button("Hủy", role: .cancel) {}
+            Button("Xác nhận rút", role: .destructive) {
+                Task {
+                    await viewModel.submitSalaryAdvanceTransitionAction("WITHDRAW")
+                }
+            }
+        } message: {
+            Text("Sau khi rút, yêu cầu sẽ đóng vĩnh viễn và không thể khôi phục.")
+        }
+    }
+
+    // MARK: - Tab 1: `+ Tạo yêu cầu`
+
+    @ViewBuilder
+    private func createRequestTab(theme: MiniBiThemePalette) -> some View {
         let projects = viewModel.salaryAdvanceContext?.activeManagedProjects ?? []
+        let selectedProject = projects.first(where: { $0.projectId == viewModel.salaryAdvanceSelectedProjectId }) ?? projects.first
         let selectedWorker = viewModel.selectedSalaryAdvanceWorker
+        let trimmedQuery = viewModel.salaryAdvanceWorkerSearch.trimmingCharacters(in: .whitespacesAndNewlines)
 
-        NavigationStack {
-            VStack(spacing: 0) {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 14) {
-                        if let err = viewModel.salaryAdvanceCreateError, !err.isEmpty {
-                            Text(err)
-                                .font(.caption.weight(.bold))
-                                .foregroundColor(SemanticColors.dangerText)
-                                .padding(12)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .background(SemanticColors.dangerBg)
-                                .cornerRadius(10)
-                        }
+        let canSubmit: Bool = {
+            guard let worker = selectedWorker,
+                  selectedProject?.hasActiveAccountant != false,
+                  SalaryAdvanceContract.describeWorkerEligibility(worker).isEligible,
+                  !viewModel.salaryAdvanceCreateSubmitting,
+                  SalaryAdvanceContract.normalizePositiveVndInput(viewModel.salaryAdvanceAmountRaw) != nil,
+                  !viewModel.salaryAdvanceInitialContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                return false
+            }
+            if viewModel.salaryAdvancePaymentMethod == SalaryAdvanceContract.paymentMethodBankTransfer &&
+                !SalaryAdvanceContract.describeWorkerBankTransferEligibility(worker).canUseBankTransfer {
+                return false
+            }
+            return true
+        }()
 
-                        // Step 1: Chọn dự án quản lý
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text("1. Dự án quản lý")
-                                .font(.subheadline.weight(.bold))
-                                .foregroundColor(theme.primary)
+        ScrollViewReader { scrollProxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    if let err = viewModel.salaryAdvanceCreateError, !err.isEmpty {
+                        Text(err)
+                            .font(.caption.weight(.bold))
+                            .foregroundColor(SemanticColors.dangerText)
+                            .padding(12)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(SemanticColors.dangerBg)
+                            .cornerRadius(10)
+                    }
 
-                            ScrollView(.horizontal, showsIndicators: false) {
-                                HStack(spacing: 8) {
-                                    ForEach(projects) { project in
-                                        let isSelected = viewModel.salaryAdvanceSelectedProjectId == project.projectId
-                                        Button {
-                                            KeyboardDismissal.dismiss()
-                                            Task { await viewModel.selectSalaryAdvanceProject(project.projectId) }
-                                        } label: {
-                                            Text(project.displayName)
-                                                .font(.caption.weight(isSelected ? .bold : .medium))
-                                                .padding(.horizontal, 12)
-                                                .padding(.vertical, 8)
-                                                .background(isSelected ? theme.primary : Color(hex: 0xF1F5F9))
-                                                .foregroundColor(isSelected ? .white : SemanticColors.textPrimary)
-                                                .cornerRadius(8)
+                    // Card 1: Dự án quản lý & Tìm người lao động
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Dự án quản lý *")
+                            .font(.caption.weight(.bold))
+                            .foregroundColor(SemanticColors.textPrimary)
+
+                        Menu {
+                            ForEach(projects) { project in
+                                Button {
+                                    KeyboardDismissal.dismiss()
+                                    Task { await viewModel.selectSalaryAdvanceProject(project.projectId) }
+                                } label: {
+                                    HStack {
+                                        Text(project.displayName)
+                                        if project.projectId == selectedProject?.projectId {
+                                            Image(systemName: "checkmark")
                                         }
-                                        .buttonStyle(.plain)
                                     }
                                 }
                             }
-                        }
-                        .padding(14)
-                        .background(Color.white)
-                        .cornerRadius(12)
-
-                        // Step 2: Tìm & chọn NLĐ thuộc dự án
-                        VStack(alignment: .leading, spacing: 10) {
-                            Text("2. Chọn người lao động")
-                                .font(.subheadline.weight(.bold))
-                                .foregroundColor(theme.primary)
-
+                        } label: {
                             HStack {
-                                Image(systemName: "magnifyingglass")
+                                Text(selectedProject?.displayName ?? "Chọn dự án quản lý...")
+                                    .font(.subheadline.weight(.medium))
+                                    .foregroundColor(SemanticColors.textPrimary)
+                                    .lineLimit(1)
+                                Spacer()
+                                Image(systemName: "chevron.down")
+                                    .font(.caption)
                                     .foregroundColor(SemanticColors.textMuted)
-                                TextField(
-                                    "Tìm theo tên hoặc mã NLĐ...",
-                                    text: Binding(
-                                        get: { viewModel.salaryAdvanceWorkerSearch },
-                                        set: { viewModel.updateSalaryAdvanceWorkerSearch($0) }
-                                    )
-                                )
-                                .submitLabel(.search)
-                                .font(.subheadline)
-                                .foregroundColor(SemanticColors.textPrimary)
                             }
-                            .padding(10)
+                            .padding(11)
                             .background(Color(hex: 0xF8FAFC))
                             .cornerRadius(8)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .stroke(SemanticColors.borderSubtle, lineWidth: 1)
+                            )
+                        }
 
-                            if let workerErr = viewModel.salaryAdvanceWorkersError, !workerErr.isEmpty {
-                                Text(workerErr)
-                                    .font(.caption)
+                        if let proj = selectedProject {
+                            if !proj.hasActiveAccountant {
+                                Text("Dự án hiện chưa có Kế toán dự án đang hoạt động (không thể gửi đề nghị ứng lương).")
+                                    .font(.caption.weight(.semibold))
                                     .foregroundColor(SemanticColors.dangerText)
-                            }
-
-                            if viewModel.salaryAdvanceWorkersLoading {
-                                HStack {
-                                    Spacer()
-                                    ProgressView("Đang tải danh sách NLĐ...")
-                                        .padding(.vertical, 16)
-                                    Spacer()
-                                }
-                            } else if viewModel.salaryAdvanceWorkers.isEmpty {
-                                Text("Không có người lao động phù hợp trong dự án này.")
+                                    .padding(10)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .background(SemanticColors.dangerBg)
+                                    .cornerRadius(8)
+                            } else {
+                                let accNames = proj.accountantDisplayNames.joined(separator: ", ")
+                                Text("Kế toán phụ trách dự án: \(accNames.isEmpty ? "Đã phân công" : accNames)")
                                     .font(.caption)
                                     .foregroundColor(SemanticColors.textSecondary)
-                                    .padding(.vertical, 8)
+                            }
+                        }
+
+                        Divider()
+
+                        // Tìm người lao động ứng lương (Search-first lookup + Collapsible when selected)
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack {
+                                Text("Tìm người lao động ứng lương *")
+                                    .font(.caption.weight(.bold))
+                                    .foregroundColor(SemanticColors.textPrimary)
+                                Spacer()
+                                if selectedWorker != nil {
+                                    Button {
+                                        KeyboardDismissal.dismiss()
+                                        viewModel.expandSalaryAdvanceWorkerPicker(!viewModel.salaryAdvanceWorkerPickerExpanded)
+                                    } label: {
+                                        Text(viewModel.salaryAdvanceWorkerPickerExpanded ? "Thu gọn" : "Đổi NLĐ")
+                                            .font(.caption.weight(.bold))
+                                            .foregroundColor(theme.primary)
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                            }
+
+                            if let worker = selectedWorker, !viewModel.salaryAdvanceWorkerPickerExpanded {
+                                HStack(spacing: 8) {
+                                    Image(systemName: "checkmark.circle.fill")
+                                        .foregroundColor(SemanticColors.successText)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text("Đã chọn: \(worker.displayName)")
+                                            .font(.subheadline.weight(.bold))
+                                            .foregroundColor(SemanticColors.textPrimary)
+                                        Text("Mã NLĐ: \(worker.employeeCode) · Tuyển: \(SalaryAdvanceContract.formatWorkerRecruiterLabel(worker))")
+                                            .font(.caption2)
+                                            .foregroundColor(SemanticColors.textSecondary)
+                                    }
+                                    Spacer()
+                                    Button("Đổi") {
+                                        viewModel.expandSalaryAdvanceWorkerPicker(true)
+                                    }
+                                    .font(.caption.weight(.bold))
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 5)
+                                    .background(Color.white)
+                                    .foregroundColor(theme.primary)
+                                    .cornerRadius(6)
+                                }
+                                .padding(10)
+                                .background(SemanticColors.successBg)
+                                .cornerRadius(8)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 8)
+                                        .stroke(SemanticColors.successBorder, lineWidth: 1)
+                                )
                             } else {
-                                VStack(spacing: 8) {
-                                    ForEach(viewModel.salaryAdvanceWorkers) { item in
-                                        let isSelected = viewModel.salaryAdvanceSelectedWorkerId == item.workerEntryId
-                                        let eligibilityDesc = SalaryAdvanceContract.describeWorkerEligibility(item)
-                                        let recLabel = SalaryAdvanceContract.formatWorkerRecruiterLabel(item)
-                                        let workDateLabel = SalaryAdvanceContract.formatWorkDateVi(item.firstWorkDate)
+                                HStack(spacing: 8) {
+                                    Image(systemName: "magnifyingglass")
+                                        .foregroundColor(SemanticColors.textMuted)
+                                    TextField(
+                                        "Nhập họ tên hoặc mã NLĐ để tìm kiếm...",
+                                        text: Binding(
+                                            get: { viewModel.salaryAdvanceWorkerSearch },
+                                            set: { viewModel.updateSalaryAdvanceWorkerSearch($0) }
+                                        )
+                                    )
+                                    .focused($focusedField, equals: .workerSearch)
+                                    .submitLabel(.search)
+                                    .font(.subheadline)
+                                    .foregroundColor(SemanticColors.textPrimary)
+
+                                    if !viewModel.salaryAdvanceWorkerSearch.isEmpty {
                                         Button {
-                                            KeyboardDismissal.dismiss()
-                                            viewModel.selectSalaryAdvanceWorker(item.workerEntryId)
+                                            viewModel.updateSalaryAdvanceWorkerSearch("")
                                         } label: {
-                                            VStack(alignment: .leading, spacing: 4) {
-                                                HStack {
-                                                    Text(item.employeeCode.isEmpty ? item.displayName : "\(item.displayName) (\(item.employeeCode))")
-                                                        .font(.caption.weight(.bold))
-                                                        .foregroundColor(SemanticColors.textPrimary)
-                                                    Spacer()
-                                                    Text(eligibilityDesc.isEligible ? "Đủ điều kiện" : "Chưa đủ ĐK")
-                                                        .font(.caption2.weight(.bold))
-                                                        .padding(.horizontal, 8)
-                                                        .padding(.vertical, 3)
-                                                        .background(eligibilityDesc.isEligible ? SemanticColors.successBg : SemanticColors.warningBg)
-                                                        .foregroundColor(eligibilityDesc.isEligible ? SemanticColors.successText : SemanticColors.warningText)
-                                                        .clipShape(Capsule())
-                                                }
-                                                Text("Người tuyển: \(recLabel) · Ngày vào: \(workDateLabel)")
-                                                    .font(.caption2)
-                                                    .foregroundColor(SemanticColors.textSecondary)
-                                                if !eligibilityDesc.isEligible, let blockingMsg = eligibilityDesc.blockingMessage {
-                                                    Text(blockingMsg)
-                                                        .font(.caption2.weight(.semibold))
-                                                        .foregroundColor(SemanticColors.dangerText)
-                                                }
-                                            }
-                                            .padding(10)
-                                            .frame(maxWidth: .infinity, alignment: .leading)
-                                            .background(isSelected ? theme.primaryLight : Color(hex: 0xF8FAFC))
-                                            .overlay(
-                                                RoundedRectangle(cornerRadius: 8)
-                                                    .stroke(isSelected ? theme.primary : SemanticColors.borderSubtle, lineWidth: isSelected ? 1.5 : 1)
-                                            )
-                                            .cornerRadius(8)
+                                            Image(systemName: "xmark.circle.fill")
+                                                .foregroundColor(SemanticColors.textMuted)
                                         }
                                         .buttonStyle(.plain)
                                     }
+                                }
+                                .padding(10)
+                                .background(Color.white)
+                                .cornerRadius(8)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 8)
+                                        .stroke(SemanticColors.borderSubtle, lineWidth: 1)
+                                )
+                                .id(FocusedField.workerSearch)
 
-                                    if viewModel.salaryAdvanceWorkersHasMore {
-                                        Button {
-                                            Task { await viewModel.loadMoreSalaryAdvanceWorkers() }
-                                        } label: {
-                                            HStack {
-                                                if viewModel.salaryAdvanceWorkersLoadingMore {
-                                                    ProgressView().scaleEffect(0.8)
+                                if let workerErr = viewModel.salaryAdvanceWorkersError, !workerErr.isEmpty {
+                                    Text(workerErr)
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundColor(SemanticColors.dangerText)
+                                }
+
+                                if trimmedQuery.isEmpty {
+                                    Text("Nhập họ tên hoặc mã NLĐ vào ô tìm kiếm phía trên để tra cứu người lao động thuộc dự án.")
+                                        .font(.caption)
+                                        .foregroundColor(SemanticColors.textSecondary)
+                                        .padding(.vertical, 4)
+                                } else if viewModel.salaryAdvanceWorkersLoading {
+                                    HStack(spacing: 8) {
+                                        ProgressView().scaleEffect(0.85)
+                                        Text("Đang tìm người lao động theo từ khóa \"\(trimmedQuery)\"...")
+                                            .font(.caption)
+                                            .foregroundColor(SemanticColors.textSecondary)
+                                    }
+                                    .padding(.vertical, 8)
+                                } else {
+                                    let matchingWorkers = viewModel.salaryAdvanceWorkers.filter { w in
+                                        SalaryAdvanceContract.matchesWorkerSearchQuery(
+                                            worker: w,
+                                            query: trimmedQuery,
+                                            eligibilityFilter: viewModel.salaryAdvanceWorkerEligibilityFilter
+                                        )
+                                    }
+                                    let allForQuery = viewModel.salaryAdvanceWorkers.filter { w in
+                                        SalaryAdvanceContract.matchesWorkerSearchQuery(
+                                            worker: w,
+                                            query: trimmedQuery,
+                                            eligibilityFilter: "ALL"
+                                        )
+                                    }
+                                    let eligibleCount = allForQuery.filter { SalaryAdvanceContract.describeWorkerEligibility($0).isEligible }.count
+                                    let ineligibleCount = allForQuery.count - eligibleCount
+
+                                    ScrollView(.horizontal, showsIndicators: false) {
+                                        HStack(spacing: 6) {
+                                            ForEach(SalaryAdvanceContract.workerPickerEligibilityFilterOptions, id: \.0) { code, baseLabel in
+                                                let chipLabel: String = {
+                                                    switch code {
+                                                    case "ALL": return "\(baseLabel) (\(allForQuery.count))"
+                                                    case "ELIGIBLE": return "\(baseLabel) (\(eligibleCount))"
+                                                    case "INELIGIBLE": return "\(baseLabel) (\(ineligibleCount))"
+                                                    default: return baseLabel
+                                                    }
+                                                }()
+                                                let isSelected = viewModel.salaryAdvanceWorkerEligibilityFilter == code
+                                                Button {
+                                                    viewModel.updateSalaryAdvanceWorkerEligibilityFilter(code)
+                                                } label: {
+                                                    Text(chipLabel)
+                                                        .font(.caption2.weight(isSelected ? .bold : .medium))
+                                                        .padding(.horizontal, 10)
+                                                        .padding(.vertical, 5)
+                                                        .background(isSelected ? theme.primaryLight : Color.white)
+                                                        .foregroundColor(isSelected ? theme.primary : SemanticColors.textSecondary)
+                                                        .cornerRadius(6)
+                                                        .overlay(
+                                                            RoundedRectangle(cornerRadius: 6)
+                                                                .stroke(isSelected ? theme.primary : SemanticColors.borderSubtle, lineWidth: 1)
+                                                        )
                                                 }
-                                                Text("Tải thêm NLĐ")
-                                                    .font(.caption.weight(.bold))
+                                                .buttonStyle(.plain)
                                             }
-                                            .frame(maxWidth: .infinity)
-                                            .padding(.vertical, 8)
-                                            .background(Color(hex: 0xF1F5F9))
-                                            .foregroundColor(theme.primary)
-                                            .cornerRadius(8)
                                         }
-                                        .buttonStyle(.plain)
-                                        .disabled(viewModel.salaryAdvanceWorkersLoadingMore)
+                                    }
+
+                                    if matchingWorkers.isEmpty {
+                                        Text("Không tìm thấy NLĐ khớp với từ khóa \"\(trimmedQuery)\".")
+                                            .font(.caption)
+                                            .foregroundColor(SemanticColors.textSecondary)
+                                            .padding(.vertical, 6)
+                                    } else {
+                                        VStack(spacing: 6) {
+                                            ForEach(matchingWorkers) { item in
+                                                let isSelected = viewModel.salaryAdvanceSelectedWorkerId == item.workerEntryId
+                                                let eligibilityDesc = SalaryAdvanceContract.describeWorkerEligibility(item)
+                                                let recLabel = SalaryAdvanceContract.formatWorkerRecruiterLabel(item)
+                                                let workDateLabel = SalaryAdvanceContract.formatWorkDateVi(item.firstWorkDate)
+                                                Button {
+                                                    KeyboardDismissal.dismiss()
+                                                    viewModel.selectSalaryAdvanceWorker(item.workerEntryId)
+                                                } label: {
+                                                    VStack(alignment: .leading, spacing: 4) {
+                                                        HStack {
+                                                            Text(item.employeeCode.isEmpty ? item.displayName : "\(item.displayName) · \(item.employeeCode)")
+                                                                .font(.caption.weight(.bold))
+                                                                .foregroundColor(SemanticColors.textPrimary)
+                                                                .lineLimit(1)
+                                                            Spacer()
+                                                            Text(eligibilityDesc.isEligible ? "Đủ điều kiện (ON)" : "Chưa đủ ĐK")
+                                                                .font(.caption2.weight(.bold))
+                                                                .padding(.horizontal, 7)
+                                                                .padding(.vertical, 2)
+                                                                .background(eligibilityDesc.isEligible ? SemanticColors.successBg : SemanticColors.warningBg)
+                                                                .foregroundColor(eligibilityDesc.isEligible ? SemanticColors.successText : SemanticColors.warningText)
+                                                                .clipShape(Capsule())
+                                                        }
+                                                        Text("Ngày đầu: \(workDateLabel) · Tuyển: \(recLabel)")
+                                                            .font(.caption2)
+                                                            .foregroundColor(SemanticColors.textSecondary)
+                                                            .lineLimit(1)
+                                                        if !eligibilityDesc.isEligible, let blockingMsg = eligibilityDesc.blockingMessage {
+                                                            Text(blockingMsg)
+                                                                .font(.caption2.weight(.semibold))
+                                                                .foregroundColor(SemanticColors.dangerText)
+                                                        }
+                                                    }
+                                                    .padding(10)
+                                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                                    .background(isSelected ? theme.primaryLight : Color.white)
+                                                    .overlay(
+                                                        RoundedRectangle(cornerRadius: 8)
+                                                            .stroke(isSelected ? theme.primary : SemanticColors.borderSubtle, lineWidth: isSelected ? 1.5 : 1)
+                                                    )
+                                                    .cornerRadius(8)
+                                                }
+                                                .buttonStyle(.plain)
+                                            }
+
+                                            if viewModel.salaryAdvanceWorkersHasMore {
+                                                Button {
+                                                    Task { await viewModel.loadMoreSalaryAdvanceWorkers() }
+                                                } label: {
+                                                    HStack {
+                                                        if viewModel.salaryAdvanceWorkersLoadingMore {
+                                                            ProgressView().scaleEffect(0.8)
+                                                        }
+                                                        Text("Tải thêm kết quả tìm kiếm...")
+                                                            .font(.caption.weight(.bold))
+                                                    }
+                                                    .frame(maxWidth: .infinity)
+                                                    .padding(.vertical, 8)
+                                                    .background(Color.white)
+                                                    .foregroundColor(theme.primary)
+                                                    .cornerRadius(8)
+                                                }
+                                                .buttonStyle(.plain)
+                                                .disabled(viewModel.salaryAdvanceWorkersLoadingMore)
+                                            }
+                                        }
                                     }
                                 }
                             }
                         }
-                        .padding(14)
-                        .background(Color.white)
-                        .cornerRadius(12)
+                        .padding(10)
+                        .background(Color(hex: 0xF8FAFC))
+                        .cornerRadius(10)
 
-                        // Step 3: Thông tin NLĐ & Tóm tắt ứng 30 ngày gần nhất + Nút xem lịch sử
+                        // Selected Worker 30d Summary & Eligibility Banner
                         if let worker = selectedWorker {
                             let eligibilityDesc = SalaryAdvanceContract.describeWorkerEligibility(worker)
-                            let bankDesc = SalaryAdvanceContract.describeWorkerBankTransferEligibility(worker)
                             let sumCount = worker.advance30dSummary?.totalCount ?? 0
                             let sumAmountRaw = worker.advance30dSummary?.totalAmountVnd ?? "0"
 
                             VStack(alignment: .leading, spacing: 8) {
+                                Text("Tóm tắt ứng trong 30 ngày gần nhất")
+                                    .font(.caption.weight(.bold))
+                                    .foregroundColor(SemanticColors.textPrimary)
+
                                 HStack {
-                                    Text("Thông tin & Lịch sử ứng lương")
-                                        .font(.subheadline.weight(.bold))
-                                        .foregroundColor(theme.primary)
+                                    Text("Số lần ứng (30 ngày):")
+                                        .font(.caption)
+                                        .foregroundColor(SemanticColors.textSecondary)
                                     Spacer()
-                                    Button {
-                                        KeyboardDismissal.dismiss()
-                                        Task { await viewModel.openSalaryAdvanceWorkerHistory() }
-                                    } label: {
-                                        HStack(spacing: 4) {
-                                            Image(systemName: "clock.arrow.circlepath")
-                                            Text("Xem lịch sử ứng")
-                                        }
+                                    Text("\(sumCount) lần")
                                         .font(.caption.weight(.bold))
-                                        .padding(.horizontal, 10)
-                                        .padding(.vertical, 6)
-                                        .background(theme.primaryLight)
+                                        .foregroundColor(SemanticColors.textPrimary)
+                                }
+                                HStack {
+                                    Text("Tổng tiền ứng (30 ngày):")
+                                        .font(.caption)
+                                        .foregroundColor(SemanticColors.textSecondary)
+                                    Spacer()
+                                    Text(SalaryAdvanceContract.formatVndAmount(sumAmountRaw))
+                                        .font(.caption.weight(.bold))
                                         .foregroundColor(theme.primary)
-                                        .cornerRadius(8)
-                                    }
-                                    .buttonStyle(.plain)
                                 }
 
-                                Text("Họ tên: \(worker.displayName) (\(worker.employeeCode))")
-                                    .font(.caption.weight(.semibold))
-                                Text("Ngày đầu tiên làm việc: \(SalaryAdvanceContract.formatWorkDateVi(worker.firstWorkDate))")
-                                    .font(.caption)
-                                    .foregroundColor(SemanticColors.textSecondary)
-                                Text("Người tuyển: \(SalaryAdvanceContract.formatWorkerRecruiterLabel(worker))")
-                                    .font(.caption)
-                                    .foregroundColor(SemanticColors.textSecondary)
+                                Button {
+                                    KeyboardDismissal.dismiss()
+                                    Task { await viewModel.openSalaryAdvanceWorkerHistory() }
+                                } label: {
+                                    HStack(spacing: 5) {
+                                        Image(systemName: "eye.fill")
+                                        Text("Xem lịch sử ứng lương")
+                                    }
+                                    .font(.caption.weight(.bold))
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 8)
+                                    .background(Color.white)
+                                    .foregroundColor(theme.primary)
+                                    .cornerRadius(8)
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 8)
+                                            .stroke(SemanticColors.borderSubtle, lineWidth: 1)
+                                    )
+                                }
+                                .buttonStyle(.plain)
 
-                                HStack(spacing: 12) {
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text("Số lần ứng (30 ngày)")
-                                            .font(.caption2)
-                                            .foregroundColor(SemanticColors.textMuted)
-                                        Text("\(sumCount) lần")
-                                            .font(.subheadline.weight(.bold))
-                                            .foregroundColor(SemanticColors.textPrimary)
-                                    }
-                                    Spacer()
-                                    VStack(alignment: .trailing, spacing: 2) {
-                                        Text("Tổng tiền (30 ngày)")
-                                            .font(.caption2)
-                                            .foregroundColor(SemanticColors.textMuted)
-                                        Text(SalaryAdvanceContract.formatVndAmount(sumAmountRaw))
-                                            .font(.subheadline.weight(.bold))
-                                            .foregroundColor(theme.primary)
-                                    }
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(eligibilityDesc.isEligible ? "Đủ điều kiện (ON)" : "Chưa đủ điều kiện")
+                                        .font(.caption.weight(.bold))
+                                        .foregroundColor(eligibilityDesc.isEligible ? SemanticColors.successText : SemanticColors.dangerText)
+                                    Text(eligibilityDesc.isEligible ? "Đã có ảnh chân dung" : (eligibilityDesc.blockingMessage ?? "NLĐ chưa đủ điều kiện ứng lương."))
+                                        .font(.caption2)
+                                        .foregroundColor(eligibilityDesc.isEligible ? SemanticColors.successText : SemanticColors.dangerText)
                                 }
                                 .padding(10)
-                                .background(Color(hex: 0xF8FAFC))
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .background(eligibilityDesc.isEligible ? SemanticColors.successBg : SemanticColors.dangerBg)
                                 .cornerRadius(8)
-
-                                if !eligibilityDesc.isEligible, let reason = eligibilityDesc.blockingMessage {
-                                    Text(reason)
-                                        .font(.caption.weight(.bold))
-                                        .foregroundColor(SemanticColors.dangerText)
-                                        .padding(10)
-                                        .frame(maxWidth: .infinity, alignment: .leading)
-                                        .background(SemanticColors.dangerBg)
-                                        .cornerRadius(8)
-                                }
                             }
-                            .padding(14)
-                            .background(Color.white)
-                            .cornerRadius(12)
-
-                            // Step 4: Tạo yêu cầu ứng lương
-                            VStack(alignment: .leading, spacing: 10) {
-                                Text("3. Thông tin đề nghị ứng lương")
-                                    .font(.subheadline.weight(.bold))
-                                    .foregroundColor(theme.primary)
-
-                                Text("Phương thức nhận tiền")
-                                    .font(.caption2.weight(.semibold))
-                                    .foregroundColor(SemanticColors.textSecondary)
-
-                                HStack(spacing: 8) {
-                                    let isCash = viewModel.salaryAdvancePaymentMethod == SalaryAdvanceContract.paymentMethodCash
-                                    Button {
-                                        viewModel.updateSalaryAdvancePaymentMethod(SalaryAdvanceContract.paymentMethodCash)
-                                    } label: {
-                                        Text("Tiền mặt")
-                                            .font(.caption.weight(isCash ? .bold : .medium))
-                                            .frame(maxWidth: .infinity)
-                                            .padding(.vertical, 9)
-                                            .background(isCash ? theme.primary : Color(hex: 0xF1F5F9))
-                                            .foregroundColor(isCash ? .white : SemanticColors.textPrimary)
-                                            .cornerRadius(8)
-                                    }
-                                    .buttonStyle(.plain)
-
-                                    let isBank = viewModel.salaryAdvancePaymentMethod == SalaryAdvanceContract.paymentMethodBankTransfer
-                                    Button {
-                                        viewModel.updateSalaryAdvancePaymentMethod(SalaryAdvanceContract.paymentMethodBankTransfer)
-                                    } label: {
-                                        Text("Chuyển khoản")
-                                            .font(.caption.weight(isBank ? .bold : .medium))
-                                            .frame(maxWidth: .infinity)
-                                            .padding(.vertical, 9)
-                                            .background(isBank ? theme.primary : Color(hex: 0xF1F5F9))
-                                            .foregroundColor(isBank ? .white : SemanticColors.textPrimary)
-                                            .cornerRadius(8)
-                                    }
-                                    .buttonStyle(.plain)
-                                }
-
-                                if viewModel.salaryAdvancePaymentMethod == SalaryAdvanceContract.paymentMethodBankTransfer {
-                                    if bankDesc.canUseBankTransfer {
-                                        Text("Tài khoản thụ hưởng: \(bankDesc.institutionName ?? "—") · \(bankDesc.accountNumberDisplay ?? "—") · \(bankDesc.accountHolderName ?? "—")")
-                                            .font(.caption)
-                                            .foregroundColor(SemanticColors.successText)
-                                    } else if let bankReason = bankDesc.blockingMessage {
-                                        Text(bankReason)
-                                            .font(.caption.weight(.semibold))
-                                            .foregroundColor(SemanticColors.dangerText)
-                                    }
-                                }
-
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text("Số tiền đề nghị (VNĐ) *")
-                                        .font(.caption2.weight(.semibold))
-                                        .foregroundColor(SemanticColors.textSecondary)
-                                    TextField(
-                                        "Nhập số tiền nguyên dương (VD: 2000000)",
-                                        text: Binding(
-                                            get: { viewModel.salaryAdvanceAmountRaw },
-                                            set: { viewModel.updateSalaryAdvanceAmount($0) }
-                                        )
-                                    )
-                                    .keyboardType(.numberPad)
-                                    .submitLabel(.done)
-                                    .font(.subheadline)
-                                    .padding(10)
-                                    .background(Color(hex: 0xF8FAFC))
-                                    .cornerRadius(8)
-                                    if let parsed = SalaryAdvanceContract.normalizePositiveVndInput(viewModel.salaryAdvanceAmountRaw) {
-                                        Text(" Hiển thị: \(SalaryAdvanceContract.formatVndAmount(parsed))")
-                                            .font(.caption2.weight(.semibold))
-                                            .foregroundColor(theme.primary)
-                                    }
-                                }
-
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text("Nội dung đề nghị *")
-                                        .font(.caption2.weight(.semibold))
-                                        .foregroundColor(SemanticColors.textSecondary)
-                                    TextField(
-                                        "Nhập lý do / nội dung đề nghị ứng lương...",
-                                        text: Binding(
-                                            get: { viewModel.salaryAdvanceInitialContent },
-                                            set: { viewModel.updateSalaryAdvanceInitialContent($0) }
-                                        )
-                                    )
-                                    .submitLabel(.done)
-                                    .font(.subheadline)
-                                    .padding(10)
-                                    .background(Color(hex: 0xF8FAFC))
-                                    .cornerRadius(8)
-                                }
-                            }
-                            .padding(14)
-                            .background(Color.white)
-                            .cornerRadius(12)
+                            .padding(10)
+                            .background(Color(hex: 0xF8FAFC))
+                            .cornerRadius(10)
                         }
+
+                        // Phương thức nhận tiền, Số tiền ứng & Nội dung đề nghị
+                        Text("Phương thức nhận tiền *")
+                            .font(.caption.weight(.bold))
+                            .foregroundColor(SemanticColors.textPrimary)
+
+                        HStack(spacing: 8) {
+                            let isCash = viewModel.salaryAdvancePaymentMethod == SalaryAdvanceContract.paymentMethodCash
+                            Button {
+                                viewModel.updateSalaryAdvancePaymentMethod(SalaryAdvanceContract.paymentMethodCash)
+                            } label: {
+                                Text("Tiền mặt")
+                                    .font(.caption.weight(isCash ? .bold : .medium))
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 9)
+                                    .background(isCash ? theme.primaryLight : Color(hex: 0xF8FAFC))
+                                    .foregroundColor(isCash ? theme.primary : SemanticColors.textPrimary)
+                                    .cornerRadius(8)
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 8)
+                                            .stroke(isCash ? theme.primary : SemanticColors.borderSubtle, lineWidth: 1)
+                                    )
+                            }
+                            .buttonStyle(.plain)
+
+                            let isBank = viewModel.salaryAdvancePaymentMethod == SalaryAdvanceContract.paymentMethodBankTransfer
+                            Button {
+                                viewModel.updateSalaryAdvancePaymentMethod(SalaryAdvanceContract.paymentMethodBankTransfer)
+                            } label: {
+                                Text("Chuyển khoản")
+                                    .font(.caption.weight(isBank ? .bold : .medium))
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 9)
+                                    .background(isBank ? theme.primaryLight : Color(hex: 0xF8FAFC))
+                                    .foregroundColor(isBank ? theme.primary : SemanticColors.textPrimary)
+                                    .cornerRadius(8)
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 8)
+                                            .stroke(isBank ? theme.primary : SemanticColors.borderSubtle, lineWidth: 1)
+                                    )
+                            }
+                            .buttonStyle(.plain)
+                        }
+
+                        if viewModel.salaryAdvancePaymentMethod == SalaryAdvanceContract.paymentMethodBankTransfer,
+                           let worker = selectedWorker {
+                            let bankDesc = SalaryAdvanceContract.describeWorkerBankTransferEligibility(worker)
+                            if bankDesc.canUseBankTransfer {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Tài khoản thụ hưởng của NLĐ")
+                                        .font(.caption2.weight(.bold))
+                                        .foregroundColor(SemanticColors.successText)
+                                    Text("\(bankDesc.institutionName ?? "—") · STK: \(bankDesc.accountNumberDisplay ?? "—") · Chủ TK: \(bankDesc.accountHolderName ?? "—")")
+                                        .font(.caption)
+                                        .foregroundColor(SemanticColors.textPrimary)
+                                }
+                                .padding(10)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .background(SemanticColors.successBg)
+                                .cornerRadius(8)
+                            } else if let bankReason = bankDesc.blockingMessage {
+                                Text(bankReason)
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundColor(SemanticColors.dangerText)
+                                    .padding(10)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .background(SemanticColors.dangerBg)
+                                    .cornerRadius(8)
+                            }
+                        }
+
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Số tiền ứng (VND) *")
+                                .font(.caption.weight(.bold))
+                                .foregroundColor(SemanticColors.textPrimary)
+                            TextField(
+                                "Nhập số tiền nguyên dương (VD: 1500000)",
+                                text: Binding(
+                                    get: { viewModel.salaryAdvanceAmountRaw },
+                                    set: { viewModel.updateSalaryAdvanceAmount($0) }
+                                )
+                            )
+                            .focused($focusedField, equals: .amount)
+                            .keyboardType(.numberPad)
+                            .submitLabel(.done)
+                            .font(.subheadline)
+                            .padding(10)
+                            .background(Color(hex: 0xF8FAFC))
+                            .cornerRadius(8)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .stroke(SemanticColors.borderSubtle, lineWidth: 1)
+                            )
+                            if let parsed = SalaryAdvanceContract.normalizePositiveVndInput(viewModel.salaryAdvanceAmountRaw) {
+                                Text("Định dạng: \(SalaryAdvanceContract.formatVndAmount(parsed))")
+                                    .font(.caption2.weight(.semibold))
+                                    .foregroundColor(theme.primary)
+                            }
+                        }
+                        .id(FocusedField.amount)
+
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Nội dung đề nghị *")
+                                .font(.caption.weight(.bold))
+                                .foregroundColor(SemanticColors.textPrimary)
+                            TextField(
+                                "Nhập lý do / nội dung đề nghị ứng lương...",
+                                text: Binding(
+                                    get: { viewModel.salaryAdvanceInitialContent },
+                                    set: { viewModel.updateSalaryAdvanceInitialContent($0) }
+                                ),
+                                axis: .vertical
+                            )
+                            .focused($focusedField, equals: .initialContent)
+                            .lineLimit(2...4)
+                            .submitLabel(.done)
+                            .font(.subheadline)
+                            .padding(10)
+                            .background(Color(hex: 0xF8FAFC))
+                            .cornerRadius(8)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .stroke(SemanticColors.borderSubtle, lineWidth: 1)
+                            )
+                        }
+                        .id(FocusedField.initialContent)
+
+                        // Full-width compact submit button
+                        Button {
+                            KeyboardDismissal.dismiss()
+                            Task { await viewModel.submitSalaryAdvanceRequest() }
+                        } label: {
+                            HStack(spacing: 6) {
+                                if viewModel.salaryAdvanceCreateSubmitting {
+                                    ProgressView().tint(.white).scaleEffect(0.85)
+                                }
+                                Text(viewModel.salaryAdvanceCreateSubmitting ? "Đang gửi yêu cầu..." : "Gửi yêu cầu ứng lương")
+                                    .font(.subheadline.weight(.bold))
+                            }
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 44)
+                            .background(canSubmit ? theme.primary : Color.gray.opacity(0.45))
+                            .foregroundColor(.white)
+                            .cornerRadius(10)
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(!canSubmit)
                     }
                     .padding(14)
-                }
-
-                Divider()
-
-                let canSubmit: Bool = {
-                    guard let worker = selectedWorker,
-                          SalaryAdvanceContract.describeWorkerEligibility(worker).isEligible,
-                          !viewModel.salaryAdvanceCreateSubmitting,
-                          SalaryAdvanceContract.normalizePositiveVndInput(viewModel.salaryAdvanceAmountRaw) != nil,
-                          !viewModel.salaryAdvanceInitialContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                        return false
-                    }
-                    if viewModel.salaryAdvancePaymentMethod == SalaryAdvanceContract.paymentMethodBankTransfer &&
-                        !SalaryAdvanceContract.describeWorkerBankTransferEligibility(worker).canUseBankTransfer {
-                        return false
-                    }
-                    return true
-                }()
-
-                HStack(spacing: 12) {
-                    Button {
-                        KeyboardDismissal.dismiss()
-                        viewModel.closeSalaryAdvanceSheet()
-                        dismiss()
-                    } label: {
-                        Text("Đóng")
-                            .font(.subheadline.weight(.bold))
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 12)
-                            .background(Color(hex: 0xF1F5F9))
-                            .foregroundColor(SemanticColors.textPrimary)
-                            .cornerRadius(10)
-                    }
-                    .buttonStyle(.plain)
-
-                    Button {
-                        KeyboardDismissal.dismiss()
-                        Task { await viewModel.submitSalaryAdvanceRequest() }
-                    } label: {
-                        HStack(spacing: 6) {
-                            if viewModel.salaryAdvanceCreateSubmitting {
-                                ProgressView().tint(.white).scaleEffect(0.85)
-                            }
-                            Text("Gửi đề nghị ứng lương")
-                                .font(.subheadline.weight(.bold))
-                        }
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 12)
-                        .background(canSubmit ? theme.primary : Color.gray.opacity(0.45))
-                        .foregroundColor(.white)
-                        .cornerRadius(10)
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(!canSubmit)
+                    .background(Color.white)
+                    .cornerRadius(12)
                 }
                 .padding(14)
+                .padding(.bottom, focusedField != nil ? 120 : 12)
+            }
+            .scrollDismissesKeyboard(.interactively)
+            .refreshable {
+                await viewModel.refreshSalaryAdvanceCreateTab()
+            }
+            .onChange(of: focusedField) { target in
+                guard let target else { return }
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 180_000_000)
+                    withAnimation(.easeInOut(duration: 0.22)) {
+                        scrollProxy.scrollTo(target, anchor: .center)
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: - Tab 2: `Yêu cầu (N)` (Collapsible Filter + Clean 3-Row Cards)
+
+    @ViewBuilder
+    private func requestListTab(theme: MiniBiThemePalette) -> some View {
+        let projects = viewModel.salaryAdvanceContext?.activeManagedProjects ?? []
+        let activeFilterCount = (viewModel.salaryAdvanceListProjectFilter != "ALL" ? 1 : 0)
+            + (viewModel.salaryAdvanceListStateFilter != "ALL" ? 1 : 0)
+            + (viewModel.salaryAdvanceListEvidenceFilter != "ALL" ? 1 : 0)
+
+        ScrollView {
+            VStack(alignment: .leading, spacing: 10) {
+                // Collapsible Search & Filter Card
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 8) {
+                        HStack(spacing: 6) {
+                            Image(systemName: "magnifyingglass")
+                                .foregroundColor(SemanticColors.textMuted)
+                            TextField(
+                                "Tìm tên hoặc mã NLĐ...",
+                                text: Binding(
+                                    get: { viewModel.salaryAdvanceListSearch },
+                                    set: { viewModel.updateSalaryAdvanceListSearch($0) }
+                                )
+                            )
+                            .submitLabel(.search)
+                            .font(.subheadline)
+                            .foregroundColor(SemanticColors.textPrimary)
+
+                            if !viewModel.salaryAdvanceListSearch.isEmpty {
+                                Button {
+                                    viewModel.updateSalaryAdvanceListSearch("")
+                                } label: {
+                                    Image(systemName: "xmark.circle.fill")
+                                        .foregroundColor(SemanticColors.textMuted)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                        .padding(9)
+                        .background(Color(hex: 0xF8FAFC))
+                        .cornerRadius(8)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8)
+                                .stroke(SemanticColors.borderSubtle, lineWidth: 1)
+                        )
+
+                        Button {
+                            withAnimation(.easeInOut(duration: 0.18)) {
+                                listFilterExpanded.toggle()
+                            }
+                        } label: {
+                            HStack(spacing: 4) {
+                                Image(systemName: "line.3.horizontal.decrease.circle")
+                                Text(activeFilterCount > 0 ? "Lọc (\(activeFilterCount))" : "Bộ lọc")
+                            }
+                            .font(.caption.weight(.bold))
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 9)
+                            .background((listFilterExpanded || activeFilterCount > 0) ? theme.primaryLight : Color(hex: 0xF8FAFC))
+                            .foregroundColor((listFilterExpanded || activeFilterCount > 0) ? theme.primary : SemanticColors.textPrimary)
+                            .cornerRadius(8)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .stroke((listFilterExpanded || activeFilterCount > 0) ? theme.primary : SemanticColors.borderSubtle, lineWidth: 1)
+                            )
+                        }
+                        .buttonStyle(.plain)
+
+                        Button {
+                            Task { await viewModel.refreshSalaryAdvanceRequests() }
+                        } label: {
+                            Image(systemName: "arrow.clockwise")
+                                .font(.caption.weight(.bold))
+                                .padding(9)
+                                .background(Color(hex: 0xF8FAFC))
+                                .foregroundColor(theme.primary)
+                                .cornerRadius(8)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 8)
+                                        .stroke(SemanticColors.borderSubtle, lineWidth: 1)
+                                )
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(viewModel.salaryAdvanceRequestsLoading)
+                    }
+
+                    if listFilterExpanded {
+                        Divider()
+
+                        if projects.count > 1 {
+                            let selectedProjLabel: String = {
+                                if viewModel.salaryAdvanceListProjectFilter == "ALL" {
+                                    return "Tất cả dự án quản lý"
+                                }
+                                return projects.first(where: { $0.projectId == viewModel.salaryAdvanceListProjectFilter })?.displayName ?? "Tất cả dự án quản lý"
+                            }()
+
+                            Menu {
+                                Button("Tất cả dự án quản lý") {
+                                    viewModel.updateSalaryAdvanceListProjectFilter("ALL")
+                                }
+                                ForEach(projects) { p in
+                                    Button(p.displayName) {
+                                        viewModel.updateSalaryAdvanceListProjectFilter(p.projectId)
+                                    }
+                                }
+                            } label: {
+                                HStack {
+                                    Text("Dự án: \(selectedProjLabel)")
+                                        .font(.caption.weight(.medium))
+                                        .foregroundColor(SemanticColors.textPrimary)
+                                    Spacer()
+                                    Image(systemName: "chevron.down")
+                                        .font(.caption2)
+                                        .foregroundColor(SemanticColors.textMuted)
+                                }
+                                .padding(9)
+                                .background(Color(hex: 0xF8FAFC))
+                                .cornerRadius(8)
+                            }
+                        }
+
+                        Text("Trạng thái đề nghị")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundColor(SemanticColors.textSecondary)
+
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 6) {
+                                ForEach(SalaryAdvanceContract.requestStateFilterOptions, id: \.0) { code, label in
+                                    let selected = viewModel.salaryAdvanceListStateFilter == code
+                                    Button {
+                                        viewModel.updateSalaryAdvanceListStateFilter(code)
+                                    } label: {
+                                        Text(label)
+                                            .font(.caption2.weight(selected ? .bold : .medium))
+                                            .padding(.horizontal, 10)
+                                            .padding(.vertical, 6)
+                                            .background(selected ? theme.primaryLight : Color(hex: 0xF8FAFC))
+                                            .foregroundColor(selected ? theme.primary : SemanticColors.textSecondary)
+                                            .cornerRadius(6)
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                            }
+                        }
+
+                        Text("Đối chiếu chứng từ")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundColor(SemanticColors.textSecondary)
+
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 6) {
+                                ForEach(SalaryAdvanceContract.evidenceReviewStateFilterOptions, id: \.0) { code, label in
+                                    let selected = viewModel.salaryAdvanceListEvidenceFilter == code
+                                    Button {
+                                        viewModel.updateSalaryAdvanceListEvidenceFilter(code)
+                                    } label: {
+                                        Text(label)
+                                            .font(.caption2.weight(selected ? .bold : .medium))
+                                            .padding(.horizontal, 10)
+                                            .padding(.vertical, 6)
+                                            .background(selected ? theme.primaryLight : Color(hex: 0xF8FAFC))
+                                            .foregroundColor(selected ? theme.primary : SemanticColors.textSecondary)
+                                            .cornerRadius(6)
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                            }
+                        }
+
+                        if activeFilterCount > 0 {
+                            Button("Đặt lại mặc định") {
+                                viewModel.updateSalaryAdvanceListProjectFilter("ALL")
+                                viewModel.updateSalaryAdvanceListStateFilter("ALL")
+                                viewModel.updateSalaryAdvanceListEvidenceFilter("ALL")
+                            }
+                            .font(.caption.weight(.bold))
+                            .foregroundColor(theme.primary)
+                        }
+                    }
+                }
+                .padding(12)
                 .background(Color.white)
+                .cornerRadius(12)
+
+                if let err = viewModel.salaryAdvanceRequestsError, !err.isEmpty {
+                    Text(err)
+                        .font(.caption.weight(.bold))
+                        .foregroundColor(SemanticColors.dangerText)
+                        .padding(12)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(SemanticColors.dangerBg)
+                        .cornerRadius(10)
+                }
+
+                if viewModel.salaryAdvanceRequestsLoading && viewModel.salaryAdvanceRequests.isEmpty {
+                    HStack {
+                        Spacer()
+                        ProgressView("Đang tải danh sách yêu cầu ứng lương...")
+                            .padding(.vertical, 24)
+                        Spacer()
+                    }
+                    .background(Color.white)
+                    .cornerRadius(12)
+                } else if viewModel.salaryAdvanceRequests.isEmpty {
+                    Text("Chưa có yêu cầu ứng lương nào phù hợp với bộ lọc hiện tại.")
+                        .font(.subheadline)
+                        .foregroundColor(SemanticColors.textSecondary)
+                        .padding(20)
+                        .frame(maxWidth: .infinity)
+                        .background(Color.white)
+                        .cornerRadius(12)
+                } else {
+                    ForEach(viewModel.salaryAdvanceRequests) { req in
+                        requestSummaryCard(req: req, theme: theme)
+                    }
+
+                    if viewModel.salaryAdvanceRequestsHasMore {
+                        Button {
+                            Task { await viewModel.loadMoreSalaryAdvanceRequests() }
+                        } label: {
+                            HStack {
+                                if viewModel.salaryAdvanceRequestsLoadingMore {
+                                    ProgressView().scaleEffect(0.8)
+                                }
+                                Text("Tải thêm yêu cầu")
+                                    .font(.caption.weight(.bold))
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 10)
+                            .background(Color.white)
+                            .foregroundColor(theme.primary)
+                            .cornerRadius(10)
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(viewModel.salaryAdvanceRequestsLoadingMore)
+                    }
+                }
             }
-            .background(theme.background)
-            .dismissKeyboardOnTapOutside()
-            .navigationTitle("Tạo đề nghị ứng lương")
-            .navigationBarTitleDisplayMode(.inline)
-            .sheet(isPresented: $viewModel.salaryAdvanceHistoryOpen) {
-                SalaryAdvanceWorkerHistorySheet(viewModel: viewModel)
+            .padding(14)
+        }
+        .refreshable {
+            await viewModel.refreshSalaryAdvanceRequests()
+        }
+    }
+
+    @ViewBuilder
+    private func requestSummaryCard(req: SalaryAdvanceRequestSummary, theme: MiniBiThemePalette) -> some View {
+        let attention = SalaryAdvanceContract.evaluateRequestAttention(req)
+        let stateColors = requestStateTone(req.requestState)
+
+        Button {
+            KeyboardDismissal.dismiss()
+            Task { await viewModel.openSalaryAdvanceRequestDetail(req.requestId) }
+        } label: {
+            VStack(alignment: .leading, spacing: 6) {
+                // Row 1: Worker Name + Code & Request State Pill
+                HStack(alignment: .top, spacing: 8) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(req.workerDisplayName.isEmpty ? "—" : req.workerDisplayName)
+                            .font(.subheadline.weight(.bold))
+                            .foregroundColor(SemanticColors.textPrimary)
+                            .lineLimit(1)
+                        Text(req.workerEmployeeCode)
+                            .font(.caption2)
+                            .foregroundColor(SemanticColors.textMuted)
+                    }
+                    Spacer()
+                    Text(SalaryAdvanceContract.requestStateShortLabel(req.requestState))
+                        .font(.caption2.weight(.bold))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(stateColors.bg)
+                        .foregroundColor(stateColors.fg)
+                        .clipShape(Capsule())
+                }
+
+                // Row 2: Amount + Payment Method & Project Name
+                HStack(alignment: .firstTextBaseline) {
+                    Text("\(SalaryAdvanceContract.formatVndAmount(req.requestedAmountVnd)) · \(SalaryAdvanceContract.paymentMethodLabel(req.paymentMethod))")
+                        .font(.subheadline.weight(.bold))
+                        .foregroundColor(theme.primary)
+                    Spacer()
+                    Text(req.projectDisplayName)
+                        .font(.caption)
+                        .foregroundColor(SemanticColors.textSecondary)
+                        .lineLimit(1)
+                }
+
+                // Row 3: Created Time & Evidence / Attention Chip
+                HStack {
+                    Text(SalaryAdvanceContract.formatDateTimeVi(req.createdAt))
+                        .font(.caption2)
+                        .foregroundColor(SemanticColors.textMuted)
+                    Spacer()
+                    if attention.pmNeedsAction, let reason = attention.pmReasonLabel {
+                        Text(reason)
+                            .font(.caption2.weight(.bold))
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 3)
+                            .background(SemanticColors.warningBg)
+                            .foregroundColor(SemanticColors.warningText)
+                            .clipShape(Capsule())
+                    } else if req.paymentMethod.uppercased() == "CASH" && req.requestState.uppercased() == "APPROVED" {
+                        let evColors = evidenceStateTone(req.evidenceReviewState)
+                        Text(SalaryAdvanceContract.evidenceReviewStateShortLabel(req.evidenceReviewState))
+                            .font(.caption2.weight(.bold))
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 3)
+                            .background(evColors.bg)
+                            .foregroundColor(evColors.fg)
+                            .clipShape(Capsule())
+                    }
+                }
             }
+            .padding(12)
+            .background(Color.white)
+            .cornerRadius(12)
+            .overlay(
+                RoundedRectangle(cornerRadius: 12)
+                    .stroke(attention.pmNeedsAction ? theme.primary.opacity(0.6) : SemanticColors.borderSubtle, lineWidth: attention.pmNeedsAction ? 1.5 : 1)
+            )
+        }
+        .buttonStyle(.plain)
+    }
+
+    // MARK: - Tab 3: `Chi tiết yêu cầu`
+
+    @ViewBuilder
+    private func requestDetailTab(theme: MiniBiThemePalette) -> some View {
+        ScrollViewReader { scrollProxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    // Navigation Header
+                    HStack {
+                        Button {
+                            KeyboardDismissal.dismiss()
+                            viewModel.backFromSalaryAdvanceDetailToList()
+                        } label: {
+                            HStack(spacing: 4) {
+                                Image(systemName: "arrow.left")
+                                Text("Danh sách yêu cầu")
+                            }
+                            .font(.caption.weight(.bold))
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 8)
+                            .background(Color.white)
+                            .foregroundColor(theme.primary)
+                            .cornerRadius(8)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .stroke(SemanticColors.borderSubtle, lineWidth: 1)
+                            )
+                        }
+                        .buttonStyle(.plain)
+
+                        Spacer()
+
+                        Button {
+                            Task { await viewModel.refreshSalaryAdvanceActiveDetail() }
+                        } label: {
+                            HStack(spacing: 4) {
+                                Image(systemName: "arrow.clockwise")
+                                Text("Làm mới")
+                            }
+                            .font(.caption.weight(.bold))
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 8)
+                            .background(Color.white)
+                            .foregroundColor(theme.primary)
+                            .cornerRadius(8)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .stroke(SemanticColors.borderSubtle, lineWidth: 1)
+                            )
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(viewModel.salaryAdvanceDetailLoading)
+                    }
+
+                    if let conflictMsg = viewModel.salaryAdvanceConflictBanner, !conflictMsg.isEmpty {
+                        Text(conflictMsg)
+                            .font(.caption.weight(.bold))
+                            .foregroundColor(SemanticColors.warningText)
+                            .padding(12)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(SemanticColors.warningBg)
+                            .cornerRadius(10)
+                    }
+
+                    if let detailErr = viewModel.salaryAdvanceDetailError, !detailErr.isEmpty {
+                        Text(detailErr)
+                            .font(.caption.weight(.bold))
+                            .foregroundColor(SemanticColors.dangerText)
+                            .padding(12)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(SemanticColors.dangerBg)
+                            .cornerRadius(10)
+                    }
+
+                    if viewModel.salaryAdvanceDetailLoading && viewModel.salaryAdvanceActiveDetail == nil {
+                        HStack {
+                            Spacer()
+                            ProgressView("Đang tải chi tiết yêu cầu ứng lương...")
+                                .padding(.vertical, 28)
+                            Spacer()
+                        }
+                        .background(Color.white)
+                        .cornerRadius(12)
+                    } else if let detail = viewModel.salaryAdvanceActiveDetail {
+                        let req = detail.request
+                        requestDetailSummaryCard(req: req, theme: theme)
+                        requestDetailPmActionsCard(req: req, theme: theme)
+                        if req.paymentMethod.uppercased() == "CASH" {
+                            requestDetailCashEvidenceCard(detail: detail, theme: theme)
+                        }
+                        requestDetailEventsAndMessagesCard(detail: detail, theme: theme)
+                    }
+                }
+                .padding(14)
+                .padding(.bottom, focusedField != nil ? 120 : 12)
+            }
+            .scrollDismissesKeyboard(.interactively)
+            .refreshable {
+                await viewModel.refreshSalaryAdvanceActiveDetail()
+            }
+            .onChange(of: focusedField) { target in
+                guard let target else { return }
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 180_000_000)
+                    withAnimation(.easeInOut(duration: 0.22)) {
+                        scrollProxy.scrollTo(target, anchor: .center)
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func requestDetailSummaryCard(req: SalaryAdvanceRequestSummary, theme: MiniBiThemePalette) -> some View {
+        let stateColors = requestStateTone(req.requestState)
+        let evColors = evidenceStateTone(req.evidenceReviewState)
+        let accountantNames = req.projectAccountants.map { acc in
+            SalaryAdvanceContract.resolveActorDisplayName(
+                displayName: acc.displayName,
+                username: acc.username,
+                fallback: acc.userId
+            )
+        }.joined(separator: ", ")
+        let recruiterLabel = SalaryAdvanceContract.resolveActorDisplayName(
+            displayName: req.workerRecruiterDisplayName,
+            username: req.workerRecruiterUsername,
+            fallback: "—"
+        )
+        let creatorLabel = SalaryAdvanceContract.resolveActorDisplayName(
+            displayName: req.createdByDisplayName,
+            username: req.createdByUsername,
+            fallback: "—"
+        )
+
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(req.workerDisplayName)
+                        .font(.headline.weight(.bold))
+                        .foregroundColor(SemanticColors.textPrimary)
+                    Text("Mã NLĐ: \(req.workerEmployeeCode) · #\(String(req.requestId.prefix(8)))")
+                        .font(.caption)
+                        .foregroundColor(SemanticColors.textMuted)
+                }
+                Spacer()
+                VStack(alignment: .trailing, spacing: 4) {
+                    Text(SalaryAdvanceContract.requestStateShortLabel(req.requestState))
+                        .font(.caption2.weight(.bold))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(stateColors.bg)
+                        .foregroundColor(stateColors.fg)
+                        .clipShape(Capsule())
+                    if req.paymentMethod.uppercased() == "CASH" && req.requestState.uppercased() == "APPROVED" {
+                        Text(SalaryAdvanceContract.evidenceReviewStateShortLabel(req.evidenceReviewState))
+                            .font(.caption2.weight(.bold))
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 3)
+                            .background(evColors.bg)
+                            .foregroundColor(evColors.fg)
+                            .clipShape(Capsule())
+                    }
+                }
+            }
+
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Số tiền đề nghị")
+                        .font(.caption2)
+                        .foregroundColor(SemanticColors.textMuted)
+                    Text(SalaryAdvanceContract.formatVndAmount(req.requestedAmountVnd))
+                        .font(.title3.weight(.bold))
+                        .foregroundColor(theme.primary)
+                }
+                Spacer()
+                Text(SalaryAdvanceContract.paymentMethodLabel(req.paymentMethod))
+                    .font(.caption.weight(.bold))
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(Color.white)
+                    .foregroundColor(SemanticColors.textPrimary)
+                    .cornerRadius(8)
+            }
+            .padding(10)
+            .background(Color(hex: 0xF8FAFC))
+            .cornerRadius(8)
+
+            if req.paymentMethod.uppercased() == "BANK_TRANSFER", let snap = req.paymentDestinationSnapshot {
+                Text("Thụ hưởng: \(snap.bankShortName ?? snap.bankCode ?? "—") · STK: \(snap.bankAccountNumber ?? "—") · Chủ TK: \(snap.bankAccountHolderName ?? "—")")
+                    .font(.caption)
+                    .foregroundColor(SemanticColors.textSecondary)
+            }
+
+            LazyVGrid(columns: [GridItem(.flexible(), alignment: .leading), GridItem(.flexible(), alignment: .leading)], spacing: 8) {
+                detailGridCell("Dự án", req.projectDisplayName)
+                detailGridCell("Kế toán phụ trách", accountantNames.isEmpty ? "—" : accountantNames)
+                detailGridCell("Ngày đầu làm việc", SalaryAdvanceContract.formatWorkDateVi(req.workerStartDate))
+                detailGridCell("Người tuyển", recruiterLabel)
+                detailGridCell("Người tạo (QLDA)", creatorLabel)
+                detailGridCell("Thời gian gửi", SalaryAdvanceContract.formatDateTimeVi(req.createdAt))
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Nội dung đề nghị ban đầu")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundColor(SemanticColors.textMuted)
+                Text(req.initialContent.isEmpty ? "—" : req.initialContent)
+                    .font(.caption)
+                    .foregroundColor(SemanticColors.textPrimary)
+            }
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color(hex: 0xF8FAFC))
+            .cornerRadius(8)
+
+            HStack {
+                Text("Ứng 30 ngày gần nhất: \(req.workerAdvance30dSummary.totalCount) lần · \(SalaryAdvanceContract.formatVndAmount(req.workerAdvance30dSummary.totalAmountVnd))")
+                    .font(.caption.weight(.bold))
+                    .foregroundColor(SemanticColors.textPrimary)
+                Spacer()
+                Button {
+                    Task { await viewModel.openSalaryAdvanceRequestWorkerHistory(req.requestId) }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "eye.fill")
+                        Text("Lịch sử ứng")
+                    }
+                    .font(.caption.weight(.bold))
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(Color(hex: 0xF8FAFC))
+                    .foregroundColor(theme.primary)
+                    .cornerRadius(8)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8)
+                            .stroke(SemanticColors.borderSubtle, lineWidth: 1)
+                    )
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(14)
+        .background(Color.white)
+        .cornerRadius(12)
+    }
+
+    @ViewBuilder
+    private func detailGridCell(_ label: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label)
+                .font(.caption2)
+                .foregroundColor(SemanticColors.textMuted)
+            Text(value.isEmpty ? "—" : value)
+                .font(.caption.weight(.semibold))
+                .foregroundColor(SemanticColors.textPrimary)
+                .lineLimit(2)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    @ViewBuilder
+    private func requestDetailPmActionsCard(req: SalaryAdvanceRequestSummary, theme: MiniBiThemePalette) -> some View {
+        if req.allowedActions.canProvideInfo || req.allowedActions.canWithdraw {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Thao tác của Quản lý dự án (QLDA)")
+                    .font(.subheadline.weight(.bold))
+                    .foregroundColor(SemanticColors.textPrimary)
+
+                TextField(
+                    req.allowedActions.canProvideInfo
+                        ? "Nội dung phản hồi bổ sung thông tin cho Kế toán *"
+                        : "Lý do rút yêu cầu (tùy chọn)",
+                    text: Binding(
+                        get: { viewModel.salaryAdvanceActionNoteDraft },
+                        set: { viewModel.updateSalaryAdvanceActionNoteDraft($0) }
+                    ),
+                    axis: .vertical
+                )
+                .focused($focusedField, equals: .actionNote)
+                .lineLimit(2...4)
+                .font(.subheadline)
+                .padding(10)
+                .background(Color(hex: 0xF8FAFC))
+                .cornerRadius(8)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(SemanticColors.borderSubtle, lineWidth: 1)
+                )
+                .id(FocusedField.actionNote)
+
+                HStack(spacing: 8) {
+                    if req.allowedActions.canProvideInfo {
+                        Button {
+                            KeyboardDismissal.dismiss()
+                            Task { await viewModel.submitSalaryAdvanceTransitionAction("PROVIDE_INFO") }
+                        } label: {
+                            HStack(spacing: 6) {
+                                if viewModel.salaryAdvanceActionSubmitting {
+                                    ProgressView().tint(.white).scaleEffect(0.8)
+                                }
+                                Text("Gửi bổ sung thông tin")
+                                    .font(.caption.weight(.bold))
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 10)
+                            .background(theme.primary)
+                            .foregroundColor(.white)
+                            .cornerRadius(8)
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(viewModel.salaryAdvanceActionSubmitting)
+                    }
+
+                    if req.allowedActions.canWithdraw {
+                        Button {
+                            KeyboardDismissal.dismiss()
+                            showWithdrawConfirmAlert = true
+                        } label: {
+                            Text("Rút yêu cầu")
+                                .font(.caption.weight(.bold))
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 10)
+                                .background(SemanticColors.dangerBg)
+                                .foregroundColor(SemanticColors.dangerText)
+                                .cornerRadius(8)
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(viewModel.salaryAdvanceActionSubmitting)
+                    }
+                }
+            }
+            .padding(14)
+            .background(Color.white)
+            .cornerRadius(12)
+        }
+    }
+
+    @ViewBuilder
+    private func requestDetailCashEvidenceCard(detail: SalaryAdvanceRequestDetail, theme: MiniBiThemePalette) -> some View {
+        let req = detail.request
+        let evColors = evidenceStateTone(req.evidenceReviewState)
+        let selectedVer = viewModel.salaryAdvanceSelectedEvidenceVersion
+            ?? req.currentEvidence?.version
+            ?? detail.evidenceVersions.first?.version
+        let activeEvidenceItem = detail.evidenceVersions.first(where: { $0.version == selectedVer })
+
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Chứng từ nhận tiền & Đối chiếu")
+                    .font(.subheadline.weight(.bold))
+                    .foregroundColor(SemanticColors.textPrimary)
+                Spacer()
+                Text(SalaryAdvanceContract.evidenceReviewStateShortLabel(req.evidenceReviewState))
+                    .font(.caption2.weight(.bold))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(evColors.bg)
+                    .foregroundColor(evColors.fg)
+                    .clipShape(Capsule())
+            }
+
+            if req.workerPortrait?.available == true {
+                Text("Ảnh chân dung hồ sơ NLĐ trong hệ thống (v\(req.workerPortrait?.version ?? 1)):")
+                    .font(.caption.weight(.bold))
+                    .foregroundColor(SemanticColors.textPrimary)
+
+                AuthenticatedRemoteImageView(
+                    path: SalaryAdvanceContract.buildWorkerPortraitPreviewPath(requestId: req.requestId),
+                    maxHeight: 190,
+                    contentMode: .fit
+                )
+            }
+
+            if !detail.evidenceVersions.isEmpty {
+                Divider()
+                Text("Ảnh NLĐ lúc nhận tiền mặt:")
+                    .font(.caption.weight(.bold))
+                    .foregroundColor(SemanticColors.textPrimary)
+
+                if detail.evidenceVersions.count > 1 {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 6) {
+                            ForEach(detail.evidenceVersions) { ev in
+                                let isSel = ev.version == selectedVer
+                                Button {
+                                    viewModel.selectSalaryAdvanceEvidenceVersion(ev.version)
+                                } label: {
+                                    Text("Phiên bản v\(ev.version)")
+                                        .font(.caption2.weight(isSel ? .bold : .medium))
+                                        .padding(.horizontal, 10)
+                                        .padding(.vertical, 5)
+                                        .background(isSel ? theme.primaryLight : Color(hex: 0xF8FAFC))
+                                        .foregroundColor(isSel ? theme.primary : SemanticColors.textSecondary)
+                                        .cornerRadius(6)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                    }
+                }
+
+                if let selectedVer {
+                    AuthenticatedRemoteImageView(
+                        path: SalaryAdvanceContract.buildEvidencePhotoPreviewPath(requestId: req.requestId, version: selectedVer),
+                        maxHeight: 230,
+                        contentMode: .fit
+                    )
+                }
+
+                if let activeEv = activeEvidenceItem {
+                    Text("Tải lên bởi: \(activeEv.uploadedByDisplayName ?? activeEv.uploadedByUsername ?? "QLDA") · \(SalaryAdvanceContract.formatDateTimeVi(activeEv.uploadedAt)) · \(SalaryAdvanceContract.formatFileSizeBytes(activeEv.sizeBytes))")
+                        .font(.caption2)
+                        .foregroundColor(SemanticColors.textSecondary)
+                    if let note = activeEv.captionNote, !note.isEmpty {
+                        Text("Ghi chú ảnh: \(note)")
+                            .font(.caption)
+                            .foregroundColor(SemanticColors.textPrimary)
+                    }
+                }
+            } else {
+                Text("Chưa có ảnh chứng từ nhận tiền mặt được tải lên.")
+                    .font(.caption)
+                    .foregroundColor(SemanticColors.textSecondary)
+            }
+
+            if req.allowedActions.canUploadCashEvidence {
+                Divider()
+                Text(detail.evidenceVersions.isEmpty ? "Tải ảnh NLĐ lúc nhận tiền mặt" : "Tải lại ảnh chứng từ nhận tiền (phiên bản mới)")
+                    .font(.caption.weight(.bold))
+                    .foregroundColor(theme.primary)
+
+                if let evErr = viewModel.salaryAdvanceEvidenceError, !evErr.isEmpty {
+                    Text(evErr)
+                        .font(.caption.weight(.semibold))
+                        .foregroundColor(SemanticColors.dangerText)
+                }
+
+                TextField(
+                    "Ghi chú kèm ảnh nhận tiền (tùy chọn)...",
+                    text: Binding(
+                        get: { viewModel.salaryAdvanceEvidenceCaptionDraft },
+                        set: { viewModel.updateSalaryAdvanceEvidenceCaptionDraft($0) }
+                    )
+                )
+                .focused($focusedField, equals: .evidenceCaption)
+                .font(.subheadline)
+                .padding(10)
+                .background(Color(hex: 0xF8FAFC))
+                .cornerRadius(8)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(SemanticColors.borderSubtle, lineWidth: 1)
+                )
+                .id(FocusedField.evidenceCaption)
+
+                HStack(spacing: 8) {
+                    Button {
+                        KeyboardDismissal.dismiss()
+                        showEvidenceCamera = true
+                    } label: {
+                        HStack(spacing: 5) {
+                            Image(systemName: "camera.fill")
+                            Text("Chụp ảnh")
+                        }
+                        .font(.caption.weight(.bold))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 10)
+                        .background(theme.primary)
+                        .foregroundColor(.white)
+                        .cornerRadius(8)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(viewModel.salaryAdvanceEvidenceUploading)
+
+                    PhotosPicker(selection: $evidencePhotoItem, matching: .images) {
+                        HStack(spacing: 5) {
+                            if viewModel.salaryAdvanceEvidenceUploading {
+                                ProgressView().scaleEffect(0.8)
+                            } else {
+                                Image(systemName: "photo.on.rectangle")
+                            }
+                            Text(viewModel.salaryAdvanceEvidenceUploading ? "Đang tải..." : "Chọn ảnh")
+                        }
+                        .font(.caption.weight(.bold))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 10)
+                        .background(Color(hex: 0xEBF3FB))
+                        .foregroundColor(Color(hex: 0x1E6BB8))
+                        .cornerRadius(8)
+                    }
+                    .disabled(viewModel.salaryAdvanceEvidenceUploading)
+                    .onChange(of: evidencePhotoItem) { newItem in
+                        guard let newItem else { return }
+                        Task {
+                            if let data = try? await newItem.loadTransferable(type: Data.self) {
+                                await viewModel.uploadSalaryAdvanceEvidenceData(
+                                    data,
+                                    fileName: "chung-tu-\(Int(Date().timeIntervalSince1970)).jpg"
+                                )
+                            }
+                            evidencePhotoItem = nil
+                        }
+                    }
+                }
+            }
+        }
+        .padding(14)
+        .background(Color.white)
+        .cornerRadius(12)
+    }
+
+    @ViewBuilder
+    private func requestDetailEventsAndMessagesCard(detail: SalaryAdvanceRequestDetail, theme: MiniBiThemePalette) -> some View {
+        let req = detail.request
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Luồng trao đổi & Nhật ký xử lý (\(detail.events.count))")
+                .font(.subheadline.weight(.bold))
+                .foregroundColor(SemanticColors.textPrimary)
+
+            if req.allowedActions.canPostMessage {
+                VStack(alignment: .leading, spacing: 8) {
+                    TextField(
+                        "Nhập nội dung trao đổi với Kế toán dự án...",
+                        text: Binding(
+                            get: { viewModel.salaryAdvanceMessageDraft },
+                            set: { viewModel.updateSalaryAdvanceMessageDraft($0) }
+                        ),
+                        axis: .vertical
+                    )
+                    .focused($focusedField, equals: .messageDraft)
+                    .lineLimit(2...4)
+                    .font(.subheadline)
+                    .padding(10)
+                    .background(Color(hex: 0xF8FAFC))
+                    .cornerRadius(8)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8)
+                            .stroke(SemanticColors.borderSubtle, lineWidth: 1)
+                    )
+                    .id(FocusedField.messageDraft)
+
+                    Button {
+                        KeyboardDismissal.dismiss()
+                        Task { await viewModel.postSalaryAdvanceMessage() }
+                    } label: {
+                        HStack(spacing: 6) {
+                            if viewModel.salaryAdvanceMessageSubmitting {
+                                ProgressView().tint(.white).scaleEffect(0.8)
+                            }
+                            Text(viewModel.salaryAdvanceMessageSubmitting ? "Đang gửi..." : "Gửi tin nhắn trao đổi")
+                                .font(.caption.weight(.bold))
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 9)
+                        .background(theme.primary)
+                        .foregroundColor(.white)
+                        .cornerRadius(8)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(viewModel.salaryAdvanceMessageSubmitting)
+                }
+                Divider()
+            }
+
+            if detail.events.isEmpty {
+                Text("Chưa có sự kiện xử lý nào.")
+                    .font(.caption)
+                    .foregroundColor(SemanticColors.textSecondary)
+            } else {
+                ForEach(detail.events) { ev in
+                    let actorName = SalaryAdvanceContract.resolveActorDisplayName(
+                        displayName: ev.actorDisplayName,
+                        username: ev.actorUsername,
+                        fallback: "Hệ thống"
+                    )
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Text("\(ev.eventSeq). \(SalaryAdvanceContract.eventTypeLabel(ev.eventType))")
+                                .font(.caption.weight(.bold))
+                                .foregroundColor(SemanticColors.textPrimary)
+                            Spacer()
+                            Text(SalaryAdvanceContract.formatDateTimeVi(ev.createdAt))
+                                .font(.caption2)
+                                .foregroundColor(SemanticColors.textMuted)
+                        }
+                        Text("\(actorName) (\(SalaryAdvanceContract.actorRoleLabel(ev.actorRoleContext)))")
+                            .font(.caption2)
+                            .foregroundColor(SemanticColors.textSecondary)
+                        if let msg = ev.messageText, !msg.isEmpty {
+                            Text(msg)
+                                .font(.caption)
+                                .foregroundColor(SemanticColors.textPrimary)
+                                .padding(8)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .background(Color.white)
+                                .cornerRadius(6)
+                        }
+                    }
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color(hex: 0xF8FAFC))
+                    .cornerRadius(8)
+                }
+            }
+        }
+        .padding(14)
+        .background(Color.white)
+        .cornerRadius(12)
+    }
+
+    private func requestStateTone(_ state: String) -> (bg: Color, fg: Color) {
+        switch state.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() {
+        case "APPROVED":
+            return (SemanticColors.successBg, SemanticColors.successText)
+        case "NEED_INFO":
+            return (SemanticColors.warningBg, SemanticColors.warningText)
+        case "REJECTED", "WITHDRAWN":
+            return (SemanticColors.dangerBg, SemanticColors.dangerText)
+        default:
+            return (SemanticColors.infoBg, SemanticColors.infoText)
+        }
+    }
+
+    private func evidenceStateTone(_ state: String) -> (bg: Color, fg: Color) {
+        switch state.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() {
+        case "CONFIRMED":
+            return (SemanticColors.successBg, SemanticColors.successText)
+        case "NEEDS_REUPLOAD":
+            return (SemanticColors.dangerBg, SemanticColors.dangerText)
+        default:
+            return (SemanticColors.warningBg, SemanticColors.warningText)
         }
     }
 }
@@ -2917,13 +4556,25 @@ struct SalaryAdvanceWorkerHistorySheet: View {
     var body: some View {
         let theme = viewModel.selectedTheme
         let worker = viewModel.selectedSalaryAdvanceWorker
+        let resolvedName: String = {
+            if let w = worker, !w.displayName.isEmpty { return w.displayName }
+            if let r = viewModel.salaryAdvanceHistoryResponse, !r.workerDisplayName.isEmpty { return r.workerDisplayName }
+            if let d = viewModel.salaryAdvanceActiveDetail, !d.request.workerDisplayName.isEmpty { return d.request.workerDisplayName }
+            return ""
+        }()
+        let resolvedCode: String = {
+            if let w = worker, !w.employeeCode.isEmpty { return w.employeeCode }
+            if let r = viewModel.salaryAdvanceHistoryResponse, !r.workerEmployeeCode.isEmpty { return r.workerEmployeeCode }
+            if let d = viewModel.salaryAdvanceActiveDetail, !d.request.workerEmployeeCode.isEmpty { return d.request.workerEmployeeCode }
+            return ""
+        }()
 
         NavigationStack {
             VStack(spacing: 0) {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 12) {
-                        if let worker {
-                            Text("NLĐ: \(worker.displayName) (\(worker.employeeCode))")
+                        if !resolvedName.isEmpty || !resolvedCode.isEmpty {
+                            Text("NLĐ: \(resolvedName)\(resolvedCode.isEmpty ? "" : " (\(resolvedCode))")")
                                 .font(.subheadline.weight(.bold))
                                 .foregroundColor(SemanticColors.textPrimary)
                         }

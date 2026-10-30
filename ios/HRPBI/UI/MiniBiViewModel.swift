@@ -97,8 +97,11 @@ public final class MiniBiViewModel: ObservableObject {
     // MARK: - Salary Advance ("Ứng lương" for QLDA) State
     @Published public var salaryAdvanceContext: SalaryAdvanceActorContext?
     @Published public var salaryAdvanceSheetOpen: Bool = false
+    @Published public var salaryAdvanceWorkspaceTab: String = "CREATE"
     @Published public var salaryAdvanceSelectedProjectId: String?
     @Published public var salaryAdvanceWorkerSearch: String = ""
+    @Published public var salaryAdvanceWorkerEligibilityFilter: String = "ALL"
+    @Published public var salaryAdvanceWorkerPickerExpanded: Bool = true
     @Published public var salaryAdvanceWorkers: [SalaryAdvanceWorkerOption] = []
     @Published public var salaryAdvanceWorkersLoading: Bool = false
     @Published public var salaryAdvanceWorkersLoadingMore: Bool = false
@@ -114,7 +117,40 @@ public final class MiniBiViewModel: ObservableObject {
     @Published public var salaryAdvancePendingIdempotencyKey: String?
     @Published public var salaryAdvancePendingSignature: String?
 
+    // Salary Advance PM Queue Request List State
+    @Published public var salaryAdvanceRequests: [SalaryAdvanceRequestSummary] = []
+    @Published public var salaryAdvanceRequestsLoading: Bool = false
+    @Published public var salaryAdvanceRequestsLoadingMore: Bool = false
+    @Published public var salaryAdvanceRequestsError: String?
+    @Published public var salaryAdvanceRequestsNextCursor: String?
+    @Published public var salaryAdvanceRequestsHasMore: Bool = false
+    @Published public var salaryAdvancePmBadgeCount: Int = 0
+    @Published public var salaryAdvanceListProjectFilter: String = "ALL"
+    @Published public var salaryAdvanceListStateFilter: String = "ALL"
+    @Published public var salaryAdvanceListEvidenceFilter: String = "ALL"
+    @Published public var salaryAdvanceListSearch: String = ""
+
+    // Salary Advance Request Detail, Messages, Actions & Evidence Upload State
+    @Published public var salaryAdvanceSelectedRequestId: String?
+    @Published public var salaryAdvanceActiveDetail: SalaryAdvanceRequestDetail?
+    @Published public var salaryAdvanceDetailLoading: Bool = false
+    @Published public var salaryAdvanceDetailError: String?
+    @Published public var salaryAdvanceConflictBanner: String?
+    @Published public var salaryAdvanceSelectedEvidenceVersion: Int?
+    @Published public var salaryAdvanceMessageDraft: String = ""
+    @Published public var salaryAdvanceMessageSubmitting: Bool = false
+    @Published public var salaryAdvanceActionNoteDraft: String = ""
+    @Published public var salaryAdvanceActionSubmitting: Bool = false
+    @Published public var salaryAdvanceEvidenceCaptionDraft: String = ""
+    @Published public var salaryAdvanceEvidenceUploading: Bool = false
+    @Published public var salaryAdvanceEvidenceError: String?
+    private var salaryAdvanceMessageIdempotencyKey: String = UUID().uuidString.lowercased()
+    private var salaryAdvanceActionIdempotencyKey: String = UUID().uuidString.lowercased()
+    private var salaryAdvanceEvidenceReserveKey: String = UUID().uuidString.lowercased()
+    private var salaryAdvanceEvidenceFinalizeKey: String = UUID().uuidString.lowercased()
+
     @Published public var salaryAdvanceHistoryOpen: Bool = false
+    @Published public var salaryAdvanceHistoryTargetRequestId: String?
     @Published public var salaryAdvanceHistoryPeriodMode: String = SalaryAdvanceContract.periodModeLast30Days
     @Published public var salaryAdvanceHistoryMonth: String = ""
     @Published public var salaryAdvanceHistoryFromDate: String = ""
@@ -127,6 +163,7 @@ public final class MiniBiViewModel: ObservableObject {
     @Published public var salaryAdvanceHistoryNextCursor: String?
     @Published public var salaryAdvanceHistoryHasMore: Bool = false
     private var salaryAdvanceSearchTask: Task<Void, Never>?
+    private var salaryAdvanceListSearchTask: Task<Void, Never>?
 
     // MARK: - Attendance State
     @Published public var attendanceTimeEvaluation: AnchorEvaluationResult
@@ -279,6 +316,10 @@ public final class MiniBiViewModel: ObservableObject {
 
     public func navigateTo(_ destination: MiniBiNavDestination) {
         // Switching destinations NEVER resets `newWorkerDraftRows`
+        if destination == .workers && currentDestination == .workers && salaryAdvanceSheetOpen {
+            closeSalaryAdvanceSheet()
+            return
+        }
         currentDestination = destination
         if destination == .attendance {
             activeAttendanceTab = .checkIn
@@ -286,6 +327,9 @@ public final class MiniBiViewModel: ObservableObject {
                 Task { await refreshMyLeaveSummary(year: leaveYear) }
             }
         } else if destination == .workers {
+            if salaryAdvanceSheetOpen {
+                closeSalaryAdvanceSheet()
+            }
             if isAuthenticated {
                 Task { await loadSalaryAdvanceContext() }
             }
@@ -1202,9 +1246,14 @@ public final class MiniBiViewModel: ObservableObject {
         }
 
         salaryAdvanceSheetOpen = true
+        salaryAdvanceWorkspaceTab = "CREATE"
         salaryAdvanceSelectedProjectId = resolvedProjectId
         salaryAdvanceWorkerSearch = ""
+        salaryAdvanceWorkerEligibilityFilter = "ALL"
+        salaryAdvanceWorkerPickerExpanded = true
         salaryAdvanceWorkers = []
+        salaryAdvanceWorkersLoading = false
+        salaryAdvanceWorkersLoadingMore = false
         salaryAdvanceWorkersError = nil
         salaryAdvanceWorkersNextCursor = nil
         salaryAdvanceWorkersHasMore = false
@@ -1218,13 +1267,12 @@ public final class MiniBiViewModel: ObservableObject {
         salaryAdvancePendingSignature = nil
         salaryAdvanceHistoryOpen = false
 
-        if let resolvedProjectId {
-            await loadSalaryAdvanceProjectWorkers(projectId: resolvedProjectId, search: "", cursor: nil, append: false)
-        }
+        await refreshSalaryAdvanceRequests()
     }
 
     public func closeSalaryAdvanceSheet() {
         salaryAdvanceSearchTask?.cancel()
+        salaryAdvanceListSearchTask?.cancel()
         salaryAdvanceSheetOpen = false
         salaryAdvanceCreateSubmitting = false
         salaryAdvanceCreateError = nil
@@ -1233,36 +1281,92 @@ public final class MiniBiViewModel: ObservableObject {
         salaryAdvanceHistoryOpen = false
     }
 
+    public func selectSalaryAdvanceWorkspaceTab(_ tab: String) {
+        let clean = tab.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        guard clean == "CREATE" || clean == "LIST" || clean == "DETAIL" else { return }
+        salaryAdvanceWorkspaceTab = clean
+        if clean == "LIST" {
+            Task { await refreshSalaryAdvanceRequests() }
+        }
+    }
+
+    public func updateSalaryAdvanceWorkerEligibilityFilter(_ filterCode: String) {
+        let clean = filterCode.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        salaryAdvanceWorkerEligibilityFilter = clean.isEmpty ? "ALL" : clean
+    }
+
+    public func expandSalaryAdvanceWorkerPicker(_ expanded: Bool = true) {
+        salaryAdvanceWorkerPickerExpanded = expanded
+    }
+
+    public func refreshSalaryAdvanceCreateTab() async {
+        guard !salaryAdvanceCreateSubmitting else { return }
+        await loadSalaryAdvanceContext()
+        await refreshSalaryAdvanceRequests()
+        let projectId = (salaryAdvanceSelectedProjectId ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let currentQuery = salaryAdvanceWorkerSearch.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !projectId.isEmpty && !currentQuery.isEmpty {
+            await loadSalaryAdvanceProjectWorkers(
+                projectId: projectId,
+                search: currentQuery,
+                cursor: nil,
+                append: false
+            )
+        }
+    }
+
     public func selectSalaryAdvanceProject(_ projectId: String) async {
         let trimmed = projectId.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         salaryAdvanceSelectedProjectId = trimmed
         salaryAdvanceSelectedWorkerId = nil
+        salaryAdvanceWorkerPickerExpanded = true
         salaryAdvanceWorkers = []
+        salaryAdvanceWorkersLoading = false
+        salaryAdvanceWorkersLoadingMore = false
         salaryAdvanceWorkersError = nil
         salaryAdvanceWorkersNextCursor = nil
         salaryAdvanceWorkersHasMore = false
         salaryAdvanceCreateError = nil
         salaryAdvancePendingIdempotencyKey = nil
         salaryAdvancePendingSignature = nil
-        await loadSalaryAdvanceProjectWorkers(
-            projectId: trimmed,
-            search: salaryAdvanceWorkerSearch,
-            cursor: nil,
-            append: false
-        )
+        let currentQuery = salaryAdvanceWorkerSearch.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !currentQuery.isEmpty {
+            await loadSalaryAdvanceProjectWorkers(
+                projectId: trimmed,
+                search: currentQuery,
+                cursor: nil,
+                append: false
+            )
+        }
     }
 
     public func updateSalaryAdvanceWorkerSearch(_ query: String) {
-        salaryAdvanceWorkerSearch = query
+        let clean = String(query.replacingOccurrences(of: "\n", with: " ").replacingOccurrences(of: "\r", with: " ").prefix(120))
+        salaryAdvanceWorkerSearch = clean
+        salaryAdvanceWorkerPickerExpanded = true
         salaryAdvanceSearchTask?.cancel()
+        let trimmed = clean.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            salaryAdvanceWorkersLoading = false
+            salaryAdvanceWorkersLoadingMore = false
+            salaryAdvanceWorkersError = nil
+            salaryAdvanceWorkersHasMore = false
+            salaryAdvanceWorkersNextCursor = nil
+            if let selectedId = salaryAdvanceSelectedWorkerId, !selectedId.isEmpty {
+                salaryAdvanceWorkers = salaryAdvanceWorkers.filter { $0.workerEntryId == selectedId }
+            } else {
+                salaryAdvanceWorkers = []
+            }
+            return
+        }
         guard let projectId = salaryAdvanceSelectedProjectId, !projectId.isEmpty else { return }
         salaryAdvanceSearchTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 250_000_000)
             guard !Task.isCancelled else { return }
             await self?.loadSalaryAdvanceProjectWorkers(
                 projectId: projectId,
-                search: query,
+                search: trimmed,
                 cursor: nil,
                 append: false
             )
@@ -1270,7 +1374,9 @@ public final class MiniBiViewModel: ObservableObject {
     }
 
     public func loadMoreSalaryAdvanceWorkers() async {
-        guard !salaryAdvanceWorkersLoading,
+        let currentQuery = salaryAdvanceWorkerSearch.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !currentQuery.isEmpty,
+              !salaryAdvanceWorkersLoading,
               !salaryAdvanceWorkersLoadingMore,
               salaryAdvanceWorkersHasMore,
               let cursor = salaryAdvanceWorkersNextCursor, !cursor.isEmpty,
@@ -1279,7 +1385,7 @@ public final class MiniBiViewModel: ObservableObject {
         }
         await loadSalaryAdvanceProjectWorkers(
             projectId: projectId,
-            search: salaryAdvanceWorkerSearch,
+            search: currentQuery,
             cursor: cursor,
             append: true
         )
@@ -1291,6 +1397,9 @@ public final class MiniBiViewModel: ObservableObject {
         cursor: String?,
         append: Bool
     ) async {
+        let trimmedSearch = search.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedSearch.isEmpty else { return }
+
         if append {
             salaryAdvanceWorkersLoadingMore = true
         } else {
@@ -1300,41 +1409,81 @@ public final class MiniBiViewModel: ObservableObject {
 
         let res = await salaryAdvanceService.listProjectWorkers(
             projectId: projectId,
-            search: search,
+            search: trimmedSearch,
             cursor: cursor,
             pageSize: 30
         )
 
-        if append {
-            salaryAdvanceWorkersLoadingMore = false
-        } else {
+        guard salaryAdvanceSelectedProjectId == projectId else {
             salaryAdvanceWorkersLoading = false
+            salaryAdvanceWorkersLoadingMore = false
+            return
         }
 
-        guard salaryAdvanceSelectedProjectId == projectId else { return }
-
         switch res {
-        case .success(let page, _):
-            let combined = append ? (salaryAdvanceWorkers + page.workers) : page.workers
-            let filtered = SalaryAdvanceContract.filterSelectableProjectWorkers(combined)
-            let resolvedSelectedId: String?
-            if let cur = salaryAdvanceSelectedWorkerId, filtered.contains(where: { $0.workerEntryId == cur }) {
-                resolvedSelectedId = cur
-            } else {
-                resolvedSelectedId = nil
+        case .success(var page, _):
+            var filtered = SalaryAdvanceContract.filterSelectableProjectWorkers(page.workers)
+            if !append && filtered.isEmpty {
+                let fallbackRes = await salaryAdvanceService.listProjectWorkers(
+                    projectId: projectId,
+                    search: "",
+                    cursor: nil,
+                    pageSize: 100
+                )
+                if case .success(let fallbackPage, _) = fallbackRes {
+                    let fallbackSelectable = SalaryAdvanceContract.filterSelectableProjectWorkers(fallbackPage.workers)
+                    filtered = fallbackSelectable.filter { worker in
+                        SalaryAdvanceContract.matchesWorkerSearchQuery(
+                            worker: worker,
+                            query: trimmedSearch,
+                            eligibilityFilter: "ALL"
+                        )
+                    }
+                    page = SalaryAdvanceProjectWorkersPage(
+                        projectId: page.projectId,
+                        nextCursor: nil,
+                        hasMore: false,
+                        workers: filtered
+                    )
+                }
             }
-            salaryAdvanceWorkers = filtered
+
+            if append {
+                salaryAdvanceWorkersLoadingMore = false
+            } else {
+                salaryAdvanceWorkersLoading = false
+            }
+
+            let combined: [SalaryAdvanceWorkerOption]
+            if append {
+                let existingIds = Set(salaryAdvanceWorkers.map { $0.workerEntryId })
+                combined = salaryAdvanceWorkers + filtered.filter { !existingIds.contains($0.workerEntryId) }
+            } else {
+                if let cur = salaryAdvanceSelectedWorkerId, !cur.isEmpty,
+                   !filtered.contains(where: { $0.workerEntryId == cur }),
+                   let preserved = salaryAdvanceWorkers.first(where: { $0.workerEntryId == cur }) {
+                    combined = [preserved] + filtered
+                } else {
+                    combined = filtered
+                }
+            }
+            salaryAdvanceWorkers = combined
             salaryAdvanceWorkersError = nil
             salaryAdvanceWorkersNextCursor = page.nextCursor
             salaryAdvanceWorkersHasMore = page.hasMore
-            salaryAdvanceSelectedWorkerId = resolvedSelectedId
 
         case .failure(let message, _, _, _):
+            if append {
+                salaryAdvanceWorkersLoadingMore = false
+            } else {
+                salaryAdvanceWorkersLoading = false
+            }
             salaryAdvanceWorkersError = message
         }
     }
 
     public func selectSalaryAdvanceWorker(_ workerEntryId: String) {
+        guard !salaryAdvanceCreateSubmitting else { return }
         let trimmed = workerEntryId.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         let matched = salaryAdvanceWorkers.first(where: { $0.workerEntryId == trimmed })
@@ -1352,6 +1501,9 @@ public final class MiniBiViewModel: ObservableObject {
         salaryAdvanceCreateError = nil
         salaryAdvancePendingIdempotencyKey = nil
         salaryAdvancePendingSignature = nil
+        if let matched, SalaryAdvanceContract.describeWorkerEligibility(matched).isEligible {
+            salaryAdvanceWorkerPickerExpanded = false
+        }
     }
 
     public func updateSalaryAdvancePaymentMethod(_ method: String) {
@@ -1384,6 +1536,13 @@ public final class MiniBiViewModel: ObservableObject {
         let projectId = (salaryAdvanceSelectedProjectId ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         guard !projectId.isEmpty else {
             salaryAdvanceCreateError = "Vui lòng chọn dự án."
+            return
+        }
+        let selectedProject = salaryAdvanceContext?.activeManagedProjects.first(where: { $0.projectId == projectId })
+        if selectedProject?.hasActiveAccountant == false {
+            salaryAdvanceCreateError = SalaryAdvanceContract.describeSalaryAdvanceError(
+                code: "SALARY_ADVANCE_PROJECT_HAS_NO_ACTIVE_ACCOUNTANT"
+            )
             return
         }
         guard let worker = selectedSalaryAdvanceWorker else {
@@ -1440,11 +1599,361 @@ public final class MiniBiViewModel: ObservableObject {
 
         switch res {
         case .success(let reqId, _):
-            closeSalaryAdvanceSheet()
-            let codeSuffix = (reqId.isEmpty || reqId == "created") ? "" : " (\(reqId))"
-            showBanner("Đã gửi đề nghị ứng lương thành công\(codeSuffix).")
-        case .failure(let message, _, _, _):
+            let workerName = worker.displayName
+            let formattedAmount = SalaryAdvanceContract.formatVndAmount(normalizedAmount)
+            salaryAdvanceSelectedWorkerId = nil
+            salaryAdvanceAmountRaw = ""
+            salaryAdvanceInitialContent = ""
+            salaryAdvanceWorkerPickerExpanded = true
+            salaryAdvancePendingIdempotencyKey = nil
+            salaryAdvancePendingSignature = nil
+            showBanner("Đã tạo yêu cầu ứng lương cho \(workerName) (\(formattedAmount)).")
+            await refreshSalaryAdvanceRequests()
+            if !reqId.isEmpty && reqId != "created" {
+                await openSalaryAdvanceRequestDetail(reqId)
+            } else {
+                salaryAdvanceWorkspaceTab = "LIST"
+            }
+        case .failure(let message, let httpStatus, let errorCode, _):
+            if SalaryAdvanceContract.isConflictError(httpStatus: httpStatus, errorCode: errorCode) {
+                salaryAdvancePendingIdempotencyKey = nil
+                salaryAdvancePendingSignature = nil
+            }
             salaryAdvanceCreateError = message
+        }
+    }
+
+    // MARK: - Salary Advance PM Queue Request List & Filtering
+
+    public func refreshSalaryAdvanceRequests() async {
+        await loadSalaryAdvanceRequests(append: false, cursor: nil)
+    }
+
+    public func updateSalaryAdvanceListProjectFilter(_ projectFilter: String) {
+        let clean = projectFilter.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolved = clean.isEmpty ? "ALL" : clean
+        guard salaryAdvanceListProjectFilter != resolved else { return }
+        salaryAdvanceListProjectFilter = resolved
+        Task { await loadSalaryAdvanceRequests(append: false, cursor: nil) }
+    }
+
+    public func updateSalaryAdvanceListStateFilter(_ stateFilter: String) {
+        let clean = stateFilter.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        let resolved = clean.isEmpty ? "ALL" : clean
+        guard salaryAdvanceListStateFilter != resolved else { return }
+        salaryAdvanceListStateFilter = resolved
+        Task { await loadSalaryAdvanceRequests(append: false, cursor: nil) }
+    }
+
+    public func updateSalaryAdvanceListEvidenceFilter(_ evidenceFilter: String) {
+        let clean = evidenceFilter.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        let resolved = clean.isEmpty ? "ALL" : clean
+        guard salaryAdvanceListEvidenceFilter != resolved else { return }
+        salaryAdvanceListEvidenceFilter = resolved
+        Task { await loadSalaryAdvanceRequests(append: false, cursor: nil) }
+    }
+
+    public func updateSalaryAdvanceListSearch(_ search: String) {
+        let clean = String(search.replacingOccurrences(of: "\n", with: " ").replacingOccurrences(of: "\r", with: " ").prefix(120))
+        salaryAdvanceListSearch = clean
+        salaryAdvanceListSearchTask?.cancel()
+        salaryAdvanceListSearchTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            guard !Task.isCancelled else { return }
+            await self?.loadSalaryAdvanceRequests(append: false, cursor: nil)
+        }
+    }
+
+    public func loadMoreSalaryAdvanceRequests() async {
+        guard !salaryAdvanceRequestsLoading,
+              !salaryAdvanceRequestsLoadingMore,
+              salaryAdvanceRequestsHasMore,
+              let cursor = salaryAdvanceRequestsNextCursor, !cursor.isEmpty else {
+            return
+        }
+        await loadSalaryAdvanceRequests(append: true, cursor: cursor)
+    }
+
+    private func loadSalaryAdvanceRequests(append: Bool, cursor: String?) async {
+        let isAppend = append && !(cursor ?? "").isEmpty
+        if isAppend {
+            salaryAdvanceRequestsLoadingMore = true
+        } else {
+            salaryAdvanceRequestsLoading = true
+            salaryAdvanceRequestsError = nil
+        }
+
+        let res = await salaryAdvanceService.listRequests(
+            queue: "PM",
+            projectFilter: salaryAdvanceListProjectFilter,
+            requestStateFilter: salaryAdvanceListStateFilter,
+            evidenceStateFilter: salaryAdvanceListEvidenceFilter,
+            search: salaryAdvanceListSearch,
+            cursor: isAppend ? cursor : nil,
+            pageSize: 25,
+            includeBadge: true
+        )
+
+        if isAppend {
+            salaryAdvanceRequestsLoadingMore = false
+        } else {
+            salaryAdvanceRequestsLoading = false
+        }
+
+        switch res {
+        case .success(let payload, _):
+            if isAppend {
+                let existingIds = Set(salaryAdvanceRequests.map { $0.requestId })
+                salaryAdvanceRequests = salaryAdvanceRequests + payload.items.filter { !existingIds.contains($0.requestId) }
+            } else {
+                salaryAdvanceRequests = payload.items
+            }
+            salaryAdvanceRequestsHasMore = payload.hasMore
+            salaryAdvanceRequestsNextCursor = payload.nextCursor
+            if let badge = payload.pmBadgeCount {
+                salaryAdvancePmBadgeCount = badge
+            }
+            salaryAdvanceRequestsError = nil
+        case .failure(let message, _, _, _):
+            salaryAdvanceRequestsError = message
+        }
+    }
+
+    // MARK: - Salary Advance Request Detail, Messages, Transition Actions & Evidence Upload
+
+    public func openSalaryAdvanceRequestDetail(_ requestId: String) async {
+        let cleanId = requestId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanId.isEmpty else { return }
+        salaryAdvanceSelectedRequestId = cleanId
+        salaryAdvanceWorkspaceTab = "DETAIL"
+        salaryAdvanceDetailError = nil
+        salaryAdvanceConflictBanner = nil
+        salaryAdvanceEvidenceError = nil
+        salaryAdvanceMessageDraft = ""
+        salaryAdvanceActionNoteDraft = ""
+        salaryAdvanceEvidenceCaptionDraft = ""
+        salaryAdvanceSelectedEvidenceVersion = nil
+        salaryAdvanceMessageIdempotencyKey = UUID().uuidString.lowercased()
+        salaryAdvanceActionIdempotencyKey = UUID().uuidString.lowercased()
+        salaryAdvanceEvidenceReserveKey = UUID().uuidString.lowercased()
+        salaryAdvanceEvidenceFinalizeKey = UUID().uuidString.lowercased()
+        await loadSalaryAdvanceRequestDetail(cleanId)
+    }
+
+    public func backFromSalaryAdvanceDetailToList() {
+        salaryAdvanceWorkspaceTab = "LIST"
+        salaryAdvanceConflictBanner = nil
+        salaryAdvanceDetailError = nil
+        salaryAdvanceEvidenceError = nil
+    }
+
+    public func refreshSalaryAdvanceActiveDetail() async {
+        guard let reqId = salaryAdvanceSelectedRequestId, !reqId.isEmpty else { return }
+        await loadSalaryAdvanceRequestDetail(reqId)
+    }
+
+    private func loadSalaryAdvanceRequestDetail(_ requestId: String) async {
+        salaryAdvanceDetailLoading = true
+        salaryAdvanceDetailError = nil
+        let res = await salaryAdvanceService.getRequestDetail(requestId: requestId)
+        salaryAdvanceDetailLoading = false
+        switch res {
+        case .success(let detail, _):
+            applyUpdatedSalaryAdvanceDetail(detail)
+        case .failure(let message, _, _, _):
+            salaryAdvanceDetailError = message
+        }
+    }
+
+    private func applyUpdatedSalaryAdvanceDetail(_ detail: SalaryAdvanceRequestDetail) {
+        salaryAdvanceActiveDetail = detail
+        let currentEvVer = detail.request.currentEvidence?.version ?? detail.evidenceVersions.first?.version
+        salaryAdvanceSelectedEvidenceVersion = currentEvVer
+        if let idx = salaryAdvanceRequests.firstIndex(where: { $0.requestId == detail.request.requestId }) {
+            salaryAdvanceRequests[idx] = detail.request
+        } else {
+            salaryAdvanceRequests.insert(detail.request, at: 0)
+        }
+    }
+
+    public func selectSalaryAdvanceEvidenceVersion(_ version: Int?) {
+        salaryAdvanceSelectedEvidenceVersion = version
+    }
+
+    public func updateSalaryAdvanceMessageDraft(_ text: String) {
+        guard !salaryAdvanceMessageSubmitting else { return }
+        salaryAdvanceMessageDraft = String(text.prefix(2000))
+        salaryAdvanceDetailError = nil
+    }
+
+    public func postSalaryAdvanceMessage() async {
+        guard !salaryAdvanceMessageSubmitting,
+              let detail = salaryAdvanceActiveDetail,
+              detail.request.allowedActions.canPostMessage else { return }
+        let cleanText = salaryAdvanceMessageDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanText.isEmpty else {
+            salaryAdvanceDetailError = "Vui lòng nhập nội dung trao đổi."
+            return
+        }
+        let reqId = detail.request.requestId
+        let expectedVersion = detail.request.version
+        let key = salaryAdvanceMessageIdempotencyKey
+
+        salaryAdvanceDetailError = nil
+        salaryAdvanceConflictBanner = nil
+        salaryAdvanceMessageSubmitting = true
+
+        let res = await salaryAdvanceService.postMessage(
+            requestId: reqId,
+            expectedVersion: expectedVersion,
+            messageText: cleanText,
+            idempotencyKey: key
+        )
+        salaryAdvanceMessageSubmitting = false
+
+        switch res {
+        case .success(let updated, _):
+            salaryAdvanceMessageIdempotencyKey = UUID().uuidString.lowercased()
+            salaryAdvanceMessageDraft = ""
+            applyUpdatedSalaryAdvanceDetail(updated)
+            showBanner("Đã gửi tin nhắn trao đổi.")
+        case .failure(let message, let httpStatus, let errorCode, _):
+            if SalaryAdvanceContract.isConflictError(httpStatus: httpStatus, errorCode: errorCode) {
+                salaryAdvanceMessageIdempotencyKey = UUID().uuidString.lowercased()
+                salaryAdvanceConflictBanner = message
+                await loadSalaryAdvanceRequestDetail(reqId)
+                await loadSalaryAdvanceRequests(append: false, cursor: nil)
+            } else {
+                salaryAdvanceDetailError = message
+            }
+        }
+    }
+
+    public func updateSalaryAdvanceActionNoteDraft(_ text: String) {
+        guard !salaryAdvanceActionSubmitting else { return }
+        salaryAdvanceActionNoteDraft = String(text.prefix(2000))
+        salaryAdvanceDetailError = nil
+    }
+
+    public func submitSalaryAdvanceTransitionAction(_ action: String, noteOverride: String? = nil) async {
+        guard !salaryAdvanceActionSubmitting,
+              let detail = salaryAdvanceActiveDetail else { return }
+        let cleanAction = action.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        let note = (noteOverride ?? salaryAdvanceActionNoteDraft).trimmingCharacters(in: .whitespacesAndNewlines)
+
+        switch cleanAction {
+        case "PROVIDE_INFO":
+            guard detail.request.allowedActions.canProvideInfo else { return }
+            if note.isEmpty {
+                salaryAdvanceDetailError = "Vui lòng nhập nội dung phản hồi bổ sung thông tin cho Kế toán."
+                return
+            }
+        case "WITHDRAW":
+            guard detail.request.allowedActions.canWithdraw else { return }
+        default:
+            return
+        }
+
+        let reqId = detail.request.requestId
+        let expectedVersion = detail.request.version
+        let key = salaryAdvanceActionIdempotencyKey
+
+        salaryAdvanceDetailError = nil
+        salaryAdvanceConflictBanner = nil
+        salaryAdvanceActionSubmitting = true
+
+        let res = await salaryAdvanceService.submitTransitionAction(
+            requestId: reqId,
+            action: cleanAction,
+            expectedVersion: expectedVersion,
+            messageText: note.isEmpty ? nil : note,
+            idempotencyKey: key
+        )
+        salaryAdvanceActionSubmitting = false
+
+        switch res {
+        case .success(let updated, _):
+            salaryAdvanceActionIdempotencyKey = UUID().uuidString.lowercased()
+            salaryAdvanceActionNoteDraft = ""
+            applyUpdatedSalaryAdvanceDetail(updated)
+            await loadSalaryAdvanceRequests(append: false, cursor: nil)
+            showBanner(cleanAction == "WITHDRAW" ? "Đã rút yêu cầu ứng lương." : "Đã gửi bổ sung thông tin cho Kế toán.")
+        case .failure(let message, let httpStatus, let errorCode, _):
+            if SalaryAdvanceContract.isConflictError(httpStatus: httpStatus, errorCode: errorCode) {
+                salaryAdvanceActionIdempotencyKey = UUID().uuidString.lowercased()
+                salaryAdvanceConflictBanner = message
+                await loadSalaryAdvanceRequestDetail(reqId)
+                await loadSalaryAdvanceRequests(append: false, cursor: nil)
+            } else {
+                salaryAdvanceDetailError = message
+            }
+        }
+    }
+
+    public func updateSalaryAdvanceEvidenceCaptionDraft(_ caption: String) {
+        guard !salaryAdvanceEvidenceUploading else { return }
+        salaryAdvanceEvidenceCaptionDraft = String(caption.prefix(1000))
+        salaryAdvanceEvidenceError = nil
+    }
+
+    public func uploadSalaryAdvanceEvidenceData(_ rawData: Data, fileName: String = "evidence.jpg") async {
+        guard !salaryAdvanceEvidenceUploading,
+              let detail = salaryAdvanceActiveDetail,
+              detail.request.allowedActions.canUploadCashEvidence else { return }
+
+        salaryAdvanceEvidenceError = nil
+        salaryAdvanceConflictBanner = nil
+        salaryAdvanceEvidenceUploading = true
+
+        let attachment = ContractFileAttachment(
+            id: UUID(),
+            fileName: fileName,
+            mimeType: "image/jpeg",
+            data: rawData
+        )
+        let payloadResult = PdfContractMerger.prepareContractUploadPayload(from: [attachment])
+        guard case .success(let preparedPayload) = payloadResult else {
+            salaryAdvanceEvidenceUploading = false
+            if case .failure(let err) = payloadResult {
+                salaryAdvanceEvidenceError = err.localizedDescription
+            } else {
+                salaryAdvanceEvidenceError = "Không thể chuẩn bị tệp ảnh chứng từ."
+            }
+            return
+        }
+
+        let reqId = detail.request.requestId
+        let expectedVersion = detail.request.version
+        let reserveKey = salaryAdvanceEvidenceReserveKey
+        let finalizeKey = salaryAdvanceEvidenceFinalizeKey
+
+        let res = await salaryAdvanceService.uploadEvidenceBytes(
+            requestId: reqId,
+            expectedVersion: expectedVersion,
+            imageData: preparedPayload.data,
+            mimeType: preparedPayload.mimeType,
+            captionNote: salaryAdvanceEvidenceCaptionDraft,
+            reserveIdempotencyKey: reserveKey,
+            finalizeIdempotencyKey: finalizeKey
+        )
+        salaryAdvanceEvidenceUploading = false
+        salaryAdvanceEvidenceReserveKey = UUID().uuidString.lowercased()
+        salaryAdvanceEvidenceFinalizeKey = UUID().uuidString.lowercased()
+
+        switch res {
+        case .success(let updated, _):
+            salaryAdvanceEvidenceCaptionDraft = ""
+            applyUpdatedSalaryAdvanceDetail(updated)
+            await loadSalaryAdvanceRequests(append: false, cursor: nil)
+            showBanner("Đã tải lên ảnh chứng từ nhận tiền thành công.")
+        case .failure(let message, let httpStatus, let errorCode, _):
+            if SalaryAdvanceContract.isConflictError(httpStatus: httpStatus, errorCode: errorCode) {
+                salaryAdvanceConflictBanner = message
+                await loadSalaryAdvanceRequestDetail(reqId)
+                await loadSalaryAdvanceRequests(append: false, cursor: nil)
+            } else {
+                salaryAdvanceEvidenceError = message
+            }
         }
     }
 
@@ -1462,6 +1971,7 @@ public final class MiniBiViewModel: ObservableObject {
         guard let worker = selectedSalaryAdvanceWorker,
               let projectId = salaryAdvanceSelectedProjectId, !projectId.isEmpty else { return }
         let defaultMonth = salaryAdvanceHistoryMonth.isEmpty ? Self.currentVnYearMonth() : salaryAdvanceHistoryMonth
+        salaryAdvanceHistoryTargetRequestId = nil
         salaryAdvanceHistoryOpen = true
         salaryAdvanceHistoryPeriodMode = SalaryAdvanceContract.periodModeLast30Days
         salaryAdvanceHistoryMonth = defaultMonth
@@ -1474,6 +1984,7 @@ public final class MiniBiViewModel: ObservableObject {
         salaryAdvanceHistoryHasMore = false
 
         await fetchSalaryAdvanceWorkerHistoryInternal(
+            requestId: nil,
             projectId: projectId,
             workerEntryId: worker.workerEntryId,
             periodMode: SalaryAdvanceContract.periodModeLast30Days,
@@ -1485,16 +1996,49 @@ public final class MiniBiViewModel: ObservableObject {
         )
     }
 
+    public func openSalaryAdvanceRequestWorkerHistory(_ requestId: String) async {
+        let cleanId = requestId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanId.isEmpty else { return }
+        let defaultMonth = salaryAdvanceHistoryMonth.isEmpty ? Self.currentVnYearMonth() : salaryAdvanceHistoryMonth
+        salaryAdvanceHistoryTargetRequestId = cleanId
+        salaryAdvanceHistoryOpen = true
+        salaryAdvanceHistoryPeriodMode = SalaryAdvanceContract.periodModeLast30Days
+        salaryAdvanceHistoryMonth = defaultMonth
+        salaryAdvanceHistoryLoading = true
+        salaryAdvanceHistoryLoadingMore = false
+        salaryAdvanceHistoryError = nil
+        salaryAdvanceHistoryResponse = nil
+        salaryAdvanceHistoryItems = []
+        salaryAdvanceHistoryNextCursor = nil
+        salaryAdvanceHistoryHasMore = false
+
+        await fetchSalaryAdvanceWorkerHistoryInternal(
+            requestId: cleanId,
+            projectId: "",
+            workerEntryId: "",
+            periodMode: SalaryAdvanceContract.periodModeLast30Days,
+            month: defaultMonth,
+            fromDate: salaryAdvanceHistoryFromDate,
+            toDate: salaryAdvanceHistoryToDate,
+            cursor: nil,
+            append: false
+        )
+    }
+
     public func closeSalaryAdvanceWorkerHistory() {
         salaryAdvanceHistoryOpen = false
+        salaryAdvanceHistoryTargetRequestId = nil
         salaryAdvanceHistoryLoading = false
         salaryAdvanceHistoryLoadingMore = false
         salaryAdvanceHistoryError = nil
     }
 
     public func selectSalaryAdvanceHistoryPeriodMode(_ periodMode: String, month: String? = nil) async {
-        guard let worker = selectedSalaryAdvanceWorker,
-              let projectId = salaryAdvanceSelectedProjectId, !projectId.isEmpty else { return }
+        let targetReqId = salaryAdvanceHistoryTargetRequestId
+        let projectId = salaryAdvanceSelectedProjectId ?? ""
+        let workerId = selectedSalaryAdvanceWorker?.workerEntryId ?? ""
+        guard !(targetReqId ?? "").isEmpty || (!projectId.isEmpty && !workerId.isEmpty) else { return }
+
         let normalizedMode = periodMode.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
         let nextMonth = (month ?? salaryAdvanceHistoryMonth).trimmingCharacters(in: .whitespacesAndNewlines)
         let resolvedMonth = nextMonth.isEmpty ? Self.currentVnYearMonth() : nextMonth
@@ -1509,8 +2053,9 @@ public final class MiniBiViewModel: ObservableObject {
         }
 
         await fetchSalaryAdvanceWorkerHistoryInternal(
+            requestId: targetReqId,
             projectId: projectId,
-            workerEntryId: worker.workerEntryId,
+            workerEntryId: workerId,
             periodMode: normalizedMode,
             month: resolvedMonth,
             fromDate: salaryAdvanceHistoryFromDate,
@@ -1521,8 +2066,11 @@ public final class MiniBiViewModel: ObservableObject {
     }
 
     public func applySalaryAdvanceHistoryCustomRange(fromDate: String, toDate: String) async {
-        guard let worker = selectedSalaryAdvanceWorker,
-              let projectId = salaryAdvanceSelectedProjectId, !projectId.isEmpty else { return }
+        let targetReqId = salaryAdvanceHistoryTargetRequestId
+        let projectId = salaryAdvanceSelectedProjectId ?? ""
+        let workerId = selectedSalaryAdvanceWorker?.workerEntryId ?? ""
+        guard !(targetReqId ?? "").isEmpty || (!projectId.isEmpty && !workerId.isEmpty) else { return }
+
         let f = fromDate.trimmingCharacters(in: .whitespacesAndNewlines)
         let t = toDate.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !f.isEmpty && !t.isEmpty else {
@@ -1535,8 +2083,9 @@ public final class MiniBiViewModel: ObservableObject {
         salaryAdvanceHistoryError = nil
 
         await fetchSalaryAdvanceWorkerHistoryInternal(
+            requestId: targetReqId,
             projectId: projectId,
-            workerEntryId: worker.workerEntryId,
+            workerEntryId: workerId,
             periodMode: SalaryAdvanceContract.periodModeCustomRange,
             month: salaryAdvanceHistoryMonth,
             fromDate: f,
@@ -1547,17 +2096,20 @@ public final class MiniBiViewModel: ObservableObject {
     }
 
     public func loadMoreSalaryAdvanceWorkerHistory() async {
+        let targetReqId = salaryAdvanceHistoryTargetRequestId
+        let projectId = salaryAdvanceSelectedProjectId ?? ""
+        let workerId = selectedSalaryAdvanceWorker?.workerEntryId ?? ""
         guard !salaryAdvanceHistoryLoading,
               !salaryAdvanceHistoryLoadingMore,
               salaryAdvanceHistoryHasMore,
               let cursor = salaryAdvanceHistoryNextCursor, !cursor.isEmpty,
-              let worker = selectedSalaryAdvanceWorker,
-              let projectId = salaryAdvanceSelectedProjectId, !projectId.isEmpty else {
+              (!(targetReqId ?? "").isEmpty || (!projectId.isEmpty && !workerId.isEmpty)) else {
             return
         }
         await fetchSalaryAdvanceWorkerHistoryInternal(
+            requestId: targetReqId,
             projectId: projectId,
-            workerEntryId: worker.workerEntryId,
+            workerEntryId: workerId,
             periodMode: salaryAdvanceHistoryPeriodMode,
             month: salaryAdvanceHistoryMonth,
             fromDate: salaryAdvanceHistoryFromDate,
@@ -1568,6 +2120,7 @@ public final class MiniBiViewModel: ObservableObject {
     }
 
     private func fetchSalaryAdvanceWorkerHistoryInternal(
+        requestId: String?,
         projectId: String,
         workerEntryId: String,
         periodMode: String,
@@ -1584,16 +2137,29 @@ public final class MiniBiViewModel: ObservableObject {
             salaryAdvanceHistoryError = nil
         }
 
-        let res = await salaryAdvanceService.fetchWorkerHistoryForPm(
-            projectId: projectId,
-            workerEntryId: workerEntryId,
-            periodMode: periodMode,
-            month: periodMode == SalaryAdvanceContract.periodModeMonth ? month : nil,
-            fromDate: periodMode == SalaryAdvanceContract.periodModeCustomRange ? fromDate : nil,
-            toDate: periodMode == SalaryAdvanceContract.periodModeCustomRange ? toDate : nil,
-            cursor: cursor,
-            pageSize: 20
-        )
+        let res: MiniBiApiResult<SalaryAdvanceWorkerHistoryResponse>
+        if let reqId = requestId, !reqId.isEmpty {
+            res = await salaryAdvanceService.fetchWorkerHistoryForRequest(
+                requestId: reqId,
+                periodMode: periodMode,
+                month: periodMode == SalaryAdvanceContract.periodModeMonth ? month : nil,
+                fromDate: periodMode == SalaryAdvanceContract.periodModeCustomRange ? fromDate : nil,
+                toDate: periodMode == SalaryAdvanceContract.periodModeCustomRange ? toDate : nil,
+                cursor: cursor,
+                pageSize: 20
+            )
+        } else {
+            res = await salaryAdvanceService.fetchWorkerHistoryForPm(
+                projectId: projectId,
+                workerEntryId: workerEntryId,
+                periodMode: periodMode,
+                month: periodMode == SalaryAdvanceContract.periodModeMonth ? month : nil,
+                fromDate: periodMode == SalaryAdvanceContract.periodModeCustomRange ? fromDate : nil,
+                toDate: periodMode == SalaryAdvanceContract.periodModeCustomRange ? toDate : nil,
+                cursor: cursor,
+                pageSize: 20
+            )
+        }
 
         if append {
             salaryAdvanceHistoryLoadingMore = false

@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 // MARK: - Salary Advance Models (`Ứng lương` QLDA)
@@ -295,12 +296,211 @@ public struct SalaryAdvanceBankStatusDescription: Equatable, Sendable {
     public let accountHolderName: String?
 }
 
+public struct SalaryAdvancePaymentDestinationSnapshot: Equatable, Sendable {
+    public let bankId: String?
+    public let institutionName: String
+    public let accountNumber: String
+    public let accountNumberMasked: String
+    public let accountHolderName: String
+}
+
+public struct SalaryAdvanceWorkerPortraitMeta: Equatable, Sendable {
+    public let documentId: String
+    public let version: Int
+    public let mimeType: String
+    public let sizeBytes: Int64
+    public let checksumSha256: String
+}
+
+public struct SalaryAdvanceCurrentEvidenceMeta: Equatable, Sendable {
+    public let evidenceVersion: Int
+    public let evidenceKind: String
+    public let mimeType: String
+    public let sizeBytes: Int64
+    public let checksumSha256: String
+    public let uploadedByUserId: String
+    public let uploadedByDisplayName: String
+    public let uploadedAt: String
+    public let reviewedByUserId: String?
+    public let reviewedByDisplayName: String?
+    public let reviewedAt: String?
+    public let reviewNote: String?
+    public let reviewedWorkerPortraitDocumentId: String?
+    public let reviewedWorkerPortraitVersion: Int?
+}
+
+public struct SalaryAdvanceAllowedActions: Equatable, Sendable {
+    public let canPostMessage: Bool
+    public let canProvideInfo: Bool
+    public let canWithdraw: Bool
+    public let canUploadEvidence: Bool
+    public let canRequestInfo: Bool
+    public let canApprove: Bool
+    public let canReject: Bool
+    public let canMarkHandledExternally: Bool
+    public let canReviewEvidence: Bool
+
+    public init(
+        canPostMessage: Bool = false,
+        canProvideInfo: Bool = false,
+        canWithdraw: Bool = false,
+        canUploadEvidence: Bool = false,
+        canRequestInfo: Bool = false,
+        canApprove: Bool = false,
+        canReject: Bool = false,
+        canMarkHandledExternally: Bool = false,
+        canReviewEvidence: Bool = false
+    ) {
+        self.canPostMessage = canPostMessage
+        self.canProvideInfo = canProvideInfo
+        self.canWithdraw = canWithdraw
+        self.canUploadEvidence = canUploadEvidence
+        self.canRequestInfo = canRequestInfo
+        self.canApprove = canApprove
+        self.canReject = canReject
+        self.canMarkHandledExternally = canMarkHandledExternally
+        self.canReviewEvidence = canReviewEvidence
+    }
+}
+
+public struct SalaryAdvanceProjectAccountantActor: Equatable, Sendable {
+    public let appUserId: String
+    public let displayName: String
+}
+
+public struct SalaryAdvanceRequestSummary: Identifiable, Equatable, Sendable {
+    public var id: String { requestId }
+    public let requestId: String
+    public let projectId: String
+    public let projectDisplayName: String
+    public let workerEntryId: String
+    public let workerEmployeeCode: String
+    public let workerDisplayName: String
+    public let workerFirstWorkDate: String?
+    public let workerRecruiterDisplayName: String?
+    public let workerRecruiterCode: String?
+    public let workerProviderType: String?
+    public let workerPortrait: SalaryAdvanceWorkerPortraitMeta?
+    public let requestedAmountVnd: String
+    public let paymentMethod: String
+    public let paymentDestinationSnapshot: SalaryAdvancePaymentDestinationSnapshot?
+    public let initialContent: String
+    public let requestState: String
+    public let evidenceReviewState: String
+    public let version: Int
+    public let createdByUserId: String
+    public let createdByDisplayName: String
+    public let decidedByUserId: String?
+    public let decidedByDisplayName: String?
+    public let decidedAt: String?
+    public let decisionNote: String?
+    public let handledExternallyByUserId: String?
+    public let handledExternallyByDisplayName: String?
+    public let handledExternallyAt: String?
+    public let handledExternallyNote: String?
+    public let withdrawnByUserId: String?
+    public let withdrawnByDisplayName: String?
+    public let withdrawnAt: String?
+    public let withdrawnNote: String?
+    public let currentEvidence: SalaryAdvanceCurrentEvidenceMeta?
+    public let currentProjectAccountant: SalaryAdvanceProjectAccountantActor?
+    public let allowedActions: SalaryAdvanceAllowedActions
+    public let lastActivityAt: String
+    public let createdAt: String
+    public let updatedAt: String
+}
+
+public struct SalaryAdvanceRequestListResponse: Equatable, Sendable {
+    public let requests: [SalaryAdvanceRequestSummary]
+    public let hasMore: Bool
+    public let nextCursor: String?
+    public let badgeCount: Int?
+    public let badgeCountCapped: Bool
+}
+
+public struct SalaryAdvanceEventItem: Identifiable, Equatable, Sendable {
+    public var id: String { eventId }
+    public let eventId: String
+    public let eventSeq: Int
+    public let eventType: String
+    public let actorUserId: String
+    public let actorDisplayName: String
+    public let actorRole: String
+    public let fromRequestState: String?
+    public let toRequestState: String
+    public let fromEvidenceReviewState: String?
+    public let toEvidenceReviewState: String
+    public let messageText: String?
+    public let evidenceVersion: Int?
+    public let evidenceKind: String?
+    public let evidenceMimeType: String?
+    public let evidenceSizeBytes: Int64?
+    public let evidenceChecksumSha256: String?
+    public let reviewedWorkerPortraitDocumentId: String?
+    public let reviewedWorkerPortraitVersion: Int?
+    public let createdAt: String
+}
+
+public struct SalaryAdvanceEvidenceVersionItem: Identifiable, Equatable, Sendable {
+    public var id: Int { evidenceVersion }
+    public let evidenceVersion: Int
+    public let evidenceKind: String
+    public let eventId: String
+    public let mimeType: String
+    public let sizeBytes: Int64
+    public let checksumSha256: String
+    public let captionNote: String?
+    public let uploadedByUserId: String
+    public let uploadedByDisplayName: String
+    public let uploadedAt: String
+}
+
+public struct SalaryAdvanceRequestDetail: Equatable, Sendable {
+    public let request: SalaryAdvanceRequestSummary
+    public let events: [SalaryAdvanceEventItem]
+    public let evidenceVersions: [SalaryAdvanceEvidenceVersionItem]
+    public let workerAdvance30dSummary: SalaryAdvanceWorkerRollingAdvanceSummary?
+    public let replayed: Bool
+}
+
+public struct SalaryAdvanceRequestAttentionView: Equatable, Sendable {
+    public let needsPmInfoResponse: Bool
+    public let needsPmEvidenceUpload: Bool
+    public let needsPmAttention: Bool
+    public let pmAttentionReason: String?
+}
+
 // MARK: - Salary Advance Contract (`SalaryAdvanceContract`)
 
 public enum SalaryAdvanceContract {
     public static let paymentMethodCash = "CASH"
     public static let paymentMethodBankTransfer = "BANK_TRANSFER"
     public static let paymentMethods: [String] = [paymentMethodCash, paymentMethodBankTransfer]
+    public static let evidenceMaxBytes: Int = 10 * 1024 * 1024 // 10 MB
+
+    public static let requestStateFilterOptions: [(key: String, label: String)] = [
+        ("ALL", "Tất cả trạng thái"),
+        ("OPEN", "Đang mở"),
+        ("NEEDS_INFO", "Cần bổ sung"),
+        ("APPROVED", "Đã chấp thuận"),
+        ("REJECTED", "Đã từ chối"),
+        ("WITHDRAWN", "Đã rút"),
+        ("HANDLED_EXTERNALLY", "Xử lý ngoài BI")
+    ]
+
+    public static let evidenceReviewStateFilterOptions: [(key: String, label: String)] = [
+        ("ALL", "Tất cả đối chiếu"),
+        ("NOT_UPLOADED", "Chưa có ảnh"),
+        ("PENDING_REVIEW", "Chờ đối chiếu"),
+        ("REVIEWED", "Đã đối chiếu"),
+        ("RETAKE_REQUIRED", "Cần gửi lại ảnh")
+    ]
+
+    public static let workerPickerEligibilityFilterOptions: [(key: String, label: String)] = [
+        ("ALL", "Tất cả"),
+        ("ELIGIBLE", "Đủ điều kiện"),
+        ("INELIGIBLE", "Chưa đủ ĐK")
+    ]
 
     public static let periodModeCurrentMonth = "THIS_MONTH"
     public static let periodModeLast30Days = "LAST_30_DAYS"
@@ -438,11 +638,17 @@ public enum SalaryAdvanceContract {
     public static func requestStateShortLabel(_ state: String) -> String {
         switch state.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() {
         case "OPEN":
-            return "Chờ xử lý"
+            return "Đang mở"
+        case "NEEDS_INFO":
+            return "Cần bổ sung"
         case "APPROVED":
-            return "Đã duyệt"
+            return "Đã chấp thuận"
         case "REJECTED":
-            return "Từ chối"
+            return "Đã từ chối"
+        case "WITHDRAWN":
+            return "Đã rút"
+        case "HANDLED_EXTERNALLY":
+            return "Xử lý ngoài BI"
         default:
             return state
         }
@@ -451,29 +657,219 @@ public enum SalaryAdvanceContract {
     public static func evidenceReviewStateShortLabel(_ state: String) -> String {
         switch state.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() {
         case "NOT_UPLOADED":
-            return "Chưa tải chứng từ"
-        case "UPLOADED_PENDING_REVIEW":
-            return "Đã tải chứng từ"
+            return "Chưa có ảnh"
+        case "PENDING_REVIEW", "UPLOADED_PENDING_REVIEW":
+            return "Chờ đối chiếu"
         case "REVIEWED":
-            return "Đã hậu kiểm"
+            return "Đã đối chiếu"
+        case "RETAKE_REQUIRED":
+            return "Cần gửi lại ảnh"
         default:
             return state
         }
     }
 
-    public static func formatWorkDateVi(_ rawDate: String) -> String {
-        let trimmed = rawDate.trimmingCharacters(in: .whitespacesAndNewlines)
+    public static func eventTypeLabel(_ eventType: String?) -> String {
+        switch eventType?.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() {
+        case "REQUEST_CREATED":
+            return "QLDA tạo yêu cầu ứng lương"
+        case "MESSAGE_POSTED":
+            return "Gửi tin nhắn trao đổi"
+        case "INFO_REQUESTED":
+            return "Kế toán yêu cầu bổ sung thông tin"
+        case "INFO_PROVIDED":
+            return "QLDA đã bổ sung thông tin"
+        case "REQUEST_APPROVED":
+            return "Kế toán chấp thuận ứng lương"
+        case "REQUEST_REJECTED":
+            return "Kế toán từ chối yêu cầu"
+        case "REQUEST_WITHDRAWN":
+            return "QLDA đã rút yêu cầu"
+        case "HANDLED_EXTERNALLY_MARKED":
+            return "Đánh dấu xử lý ngoài hệ thống"
+        case "EVIDENCE_UPLOADED":
+            return "Tải lên ảnh chứng từ nhận tiền"
+        case "EVIDENCE_REVIEWED":
+            return "Kế toán xác nhận đã đối chiếu chứng từ"
+        case "EVIDENCE_RETAKE_REQUESTED":
+            return "Kế toán yêu cầu gửi lại ảnh chứng từ"
+        default:
+            return eventType ?? ""
+        }
+    }
+
+    public static func actorRoleLabel(_ role: String?) -> String {
+        switch role?.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() {
+        case "PROJECT_MANAGER":
+            return "Quản lý dự án (QLDA)"
+        case "PROJECT_ACCOUNTANT":
+            return "Kế toán dự án"
+        default:
+            return role ?? ""
+        }
+    }
+
+    public static func resolveActorDisplayName(_ raw: String?, fallbackLabel: String = "Chưa cập nhật tên") -> String {
+        let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if trimmed.isEmpty || WorkerItem.isUuidLike(trimmed) {
+            return fallbackLabel
+        }
+        return trimmed
+    }
+
+    public static func formatWorkerRecruiterLabel(
+        recruiterDisplayName: String?,
+        recruiterCode: String? = nil,
+        providerType: String? = nil,
+        fallbackLabel: String = "Chưa cập nhật"
+    ) -> String {
+        let safeName = (recruiterDisplayName?.trimmingCharacters(in: .whitespacesAndNewlines)).flatMap {
+            ($0.isEmpty || WorkerItem.isUuidLike($0)) ? nil : $0
+        }
+        let safeCode = (recruiterCode?.trimmingCharacters(in: .whitespacesAndNewlines)).flatMap {
+            ($0.isEmpty || WorkerItem.isUuidLike($0)) ? nil : $0
+        }
+        let isVendor = providerType?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "vendor"
+        guard var base = safeName ?? safeCode else {
+            return isVendor ? "Vendor (Chưa cập nhật tên)" : fallbackLabel
+        }
+        if let safeName, let safeCode,
+           safeName.caseInsensitiveCompare(safeCode) != .orderedSame,
+           !safeName.localizedCaseInsensitiveContains(safeCode) {
+            base = "\(safeName) (\(safeCode))"
+        }
+        if isVendor && !base.localizedCaseInsensitiveContains("vendor") {
+            return "\(base) · Vendor"
+        }
+        return base
+    }
+
+    public static func formatWorkDateVi(_ rawDate: String?) -> String {
+        let trimmed = rawDate?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard !trimmed.isEmpty else { return "—" }
         let ui = DirectEntryContract.isoDateToUiDate(trimmed)
         return ui.isEmpty ? trimmed : ui
     }
 
-    public static func formatWorkerRecruiterLabel(_ worker: SalaryAdvanceWorkerOption) -> String {
-        let rec = worker.recruiterDisplayName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        if !rec.isEmpty {
-            return rec
+    public static func formatDateTimeVi(_ isoTimestamp: String?) -> String {
+        let trimmed = isoTimestamp?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !trimmed.isEmpty else { return "—" }
+        if let epochMs = AttendanceTimeAnchorManager.parseIso8601ToEpochMs(trimmed) {
+            let date = Date(timeIntervalSince1970: Double(epochMs) / 1000.0)
+            let df = DateFormatter()
+            df.locale = Locale(identifier: "vi_VN")
+            df.timeZone = TimeZone(identifier: "Asia/Ho_Chi_Minh") ?? .current
+            df.dateFormat = "dd/MM/yyyy HH:mm"
+            return df.string(from: date)
         }
-        return worker.providerType.lowercased() == "vendor" ? "Vendor" : "HRP"
+        return trimmed
+    }
+
+    public static func formatFileSizeBytes(_ sizeBytes: Int64?) -> String {
+        guard let sizeBytes, sizeBytes > 0 else { return "0 B" }
+        if sizeBytes < 1024 { return "\(sizeBytes) B" }
+        if sizeBytes < 1024 * 1024 { return String(format: "%.1f KB", Double(sizeBytes) / 1024.0) }
+        return String(format: "%.2f MB", Double(sizeBytes) / (1024.0 * 1024.0))
+    }
+
+    public static func sha256Hex(_ data: Data) -> String {
+        let digest = SHA256.hash(data: data)
+        return digest.map { String(format: "%02x", $0) }.joined()
+    }
+
+    public static func evaluateRequestAttention(_ item: SalaryAdvanceRequestSummary) -> SalaryAdvanceRequestAttentionView {
+        let state = item.requestState.uppercased()
+        let evState = item.evidenceReviewState.uppercased()
+        let isCash = item.paymentMethod.uppercased() != "BANK_TRANSFER"
+        let needsPmInfoResponse = state == "NEEDS_INFO"
+        let needsPmEvidenceUpload = isCash && state == "APPROVED" && (evState == "NOT_UPLOADED" || evState == "RETAKE_REQUIRED")
+        let needsPmAttention = needsPmInfoResponse || needsPmEvidenceUpload
+        let pmAttentionReason: String? = {
+            if needsPmInfoResponse {
+                return "Cần bổ sung thông tin theo yêu cầu của Kế toán"
+            }
+            if state == "APPROVED" && isCash && evState == "RETAKE_REQUIRED" {
+                return "Cần chụp/tải lại ảnh NLĐ nhận tiền mặt"
+            }
+            if state == "APPROVED" && isCash && evState == "NOT_UPLOADED" {
+                return "Đã duyệt — chờ QLDA tải ảnh NLĐ nhận tiền mặt"
+            }
+            return nil
+        }()
+        return SalaryAdvanceRequestAttentionView(
+            needsPmInfoResponse: needsPmInfoResponse,
+            needsPmEvidenceUpload: needsPmEvidenceUpload,
+            needsPmAttention: needsPmAttention,
+            pmAttentionReason: pmAttentionReason
+        )
+    }
+
+    public static func normalizeVietnameseForSearch(_ raw: String?) -> String {
+        let text = raw?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !text.isEmpty else { return "" }
+        return text
+            .folding(options: [.diacriticInsensitive, .caseInsensitive], locale: Locale(identifier: "vi_VN"))
+            .replacingOccurrences(of: "đ", with: "d")
+            .replacingOccurrences(of: "Đ", with: "d")
+            .lowercased()
+            .components(separatedBy: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+    }
+
+    public static func matchesWorkerSearchQuery(
+        worker: SalaryAdvanceWorkerOption,
+        query: String?,
+        eligibilityFilter: String = "ALL"
+    ) -> Bool {
+        let cleanFilter = eligibilityFilter.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        if cleanFilter == "ELIGIBLE" || cleanFilter == "INELIGIBLE" {
+            let isEligible = describeWorkerEligibility(worker).isEligible
+            if cleanFilter == "ELIGIBLE" && !isEligible { return false }
+            if cleanFilter == "INELIGIBLE" && isEligible { return false }
+        }
+        let normalizedQuery = normalizeVietnameseForSearch(query)
+        if normalizedQuery.isEmpty { return true }
+        let tokens = normalizedQuery.split(separator: " ").map(String.init).filter { !$0.isEmpty }
+        if tokens.isEmpty { return true }
+        let searchable = [
+            normalizeVietnameseForSearch(worker.displayName),
+            normalizeVietnameseForSearch(worker.employeeCode),
+            normalizeVietnameseForSearch(worker.recruiterDisplayName)
+        ].joined(separator: " ")
+        return tokens.allSatisfy { searchable.contains($0) }
+    }
+
+    public static func buildWorkerPortraitPreviewPath(requestId: String, expectedDocumentId: String) -> String {
+        let encodedReq = requestId.trimmingCharacters(in: .whitespacesAndNewlines).addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? requestId
+        let encodedDoc = expectedDocumentId.trimmingCharacters(in: .whitespacesAndNewlines).addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? expectedDocumentId
+        return "/api/salary-advance/requests/\(encodedReq)/worker-portrait?expected_document_id=\(encodedDoc)"
+    }
+
+    public static func buildEvidencePhotoPreviewPath(requestId: String, evidenceVersion: Int) -> String {
+        let encodedReq = requestId.trimmingCharacters(in: .whitespacesAndNewlines).addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? requestId
+        return "/api/salary-advance/requests/\(encodedReq)/evidence/\(evidenceVersion)/preview"
+    }
+
+    public static func isConflictError(statusCode: Int?, errorCode: String?) -> Bool {
+        if statusCode == 409 { return true }
+        let clean = errorCode?.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() ?? ""
+        return [
+            "SALARY_ADVANCE_VERSION_CONFLICT",
+            "SALARY_ADVANCE_STATE_CONFLICT",
+            "SALARY_ADVANCE_EVIDENCE_VERSION_CONFLICT",
+            "SALARY_ADVANCE_WORKER_PORTRAIT_VERSION_CONFLICT",
+            "SALARY_ADVANCE_IDEMPOTENCY_CONFLICT"
+        ].contains(clean)
+    }
+
+    public static func formatWorkerRecruiterLabel(_ worker: SalaryAdvanceWorkerOption) -> String {
+        formatWorkerRecruiterLabel(
+            recruiterDisplayName: worker.recruiterDisplayName,
+            recruiterCode: nil,
+            providerType: worker.providerType,
+            fallbackLabel: worker.providerType.lowercased() == "vendor" ? "Vendor" : "HRP"
+        )
     }
 
     public static func normalizePositiveVndInput(_ raw: String) -> String? {
@@ -493,7 +889,7 @@ public enum SalaryAdvanceContract {
         let digits = rawDigits.trimmingCharacters(in: .whitespacesAndNewlines).filter(\.isNumber)
         let clean = String(digits.drop(while: { $0 == "0" }))
         if clean.isEmpty {
-            return "0 ₫"
+            return "0 đ"
         }
         var reversedChars: [Character] = []
         for (idx, ch) in clean.reversed().enumerated() {
@@ -502,7 +898,7 @@ public enum SalaryAdvanceContract {
             }
             reversedChars.append(ch)
         }
-        return "\(String(reversedChars.reversed())) ₫"
+        return "\(String(reversedChars.reversed())) đ"
     }
 
     public static func buildCreateRequestPayload(
@@ -703,6 +1099,190 @@ public enum SalaryAdvanceContract {
             items: items
         )
     }
+
+    public static func parseAllowedActions(_ obj: [String: Any]?) -> SalaryAdvanceAllowedActions {
+        guard let obj = obj else { return SalaryAdvanceAllowedActions() }
+        return SalaryAdvanceAllowedActions(
+            canPostMessage: obj.optBool("can_post_message"),
+            canRequestInfo: obj.optBool("can_request_info"),
+            canProvideInfo: obj.optBool("can_provide_info"),
+            canApprove: obj.optBool("can_approve"),
+            canReject: obj.optBool("can_reject"),
+            canWithdraw: obj.optBool("can_withdraw"),
+            canUploadCashEvidence: obj.optBool("can_upload_cash_evidence"),
+            canConfirmCashEvidence: obj.optBool("can_confirm_cash_evidence"),
+            canRequestEvidenceReupload: obj.optBool("can_request_evidence_reupload")
+        )
+    }
+
+    public static func parseRequestSummary(_ obj: [String: Any]) -> SalaryAdvanceRequestSummary {
+        let paySnap: SalaryAdvancePaymentDestinationSnapshot? = obj.optObject("payment_destination_snapshot").map { p in
+            SalaryAdvancePaymentDestinationSnapshot(
+                bankBin: p.optNullableString("bank_bin"),
+                bankCode: p.optNullableString("bank_code"),
+                bankShortName: p.optNullableString("bank_short_name"),
+                bankAccountNumber: p.optNullableString("bank_account_number"),
+                bankAccountHolderName: p.optNullableString("bank_account_holder_name")
+            )
+        }
+        let portraitMeta: SalaryAdvanceWorkerPortraitMeta? = obj.optObject("worker_portrait").map { p in
+            SalaryAdvanceWorkerPortraitMeta(
+                available: p.optBool("available"),
+                documentId: p.optNullableString("document_id"),
+                version: p["version"] != nil && !(p["version"] is NSNull) ? p.optInt("version") : nil,
+                mimeType: p.optNullableString("mime_type"),
+                sizeBytes: p["size_bytes"] != nil && !(p["size_bytes"] is NSNull) ? Int64(p.optInt("size_bytes")) : nil
+            )
+        }
+        let currentEvidence: SalaryAdvanceCurrentEvidenceMeta? = obj.optObject("current_evidence").map { e in
+            SalaryAdvanceCurrentEvidenceMeta(
+                evidenceId: e.optString("evidence_id"),
+                version: max(1, e.optInt("version", defaultValue: 1)),
+                uploadStatus: e.optString("upload_status", defaultValue: "READY"),
+                mimeType: e.optNullableString("mime_type"),
+                sizeBytes: Int64(e.optInt("size_bytes", defaultValue: 0)),
+                captionNote: e.optNullableString("caption_note"),
+                uploadedByUserId: e.optString("uploaded_by_user_id"),
+                uploadedByDisplayName: e.optNullableString("uploaded_by_display_name"),
+                uploadedAt: e.optNullableString("uploaded_at")
+            )
+        }
+        let sumObj = obj.optObject("worker_advance_30d_summary")
+        let summary30d = SalaryAdvanceWorkerAdvance30dSummary(
+            count30d: max(0, sumObj?.optInt("count_30d", defaultValue: 0) ?? 0),
+            totalAmountVnd30d: sumObj?.optString("total_amount_vnd_30d", defaultValue: "0") ?? "0"
+        )
+        let allowed = parseAllowedActions(obj.optObject("allowed_actions"))
+        let accountants = obj.optObjectArray("project_accountants").compactMap { acc -> SalaryAdvanceProjectAccountantActor? in
+            let uid = acc.optString("user_id")
+            guard !uid.isEmpty else { return nil }
+            return SalaryAdvanceProjectAccountantActor(
+                userId: uid,
+                username: acc.optString("username"),
+                displayName: acc.optNullableString("display_name")
+            )
+        }
+
+        return SalaryAdvanceRequestSummary(
+            requestId: obj.optString("request_id"),
+            version: max(1, obj.optInt("version", defaultValue: 1)),
+            requestState: obj.optString("request_state", defaultValue: "OPEN"),
+            evidenceReviewState: obj.optString("evidence_review_state", defaultValue: "NOT_UPLOADED"),
+            projectId: obj.optString("project_id"),
+            projectCode: obj.optNullableString("project_code"),
+            projectDisplayName: obj.optString("project_display_name"),
+            workerEntryId: obj.optString("worker_entry_id"),
+            workerEmployeeCode: obj.optString("worker_employee_code"),
+            workerDisplayName: obj.optString("worker_display_name"),
+            workerStartDate: obj.optNullableString("worker_start_date"),
+            workerRecruiterUserId: obj.optNullableString("worker_recruiter_user_id"),
+            workerRecruiterUsername: obj.optNullableString("worker_recruiter_username"),
+            workerRecruiterDisplayName: obj.optNullableString("worker_recruiter_display_name"),
+            requestedAmountVnd: obj.optString("requested_amount_vnd", defaultValue: "0"),
+            paymentMethod: obj.optString("payment_method", defaultValue: "CASH"),
+            paymentDestinationSnapshot: paySnap,
+            initialContent: obj.optString("initial_content"),
+            createdByUserId: obj.optString("created_by_user_id"),
+            createdByUsername: obj.optNullableString("created_by_username"),
+            createdByDisplayName: obj.optNullableString("created_by_display_name"),
+            decidedByUserId: obj.optNullableString("decided_by_user_id"),
+            decidedByUsername: obj.optNullableString("decided_by_username"),
+            decidedByDisplayName: obj.optNullableString("decided_by_display_name"),
+            decidedAt: obj.optNullableString("decided_at"),
+            effectiveAt: obj.optNullableString("effective_at"),
+            effectiveDate: obj.optNullableString("effective_date"),
+            withdrawnAt: obj.optNullableString("withdrawn_at"),
+            evidenceConfirmedByUserId: obj.optNullableString("evidence_confirmed_by_user_id"),
+            evidenceConfirmedByUsername: obj.optNullableString("evidence_confirmed_by_username"),
+            evidenceConfirmedByDisplayName: obj.optNullableString("evidence_confirmed_by_display_name"),
+            evidenceConfirmedAt: obj.optNullableString("evidence_confirmed_at"),
+            lastActivityAt: obj.optString("last_activity_at"),
+            createdAt: obj.optString("created_at"),
+            updatedAt: obj.optString("updated_at"),
+            workerPortrait: portraitMeta,
+            currentEvidence: currentEvidence,
+            workerAdvance30dSummary: summary30d,
+            allowedActions: allowed,
+            projectAccountants: accountants
+        )
+    }
+
+    public static func parseRequestListResponse(_ root: [String: Any]) -> SalaryAdvanceRequestListResponse {
+        let data = (root["data"] as? [String: Any]) ?? root
+        let items = data.optObjectArray("items").compactMap { item -> SalaryAdvanceRequestSummary? in
+            let parsed = parseRequestSummary(item)
+            return parsed.requestId.isEmpty ? nil : parsed
+        }
+        var pmCount: Int? = nil
+        var accCount: Int? = nil
+        if let badge = data.optObject("badge") {
+            if badge["pm_badge_count"] != nil && !(badge["pm_badge_count"] is NSNull) {
+                pmCount = max(0, badge.optInt("pm_badge_count"))
+            }
+            if badge["accountant_badge_count"] != nil && !(badge["accountant_badge_count"] is NSNull) {
+                accCount = max(0, badge.optInt("accountant_badge_count"))
+            }
+        }
+        return SalaryAdvanceRequestListResponse(
+            queue: data.optString("queue", defaultValue: "PM"),
+            nextCursor: data.optNullableString("next_cursor"),
+            hasMore: data.optBool("has_more"),
+            items: items,
+            pmBadgeCount: pmCount,
+            accountantBadgeCount: accCount
+        )
+    }
+
+    public static func parseRequestDetail(_ root: [String: Any]) -> SalaryAdvanceRequestDetail {
+        let data = (root["data"] as? [String: Any]) ?? root
+        let reqObj = data.optObject("request") ?? data
+        let summary = parseRequestSummary(reqObj)
+        let events = data.optObjectArray("events").compactMap { ev -> SalaryAdvanceEventItem? in
+            let eid = ev.optString("event_id")
+            guard !eid.isEmpty else { return nil }
+            return SalaryAdvanceEventItem(
+                eventId: eid,
+                requestId: ev.optString("request_id", defaultValue: summary.requestId),
+                eventSeq: max(1, ev.optInt("event_seq", defaultValue: 1)),
+                eventType: ev.optString("event_type"),
+                actorUserId: ev.optString("actor_user_id"),
+                actorUsername: ev.optNullableString("actor_username"),
+                actorDisplayName: ev.optNullableString("actor_display_name"),
+                actorRoleContext: ev.optString("actor_role_context", defaultValue: "SYSTEM"),
+                fromRequestState: ev.optNullableString("from_request_state"),
+                toRequestState: ev.optNullableString("to_request_state"),
+                fromEvidenceReviewState: ev.optNullableString("from_evidence_review_state"),
+                toEvidenceReviewState: ev.optNullableString("to_evidence_review_state"),
+                messageText: ev.optNullableString("message_text"),
+                metadata: ev.optObject("metadata"),
+                createdAt: ev.optString("created_at")
+            )
+        }
+        let evidenceVersions = data.optObjectArray("evidence_versions").compactMap { ev -> SalaryAdvanceEvidenceVersionItem? in
+            let evid = ev.optString("evidence_id")
+            guard !evid.isEmpty else { return nil }
+            return SalaryAdvanceEvidenceVersionItem(
+                evidenceId: evid,
+                requestId: ev.optString("request_id", defaultValue: summary.requestId),
+                version: max(1, ev.optInt("version", defaultValue: 1)),
+                uploadStatus: ev.optString("upload_status", defaultValue: "READY"),
+                mimeType: ev.optString("mime_type", defaultValue: "image/jpeg"),
+                sizeBytes: Int64(ev.optInt("size_bytes", defaultValue: 0)),
+                sha256: ev.optString("sha256"),
+                captionNote: ev.optNullableString("caption_note"),
+                uploadedByUserId: ev.optString("uploaded_by_user_id"),
+                uploadedByUsername: ev.optNullableString("uploaded_by_username"),
+                uploadedByDisplayName: ev.optNullableString("uploaded_by_display_name"),
+                uploadedAt: ev.optNullableString("uploaded_at"),
+                createdAt: ev.optString("created_at")
+            )
+        }
+        return SalaryAdvanceRequestDetail(
+            request: summary,
+            events: events,
+            evidenceVersions: evidenceVersions
+        )
+    }
 }
 
 // MARK: - Salary Advance Service (`SalaryAdvanceService`)
@@ -820,6 +1400,331 @@ public final class SalaryAdvanceService {
         let reqObj = (data["request"] as? [String: Any]) ?? data
         let reqId = reqObj.optString("request_id", defaultValue: "created")
         return .success(reqId, statusCode: response.statusCode)
+    }
+
+    public func listRequests(
+        queue: String = "PM",
+        projectFilter: String = "ALL",
+        requestStateFilter: String = "ALL",
+        evidenceStateFilter: String = "ALL",
+        search: String = "",
+        cursor: String? = nil,
+        pageSize: Int = 20,
+        includeBadge: Bool = true
+    ) async -> MiniBiApiResult<SalaryAdvanceRequestListResponse> {
+        var queryItems: [URLQueryItem] = [
+            URLQueryItem(name: "queue", value: queue.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()),
+            URLQueryItem(name: "project_id", value: projectFilter.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "ALL" : projectFilter.trimmingCharacters(in: .whitespacesAndNewlines)),
+            URLQueryItem(name: "request_state", value: requestStateFilter.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "ALL" : requestStateFilter.trimmingCharacters(in: .whitespacesAndNewlines)),
+            URLQueryItem(name: "evidence_review_state", value: evidenceStateFilter.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "ALL" : evidenceStateFilter.trimmingCharacters(in: .whitespacesAndNewlines)),
+            URLQueryItem(name: "page_size", value: String(min(100, max(1, pageSize)))),
+            URLQueryItem(name: "include_badge", value: includeBadge ? "1" : "0")
+        ]
+        let cleanSearch = search.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !cleanSearch.isEmpty {
+            queryItems.append(URLQueryItem(name: "search", value: cleanSearch))
+        }
+        if let cleanCursor = cursor?.trimmingCharacters(in: .whitespacesAndNewlines), !cleanCursor.isEmpty {
+            queryItems.append(URLQueryItem(name: "cursor", value: cleanCursor))
+        }
+
+        let response = await httpClient.request(
+            method: "GET",
+            path: "/api/salary-advance/requests",
+            queryItems: queryItems
+        )
+        guard response.isSuccess, let root = response.jsonObject else {
+            return .failure(
+                message: SalaryAdvanceContract.describeSalaryAdvanceError(
+                    code: response.errorCode,
+                    httpStatus: response.statusCode,
+                    fallback: response.errorMessage
+                ),
+                httpStatus: response.statusCode,
+                errorCode: response.errorCode
+            )
+        }
+        return .success(SalaryAdvanceContract.parseRequestListResponse(root), statusCode: response.statusCode)
+    }
+
+    public func getRequestDetail(requestId: String) async -> MiniBiApiResult<SalaryAdvanceRequestDetail> {
+        let cleanId = requestId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanId.isEmpty else {
+            return .failure(message: "Không xác định được mã yêu cầu ứng lương.")
+        }
+        let encodedId = cleanId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? cleanId
+        let response = await httpClient.request(
+            method: "GET",
+            path: "/api/salary-advance/requests/\(encodedId)"
+        )
+        guard response.isSuccess, let root = response.jsonObject else {
+            return .failure(
+                message: SalaryAdvanceContract.describeSalaryAdvanceError(
+                    code: response.errorCode,
+                    httpStatus: response.statusCode,
+                    fallback: response.errorMessage
+                ),
+                httpStatus: response.statusCode,
+                errorCode: response.errorCode
+            )
+        }
+        return .success(SalaryAdvanceContract.parseRequestDetail(root), statusCode: response.statusCode)
+    }
+
+    public func postMessage(
+        requestId: String,
+        expectedVersion: Int,
+        messageText: String,
+        idempotencyKey: String
+    ) async -> MiniBiApiResult<SalaryAdvanceRequestDetail> {
+        let cleanId = requestId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanId.isEmpty else {
+            return .failure(message: "Không xác định được mã yêu cầu ứng lương.")
+        }
+        let payload: [String: Any]
+        do {
+            payload = try SalaryAdvanceContract.buildPostMessagePayload(
+                expectedVersion: expectedVersion,
+                messageText: messageText,
+                idempotencyKey: idempotencyKey
+            )
+        } catch {
+            return .failure(message: error.localizedDescription)
+        }
+
+        let encodedId = cleanId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? cleanId
+        let cleanIdem = idempotencyKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        let response = await httpClient.request(
+            method: "POST",
+            path: "/api/salary-advance/requests/\(encodedId)/messages",
+            jsonBody: payload,
+            additionalHeaders: ["Idempotency-Key": cleanIdem]
+        )
+        guard response.isSuccess, let root = response.jsonObject else {
+            return .failure(
+                message: SalaryAdvanceContract.describeSalaryAdvanceError(
+                    code: response.errorCode,
+                    httpStatus: response.statusCode,
+                    fallback: response.errorMessage
+                ),
+                httpStatus: response.statusCode,
+                errorCode: response.errorCode
+            )
+        }
+        return .success(SalaryAdvanceContract.parseRequestDetail(root), statusCode: response.statusCode)
+    }
+
+    public func submitTransitionAction(
+        requestId: String,
+        action: String,
+        expectedVersion: Int,
+        messageText: String?,
+        idempotencyKey: String
+    ) async -> MiniBiApiResult<SalaryAdvanceRequestDetail> {
+        let cleanId = requestId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanId.isEmpty else {
+            return .failure(message: "Không xác định được mã yêu cầu ứng lương.")
+        }
+        let payload: [String: Any]
+        do {
+            payload = try SalaryAdvanceContract.buildTransitionActionPayload(
+                action: action,
+                expectedVersion: expectedVersion,
+                messageText: messageText,
+                idempotencyKey: idempotencyKey
+            )
+        } catch {
+            return .failure(message: error.localizedDescription)
+        }
+
+        let encodedId = cleanId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? cleanId
+        let cleanIdem = idempotencyKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        let response = await httpClient.request(
+            method: "POST",
+            path: "/api/salary-advance/requests/\(encodedId)/actions",
+            jsonBody: payload,
+            additionalHeaders: ["Idempotency-Key": cleanIdem]
+        )
+        guard response.isSuccess, let root = response.jsonObject else {
+            return .failure(
+                message: SalaryAdvanceContract.describeSalaryAdvanceError(
+                    code: response.errorCode,
+                    httpStatus: response.statusCode,
+                    fallback: response.errorMessage
+                ),
+                httpStatus: response.statusCode,
+                errorCode: response.errorCode
+            )
+        }
+        return .success(SalaryAdvanceContract.parseRequestDetail(root), statusCode: response.statusCode)
+    }
+
+    public func uploadEvidenceBytes(
+        requestId: String,
+        expectedVersion: Int,
+        imageData: Data,
+        mimeType: String,
+        captionNote: String?,
+        reserveIdempotencyKey: String,
+        finalizeIdempotencyKey: String
+    ) async -> MiniBiApiResult<SalaryAdvanceRequestDetail> {
+        let cleanId = requestId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanId.isEmpty else {
+            return .failure(message: "Không xác định được mã yêu cầu ứng lương.")
+        }
+        let sha256HexStr = SalaryAdvanceContract.sha256Hex(imageData)
+        let reservePayload: [String: Any]
+        do {
+            reservePayload = try SalaryAdvanceContract.buildReserveEvidenceUploadPayload(
+                expectedVersion: expectedVersion,
+                mimeType: mimeType,
+                sizeBytes: Int64(imageData.count),
+                sha256: sha256HexStr,
+                captionNote: captionNote,
+                idempotencyKey: reserveIdempotencyKey
+            )
+        } catch {
+            return .failure(message: error.localizedDescription)
+        }
+
+        let encodedId = cleanId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? cleanId
+        let cleanReserveIdem = reserveIdempotencyKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        let reserveResp = await httpClient.request(
+            method: "POST",
+            path: "/api/salary-advance/requests/\(encodedId)/evidence/reserve",
+            jsonBody: reservePayload,
+            additionalHeaders: ["Idempotency-Key": cleanReserveIdem]
+        )
+        guard reserveResp.isSuccess, let reserveRoot = reserveResp.jsonObject else {
+            return .failure(
+                message: SalaryAdvanceContract.describeSalaryAdvanceError(
+                    code: reserveResp.errorCode,
+                    httpStatus: reserveResp.statusCode,
+                    fallback: reserveResp.errorMessage
+                ),
+                httpStatus: reserveResp.statusCode,
+                errorCode: reserveResp.errorCode
+            )
+        }
+
+        let reserveData = (reserveRoot["data"] as? [String: Any]) ?? reserveRoot
+        let uploadObj = reserveData.optObject("upload") ?? reserveData
+        let uploadId = uploadObj.optString("upload_id").isEmpty
+            ? uploadObj.optString("evidence_id")
+            : uploadObj.optString("upload_id")
+        let putUrl = uploadObj.optString("put_url").isEmpty
+            ? uploadObj.optString("presigned_put_url")
+            : uploadObj.optString("put_url")
+
+        guard !uploadId.isEmpty && !putUrl.isEmpty else {
+            return .failure(message: "Máy chủ không trả về liên kết tải ảnh chứng từ hợp lệ.")
+        }
+
+        var extraPutHeaders: [String: String] = [:]
+        if let headersObj = uploadObj.optObject("required_headers") ?? uploadObj.optObject("headers") {
+            for (k, v) in headersObj {
+                if let strVal = v as? String, !strVal.isEmpty, k.lowercased() != "content-type" {
+                    extraPutHeaders[k] = strVal
+                }
+            }
+        }
+
+        let putResp = await httpClient.putPresignedUrl(
+            presignedUrl: putUrl,
+            data: imageData,
+            contentType: mimeType.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+            extraHeaders: extraPutHeaders
+        )
+        guard putResp.isSuccess else {
+            return .failure(
+                message: putResp.errorMessage ?? "Không thể tải ảnh chứng từ lên kho lưu trữ (HTTP \(putResp.statusCode)).",
+                httpStatus: putResp.statusCode
+            )
+        }
+
+        let finalizePayload: [String: Any]
+        do {
+            finalizePayload = try SalaryAdvanceContract.buildFinalizeEvidenceUploadPayload(
+                expectedVersion: expectedVersion,
+                idempotencyKey: finalizeIdempotencyKey
+            )
+        } catch {
+            return .failure(message: error.localizedDescription)
+        }
+
+        let encodedUploadId = uploadId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? uploadId
+        let cleanFinalizeIdem = finalizeIdempotencyKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        let finalizeResp = await httpClient.request(
+            method: "POST",
+            path: "/api/salary-advance/requests/\(encodedId)/evidence/\(encodedUploadId)/finalize",
+            jsonBody: finalizePayload,
+            additionalHeaders: ["Idempotency-Key": cleanFinalizeIdem]
+        )
+        guard finalizeResp.isSuccess, let finalizeRoot = finalizeResp.jsonObject else {
+            return .failure(
+                message: SalaryAdvanceContract.describeSalaryAdvanceError(
+                    code: finalizeResp.errorCode,
+                    httpStatus: finalizeResp.statusCode,
+                    fallback: finalizeResp.errorMessage
+                ),
+                httpStatus: finalizeResp.statusCode,
+                errorCode: finalizeResp.errorCode
+            )
+        }
+        httpClient.invalidateBinaryCache()
+        return .success(SalaryAdvanceContract.parseRequestDetail(finalizeRoot), statusCode: finalizeResp.statusCode)
+    }
+
+    public func fetchWorkerHistoryForRequest(
+        requestId: String,
+        periodMode: String = "THIS_MONTH",
+        month: String? = nil,
+        fromDate: String? = nil,
+        toDate: String? = nil,
+        cursor: String? = nil,
+        pageSize: Int = 20
+    ) async -> MiniBiApiResult<SalaryAdvanceWorkerHistoryResponse> {
+        let cleanId = requestId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanId.isEmpty else {
+            return .failure(message: "Không xác định được mã yêu cầu ứng lương.")
+        }
+        let encodedId = cleanId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? cleanId
+        let cleanMode = periodMode.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+
+        var queryItems: [URLQueryItem] = [
+            URLQueryItem(name: "period_mode", value: cleanMode),
+            URLQueryItem(name: "page_size", value: String(min(100, max(1, pageSize))))
+        ]
+        if cleanMode == "MONTH", let m = month?.trimmingCharacters(in: .whitespacesAndNewlines), !m.isEmpty {
+            queryItems.append(URLQueryItem(name: "month", value: m))
+        }
+        if cleanMode == "CUSTOM_RANGE" {
+            let fIso = DirectEntryContract.uiDateToIsoDate(fromDate ?? "")
+            let tIso = DirectEntryContract.uiDateToIsoDate(toDate ?? "")
+            if !fIso.isEmpty { queryItems.append(URLQueryItem(name: "from_date", value: fIso)) }
+            if !tIso.isEmpty { queryItems.append(URLQueryItem(name: "to_date", value: tIso)) }
+        }
+        if let cleanCursor = cursor?.trimmingCharacters(in: .whitespacesAndNewlines), !cleanCursor.isEmpty {
+            queryItems.append(URLQueryItem(name: "cursor", value: cleanCursor))
+        }
+
+        let response = await httpClient.request(
+            method: "GET",
+            path: "/api/salary-advance/requests/\(encodedId)/worker-history",
+            queryItems: queryItems
+        )
+        guard response.isSuccess, let root = response.jsonObject else {
+            return .failure(
+                message: SalaryAdvanceContract.describeSalaryAdvanceError(
+                    code: response.errorCode,
+                    httpStatus: response.statusCode,
+                    fallback: response.errorMessage
+                ),
+                httpStatus: response.statusCode,
+                errorCode: response.errorCode
+            )
+        }
+        return .success(SalaryAdvanceContract.parseWorkerHistoryResponse(root), statusCode: response.statusCode)
     }
 
     public func fetchWorkerHistoryForPm(

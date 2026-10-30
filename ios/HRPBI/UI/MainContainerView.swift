@@ -63,7 +63,10 @@ public struct MainContainerView: View {
                                     .cornerRadius(6)
                             }
                             if let user = viewModel.currentUser {
-                                Text("\(viewModel.currentDestination.titleVi) · \(user.fullName)")
+                                let activeTitle = (viewModel.currentDestination == .workers && viewModel.salaryAdvanceSheetOpen)
+                                    ? "Ứng lương"
+                                    : viewModel.currentDestination.titleVi
+                                Text("\(activeTitle) · \(user.fullName)")
                                     .font(.caption)
                                     .foregroundColor(SemanticColors.textMuted)
                                     .lineLimit(1)

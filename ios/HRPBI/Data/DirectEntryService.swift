@@ -942,6 +942,7 @@ public final class DirectEntryService: @unchecked Sendable {
                         reservedEntryVersion
                     )
                 }
+                httpClient.invalidateBinaryCache()
                 let finalizedVersion = finalizeRes.jsonObject?.optInt("entry_version", defaultValue: reservedEntryVersion) ?? reservedEntryVersion
                 return (.success(docId, statusCode: finalizeRes.statusCode), max(reservedEntryVersion, finalizedVersion))
             }
@@ -1007,20 +1008,47 @@ public final class DirectEntryService: @unchecked Sendable {
         let entryId = entryObj.optString("entry_id", "id")
         let submissionId = entryObj.optString("submission_id")
         let version = max(1, entryObj.optInt("version", "entry_version", defaultValue: 1))
+        let catalog = DirectEntryService.shared.lastLoadedCatalog
         let projectObj = entryObj["project"] as? [String: Any]
         let projectId = projectObj?.optString("project_id", "id") ?? entryObj.optString("project_id")
-        let projectDisplay = projectObj?.optString("display_name", "display", "name")
+        let rawProjectDisplay = projectObj?.optString("display_name", "display", "name")
             ?? entryObj.optString("project_display", "project_name", "du_an")
+        let projectDisplay: String = {
+            if (rawProjectDisplay.isEmpty || rawProjectDisplay == projectId),
+               let matchedProj = catalog?.projects.first(where: { $0.id.caseInsensitiveCompare(projectId) == .orderedSame }) {
+                return matchedProj.name
+            }
+            return rawProjectDisplay.isEmpty ? projectId : rawProjectDisplay
+        }()
         let firstWorkDate = entryObj.optString("first_work_date", "ngay_vao_lam")
         let employeeCode = entryObj.optString("employee_code", "ma_nld")
         let recruiterObj = entryObj["recruiter"] as? [String: Any]
         let recruiterId = recruiterObj?.optString("recruiter_id", "id") ?? entryObj.optString("recruiter_id")
-        let recruiterDisplay = recruiterObj?.optString("display_name", "display", "name")
+        let rawRecruiterDisplay = recruiterObj?.optString("display_name", "display", "name")
             ?? entryObj.optString("recruiter_display", "recruiter_name", "nguoi_tuyen")
+        let recruiterDisplay: String = {
+            if !rawRecruiterDisplay.isEmpty && !WorkerItem.isUuidLike(rawRecruiterDisplay) {
+                return rawRecruiterDisplay
+            }
+            if !recruiterId.isEmpty,
+               let matchedRec = catalog?.recruiters.first(where: { $0.id.caseInsensitiveCompare(recruiterId) == .orderedSame }) {
+                return matchedRec.name
+            }
+            return WorkerItem.isUuidLike(rawRecruiterDisplay) ? "" : rawRecruiterDisplay
+        }()
         let teamId = entryObj.optNullableString("team_id")
         let providerType = entryObj.optString("provider_type", defaultValue: "hrp")
-        let laborType = entryObj.optString("labor_type", defaultValue: "TEMPORARY")
-        let laborTypeDisplay = entryObj.optString("labor_type_display", defaultValue: laborType)
+        let laborType = entryObj.optString("labor_type", defaultValue: "thoi_vu")
+        let rawLaborTypeDisplay = entryObj.optString("labor_type_display", defaultValue: laborType)
+        let laborTypeDisplay: String = {
+            if let matchedLt = catalog?.laborTypes.first(where: { $0.id.caseInsensitiveCompare(laborType) == .orderedSame }) {
+                return matchedLt.name
+            }
+            let lower = rawLaborTypeDisplay.lowercased()
+            if lower == "thoi_vu" || lower == "temporary" { return "Thời vụ" }
+            if lower == "chinh_thuc" || lower == "official" || lower == "permanent" { return "Chính thức" }
+            return rawLaborTypeDisplay
+        }()
         let allowedObj = entryObj["allowed_actions"] as? [String: Any]
         let canDirectEdit = allowedObj?.optBool("direct_edit", defaultValue: true)
             ?? entryObj.optBool("can_direct_edit", defaultValue: true)
@@ -1084,17 +1112,47 @@ public final class DirectEntryService: @unchecked Sendable {
         let employmentLeaveReason = empObj?.optNullableString("leave_reason")
             ?? entryObj.optNullableString("employment_leave_reason", "leave_reason")
 
+        let portraitWrapper = entryObj["worker_portrait"] as? [String: Any]
+        let currentPortraitObj = (portraitWrapper?["current"] as? [String: Any]) ?? portraitWrapper
+        let portraitDocId = currentPortraitObj?.optString("document_id", "doc_id", "id") ?? ""
+        let portraitVer = max(1, currentPortraitObj?.optInt("file_version", "version", defaultValue: 1) ?? 1)
+        let portraitUpStatus = (currentPortraitObj?.optString("upload_status", "status", defaultValue: "READY") ?? "READY").uppercased()
+        let isPortraitReady = !portraitDocId.isEmpty && (portraitUpStatus == "READY" || portraitUpStatus == "UPLOADED")
+        let computedPortraitPreviewPath: String? = (!entryId.isEmpty && isPortraitReady)
+            ? "/api/direct-entry/entries/\(entryId)/documents/\(portraitDocId)/preview"
+            : nil
+        let computedPortraitDownloadPath: String? = (!entryId.isEmpty && isPortraitReady)
+            ? "/api/direct-entry/entries/\(entryId)/documents/\(portraitDocId)/download"
+            : nil
+
         var docs: [WorkerDocumentSummary] = []
         var fileVers: [String: Int] = [:]
         for d in entryObj.optObjectArray("documents") {
             let dType = d.optString("document_type", "doc_type", "type").uppercased()
             guard !dType.isEmpty else { continue }
+            let docId = d.optString("document_id", "doc_id", "id")
             let fVer = max(1, d.optInt("file_version", "version", defaultValue: 1))
             fileVers[dType] = fVer
-            let dlPath = d.optNullableString("download_path", "download_url", "file_url")
-            let pvPath = d.optNullableString("preview_path", "preview_url")
             let upStatus = d.optString("upload_status", "status", defaultValue: "READY").uppercased()
-            let hasFile = d.optBool("has_file", defaultValue: dlPath != nil || pvPath != nil || upStatus == "READY")
+            let isReady = upStatus == "READY" || upStatus == "UPLOADED"
+            let mime = d.optString("mime_type").lowercased()
+            let computedPreviewPath: String? = {
+                guard !entryId.isEmpty && !docId.isEmpty && isReady else { return nil }
+                if dType == "WORKER_PORTRAIT" {
+                    return "/api/direct-entry/entries/\(entryId)/documents/\(docId)/preview"
+                }
+                if (dType == "CCCD_FRONT" || dType == "CCCD_BACK") && (mime.isEmpty || mime.hasPrefix("image/")) {
+                    return "/api/direct-entry/entries/\(entryId)/documents/\(docId)/cccd-preview"
+                }
+                return nil
+            }()
+            let computedDownloadPath: String? = (!entryId.isEmpty && !docId.isEmpty && isReady)
+                ? "/api/direct-entry/entries/\(entryId)/documents/\(docId)/download"
+                : nil
+
+            let dlPath = d.optNullableString("download_path", "download_url", "file_url") ?? computedDownloadPath
+            let pvPath = d.optNullableString("preview_path", "preview_url") ?? computedPreviewPath
+            let hasFile = d.optBool("has_file", defaultValue: dlPath != nil || pvPath != nil || isReady)
             docs.append(
                 WorkerDocumentSummary(
                     documentType: dType,
@@ -1107,10 +1165,31 @@ public final class DirectEntryService: @unchecked Sendable {
             )
         }
 
-        let portraitPreviewPath = entryObj.optNullableString("portrait_preview_path")
+        let explicitPortraitPreview = entryObj.optNullableString("portrait_preview_path")
+        let explicitPortraitDownload = entryObj.optNullableString("portrait_download_path")
+        let portraitPreviewPath = explicitPortraitPreview
+            ?? computedPortraitPreviewPath
             ?? docs.first(where: { $0.documentType == "WORKER_PORTRAIT" })?.previewPath
-        let portraitDownloadPath = entryObj.optNullableString("portrait_download_path")
+        let portraitDownloadPath = explicitPortraitDownload
+            ?? computedPortraitDownloadPath
             ?? docs.first(where: { $0.documentType == "WORKER_PORTRAIT" })?.downloadPath
+
+        if !docs.contains(where: { $0.documentType == "WORKER_PORTRAIT" && $0.hasFile }) &&
+            (isPortraitReady || portraitPreviewPath != nil || portraitDownloadPath != nil) {
+            docs.removeAll { $0.documentType == "WORKER_PORTRAIT" }
+            docs.insert(
+                WorkerDocumentSummary(
+                    documentType: "WORKER_PORTRAIT",
+                    uploadStatus: "READY",
+                    fileVersion: portraitVer,
+                    downloadPath: portraitDownloadPath,
+                    previewPath: portraitPreviewPath,
+                    hasFile: true
+                ),
+                at: 0
+            )
+            fileVers["WORKER_PORTRAIT"] = portraitVer
+        }
 
         return WorkerEntryDetail(
             entryId: entryId,
@@ -1495,6 +1574,9 @@ public final class DirectEntryService: @unchecked Sendable {
         guard !cleanId.isEmpty else {
             return .failure(message: "Không tìm thấy mã định danh hồ sơ NLĐ.")
         }
+        if lastLoadedCatalog == nil {
+            _ = await fetchCatalogOptions()
+        }
         let encoded = cleanId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? cleanId
         let response = await httpClient.request(
             method: "GET",
@@ -1553,7 +1635,8 @@ public final class DirectEntryService: @unchecked Sendable {
                 errorCode: response.errorCode
             )
         }
-        if let root = response.jsonObject {
+        if let root = response.jsonObject,
+           root["entry"] != nil || root["worker_details"] != nil {
             let updated = Self.parseWorkerEntryDetail(root)
             if !updated.entryId.isEmpty {
                 return .success(updated, statusCode: response.statusCode)
