@@ -1806,10 +1806,10 @@ struct WorkerDirectEditSheet: View {
                                 Spacer()
                             }
                         } else if let detail {
-                            personalSection(theme: theme)
-                            employmentSection(theme: theme)
-                            paymentSection(theme: theme)
-                            documentsSection(theme: theme, detail: detail)
+                            personalSection()
+                            employmentSection()
+                            paymentSection()
+                            documentsSection(detail: detail)
                         }
                     }
                     .padding(14)
@@ -1984,7 +1984,8 @@ struct WorkerDirectEditSheet: View {
     }
 
     @ViewBuilder
-    private func personalSection(theme: AppTheme) -> some View {
+    private func personalSection() -> some View {
+        let theme = viewModel.selectedTheme
         VStack(alignment: .leading, spacing: 10) {
             Text("Thông tin cá nhân")
                 .font(.subheadline.weight(.bold))
@@ -2056,7 +2057,8 @@ struct WorkerDirectEditSheet: View {
     }
 
     @ViewBuilder
-    private func employmentSection(theme: AppTheme) -> some View {
+    private func employmentSection() -> some View {
+        let theme = viewModel.selectedTheme
         VStack(alignment: .leading, spacing: 10) {
             Text("Thông tin công việc")
                 .font(.subheadline.weight(.bold))
@@ -2158,7 +2160,8 @@ struct WorkerDirectEditSheet: View {
     }
 
     @ViewBuilder
-    private func paymentSection(theme: AppTheme) -> some View {
+    private func paymentSection() -> some View {
+        let theme = viewModel.selectedTheme
         VStack(alignment: .leading, spacing: 10) {
             Text("Thông tin ngân hàng")
                 .font(.subheadline.weight(.bold))
@@ -2213,7 +2216,8 @@ struct WorkerDirectEditSheet: View {
     }
 
     @ViewBuilder
-    private func documentsSection(theme: AppTheme, detail: WorkerEntryDetail) -> some View {
+    private func documentsSection(detail: WorkerEntryDetail) -> some View {
+        let theme = viewModel.selectedTheme
         VStack(alignment: .leading, spacing: 12) {
             Text("Hồ sơ đính kèm")
                 .font(.subheadline.weight(.bold))
