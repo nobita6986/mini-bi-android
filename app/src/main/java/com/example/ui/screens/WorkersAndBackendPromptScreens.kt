@@ -9,6 +9,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -23,17 +24,22 @@ import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
@@ -96,10 +102,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
@@ -4474,6 +4482,7 @@ internal fun SalaryAdvanceCreateRequestDialog(
                                     shape = RoundedCornerShape(12.dp),
                                     modifier = Modifier
                                         .fillMaxWidth()
+                                        .keepFocusedFieldVisibleAboveKeyboard()
                                         .testTag("salary_advance_worker_search_input")
                                 )
 
@@ -4910,6 +4919,7 @@ internal fun SalaryAdvanceCreateRequestDialog(
                         shape = RoundedCornerShape(12.dp),
                         modifier = Modifier
                             .fillMaxWidth()
+                            .keepFocusedFieldVisibleAboveKeyboard()
                             .testTag("salary_advance_amount_input")
                     )
 
@@ -4925,8 +4935,11 @@ internal fun SalaryAdvanceCreateRequestDialog(
                         shape = RoundedCornerShape(12.dp),
                         modifier = Modifier
                             .fillMaxWidth()
+                            .keepFocusedFieldVisibleAboveKeyboard()
                             .testTag("salary_advance_content_input")
                     )
+
+                    Spacer(modifier = Modifier.height(8.dp))
 
                     if (!createError.isNullOrBlank()) {
                         Surface(
@@ -5962,6 +5975,7 @@ private fun SalaryAdvanceRequestDetailTabContent(
                             shape = RoundedCornerShape(12.dp),
                             modifier = Modifier
                                 .fillMaxWidth()
+                                .keepFocusedFieldVisibleAboveKeyboard()
                                 .testTag("salary_advance_detail_action_note_input")
                         )
 
@@ -6184,6 +6198,7 @@ private fun SalaryAdvanceRequestDetailTabContent(
                             shape = RoundedCornerShape(12.dp),
                             modifier = Modifier
                                 .fillMaxWidth()
+                                .keepFocusedFieldVisibleAboveKeyboard()
                                 .testTag("salary_advance_evidence_caption_input")
                         )
 
@@ -6290,6 +6305,7 @@ private fun SalaryAdvanceRequestDetailTabContent(
                                 shape = RoundedCornerShape(12.dp),
                                 modifier = Modifier
                                     .weight(1f)
+                                    .keepFocusedFieldVisibleAboveKeyboard()
                                     .testTag("salary_advance_message_input")
                             )
                             Button(
@@ -6702,4 +6718,36 @@ internal fun SalaryAdvanceWorkerHistoryDialog(
     } else {
         dialogBody()
     }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun Modifier.keepFocusedFieldVisibleAboveKeyboard(): Modifier {
+    val bringIntoViewRequester = remember { BringIntoViewRequester() }
+    var isFocused by remember { mutableStateOf(false) }
+    val density = LocalDensity.current
+    val imeBottomPx = WindowInsets.ime.getBottom(density)
+
+    LaunchedEffect(isFocused, imeBottomPx) {
+        if (isFocused) {
+            if (imeBottomPx > 0) {
+                bringIntoViewRequester.bringIntoView()
+            } else {
+                kotlinx.coroutines.delay(120)
+                if (isFocused) {
+                    bringIntoViewRequester.bringIntoView()
+                }
+                kotlinx.coroutines.delay(160)
+                if (isFocused) {
+                    bringIntoViewRequester.bringIntoView()
+                }
+            }
+        }
+    }
+
+    return this
+        .bringIntoViewRequester(bringIntoViewRequester)
+        .onFocusChanged { state ->
+            isFocused = state.isFocused
+        }
 }

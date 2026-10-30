@@ -27,6 +27,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
@@ -217,7 +218,12 @@ fun MiniBiAppRoot(viewModel: MiniBiViewModel) {
             containerColor = MaterialTheme.colorScheme.background,
             contentWindowInsets = WindowInsets.safeDrawing
         ) { innerPadding ->
-            Box(modifier = Modifier.padding(innerPadding).consumeWindowInsets(innerPadding)) {
+            Box(
+                modifier = Modifier
+                    .padding(innerPadding)
+                    .consumeWindowInsets(innerPadding)
+                    .imePadding()
+            ) {
                 LoginScreen(
                     busy = loginBusy,
                     error = loginError,
@@ -694,6 +700,7 @@ fun MiniBiAppRoot(viewModel: MiniBiViewModel) {
                     .fillMaxSize()
                     .padding(innerPadding)
                     .consumeWindowInsets(innerPadding)
+                    .imePadding()
                     .pointerInput(Unit) {
                         detectTapGestures(onTap = {
                             focusManager.clearFocus()
