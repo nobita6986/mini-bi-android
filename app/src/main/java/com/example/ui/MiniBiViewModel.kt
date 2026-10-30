@@ -24,6 +24,8 @@ import com.example.data.CccdReviewQueuePage
 import com.example.data.CccdReviewStatusFilter
 import com.example.data.CccdReviewSummary
 import com.example.data.DashboardDatePreset
+import com.example.data.DirectEditFileState
+import com.example.data.DirectEditFileStatus
 import com.example.data.DirectEntryCatalog
 import com.example.data.DirectEntryContract
 import com.example.data.DuplicateCccdGroupItem
@@ -270,6 +272,12 @@ class MiniBiViewModel internal constructor(
 
     private val _directEditTarget = MutableStateFlow<Pair<WorkerProfileEntity, WorkerEntryDetail>?>(null)
     val directEditTarget: StateFlow<Pair<WorkerProfileEntity, WorkerEntryDetail>?> = _directEditTarget.asStateFlow()
+
+    private val _directEditProfileSaveMessage = MutableStateFlow<String?>(null)
+    val directEditProfileSaveMessage: StateFlow<String?> = _directEditProfileSaveMessage.asStateFlow()
+
+    private val _directEditFileStatuses = MutableStateFlow<Map<String, DirectEditFileStatus>>(emptyMap())
+    val directEditFileStatuses: StateFlow<Map<String, DirectEditFileStatus>> = _directEditFileStatuses.asStateFlow()
 
     private val _workerMutationBusy = MutableStateFlow(false)
     val workerMutationBusy: StateFlow<Boolean> = _workerMutationBusy.asStateFlow()
@@ -2999,14 +3007,24 @@ class MiniBiViewModel internal constructor(
         }
     }
 
+    private fun cleanupAllDirectEditStagedFiles() {
+        val currentMap = _directEditFileStatuses.value
+        _directEditFileStatuses.value = emptyMap()
+        currentMap.values.forEach { status ->
+            discardDraftAttachment(status.stagedRef)
+        }
+    }
+
     fun openDirectEdit(worker: WorkerProfileEntity) {
         if (!worker.allowedActions.directEdit) return
+        cleanupAllDirectEditStagedFiles()
+        _directEditProfileSaveMessage.value = null
         _workerMutationError.value = null
         loadCatalogIfNeeded()
         viewModelScope.launch {
             try {
                 val detail = repository.directEntryService.getEntryDetail(worker.entryId)
-                _directEditTarget.value = worker to detail
+                _directEditTarget.value = worker.copy(entryVersion = detail.version) to detail
             } catch (e: Exception) {
                 e.rethrowIfCancelled()
                 showBanner(
@@ -3018,8 +3036,137 @@ class MiniBiViewModel internal constructor(
     }
 
     fun closeDirectEdit() {
+        cleanupAllDirectEditStagedFiles()
+        _directEditProfileSaveMessage.value = null
         _directEditTarget.value = null
         _workerMutationError.value = null
+    }
+
+    fun attachDirectEditStagedDocument(documentType: String, stagedRef: StagedDocumentRef) {
+        val prev = _directEditFileStatuses.value[documentType]?.stagedRef
+        if (prev != null && prev.localFilePath != stagedRef.localFilePath) {
+            discardDraftAttachment(prev)
+        }
+        val kb = ((stagedRef.sizeBytes + 512L) / 1024L).coerceAtLeast(1L)
+        val sizeLabel = if (kb >= 1024L) {
+            String.format(Locale.US, "%.1f MB", kb / 1024.0)
+        } else {
+            "$kb KB"
+        }
+        val label = DirectEntryContract.directEditDocumentLabel(documentType)
+        val pageHint = if (stagedRef.pageCount > 1) " · ${stagedRef.pageCount} trang PDF" else ""
+        val status = DirectEditFileStatus(
+            documentType = documentType,
+            state = DirectEditFileState.SELECTED,
+            message = "$label: Đã chọn tệp mới ($sizeLabel$pageHint), chờ lưu.",
+            stagedRef = stagedRef
+        )
+        _directEditFileStatuses.value = _directEditFileStatuses.value + (documentType to status)
+    }
+
+    fun clearDirectEditStagedDocument(documentType: String) {
+        val prev = _directEditFileStatuses.value[documentType] ?: return
+        discardDraftAttachment(prev.stagedRef)
+        _directEditFileStatuses.value = _directEditFileStatuses.value - documentType
+    }
+
+    fun retryDirectEditDocument(
+        documentType: String,
+        reason: String? = null
+    ) {
+        if (_workerMutationBusy.value) return
+        val target = _directEditTarget.value ?: return
+        val fileStatus = _directEditFileStatuses.value[documentType] ?: return
+        val stagedRef = fileStatus.stagedRef ?: return
+        if (currentActor.value?.hasCapability("document_upload") == false) return
+
+        _workerMutationBusy.value = true
+        _workerMutationError.value = null
+        val label = DirectEntryContract.directEditDocumentLabel(documentType)
+        _directEditFileStatuses.value = _directEditFileStatuses.value + (
+            documentType to fileStatus.copy(
+                state = DirectEditFileState.UPLOADING,
+                message = "$label: Đang thử tải lại..."
+            )
+        )
+
+        viewModelScope.launch {
+            try {
+                val currentWorker = _directEditTarget.value?.first ?: target.first
+                val currentDetail = _directEditTarget.value?.second ?: target.second
+                val outcome = repository.directEntryService.uploadDirectEditDocument(
+                    entryId = currentDetail.entryId,
+                    expectedEntryVersion = currentDetail.version,
+                    documentType = documentType,
+                    stagedRef = stagedRef,
+                    reason = reason
+                )
+                val updatedFileVersions = if (outcome.ok) {
+                    currentDetail.fileVersions + (documentType to outcome.documentVersion)
+                } else {
+                    currentDetail.fileVersions
+                }
+                val updatedDetail = currentDetail.copy(
+                    version = outcome.entryVersion,
+                    fileVersions = updatedFileVersions
+                )
+                _directEditTarget.value = currentWorker.copy(entryVersion = outcome.entryVersion) to updatedDetail
+
+                if (!outcome.ok) {
+                    val errMsg = outcome.message
+                        ?: DirectEntryContract.directEditDocumentErrorMessage(documentType, outcome.code)
+                    _directEditFileStatuses.value = _directEditFileStatuses.value + (
+                        documentType to DirectEditFileStatus(
+                            documentType = documentType,
+                            state = DirectEditFileState.ERROR,
+                            message = errMsg,
+                            stagedRef = stagedRef
+                        )
+                    )
+                    _workerMutationError.value = errMsg
+                } else {
+                    discardDraftAttachment(stagedRef)
+                    _directEditFileStatuses.value = _directEditFileStatuses.value + (
+                        documentType to DirectEditFileStatus(
+                            documentType = documentType,
+                            state = DirectEditFileState.SAVED,
+                            message = "$label: Đã tải lên và lưu thành công (v${outcome.documentVersion}).",
+                            documentVersion = outcome.documentVersion,
+                            stagedRef = null
+                        )
+                    )
+                    val refreshed = runCatching { repository.directEntryService.getEntryDetail(currentDetail.entryId) }
+                        .onFailure { it.rethrowIfCancelled() }
+                        .getOrNull()
+                    if (refreshed != null) {
+                        _directEditTarget.value = currentWorker.copy(entryVersion = refreshed.version) to refreshed
+                        if (_selectedEntryDetail.value?.entryId == refreshed.entryId) {
+                            _selectedEntryDetail.value = refreshed
+                        }
+                    }
+                    val hasOtherErrors = _directEditFileStatuses.value.values.any { it.state == DirectEditFileState.ERROR }
+                    if (!hasOtherErrors) {
+                        _workerMutationError.value = null
+                    }
+                    selectWorkerTab(_activeWorkerTabKey.value)
+                }
+            } catch (e: Exception) {
+                e.rethrowIfCancelled()
+                val errMsg = (e as? BackendApiException)?.message
+                    ?: "$label: Không tải được tệp lên máy chủ. Vui lòng bấm Thử lại tệp này."
+                _directEditFileStatuses.value = _directEditFileStatuses.value + (
+                    documentType to DirectEditFileStatus(
+                        documentType = documentType,
+                        state = DirectEditFileState.ERROR,
+                        message = errMsg,
+                        stagedRef = stagedRef
+                    )
+                )
+                _workerMutationError.value = errMsg
+            } finally {
+                _workerMutationBusy.value = false
+            }
+        }
     }
 
     fun submitDirectEdit(
@@ -3029,22 +3176,149 @@ class MiniBiViewModel internal constructor(
         reason: String?
     ) {
         if (_workerMutationBusy.value) return
+        val canUploadDocs = currentActor.value?.hasCapability("document_upload") ?: true
+        val pendingSpecs = if (canUploadDocs) {
+            DirectEntryContract.DIRECT_EDIT_DOCUMENT_TYPES.filter { spec ->
+                val st = _directEditFileStatuses.value[spec.type]
+                st != null && st.stagedRef != null &&
+                    (st.state == DirectEditFileState.SELECTED || st.state == DirectEditFileState.ERROR)
+            }
+        } else {
+            emptyList()
+        }
+        val hasProfilePatch = patch.length() > 0
+        if (!hasProfilePatch && pendingSpecs.isEmpty()) {
+            _workerMutationError.value = "Bạn chưa thay đổi thông tin hoặc chọn tài liệu mới để lưu."
+            return
+        }
+
         _workerMutationBusy.value = true
         _workerMutationError.value = null
         viewModelScope.launch {
+            var currentVersion = expectedEntryVersion
+            var profileSavedNow = false
             try {
-                val refreshedDetail = repository.directEntryService.privilegedEditEntry(
-                    entryId = entryId,
-                    expectedEntryVersion = expectedEntryVersion,
-                    patch = patch,
-                    reason = reason
-                )
-                _directEditTarget.value = null
-                if (_selectedEntryDetail.value?.entryId == entryId) {
-                    _selectedEntryDetail.value = refreshedDetail
+                if (hasProfilePatch) {
+                    val baselineDetail = _directEditTarget.value?.second
+                    val refreshedDetail = repository.directEntryService.privilegedEditEntry(
+                        entryId = entryId,
+                        expectedEntryVersion = currentVersion,
+                        patch = patch,
+                        reason = reason,
+                        baselineFallback = baselineDetail
+                    )
+                    currentVersion = refreshedDetail.version
+                    profileSavedNow = true
+                    _directEditProfileSaveMessage.value =
+                        "Thông tin hồ sơ (cá nhân, công việc, ngân hàng): Đã lưu thành công."
+                    val currentWorker = _directEditTarget.value?.first
+                    if (currentWorker != null) {
+                        _directEditTarget.value = currentWorker.copy(entryVersion = refreshedDetail.version) to refreshedDetail
+                    }
+                    if (_selectedEntryDetail.value?.entryId == entryId) {
+                        _selectedEntryDetail.value = refreshedDetail
+                    }
                 }
-                showBanner("Đã cập nhật hồ sơ thành công (phiên bản v${refreshedDetail.version}).")
+
+                if (pendingSpecs.isEmpty()) {
+                    cleanupAllDirectEditStagedFiles()
+                    _directEditProfileSaveMessage.value = null
+                    _directEditTarget.value = null
+                    showBanner("Đã cập nhật hồ sơ thành công (phiên bản v$currentVersion).")
+                    selectWorkerTab(_activeWorkerTabKey.value)
+                    return@launch
+                }
+
+                var anyFileFailed = false
+                for (spec in pendingSpecs) {
+                    val currentStatus = _directEditFileStatuses.value[spec.type] ?: continue
+                    val stagedRef = currentStatus.stagedRef ?: continue
+                    _directEditFileStatuses.value = _directEditFileStatuses.value + (
+                        spec.type to currentStatus.copy(
+                            state = DirectEditFileState.UPLOADING,
+                            message = "${spec.label}: Đang tải tệp lên máy chủ..."
+                        )
+                    )
+                    val outcome = repository.directEntryService.uploadDirectEditDocument(
+                        entryId = entryId,
+                        expectedEntryVersion = currentVersion,
+                        documentType = spec.type,
+                        stagedRef = stagedRef,
+                        reason = reason
+                    )
+                    currentVersion = outcome.entryVersion
+                    val latestTarget = _directEditTarget.value
+                    if (latestTarget != null) {
+                        val updatedFileVersions = if (outcome.ok) {
+                            latestTarget.second.fileVersions + (spec.type to outcome.documentVersion)
+                        } else {
+                            latestTarget.second.fileVersions
+                        }
+                        _directEditTarget.value = latestTarget.first.copy(entryVersion = currentVersion) to
+                            latestTarget.second.copy(
+                                version = currentVersion,
+                                fileVersions = updatedFileVersions
+                            )
+                    }
+
+                    if (!outcome.ok) {
+                        anyFileFailed = true
+                        val errMsg = outcome.message
+                            ?: DirectEntryContract.directEditDocumentErrorMessage(spec.type, outcome.code)
+                        _directEditFileStatuses.value = _directEditFileStatuses.value + (
+                            spec.type to DirectEditFileStatus(
+                                documentType = spec.type,
+                                state = DirectEditFileState.ERROR,
+                                message = errMsg,
+                                stagedRef = stagedRef
+                            )
+                        )
+                    } else {
+                        discardDraftAttachment(stagedRef)
+                        _directEditFileStatuses.value = _directEditFileStatuses.value + (
+                            spec.type to DirectEditFileStatus(
+                                documentType = spec.type,
+                                state = DirectEditFileState.SAVED,
+                                message = "${spec.label}: Đã tải lên và lưu thành công (v${outcome.documentVersion}).",
+                                documentVersion = outcome.documentVersion,
+                                stagedRef = null
+                            )
+                        )
+                    }
+                }
+
+                val refreshedAfterDocs = runCatching { repository.directEntryService.getEntryDetail(entryId) }
+                    .onFailure { it.rethrowIfCancelled() }
+                    .getOrNull()
+                if (refreshedAfterDocs != null) {
+                    val currentWorker = _directEditTarget.value?.first
+                    if (currentWorker != null) {
+                        _directEditTarget.value = currentWorker.copy(entryVersion = refreshedAfterDocs.version) to refreshedAfterDocs
+                    }
+                    if (_selectedEntryDetail.value?.entryId == entryId) {
+                        _selectedEntryDetail.value = refreshedAfterDocs
+                    }
+                }
+
                 selectWorkerTab(_activeWorkerTabKey.value)
+                if (anyFileFailed) {
+                    _workerMutationError.value = if (profileSavedNow || _directEditProfileSaveMessage.value != null) {
+                        "Thông tin hồ sơ đã được lưu. Một số tài liệu chưa tải lên được — vui lòng kiểm tra từng tệp bên dưới và thử lại."
+                    } else {
+                        "Một số tài liệu chưa tải lên được — vui lòng kiểm tra từng tệp bên dưới và thử lại."
+                    }
+                } else {
+                    cleanupAllDirectEditStagedFiles()
+                    _directEditProfileSaveMessage.value = null
+                    _directEditTarget.value = null
+                    showBanner(
+                        if (hasProfilePatch) {
+                            "Đã cập nhật hồ sơ và tài liệu đính kèm thành công."
+                        } else {
+                            "Đã tải lên tài liệu đính kèm thành công."
+                        }
+                    )
+                }
             } catch (e: BackendApiException) {
                 _workerMutationError.value = e.message
                 if (e.kind == BackendFailureKind.CONFLICT) {

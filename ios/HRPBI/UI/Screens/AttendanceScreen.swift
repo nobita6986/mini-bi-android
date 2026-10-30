@@ -547,6 +547,10 @@ public struct AttendanceScreen: View {
             }
             .padding(14)
         }
+        .refreshable {
+            locationManager.requestLocationUpdate()
+            await viewModel.syncAttendanceTimeAnchor()
+        }
     }
 
     // MARK: - Tab 2: Leave Request ("Xin nghỉ") Content
@@ -671,6 +675,9 @@ public struct AttendanceScreen: View {
                 }
             }
             .padding(14)
+        }
+        .refreshable {
+            await viewModel.refreshMyLeaveSummary(year: viewModel.leaveYear)
         }
         .onAppear {
             viewModel.ensureInitialLeaveDraftDay()
@@ -1554,7 +1561,7 @@ public struct AttendanceScreen: View {
                                 if isExpanded {
                                     VStack(alignment: .leading, spacing: 4) {
                                         Text("Mã đơn: #\(String(req.requestId.prefix(8))) • Phiên bản: v\(req.rowVersion)")
-                                            .font(.caption2.monospaced())
+                                            .font(.caption2)
                                             .foregroundColor(SemanticColors.textSecondary)
                                         Text("Thời điểm gửi: \(WorkReportsContract.formatIsoDateTimeVi(req.submittedAt))")
                                             .font(.caption2)
@@ -1673,6 +1680,9 @@ public struct AttendanceScreen: View {
                     }
                 }
                 .padding(14)
+            }
+            .refreshable {
+                await viewModel.refreshLeaveApprovalInbox()
             }
             .onAppear {
                 if viewModel.leaveApprovalInbox == nil && !viewModel.isLoadingLeaveInbox {

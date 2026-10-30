@@ -586,8 +586,8 @@ class AuthSessionAndSecurityContractTest {
             gradleText.contains("\"https://bi.hrpartner.vn\"")
         )
         assertTrue(
-            "Debug server URL in app/build.gradle.kts must point to https://bi2.hrpartner.vn",
-            gradleText.contains("\"https://bi2.hrpartner.vn\"")
+            "Debug server URL in app/build.gradle.kts must point to https://bi.hrpvietnam.com",
+            gradleText.contains("\"https://bi.hrpvietnam.com\"")
         )
         assertTrue(
             "Application ID in app/build.gradle.kts must be vn.hrpartner.bi",
@@ -599,6 +599,7 @@ class AuthSessionAndSecurityContractTest {
         )
         assertEquals("BI", resolveBrandBadgeLabel("https://bi.hrpartner.vn"))
         assertEquals("BI2", resolveBrandBadgeLabel("https://bi2.hrpartner.vn"))
+        assertEquals("BI2", resolveBrandBadgeLabel("https://bi.hrpvietnam.com"))
 
         val sharedPrefsFile = File(context.cacheDir, "test_prefs_${System.nanoTime()}.preferences_pb")
         try {

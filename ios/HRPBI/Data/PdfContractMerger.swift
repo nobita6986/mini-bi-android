@@ -51,6 +51,17 @@ public enum PdfContractMerger {
     public static let maxUploadSizeBytes: Int = 10 * 1024 * 1024 // 10 MB
     public static let maxImageDimensionPx: CGFloat = 1600.0
 
+    public static func isJpegOrPngData(_ data: Data) -> (isSupported: Bool, mimeType: String) {
+        let bytes = [UInt8](data.prefix(8))
+        if bytes.count >= 3 && bytes[0] == 0xFF && bytes[1] == 0xD8 && bytes[2] == 0xFF {
+            return (true, "image/jpeg")
+        }
+        if bytes.count >= 4 && bytes[0] == 0x89 && bytes[1] == 0x50 && bytes[2] == 0x4E && bytes[3] == 0x47 {
+            return (true, "image/png")
+        }
+        return (false, "image/jpeg")
+    }
+
     public static func prepareContractUploadPayload(
         attachments: [LocalAttachmentItem],
         timestampMs: Int64 = Int64(Date().timeIntervalSince1970 * 1000)
@@ -78,18 +89,22 @@ public enum PdfContractMerger {
             )
         }
 
-        // Case 2: Single image attachment -> send as single image (normalizing/compressing if > 10 MB)
+        // Case 2: Single image attachment -> send as single image (normalizing/compressing if > 10 MB or HEIC)
         if attachments.count == 1 {
             let imgAtt = attachments[0]
             guard let uiImage = UIImage(data: imgAtt.data) else {
                 throw ContractUploadPreparationError.invalidImageData
             }
-            if imgAtt.data.count <= maxUploadSizeBytes &&
-                max(uiImage.size.width, uiImage.size.height) <= maxImageDimensionPx &&
+            let magicCheck = isJpegOrPngData(imgAtt.data)
+            let pixelWidth = uiImage.size.width * uiImage.scale
+            let pixelHeight = uiImage.size.height * uiImage.scale
+            if magicCheck.isSupported &&
+                imgAtt.data.count <= maxUploadSizeBytes &&
+                max(pixelWidth, pixelHeight) <= maxImageDimensionPx &&
                 uiImage.imageOrientation == .up {
                 return PreparedContractUploadPayload(
                     fileName: imgAtt.fileName.isEmpty ? "hop-dong-\(timestampMs).jpg" : imgAtt.fileName,
-                    mimeType: imgAtt.mimeType.isEmpty ? "image/jpeg" : imgAtt.mimeType,
+                    mimeType: magicCheck.mimeType,
                     data: imgAtt.data,
                     pageCount: 1,
                     wasMergedFromMultipleImages: false
@@ -101,8 +116,10 @@ public enum PdfContractMerger {
                   jpegData.count <= maxUploadSizeBytes else {
                 throw ContractUploadPreparationError.exceedsMaxSizeLimit
             }
+            let baseName = (imgAtt.fileName as NSString).deletingPathExtension
+            let cleanFileName = baseName.isEmpty ? "hop-dong-\(timestampMs).jpg" : "\(baseName).jpg"
             return PreparedContractUploadPayload(
-                fileName: imgAtt.fileName.isEmpty ? "hop-dong-\(timestampMs).jpg" : imgAtt.fileName,
+                fileName: cleanFileName,
                 mimeType: "image/jpeg",
                 data: jpegData,
                 pageCount: 1,

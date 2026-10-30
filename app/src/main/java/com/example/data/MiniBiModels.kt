@@ -481,7 +481,85 @@ data class WorkerEntryDetail(
     val employmentLeaveReason: String? = null,
     val portraitPreviewPath: String?,
     val portraitDownloadPath: String?,
-    val documents: List<EntryDocumentItem>
+    val documents: List<EntryDocumentItem>,
+    val rawBankName: String? = bankName,
+    val workerDetailsStates: Map<String, String> = emptyMap(),
+    val fileVersions: Map<String, Int> = emptyMap()
+)
+
+data class VietQrBankCatalogDefinition(
+    val bankId: String,
+    val bankCode: String,
+    val shortName: String,
+    val officialName: String,
+    val bin: String,
+    val aliases: List<String> = emptyList()
+)
+
+data class MergedBankCatalogOption(
+    val bankId: String,
+    val bankCode: String,
+    val shortName: String,
+    val officialName: String,
+    val displayName: String,
+    val label: String,
+    val keywords: String
+)
+
+data class DirectEditDocumentTypeSpec(
+    val type: String,
+    val label: String,
+    val acceptMimeTypes: List<String>
+)
+
+enum class DirectEditFileState {
+    SELECTED,
+    UPLOADING,
+    SAVED,
+    ERROR
+}
+
+data class DirectEditFileStatus(
+    val documentType: String,
+    val state: DirectEditFileState,
+    val message: String,
+    val stagedRef: StagedDocumentRef? = null,
+    val documentVersion: Int? = null
+)
+
+data class DirectEditSingleDocumentUploadResult(
+    val ok: Boolean,
+    val docType: String = "",
+    val documentId: String? = null,
+    val documentVersion: Int = 1,
+    val entryVersion: Int,
+    val conflict: Boolean = false,
+    val code: String? = null,
+    val message: String? = null
+)
+
+data class DirectEditFormInput(
+    val displayName: String,
+    val gender: String,
+    val dateOfBirth: String,
+    val nationalId: String,
+    val nationalIdIssuedAt: String,
+    val nationalIdIssuedPlace: String,
+    val address: String,
+    val phone: String,
+    val employeeCode: String,
+    val projectId: String,
+    val firstWorkDate: String,
+    val recruiterId: String,
+    val laborType: String,
+    val employmentStatus: String,
+    val employmentEffectiveDate: String,
+    val employmentLeaveReason: String,
+    val accountNumber: String,
+    val bankId: String,
+    val bankQueryText: String,
+    val accountHolderName: String,
+    val reason: String = ""
 )
 
 data class CccdDecodedQrPayload(

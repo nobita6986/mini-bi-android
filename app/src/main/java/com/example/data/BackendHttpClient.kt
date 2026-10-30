@@ -68,7 +68,15 @@ class BackendHttpClient(
             "ACTOR_NOT_AVAILABLE" to "Tài khoản hiện chưa được kích hoạt quyền chấm công. Vui lòng đăng nhập lại và thử lại, hoặc liên hệ quản trị viên.",
             // Work report business codes
             "WORK_REPORT_DEADLINE_PASSED" to "Đã quá hạn nộp báo cáo.",
-            "WORK_REPORT_VERSION_CONFLICT" to "Dữ liệu báo cáo đã thay đổi trên máy chủ (xung đột phiên bản). Vui lòng tải lại và thử lại."
+            "WORK_REPORT_VERSION_CONFLICT" to "Dữ liệu báo cáo đã thay đổi trên máy chủ (xung đột phiên bản). Vui lòng tải lại và thử lại.",
+            // Privileged edit & document upload business codes
+            "PRIVILEGED_EDIT_CONFLICT" to "Dữ liệu bị trùng (ví dụ mã người lao động đã tồn tại). Vui lòng kiểm tra lại.",
+            "PRIVILEGED_EDIT_STATE_LOCKED" to "Trạng thái hồ sơ hiện tại không cho phép chỉnh sửa trực tiếp.",
+            "PRIVILEGED_EDIT_DENIED" to "Bạn không còn quyền sửa trực tiếp hồ sơ này.",
+            "PRIVILEGED_EDIT_INVALID" to "Dữ liệu chỉnh sửa không hợp lệ (kiểm tra định dạng mã NLĐ, ngày làm việc, CCCD, danh mục đang hoạt động hoặc trạng thái làm việc).",
+            "VERSION_CONFLICT" to "Dữ liệu đã thay đổi ở nơi khác. Vui lòng tải lại trước khi tiếp tục.",
+            "DOCUMENT_VERSION_CONFLICT" to "Hồ sơ vừa được cập nhật ở nơi khác (lệch phiên bản). Vui lòng bấm Thử lại tệp này.",
+            "DOCUMENT_DENIED" to "Tài khoản không còn quyền tải tài liệu này."
         )
 
         internal fun extractErrorCodeAndMessage(bodyStr: String): Pair<String?, String?> {
