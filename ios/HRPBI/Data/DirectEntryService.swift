@@ -61,6 +61,30 @@ public enum DirectEntryContract {
         return trimmed
     }
 
+    public static func isoDateToUiDate(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "" }
+        let prefix10 = String(trimmed.prefix(10))
+        if prefix10.contains("-") {
+            let parts = prefix10.split(separator: "-")
+            if parts.count == 3 {
+                if parts[0].count == 4 {
+                    let y = String(parts[0])
+                    let m = String(parts[1]).paddingLeftZeros(count: 2)
+                    let d = String(parts[2]).paddingLeftZeros(count: 2)
+                    return "\(d)/\(m)/\(y)"
+                }
+                if parts[2].count == 4 {
+                    let d = String(parts[0]).paddingLeftZeros(count: 2)
+                    let m = String(parts[1]).paddingLeftZeros(count: 2)
+                    let y = String(parts[2])
+                    return "\(d)/\(m)/\(y)"
+                }
+            }
+        }
+        return trimmed
+    }
+
     public static func reviewStatusDisplayLabel(_ status: String) -> String {
         switch status.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() {
         case reviewStatusMatched, "MATCHED_INITIAL", "RESOLVED":
@@ -952,7 +976,7 @@ public final class DirectEntryService: @unchecked Sendable {
 
     // MARK: - Direct Edit Worker Profile (GET Detail, Patch Builder, Field Validation, Privileged Edit)
 
-    private static let employeeCodeRegex = try! NSRegularExpression(pattern: #"^hrp-\d{4}-\d{6}$"#, options: [.caseInsensitive])
+    private static let employeeCodeRegex = try! NSRegularExpression(pattern: #"^hrp-(0[1-9]|1[0-2])\d{2}-\d{6}$"#, options: [.caseInsensitive])
     private static let safeCatalogIdRegex = try! NSRegularExpression(pattern: #"^[A-Za-z0-9_.\-]{1,128}$"#)
     private static let laborTypeKeyRegex = try! NSRegularExpression(pattern: #"^[A-Za-z0-9_\-]{1,64}$"#)
     private static let paymentAccountDigitsRegex = try! NSRegularExpression(pattern: #"^\d{1,64}$"#)
@@ -997,6 +1021,9 @@ public final class DirectEntryService: @unchecked Sendable {
         let providerType = entryObj.optString("provider_type", defaultValue: "hrp")
         let laborType = entryObj.optString("labor_type", defaultValue: "TEMPORARY")
         let laborTypeDisplay = entryObj.optString("labor_type_display", defaultValue: laborType)
+        let allowedObj = entryObj["allowed_actions"] as? [String: Any]
+        let canDirectEdit = allowedObj?.optBool("direct_edit", defaultValue: true)
+            ?? entryObj.optBool("can_direct_edit", defaultValue: true)
 
         let wdObj = (entryObj["worker_details"] as? [String: Any])
             ?? (entryObj["worker"] as? [String: Any])
@@ -1004,8 +1031,9 @@ public final class DirectEntryService: @unchecked Sendable {
         let displayName = wdObj.optString("display_name")
             .ifEmpty(entryObj.optString("display_name", "ho_ten", "full_name"))
 
-        func extractTriState(_ dict: [String: Any], _ key: String) -> (state: String, value: String?) {
-            guard let raw = dict[key], !(raw is NSNull) else {
+        func extractTriState(_ dict: [String: Any], _ key: String, fallbackKey: String? = nil) -> (state: String, value: String?) {
+            let raw = dict[key] ?? (fallbackKey.flatMap { dict[$0] })
+            guard let raw, !(raw is NSNull) else {
                 return ("omitted", nil)
             }
             if let sub = raw as? [String: Any] {
@@ -1027,13 +1055,13 @@ public final class DirectEntryService: @unchecked Sendable {
         wdStates["date_of_birth"] = dobPair.state
         let nidPair = extractTriState(wdObj, "national_id")
         wdStates["national_id"] = nidPair.state
-        let issuedAtPair = extractTriState(wdObj, "national_id_issued_at")
+        let issuedAtPair = extractTriState(wdObj, "national_id_issued_at", fallbackKey: "national_id_issued_date")
         wdStates["national_id_issued_at"] = issuedAtPair.state
         let issuedPlacePair = extractTriState(wdObj, "national_id_issued_place")
         wdStates["national_id_issued_place"] = issuedPlacePair.state
         let addressPair = extractTriState(wdObj, "address")
         wdStates["address"] = addressPair.state
-        let phonePair = extractTriState(wdObj, "phone")
+        let phonePair = extractTriState(wdObj, "phone", fallbackKey: "phone_number")
         wdStates["phone"] = phonePair.state
 
         let notePair = extractTriState(entryObj, "general_note")
@@ -1063,13 +1091,18 @@ public final class DirectEntryService: @unchecked Sendable {
             guard !dType.isEmpty else { continue }
             let fVer = max(1, d.optInt("file_version", "version", defaultValue: 1))
             fileVers[dType] = fVer
+            let dlPath = d.optNullableString("download_path", "download_url", "file_url")
+            let pvPath = d.optNullableString("preview_path", "preview_url")
+            let upStatus = d.optString("upload_status", "status", defaultValue: "READY").uppercased()
+            let hasFile = d.optBool("has_file", defaultValue: dlPath != nil || pvPath != nil || upStatus == "READY")
             docs.append(
                 WorkerDocumentSummary(
                     documentType: dType,
-                    uploadStatus: d.optString("upload_status", "status", defaultValue: "READY").uppercased(),
+                    uploadStatus: upStatus,
                     fileVersion: fVer,
-                    downloadPath: d.optNullableString("download_path", "download_url", "file_url"),
-                    previewPath: d.optNullableString("preview_path", "preview_url")
+                    downloadPath: dlPath,
+                    previewPath: pvPath,
+                    hasFile: hasFile
                 )
             )
         }
@@ -1097,10 +1130,10 @@ public final class DirectEntryService: @unchecked Sendable {
             gender: genderPair.value ?? entryObj.optNullableString("gender"),
             dateOfBirth: dobPair.value ?? entryObj.optNullableString("date_of_birth"),
             nationalId: nidPair.value ?? entryObj.optNullableString("national_id"),
-            nationalIdIssuedAt: issuedAtPair.value ?? entryObj.optNullableString("national_id_issued_at"),
+            nationalIdIssuedAt: issuedAtPair.value ?? entryObj.optNullableString("national_id_issued_at", "national_id_issued_date"),
             nationalIdIssuedPlace: issuedPlacePair.value ?? entryObj.optNullableString("national_id_issued_place"),
             address: addressPair.value ?? entryObj.optNullableString("address"),
-            phone: phonePair.value ?? entryObj.optNullableString("phone"),
+            phone: phonePair.value ?? entryObj.optNullableString("phone", "phone_number"),
             generalNote: generalNote,
             paymentState: paymentState,
             bankId: bankId,
@@ -1116,7 +1149,8 @@ public final class DirectEntryService: @unchecked Sendable {
             portraitDownloadPath: portraitDownloadPath,
             documents: docs,
             workerDetailsStates: wdStates,
-            fileVersions: fileVers
+            fileVersions: fileVers,
+            canDirectEdit: canDirectEdit
         )
     }
 
@@ -1128,9 +1162,12 @@ public final class DirectEntryService: @unchecked Sendable {
         return DirectEditFormInput(
             employeeCode: detail.employeeCode,
             projectId: detail.projectId,
+            projectDisplay: detail.projectDisplay,
             firstWorkDateUi: DirectEntryContract.isoDateToUiDate(detail.firstWorkDate),
             recruiterId: detail.recruiterId,
+            recruiterDisplay: detail.recruiterDisplay,
             laborTypeKey: detail.laborType,
+            laborTypeDisplay: detail.laborTypeDisplay,
             statusCode: detail.employmentStatus,
             statusEffectiveDateUi: DirectEntryContract.isoDateToUiDate(
                 detail.employmentEffectiveDate.isEmpty ? detail.firstWorkDate : detail.employmentEffectiveDate
@@ -1147,7 +1184,8 @@ public final class DirectEntryService: @unchecked Sendable {
             accountHolderName: detail.accountHolderName ?? "",
             accountNumber: detail.accountNumber ?? "",
             bankId: resolvedBank.bankId,
-            bankName: resolvedBank.bankName
+            bankName: resolvedBank.bankName,
+            isCustomBank: resolvedBank.bankId == nil && !resolvedBank.bankName.isEmpty
         )
     }
 
@@ -1160,7 +1198,7 @@ public final class DirectEntryService: @unchecked Sendable {
         let cleanEmployeeCode = input.employeeCode.trimmingCharacters(in: .whitespacesAndNewlines)
         if cleanEmployeeCode != baseline.employeeCode.trimmingCharacters(in: .whitespacesAndNewlines) &&
             !matchesRegex(employeeCodeRegex, cleanEmployeeCode) {
-            errors["employee_code"] = "Mã NLĐ sai định dạng. Hãy nhập theo mẫu hrp-XXXX-XXXXXX (ví dụ: hrp-2026-001456)."
+            errors["employee_code"] = "Mã NLĐ sai định dạng. Hãy nhập theo mẫu hrp-MMYY-XXXXXX (ví dụ: hrp-1026-001456)."
         }
 
         let cleanProjectId = input.projectId.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1252,12 +1290,7 @@ public final class DirectEntryService: @unchecked Sendable {
         baseline: WorkerEntryDetail,
         input: DirectEditFormInput,
         canEditEmploymentStatus: Bool = true
-    ) throws -> [String: Any] {
-        let fieldErrors = validateDirectEditFormFields(baseline: baseline, input: input)
-        if let firstErr = fieldErrors.values.first {
-            throw NSError(domain: "DirectEditValidation", code: 400, userInfo: [NSLocalizedDescriptionKey: firstErr])
-        }
-
+    ) -> [String: Any] {
         var patch: [String: Any] = [:]
 
         let cleanProjectId = input.projectId.trimmingCharacters(in: .whitespacesAndNewlines)

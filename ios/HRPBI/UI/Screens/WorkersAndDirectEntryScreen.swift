@@ -1812,7 +1812,7 @@ struct WorkerDirectEditSheet: View {
                                     .font(.subheadline.weight(.bold))
                                     .foregroundColor(theme.primary)
 
-                                directEditTextField("Họ và tên *", text: $form.hoTen, error: viewModel.directEditFieldErrors["ho_ten"])
+                                directEditTextField("Họ và tên *", text: $form.hoTen, error: viewModel.directEditFieldErrors["display_name"] ?? viewModel.directEditFieldErrors["ho_ten"])
 
                                 VStack(alignment: .leading, spacing: 4) {
                                     Text("Giới tính")
@@ -1841,19 +1841,19 @@ struct WorkerDirectEditSheet: View {
                                     "Ngày sinh (DD/MM/YYYY)",
                                     text: $form.ngaySinh,
                                     placeholder: "VD: 15/08/1995",
-                                    error: viewModel.directEditFieldErrors["ngay_sinh"]
+                                    error: viewModel.directEditFieldErrors["date_of_birth"] ?? viewModel.directEditFieldErrors["ngay_sinh"]
                                 )
                                 directEditTextField(
                                     "Số CCCD (12 chữ số)",
                                     text: $form.soCccd,
                                     keyboard: .numberPad,
-                                    error: viewModel.directEditFieldErrors["so_cccd"]
+                                    error: viewModel.directEditFieldErrors["national_id_number"] ?? viewModel.directEditFieldErrors["so_cccd"]
                                 )
                                 directEditTextField(
                                     "Ngày cấp CCCD (DD/MM/YYYY)",
                                     text: $form.ngayCapCccd,
                                     placeholder: "VD: 20/10/2021",
-                                    error: viewModel.directEditFieldErrors["ngay_cap_cccd"]
+                                    error: viewModel.directEditFieldErrors["national_id_issue_date"] ?? viewModel.directEditFieldErrors["ngay_cap_cccd"]
                                 )
                                 directEditTextField(
                                     "Nơi cấp CCCD",
@@ -1886,7 +1886,7 @@ struct WorkerDirectEditSheet: View {
                                     "Mã NLĐ (hrp-MMYY-XXXXXX) *",
                                     text: $form.maNld,
                                     placeholder: "VD: hrp-1026-000123",
-                                    error: viewModel.directEditFieldErrors["ma_nld"]
+                                    error: viewModel.directEditFieldErrors["employee_code"] ?? viewModel.directEditFieldErrors["ma_nld"]
                                 )
 
                                 directEditPickerButton(
@@ -1920,7 +1920,7 @@ struct WorkerDirectEditSheet: View {
                                     "Ngày bắt đầu (DD/MM/YYYY)",
                                     text: $form.ngayVaoLam,
                                     placeholder: "VD: 01/10/2026",
-                                    error: viewModel.directEditFieldErrors["ngay_vao_lam"]
+                                    error: viewModel.directEditFieldErrors["started_on"] ?? viewModel.directEditFieldErrors["ngay_vao_lam"]
                                 )
 
                                 VStack(alignment: .leading, spacing: 6) {
@@ -1953,7 +1953,13 @@ struct WorkerDirectEditSheet: View {
                                         "Ngày hiệu lực nghỉ việc (DD/MM/YYYY) *",
                                         text: $form.employmentEffectiveDate,
                                         placeholder: "VD: 30/10/2026",
-                                        error: viewModel.directEditFieldErrors["employment_effective_date"]
+                                        error: viewModel.directEditFieldErrors["effective_date"] ?? viewModel.directEditFieldErrors["employment_effective_date"]
+                                    )
+                                    directEditTextField(
+                                        "Lý do nghỉ việc *",
+                                        text: $form.offReason,
+                                        placeholder: "Nhập lý do nghỉ việc...",
+                                        error: viewModel.directEditFieldErrors["reason"]
                                     )
                                 }
                             }
@@ -1970,7 +1976,7 @@ struct WorkerDirectEditSheet: View {
                                 directEditTextField(
                                     "Tên chủ tài khoản",
                                     text: $form.chuTaiKhoan,
-                                    error: viewModel.directEditFieldErrors["chu_tai_khoan"]
+                                    error: viewModel.directEditFieldErrors["payment"] ?? viewModel.directEditFieldErrors["chu_tai_khoan"]
                                 )
                                 directEditTextField(
                                     "Số tài khoản",
@@ -2002,9 +2008,9 @@ struct WorkerDirectEditSheet: View {
                                         "Tên ngân hàng tham chiếu *",
                                         text: $form.customBankName,
                                         placeholder: "Nhập tên ngân hàng...",
-                                        error: viewModel.directEditFieldErrors["ngan_hang"]
+                                        error: viewModel.directEditFieldErrors["payment"] ?? viewModel.directEditFieldErrors["ngan_hang"]
                                     )
-                                } else if let bankErr = viewModel.directEditFieldErrors["ngan_hang"] {
+                                } else if let bankErr = viewModel.directEditFieldErrors["payment"] ?? viewModel.directEditFieldErrors["ngan_hang"] {
                                     Text(bankErr)
                                         .font(.caption2)
                                         .foregroundColor(SemanticColors.dangerText)
@@ -2181,18 +2187,9 @@ struct WorkerDirectEditSheet: View {
                 }
             }
             .sheet(isPresented: $showRecruiterPicker) {
-                let recruiterItems: [(id: String, label: String)] = {
-                    var list: [(id: String, label: String)] = []
-                    for r in viewModel.directEntryOptions.catalogInternalRecruiters {
-                        let subtitle = [r.chucVu, r.boPhan].filter { !$0.isEmpty }.joined(separator: " · ")
-                        let display = subtitle.isEmpty ? r.displayName : "\(r.displayName) · \(subtitle)"
-                        list.append((r.recruiterId, display))
-                    }
-                    for v in viewModel.directEntryOptions.catalogVendors {
-                        list.append((v.recruiterId, "Vendor: \(v.displayName)"))
-                    }
-                    return list
-                }()
+                let recruiterItems: [(id: String, label: String)] = viewModel.directEntryOptions.catalogRecruiters.map {
+                    ($0.recruiterId, $0.label)
+                }
                 DirectEntrySearchablePickerSheet(
                     title: "Chọn người tuyển",
                     placeholder: "Tìm tên người tuyển hoặc mã...",
@@ -2217,14 +2214,15 @@ struct WorkerDirectEditSheet: View {
                 ) { selectedId, _ in
                     if selectedId == "__CUSTOM__" {
                         form.isCustomBank = true
-                        form.nganHang = ""
+                        form.bankId = nil
+                        form.bankName = ""
                     } else if let matched = VietQrBankCatalog.banks.first(where: { $0.shortName == selectedId }) {
                         form.isCustomBank = false
-                        form.nganHang = matched.shortName
-                        form.customBankName = ""
+                        form.bankId = matched.id
+                        form.bankName = matched.shortName
                     } else {
                         form.isCustomBank = true
-                        form.nganHang = ""
+                        form.bankId = nil
                         form.customBankName = selectedId
                     }
                 }
@@ -2405,26 +2403,26 @@ struct WorkerDirectEditSheet: View {
 
     @ViewBuilder
     private func directEditFileStatusRow(docType: String) -> some View {
-        if let st = viewModel.directEditFileStatuses[docType], st.status != .idle {
+        if let st = viewModel.directEditFileStatuses[docType], st.state != .idle {
             HStack(spacing: 8) {
-                switch st.status {
+                switch st.state {
                 case .uploading:
                     ProgressView().scaleEffect(0.75)
-                    Text(st.message ?? "Đang tải tệp...")
+                    Text(st.message.isEmpty ? "Đang tải tệp..." : st.message)
                         .font(.caption2)
                         .foregroundColor(SemanticColors.infoText)
-                case .success:
+                case .uploaded:
                     Image(systemName: "checkmark.circle.fill")
                         .foregroundColor(SemanticColors.successText)
                         .font(.caption)
-                    Text(st.message ?? "Đã tải tệp thành công.")
+                    Text(st.message.isEmpty ? "Đã tải tệp thành công." : st.message)
                         .font(.caption2.weight(.semibold))
                         .foregroundColor(SemanticColors.successText)
                 case .error:
                     Image(systemName: "exclamationmark.triangle.fill")
                         .foregroundColor(SemanticColors.dangerText)
                         .font(.caption)
-                    Text(st.message ?? "Lỗi tải tệp.")
+                    Text(st.message.isEmpty ? "Lỗi tải tệp." : st.message)
                         .font(.caption2)
                         .foregroundColor(SemanticColors.dangerText)
                     Spacer()

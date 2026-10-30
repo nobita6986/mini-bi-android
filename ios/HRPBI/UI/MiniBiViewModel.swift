@@ -92,7 +92,7 @@ public final class MiniBiViewModel: ObservableObject {
     @Published public var directEditErrorMessage: String?
     @Published public var directEditFieldErrors: [String: String] = [:]
     @Published public var directEditProfileSavedMessage: String?
-    @Published public var directEditFileStatuses: [String: DirectEditFileState] = [:]
+    @Published public var directEditFileStatuses: [String: DirectEditFileStatus] = [:]
 
     // MARK: - Salary Advance ("Ứng lương" for QLDA) State
     @Published public var salaryAdvanceContext: SalaryAdvanceActorContext?
@@ -933,8 +933,8 @@ public final class MiniBiViewModel: ObservableObject {
             await loadDirectEntryAssigneeOptions()
         }
 
-        let targetEntryId = !worker.entryIdUuid.isEmpty ? worker.entryIdUuid : (worker.id != 0 ? String(worker.id) : worker.maNld)
-        let detailRes = await directEntryService.fetchWorkerEntryDetail(entryIdUuid: targetEntryId)
+        let targetEntryId = worker.maNld
+        let detailRes = await directEntryService.fetchWorkerEntryDetail(entryId: targetEntryId)
         directEditLoadingDetail = false
 
         switch detailRes {
@@ -970,7 +970,7 @@ public final class MiniBiViewModel: ObservableObject {
         directEditErrorMessage = nil
         directEditFieldErrors = [:]
 
-        let validationErrors = DirectEntryService.validateDirectEditFormFields(baseline: baseline, form: form)
+        let validationErrors = DirectEntryService.validateDirectEditFormFields(baseline: baseline, input: form)
         if !validationErrors.isEmpty {
             directEditFieldErrors = validationErrors
             let firstError = validationErrors.values.first ?? "Dữ liệu chỉnh sửa chưa hợp lệ."
@@ -980,7 +980,7 @@ public final class MiniBiViewModel: ObservableObject {
             return
         }
 
-        let patch = DirectEntryService.buildDirectEditPatch(baseline: baseline, form: form)
+        let patch = DirectEntryService.buildDirectEditPatch(baseline: baseline, input: form)
         let nonEmptyStaged = stagedFiles.filter { !$0.value.isEmpty }
 
         if patch.isEmpty && nonEmptyStaged.isEmpty {
@@ -989,38 +989,34 @@ public final class MiniBiViewModel: ObservableObject {
         }
 
         var currentVersion = baseline.entryVersion
-        let targetEntryId = !baseline.entryIdUuid.isEmpty
-            ? baseline.entryIdUuid
-            : (baseline.id != 0 ? String(baseline.id) : baseline.maNld)
+        let targetEntryId = baseline.entryId
 
         // Step 1: Save profile fields via privileged-edit API first (if any field changed or if profile hasn't been saved yet)
         if !patch.isEmpty {
             directEditSavingProfile = true
             let editRes = await directEntryService.submitPrivilegedEdit(
-                entryIdUuid: targetEntryId,
+                entryId: targetEntryId,
                 expectedEntryVersion: currentVersion,
                 patch: patch
             )
             directEditSavingProfile = false
 
             switch editRes {
-            case .success(let newVersion, _):
-                currentVersion = newVersion
-                directEditProfileSavedMessage = "Đã lưu thông tin hồ sơ (v\(newVersion))."
+            case .success(let updatedDetail, _):
+                currentVersion = updatedDetail.entryVersion
+                directEditBaselineDetail = updatedDetail
+                directEditProfileSavedMessage = "Đã lưu thông tin hồ sơ (v\(currentVersion))."
                 // Refresh baseline so subsequent retries don't re-submit already saved profile changes
-                if case .success(let refreshed, _) = await directEntryService.fetchWorkerEntryDetail(entryIdUuid: targetEntryId) {
+                if case .success(let refreshed, _) = await directEntryService.fetchWorkerEntryDetail(entryId: targetEntryId) {
                     directEditBaselineDetail = refreshed
                     currentVersion = refreshed.entryVersion
-                } else if var cur = directEditBaselineDetail {
-                    cur.entryVersion = newVersion
-                    directEditBaselineDetail = cur
                 }
 
             case .failure(let message, let httpStatus, let errorCode, _):
                 directEditErrorMessage = message
                 let codeUpper = (errorCode ?? "").uppercased()
                 if httpStatus == 409 && codeUpper == "OCC_CONFLICT" {
-                    if case .success(let refreshed, _) = await directEntryService.fetchWorkerEntryDetail(entryIdUuid: targetEntryId) {
+                    if case .success(let refreshed, _) = await directEntryService.fetchWorkerEntryDetail(entryId: targetEntryId) {
                         directEditBaselineDetail = refreshed
                     }
                 }
@@ -1042,7 +1038,7 @@ public final class MiniBiViewModel: ObservableObject {
                 let displayName = files.count >= 2
                     ? "\(files.count) tệp ảnh (ghép PDF)"
                     : (files.first?.fileName ?? docType)
-                directEditFileStatuses[docType] = DirectEditFileState(
+                directEditFileStatuses[docType] = DirectEditFileStatus(
                     docType: docType,
                     fileName: displayName,
                     status: .uploading,
@@ -1061,7 +1057,7 @@ public final class MiniBiViewModel: ObservableObject {
                 }
                 switch upRes.result {
                 case .success:
-                    directEditFileStatuses[docType] = DirectEditFileState(
+                    directEditFileStatuses[docType] = DirectEditFileStatus(
                         docType: docType,
                         fileName: displayName,
                         status: .success,
@@ -1069,7 +1065,7 @@ public final class MiniBiViewModel: ObservableObject {
                     )
                 case .failure(let errMsg, _, _, _):
                     anyFileFailed = true
-                    directEditFileStatuses[docType] = DirectEditFileState(
+                    directEditFileStatuses[docType] = DirectEditFileStatus(
                         docType: docType,
                         fileName: displayName,
                         status: .error,
@@ -1078,7 +1074,7 @@ public final class MiniBiViewModel: ObservableObject {
                 }
             }
 
-            if case .success(let refreshed, _) = await directEntryService.fetchWorkerEntryDetail(entryIdUuid: targetEntryId) {
+            if case .success(let refreshed, _) = await directEntryService.fetchWorkerEntryDetail(entryId: targetEntryId) {
                 directEditBaselineDetail = refreshed
             }
         }
@@ -1100,14 +1096,12 @@ public final class MiniBiViewModel: ObservableObject {
         onComplete: (() -> Void)? = nil
     ) async {
         guard let baseline = directEditBaselineDetail, !attachments.isEmpty else { return }
-        let targetEntryId = !baseline.entryIdUuid.isEmpty
-            ? baseline.entryIdUuid
-            : (baseline.id != 0 ? String(baseline.id) : baseline.maNld)
+        let targetEntryId = baseline.entryId
         let displayName = attachments.count >= 2
             ? "\(attachments.count) tệp ảnh (ghép PDF)"
             : (attachments.first?.fileName ?? docType)
 
-        directEditFileStatuses[docType] = DirectEditFileState(
+        directEditFileStatuses[docType] = DirectEditFileStatus(
             docType: docType,
             fileName: displayName,
             status: .uploading,
@@ -1121,7 +1115,7 @@ public final class MiniBiViewModel: ObservableObject {
             initialEntryVersion: baseline.entryVersion
         )
 
-        if case .success(let refreshed, _) = await directEntryService.fetchWorkerEntryDetail(entryIdUuid: targetEntryId) {
+        if case .success(let refreshed, _) = await directEntryService.fetchWorkerEntryDetail(entryId: targetEntryId) {
             directEditBaselineDetail = refreshed
         } else if var cur = directEditBaselineDetail {
             cur.entryVersion = upRes.nextEntryVersion
@@ -1130,7 +1124,7 @@ public final class MiniBiViewModel: ObservableObject {
 
         switch upRes.result {
         case .success:
-            directEditFileStatuses[docType] = DirectEditFileState(
+            directEditFileStatuses[docType] = DirectEditFileStatus(
                 docType: docType,
                 fileName: displayName,
                 status: .success,
@@ -1142,7 +1136,7 @@ public final class MiniBiViewModel: ObservableObject {
             await loadWorkers(resetPage: false)
             onComplete?()
         case .failure(let errMsg, _, _, _):
-            directEditFileStatuses[docType] = DirectEditFileState(
+            directEditFileStatuses[docType] = DirectEditFileStatus(
                 docType: docType,
                 fileName: displayName,
                 status: .error,

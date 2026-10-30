@@ -1072,10 +1072,10 @@ final class HRPBTests: XCTestCase {
         form.nganHang = "Techcombank"
         form.isCustomBank = false
 
-        let validationErrors = DirectEntryService.validateDirectEditFormFields(baseline: baseline, form: form)
+        let validationErrors = DirectEntryService.validateDirectEditFormFields(baseline: baseline, input: form)
         XCTAssertTrue(validationErrors.isEmpty, "Unexpected validation errors: \(validationErrors)")
 
-        let patch = DirectEntryService.buildDirectEditPatch(baseline: baseline, form: form)
+        let patch = DirectEntryService.buildDirectEditPatch(baseline: baseline, input: form)
         XCTAssertNil(patch["employee_code"])
         let paymentPatch = try XCTUnwrap(patch["payment"] as? [String: Any])
         XCTAssertEqual(paymentPatch["state"] as? String, "provided")
@@ -1083,28 +1083,28 @@ final class HRPBTests: XCTestCase {
         XCTAssertEqual(paymentPatch["account_number"] as? String, "1903667788")
         XCTAssertEqual(paymentPatch["account_holder_name"] as? String, "NGUYEN VAN AN")
 
-        // When user modifies employee_code to an invalid format -> validation catches `ma_nld`
+        // When user modifies employee_code to an invalid format -> validation catches `employee_code`
         var badCodeForm = form
         badCodeForm.maNld = "hrp-2026-999999"
-        let badCodeErrors = DirectEntryService.validateDirectEditFormFields(baseline: baseline, form: badCodeForm)
-        XCTAssertNotNil(badCodeErrors["ma_nld"])
+        let badCodeErrors = DirectEntryService.validateDirectEditFormFields(baseline: baseline, input: badCodeForm)
+        XCTAssertNotNil(badCodeErrors["employee_code"])
 
         // Valid new employee_code `hrp-1026-001456` passes validation and is included in patch
         var validCodeForm = form
         validCodeForm.maNld = "hrp-1026-001456"
-        XCTAssertTrue(DirectEntryService.validateDirectEditFormFields(baseline: baseline, form: validCodeForm).isEmpty)
-        let validCodePatch = DirectEntryService.buildDirectEditPatch(baseline: baseline, form: validCodeForm)
+        XCTAssertTrue(DirectEntryService.validateDirectEditFormFields(baseline: baseline, input: validCodeForm).isEmpty)
+        let validCodePatch = DirectEntryService.buildDirectEditPatch(baseline: baseline, input: validCodeForm)
         XCTAssertEqual(validCodePatch["employee_code"] as? String, "hrp-1026-001456")
 
         // VietQR Bank Catalog search & initial resolution
         XCTAssertGreaterThanOrEqual(VietQrBankCatalog.banks.count, 55)
-        let resolvedKnown = VietQrBankCatalog.resolveForInitialValue("Techcombank")
-        XCTAssertFalse(resolvedKnown.isCustom)
-        XCTAssertEqual(resolvedKnown.selectedShortName, "Techcombank")
+        let resolvedKnown = VietQrBankCatalog.resolveForInitialValue(bankId: nil, bankName: "Techcombank")
+        XCTAssertEqual(resolvedKnown.bankId, "TCB")
+        XCTAssertEqual(resolvedKnown.bankName, "Techcombank")
 
-        let resolvedCustom = VietQrBankCatalog.resolveForInitialValue("Ngân hàng Nông Thôn X")
-        XCTAssertTrue(resolvedCustom.isCustom)
-        XCTAssertEqual(resolvedCustom.customBankName, "Ngân hàng Nông Thôn X")
+        let resolvedCustom = VietQrBankCatalog.resolveForInitialValue(bankId: nil, bankName: "Ngân hàng Nông Thôn X")
+        XCTAssertNil(resolvedCustom.bankId)
+        XCTAssertEqual(resolvedCustom.bankName, "Ngân hàng Nông Thôn X")
     }
 
     // MARK: - 9. Salary Advance ("Ứng lương" for QLDA) Contract Tests

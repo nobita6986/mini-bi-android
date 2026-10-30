@@ -1011,6 +1011,8 @@ public struct WorkerItem: Identifiable, Equatable, Sendable {
     public let gioiTinh: String
     public let queQuan: String
     public let ngayCap: String
+    public let noiCapCccd: String
+    public var ngayCapCccd: String { ngayCap }
     public let nganhNghe: String
     public let nhom: String
     public let soTaiKhoan: String
@@ -1070,6 +1072,7 @@ public struct WorkerItem: Identifiable, Equatable, Sendable {
         gioiTinh: String = "",
         queQuan: String = "",
         ngayCap: String = "",
+        noiCapCccd: String = "",
         nganhNghe: String = "",
         nhom: String = "",
         soTaiKhoan: String = "",
@@ -1108,6 +1111,7 @@ public struct WorkerItem: Identifiable, Equatable, Sendable {
         self.gioiTinh = gioiTinh
         self.queQuan = queQuan
         self.ngayCap = ngayCap
+        self.noiCapCccd = noiCapCccd
         self.nganhNghe = nganhNghe
         self.nhom = nhom
         self.soTaiKhoan = soTaiKhoan
@@ -1137,34 +1141,44 @@ public struct WorkerItem: Identifiable, Equatable, Sendable {
 public struct WorkerDocumentSummary: Identifiable, Equatable, Sendable {
     public var id: String { documentType }
     public let documentType: String
+    public var docType: String { documentType }
     public let uploadStatus: String
     public let fileVersion: Int
     public let downloadPath: String?
     public let previewPath: String?
+    public let hasFile: Bool
 
     public init(
         documentType: String,
         uploadStatus: String = "READY",
         fileVersion: Int = 1,
         downloadPath: String? = nil,
-        previewPath: String? = nil
+        previewPath: String? = nil,
+        hasFile: Bool = true
     ) {
         self.documentType = documentType
         self.uploadStatus = uploadStatus
         self.fileVersion = fileVersion
         self.downloadPath = downloadPath
         self.previewPath = previewPath
+        self.hasFile = hasFile
     }
 }
 
 public struct WorkerEntryDetail: Equatable, Sendable {
     public let entryId: String
+    public var entryIdUuid: String { entryId }
     public let submissionId: String
-    public let version: Int
+    public var version: Int
+    public var entryVersion: Int {
+        get { version }
+        set { version = newValue }
+    }
     public let projectId: String
     public let projectDisplay: String
     public let firstWorkDate: String
     public let employeeCode: String
+    public var maNld: String { employeeCode }
     public let recruiterId: String
     public let recruiterDisplay: String
     public let teamId: String?
@@ -1172,8 +1186,11 @@ public struct WorkerEntryDetail: Equatable, Sendable {
     public let laborType: String
     public let laborTypeDisplay: String
     public let displayName: String
+    public var hoTen: String { displayName }
     public let gender: String?
     public let dateOfBirth: String?
+    public var ngaySinh: String { DirectEntryContract.isoDateToUiDate(dateOfBirth ?? "") }
+    public var ngayVaoLam: String { DirectEntryContract.isoDateToUiDate(firstWorkDate) }
     public let nationalId: String?
     public let nationalIdIssuedAt: String?
     public let nationalIdIssuedPlace: String?
@@ -1195,6 +1212,7 @@ public struct WorkerEntryDetail: Equatable, Sendable {
     public let documents: [WorkerDocumentSummary]
     public let workerDetailsStates: [String: String]
     public let fileVersions: [String: Int]
+    public let canDirectEdit: Bool
 
     public init(
         entryId: String,
@@ -1233,7 +1251,8 @@ public struct WorkerEntryDetail: Equatable, Sendable {
         portraitDownloadPath: String? = nil,
         documents: [WorkerDocumentSummary] = [],
         workerDetailsStates: [String: String] = [:],
-        fileVersions: [String: Int] = [:]
+        fileVersions: [String: Int] = [:],
+        canDirectEdit: Bool = true
     ) {
         self.entryId = entryId
         self.submissionId = submissionId
@@ -1272,6 +1291,7 @@ public struct WorkerEntryDetail: Equatable, Sendable {
         self.documents = documents
         self.workerDetailsStates = workerDetailsStates
         self.fileVersions = fileVersions
+        self.canDirectEdit = canDirectEdit
     }
 }
 
@@ -1279,9 +1299,12 @@ public struct DirectEditFormInput: Equatable, Sendable {
     // Work section
     public var employeeCode: String
     public var projectId: String
+    public var projectDisplay: String
     public var firstWorkDateUi: String
     public var recruiterId: String
+    public var recruiterDisplay: String
     public var laborTypeKey: String
+    public var laborTypeDisplay: String
     public var statusCode: String
     public var statusEffectiveDateUi: String
     public var leaveReason: String
@@ -1301,13 +1324,122 @@ public struct DirectEditFormInput: Equatable, Sendable {
     public var accountNumber: String
     public var bankId: String?
     public var bankName: String
+    public var isCustomBank: Bool
+
+    // Vietnamese UI convenience aliases
+    public var maNld: String {
+        get { employeeCode }
+        set { employeeCode = newValue }
+    }
+    public var duAn: String {
+        get { projectDisplay }
+        set { projectDisplay = newValue }
+    }
+    public var nganhNghe: String {
+        get { laborTypeDisplay }
+        set { laborTypeDisplay = newValue }
+    }
+    public var nguoiTuyen: String {
+        get { recruiterDisplay }
+        set { recruiterDisplay = newValue }
+    }
+    public var ngayVaoLam: String {
+        get { firstWorkDateUi }
+        set { firstWorkDateUi = newValue }
+    }
+    public var trangThai: String {
+        get { statusCode.uppercased() == "OFF" ? "Đã nghỉ" : "Đang làm" }
+        set { statusCode = newValue.lowercased().contains("nghỉ") ? "OFF" : "ON" }
+    }
+    public var employmentStatusCode: String {
+        get { statusCode }
+        set { statusCode = newValue }
+    }
+    public var employmentEffectiveDate: String {
+        get { statusEffectiveDateUi }
+        set { statusEffectiveDateUi = newValue }
+    }
+    public var hoTen: String {
+        get { displayName }
+        set { displayName = newValue }
+    }
+    public var gioiTinh: String {
+        get {
+            switch gender.uppercased() {
+            case "MALE", "NAM": return "Nam"
+            case "FEMALE", "NỮ", "NU": return "Nữ"
+            default: return ""
+            }
+        }
+        set {
+            let u = newValue.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+            if u == "NAM" || u == "MALE" { gender = "MALE" }
+            else if u == "NỮ" || u == "NU" || u == "FEMALE" { gender = "FEMALE" }
+            else { gender = "" }
+        }
+    }
+    public var ngaySinh: String {
+        get { dateOfBirthUi }
+        set { dateOfBirthUi = newValue }
+    }
+    public var soCccd: String {
+        get { nationalId }
+        set { nationalId = newValue }
+    }
+    public var ngayCapCccd: String {
+        get { nationalIdIssuedAtUi }
+        set { nationalIdIssuedAtUi = newValue }
+    }
+    public var noiCapCccd: String {
+        get { nationalIdIssuedPlace }
+        set { nationalIdIssuedPlace = newValue }
+    }
+    public var queQuan: String {
+        get { address }
+        set { address = newValue }
+    }
+    public var sdt: String {
+        get { phone }
+        set { phone = newValue }
+    }
+    public var chuTaiKhoan: String {
+        get { accountHolderName }
+        set { accountHolderName = newValue }
+    }
+    public var soTaiKhoan: String {
+        get { accountNumber }
+        set { accountNumber = newValue }
+    }
+    public var nganHang: String {
+        get { bankName }
+        set {
+            bankName = newValue
+            let resolved = VietQrBankCatalog.resolveForInitialValue(bankId: nil, bankName: newValue)
+            bankId = resolved.bankId
+            if !newValue.isEmpty {
+                isCustomBank = (resolved.bankId == nil)
+            }
+        }
+    }
+    public var customBankName: String {
+        get { isCustomBank ? bankName : "" }
+        set {
+            bankName = newValue
+            if isCustomBank {
+                bankId = nil
+            }
+        }
+    }
 
     public init(
         employeeCode: String = "",
         projectId: String = "",
+        projectDisplay: String = "",
         firstWorkDateUi: String = "",
         recruiterId: String = "",
+        recruiterDisplay: String = "",
         laborTypeKey: String = "",
+        laborTypeDisplay: String = "",
         statusCode: String = "ON",
         statusEffectiveDateUi: String = "",
         leaveReason: String = "",
@@ -1322,13 +1454,17 @@ public struct DirectEditFormInput: Equatable, Sendable {
         accountHolderName: String = "",
         accountNumber: String = "",
         bankId: String? = nil,
-        bankName: String = ""
+        bankName: String = "",
+        isCustomBank: Bool = false
     ) {
         self.employeeCode = employeeCode
         self.projectId = projectId
+        self.projectDisplay = projectDisplay
         self.firstWorkDateUi = firstWorkDateUi
         self.recruiterId = recruiterId
+        self.recruiterDisplay = recruiterDisplay
         self.laborTypeKey = laborTypeKey
+        self.laborTypeDisplay = laborTypeDisplay
         self.statusCode = statusCode
         self.statusEffectiveDateUi = statusEffectiveDateUi
         self.leaveReason = leaveReason
@@ -1344,36 +1480,61 @@ public struct DirectEditFormInput: Equatable, Sendable {
         self.accountNumber = accountNumber
         self.bankId = bankId
         self.bankName = bankName
+        self.isCustomBank = isCustomBank
     }
 }
 
 public enum DirectEditFileState: String, Equatable, Sendable {
+    case idle = "IDLE"
     case pending = "PENDING"
     case uploading = "UPLOADING"
     case saved = "SAVED"
     case error = "ERROR"
+
+    public static var success: DirectEditFileState { .saved }
 }
 
 public struct DirectEditFileStatus: Identifiable, Equatable, Sendable {
     public var id: String { documentType }
     public let documentType: String
+    public var fileName: String
     public var state: DirectEditFileState
+    public var status: DirectEditFileState {
+        get { state }
+        set { state = newValue }
+    }
     public var message: String
     public var attachment: LocalAttachmentItem?
     public var documentVersion: Int?
 
     public init(
         documentType: String,
+        fileName: String = "",
         state: DirectEditFileState,
         message: String,
         attachment: LocalAttachmentItem? = nil,
         documentVersion: Int? = nil
     ) {
         self.documentType = documentType
+        self.fileName = fileName
         self.state = state
         self.message = message
         self.attachment = attachment
         self.documentVersion = documentVersion
+    }
+
+    public init(
+        docType: String,
+        fileName: String = "",
+        status: DirectEditFileState,
+        message: String
+    ) {
+        self.documentType = docType
+        self.fileName = fileName
+        self.state = status
+        self.message = message
+        self.attachment = nil
+        self.documentVersion = nil
     }
 }
 
@@ -1397,6 +1558,7 @@ public struct VietQrBankOption: Identifiable, Equatable, Sendable {
 }
 
 public enum VietQrBankCatalog {
+    public static var banks: [VietQrBankOption] { allBanks }
     public static let allBanks: [VietQrBankOption] = [
         VietQrBankOption(code: "ICB", shortName: "VietinBank", fullName: "Ngân hàng TMCP Công thương Việt Nam", bin: "970415"),
         VietQrBankOption(code: "VCB", shortName: "Vietcombank", fullName: "Ngân hàng TMCP Ngoại Thương Việt Nam", bin: "970436"),
