@@ -95,11 +95,11 @@ public final class MiniBiViewModel: ObservableObject {
     @Published public var directEditFileStatuses: [String: DirectEditFileState] = [:]
 
     // MARK: - Salary Advance ("Ứng lương" for QLDA) State
-    @Published public var salaryAdvanceContext: SalaryAdvanceContextResponse?
+    @Published public var salaryAdvanceContext: SalaryAdvanceActorContext?
     @Published public var salaryAdvanceSheetOpen: Bool = false
     @Published public var salaryAdvanceSelectedProjectId: String?
     @Published public var salaryAdvanceWorkerSearch: String = ""
-    @Published public var salaryAdvanceWorkers: [SalaryAdvanceWorkerItem] = []
+    @Published public var salaryAdvanceWorkers: [SalaryAdvanceWorkerOption] = []
     @Published public var salaryAdvanceWorkersLoading: Bool = false
     @Published public var salaryAdvanceWorkersLoadingMore: Bool = false
     @Published public var salaryAdvanceWorkersError: String?
@@ -123,7 +123,7 @@ public final class MiniBiViewModel: ObservableObject {
     @Published public var salaryAdvanceHistoryLoadingMore: Bool = false
     @Published public var salaryAdvanceHistoryError: String?
     @Published public var salaryAdvanceHistoryResponse: SalaryAdvanceWorkerHistoryResponse?
-    @Published public var salaryAdvanceHistoryItems: [SalaryAdvanceHistoryItem] = []
+    @Published public var salaryAdvanceHistoryItems: [SalaryAdvanceWorkerHistoryItem] = []
     @Published public var salaryAdvanceHistoryNextCursor: String?
     @Published public var salaryAdvanceHistoryHasMore: Bool = false
     private var salaryAdvanceSearchTask: Task<Void, Never>?
@@ -1157,7 +1157,7 @@ public final class MiniBiViewModel: ObservableObject {
         SalaryAdvanceContract.canShowPmSalaryAdvanceEntry(salaryAdvanceContext)
     }
 
-    public var selectedSalaryAdvanceWorker: SalaryAdvanceWorkerItem? {
+    public var selectedSalaryAdvanceWorker: SalaryAdvanceWorkerOption? {
         guard let selectedId = salaryAdvanceSelectedWorkerId else { return nil }
         return salaryAdvanceWorkers.first(where: { $0.workerEntryId == selectedId })
     }
@@ -1166,20 +1166,24 @@ public final class MiniBiViewModel: ObservableObject {
         let res = await salaryAdvanceService.fetchContext()
         switch res {
         case .success(let ctx, _):
-            let activeProjects = ctx.managedProjects.filter { $0.isActive }
-            salaryAdvanceContext = SalaryAdvanceContextResponse(
-                actor: ctx.actor,
-                managedProjects: activeProjects,
-                defaults: ctx.defaults
+            let activeProjects = ctx.activeManagedProjects
+            salaryAdvanceContext = SalaryAdvanceActorContext(
+                appUserId: ctx.appUserId,
+                displayName: ctx.displayName,
+                authorizationDate: ctx.authorizationDate,
+                isFullAdmin: ctx.isFullAdmin,
+                isBod: ctx.isBod,
+                isProjectManager: ctx.isProjectManager,
+                isProjectAccountant: ctx.isProjectAccountant,
+                isSupervisoryViewer: ctx.isSupervisoryViewer,
+                managedProjects: activeProjects
             )
             let currentProjectId = salaryAdvanceSelectedProjectId
             let resolvedProjectId: String?
-            if let currentProjectId, activeProjects.contains(where: { $0.id == currentProjectId }) {
+            if let currentProjectId, activeProjects.contains(where: { $0.projectId == currentProjectId }) {
                 resolvedProjectId = currentProjectId
-            } else if let defId = ctx.defaults.projectId, activeProjects.contains(where: { $0.id == defId }) {
-                resolvedProjectId = defId
             } else {
-                resolvedProjectId = activeProjects.first?.id
+                resolvedProjectId = activeProjects.first?.projectId
             }
             salaryAdvanceSelectedProjectId = resolvedProjectId
         case .failure:
@@ -1195,14 +1199,12 @@ public final class MiniBiViewModel: ObservableObject {
             showBanner("Tài khoản hiện tại không có dự án QLDA để tạo đề nghị ứng lương.", isError: true)
             return
         }
-        let projects = salaryAdvanceContext?.managedProjects ?? []
+        let projects = salaryAdvanceContext?.activeManagedProjects ?? []
         let resolvedProjectId: String?
-        if let cur = salaryAdvanceSelectedProjectId, projects.contains(where: { $0.id == cur }) {
+        if let cur = salaryAdvanceSelectedProjectId, projects.contains(where: { $0.projectId == cur }) {
             resolvedProjectId = cur
-        } else if let def = salaryAdvanceContext?.defaults.projectId, projects.contains(where: { $0.id == def }) {
-            resolvedProjectId = def
         } else {
-            resolvedProjectId = projects.first?.id
+            resolvedProjectId = projects.first?.projectId
         }
 
         salaryAdvanceSheetOpen = true
@@ -1306,7 +1308,7 @@ public final class MiniBiViewModel: ObservableObject {
             projectId: projectId,
             search: search,
             cursor: cursor,
-            limit: 20
+            pageSize: 30
         )
 
         if append {
@@ -1319,7 +1321,7 @@ public final class MiniBiViewModel: ObservableObject {
 
         switch res {
         case .success(let page, _):
-            let combined = append ? (salaryAdvanceWorkers + page.items) : page.items
+            let combined = append ? (salaryAdvanceWorkers + page.workers) : page.workers
             let filtered = SalaryAdvanceContract.filterSelectableProjectWorkers(combined)
             let resolvedSelectedId: String?
             if let cur = salaryAdvanceSelectedWorkerId, filtered.contains(where: { $0.workerEntryId == cur }) {
@@ -1346,7 +1348,7 @@ public final class MiniBiViewModel: ObservableObject {
         let nextMethod: String
         if currentMethod == SalaryAdvanceContract.paymentMethodBankTransfer,
            let matched,
-           !matched.eligibility.canRequestBankTransfer {
+           !matched.bankTransferEligible {
             nextMethod = SalaryAdvanceContract.paymentMethodCash
         } else {
             nextMethod = currentMethod
@@ -1394,18 +1396,20 @@ public final class MiniBiViewModel: ObservableObject {
             salaryAdvanceCreateError = "Vui lòng chọn người lao động."
             return
         }
-        guard worker.eligibility.isEligibleForAdvance else {
-            salaryAdvanceCreateError = SalaryAdvanceContract.describeWorkerEligibility(worker.eligibility)
+        let eligibilityDesc = SalaryAdvanceContract.describeWorkerEligibility(worker)
+        guard eligibilityDesc.isEligible else {
+            salaryAdvanceCreateError = eligibilityDesc.blockingMessage
                 ?? "Người lao động chưa đủ điều kiện ứng lương."
             return
         }
+        let bankDesc = SalaryAdvanceContract.describeWorkerBankTransferEligibility(worker)
         if salaryAdvancePaymentMethod == SalaryAdvanceContract.paymentMethodBankTransfer &&
-            !worker.eligibility.canRequestBankTransfer {
-            salaryAdvanceCreateError = SalaryAdvanceContract.describeWorkerBankTransferEligibility(worker)
+            !bankDesc.canUseBankTransfer {
+            salaryAdvanceCreateError = bankDesc.blockingMessage
                 ?? "Người lao động chưa đủ điều kiện nhận chuyển khoản."
             return
         }
-        guard let amountVnd = SalaryAdvanceContract.parsePositiveVndAmount(salaryAdvanceAmountRaw) else {
+        guard let normalizedAmount = SalaryAdvanceContract.normalizePositiveVndInput(salaryAdvanceAmountRaw) else {
             salaryAdvanceCreateError = "Số tiền đề nghị phải là số nguyên dương (VNĐ)."
             return
         }
@@ -1415,7 +1419,7 @@ public final class MiniBiViewModel: ObservableObject {
             return
         }
 
-        let signature = "\(projectId)|\(worker.workerEntryId)|\(amountVnd)|\(salaryAdvancePaymentMethod)|\(trimmedContent)"
+        let signature = "\(projectId)|\(worker.workerEntryId)|\(normalizedAmount)|\(salaryAdvancePaymentMethod)|\(trimmedContent)"
         let idempotencyKey: String
         if salaryAdvancePendingSignature == signature,
            let existingKey = salaryAdvancePendingIdempotencyKey, !existingKey.isEmpty {
@@ -1432,7 +1436,7 @@ public final class MiniBiViewModel: ObservableObject {
         let res = await salaryAdvanceService.createRequest(
             projectId: projectId,
             workerEntryId: worker.workerEntryId,
-            requestedAmountVnd: amountVnd,
+            requestedAmountRaw: normalizedAmount,
             paymentMethod: salaryAdvancePaymentMethod,
             initialContent: trimmedContent,
             idempotencyKey: idempotencyKey
@@ -1441,9 +1445,9 @@ public final class MiniBiViewModel: ObservableObject {
         salaryAdvanceCreateSubmitting = false
 
         switch res {
-        case .success(let outcome, _):
+        case .success(let reqId, _):
             closeSalaryAdvanceSheet()
-            let codeSuffix = outcome.requestCode.isEmpty ? "" : " (\(outcome.requestCode))"
+            let codeSuffix = (reqId.isEmpty || reqId == "created") ? "" : " (\(reqId))"
             showBanner("Đã gửi đề nghị ứng lương thành công\(codeSuffix).")
         case .failure(let message, _, _, _):
             salaryAdvanceCreateError = message
@@ -1461,7 +1465,8 @@ public final class MiniBiViewModel: ObservableObject {
     }
 
     public func openSalaryAdvanceWorkerHistory() async {
-        guard let worker = selectedSalaryAdvanceWorker else { return }
+        guard let worker = selectedSalaryAdvanceWorker,
+              let projectId = salaryAdvanceSelectedProjectId, !projectId.isEmpty else { return }
         let defaultMonth = salaryAdvanceHistoryMonth.isEmpty ? Self.currentVnYearMonth() : salaryAdvanceHistoryMonth
         salaryAdvanceHistoryOpen = true
         salaryAdvanceHistoryPeriodMode = SalaryAdvanceContract.periodModeLast30Days
@@ -1475,8 +1480,8 @@ public final class MiniBiViewModel: ObservableObject {
         salaryAdvanceHistoryHasMore = false
 
         await fetchSalaryAdvanceWorkerHistoryInternal(
+            projectId: projectId,
             workerEntryId: worker.workerEntryId,
-            projectId: salaryAdvanceSelectedProjectId,
             periodMode: SalaryAdvanceContract.periodModeLast30Days,
             month: defaultMonth,
             fromDate: salaryAdvanceHistoryFromDate,
@@ -1494,7 +1499,8 @@ public final class MiniBiViewModel: ObservableObject {
     }
 
     public func selectSalaryAdvanceHistoryPeriodMode(_ periodMode: String, month: String? = nil) async {
-        guard let worker = selectedSalaryAdvanceWorker else { return }
+        guard let worker = selectedSalaryAdvanceWorker,
+              let projectId = salaryAdvanceSelectedProjectId, !projectId.isEmpty else { return }
         let normalizedMode = periodMode.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
         let nextMonth = (month ?? salaryAdvanceHistoryMonth).trimmingCharacters(in: .whitespacesAndNewlines)
         let resolvedMonth = nextMonth.isEmpty ? Self.currentVnYearMonth() : nextMonth
@@ -1509,8 +1515,8 @@ public final class MiniBiViewModel: ObservableObject {
         }
 
         await fetchSalaryAdvanceWorkerHistoryInternal(
+            projectId: projectId,
             workerEntryId: worker.workerEntryId,
-            projectId: salaryAdvanceSelectedProjectId,
             periodMode: normalizedMode,
             month: resolvedMonth,
             fromDate: salaryAdvanceHistoryFromDate,
@@ -1521,11 +1527,12 @@ public final class MiniBiViewModel: ObservableObject {
     }
 
     public func applySalaryAdvanceHistoryCustomRange(fromDate: String, toDate: String) async {
-        guard let worker = selectedSalaryAdvanceWorker else { return }
+        guard let worker = selectedSalaryAdvanceWorker,
+              let projectId = salaryAdvanceSelectedProjectId, !projectId.isEmpty else { return }
         let f = fromDate.trimmingCharacters(in: .whitespacesAndNewlines)
         let t = toDate.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !f.isEmpty && !t.isEmpty else {
-            salaryAdvanceHistoryError = "Vui lòng nhập đầy đủ từ ngày và đến ngày (YYYY-MM-DD)."
+            salaryAdvanceHistoryError = "Vui lòng nhập đầy đủ từ ngày và đến ngày (DD/MM/YYYY hoặc YYYY-MM-DD)."
             return
         }
         salaryAdvanceHistoryPeriodMode = SalaryAdvanceContract.periodModeCustomRange
@@ -1534,8 +1541,8 @@ public final class MiniBiViewModel: ObservableObject {
         salaryAdvanceHistoryError = nil
 
         await fetchSalaryAdvanceWorkerHistoryInternal(
+            projectId: projectId,
             workerEntryId: worker.workerEntryId,
-            projectId: salaryAdvanceSelectedProjectId,
             periodMode: SalaryAdvanceContract.periodModeCustomRange,
             month: salaryAdvanceHistoryMonth,
             fromDate: f,
@@ -1550,12 +1557,13 @@ public final class MiniBiViewModel: ObservableObject {
               !salaryAdvanceHistoryLoadingMore,
               salaryAdvanceHistoryHasMore,
               let cursor = salaryAdvanceHistoryNextCursor, !cursor.isEmpty,
-              let worker = selectedSalaryAdvanceWorker else {
+              let worker = selectedSalaryAdvanceWorker,
+              let projectId = salaryAdvanceSelectedProjectId, !projectId.isEmpty else {
             return
         }
         await fetchSalaryAdvanceWorkerHistoryInternal(
+            projectId: projectId,
             workerEntryId: worker.workerEntryId,
-            projectId: salaryAdvanceSelectedProjectId,
             periodMode: salaryAdvanceHistoryPeriodMode,
             month: salaryAdvanceHistoryMonth,
             fromDate: salaryAdvanceHistoryFromDate,
@@ -1566,8 +1574,8 @@ public final class MiniBiViewModel: ObservableObject {
     }
 
     private func fetchSalaryAdvanceWorkerHistoryInternal(
+        projectId: String,
         workerEntryId: String,
-        projectId: String?,
         periodMode: String,
         month: String,
         fromDate: String,
@@ -1583,14 +1591,14 @@ public final class MiniBiViewModel: ObservableObject {
         }
 
         let res = await salaryAdvanceService.fetchWorkerHistoryForPm(
-            workerEntryId: workerEntryId,
             projectId: projectId,
+            workerEntryId: workerEntryId,
             periodMode: periodMode,
             month: periodMode == SalaryAdvanceContract.periodModeMonth ? month : nil,
             fromDate: periodMode == SalaryAdvanceContract.periodModeCustomRange ? fromDate : nil,
             toDate: periodMode == SalaryAdvanceContract.periodModeCustomRange ? toDate : nil,
             cursor: cursor,
-            limit: 10
+            pageSize: 20
         )
 
         if append {

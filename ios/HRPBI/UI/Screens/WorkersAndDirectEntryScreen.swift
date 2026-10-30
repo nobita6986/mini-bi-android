@@ -2457,7 +2457,7 @@ struct SalaryAdvanceCreateRequestSheet: View {
 
     var body: some View {
         let theme = viewModel.selectedTheme
-        let projects = viewModel.salaryAdvanceContext?.managedProjects ?? []
+        let projects = viewModel.salaryAdvanceContext?.activeManagedProjects ?? []
         let selectedWorker = viewModel.selectedSalaryAdvanceWorker
 
         NavigationStack {
@@ -2483,12 +2483,12 @@ struct SalaryAdvanceCreateRequestSheet: View {
                             ScrollView(.horizontal, showsIndicators: false) {
                                 HStack(spacing: 8) {
                                     ForEach(projects) { project in
-                                        let isSelected = viewModel.salaryAdvanceSelectedProjectId == project.id
+                                        let isSelected = viewModel.salaryAdvanceSelectedProjectId == project.projectId
                                         Button {
                                             KeyboardDismissal.dismiss()
-                                            Task { await viewModel.selectSalaryAdvanceProject(project.id) }
+                                            Task { await viewModel.selectSalaryAdvanceProject(project.projectId) }
                                         } label: {
-                                            Text(project.name)
+                                            Text(project.displayName)
                                                 .font(.caption.weight(isSelected ? .bold : .medium))
                                                 .padding(.horizontal, 12)
                                                 .padding(.vertical, 8)
@@ -2551,30 +2551,32 @@ struct SalaryAdvanceCreateRequestSheet: View {
                                 VStack(spacing: 8) {
                                     ForEach(viewModel.salaryAdvanceWorkers) { item in
                                         let isSelected = viewModel.salaryAdvanceSelectedWorkerId == item.workerEntryId
-                                        let eligibilityReason = SalaryAdvanceContract.describeWorkerEligibility(item.eligibility)
+                                        let eligibilityDesc = SalaryAdvanceContract.describeWorkerEligibility(item)
+                                        let recLabel = SalaryAdvanceContract.formatWorkerRecruiterLabel(item)
+                                        let workDateLabel = SalaryAdvanceContract.formatWorkDateVi(item.firstWorkDate)
                                         Button {
                                             KeyboardDismissal.dismiss()
                                             viewModel.selectSalaryAdvanceWorker(item.workerEntryId)
                                         } label: {
                                             VStack(alignment: .leading, spacing: 4) {
                                                 HStack {
-                                                    Text(item.workerCode.isEmpty ? item.workerName : "\(item.workerName) (\(item.workerCode))")
+                                                    Text(item.employeeCode.isEmpty ? item.displayName : "\(item.displayName) (\(item.employeeCode))")
                                                         .font(.caption.weight(.bold))
                                                         .foregroundColor(SemanticColors.textPrimary)
                                                     Spacer()
-                                                    Text(item.eligibility.isEligibleForAdvance ? "Đủ điều kiện" : "Chưa đủ ĐK")
+                                                    Text(eligibilityDesc.isEligible ? "Đủ điều kiện" : "Chưa đủ ĐK")
                                                         .font(.caption2.weight(.bold))
                                                         .padding(.horizontal, 8)
                                                         .padding(.vertical, 3)
-                                                        .background(item.eligibility.isEligibleForAdvance ? SemanticColors.successBg : SemanticColors.warningBg)
-                                                        .foregroundColor(item.eligibility.isEligibleForAdvance ? SemanticColors.successText : SemanticColors.warningText)
+                                                        .background(eligibilityDesc.isEligible ? SemanticColors.successBg : SemanticColors.warningBg)
+                                                        .foregroundColor(eligibilityDesc.isEligible ? SemanticColors.successText : SemanticColors.warningText)
                                                         .clipShape(Capsule())
                                                 }
-                                                Text("Người tuyển: \(item.recruiterDisplay.isEmpty ? "—" : item.recruiterDisplay) · Ngày vào: \(item.firstWorkDate ?? "—")")
+                                                Text("Người tuyển: \(recLabel) · Ngày vào: \(workDateLabel)")
                                                     .font(.caption2)
                                                     .foregroundColor(SemanticColors.textSecondary)
-                                                if let eligibilityReason, !item.eligibility.isEligibleForAdvance {
-                                                    Text(eligibilityReason)
+                                                if !eligibilityDesc.isEligible, let blockingMsg = eligibilityDesc.blockingMessage {
+                                                    Text(blockingMsg)
                                                         .font(.caption2.weight(.semibold))
                                                         .foregroundColor(SemanticColors.dangerText)
                                                 }
@@ -2620,6 +2622,11 @@ struct SalaryAdvanceCreateRequestSheet: View {
 
                         // Step 3: Thông tin NLĐ & Tóm tắt ứng 30 ngày gần nhất + Nút xem lịch sử
                         if let worker = selectedWorker {
+                            let eligibilityDesc = SalaryAdvanceContract.describeWorkerEligibility(worker)
+                            let bankDesc = SalaryAdvanceContract.describeWorkerBankTransferEligibility(worker)
+                            let sumCount = worker.advance30dSummary?.totalCount ?? 0
+                            let sumAmountRaw = worker.advance30dSummary?.totalAmountVnd ?? "0"
+
                             VStack(alignment: .leading, spacing: 8) {
                                 HStack {
                                     Text("Thông tin & Lịch sử ứng lương")
@@ -2644,12 +2651,12 @@ struct SalaryAdvanceCreateRequestSheet: View {
                                     .buttonStyle(.plain)
                                 }
 
-                                Text("Họ tên: \(worker.workerName) (\(worker.workerCode))")
+                                Text("Họ tên: \(worker.displayName) (\(worker.employeeCode))")
                                     .font(.caption.weight(.semibold))
-                                Text("Ngày đầu tiên làm việc: \(worker.firstWorkDate ?? "—")")
+                                Text("Ngày đầu tiên làm việc: \(SalaryAdvanceContract.formatWorkDateVi(worker.firstWorkDate))")
                                     .font(.caption)
                                     .foregroundColor(SemanticColors.textSecondary)
-                                Text("Người tuyển: \(worker.recruiterDisplay.isEmpty ? "—" : worker.recruiterDisplay)")
+                                Text("Người tuyển: \(SalaryAdvanceContract.formatWorkerRecruiterLabel(worker))")
                                     .font(.caption)
                                     .foregroundColor(SemanticColors.textSecondary)
 
@@ -2658,7 +2665,7 @@ struct SalaryAdvanceCreateRequestSheet: View {
                                         Text("Số lần ứng (30 ngày)")
                                             .font(.caption2)
                                             .foregroundColor(SemanticColors.textMuted)
-                                        Text("\(worker.recent30dSummary.count) lần")
+                                        Text("\(sumCount) lần")
                                             .font(.subheadline.weight(.bold))
                                             .foregroundColor(SemanticColors.textPrimary)
                                     }
@@ -2667,7 +2674,7 @@ struct SalaryAdvanceCreateRequestSheet: View {
                                         Text("Tổng tiền (30 ngày)")
                                             .font(.caption2)
                                             .foregroundColor(SemanticColors.textMuted)
-                                        Text("\(SalaryAdvanceContract.formatVnd(worker.recent30dSummary.totalAmountVnd)) đ")
+                                        Text(SalaryAdvanceContract.formatVndAmount(sumAmountRaw))
                                             .font(.subheadline.weight(.bold))
                                             .foregroundColor(theme.primary)
                                     }
@@ -2676,8 +2683,7 @@ struct SalaryAdvanceCreateRequestSheet: View {
                                 .background(Color(hex: 0xF8FAFC))
                                 .cornerRadius(8)
 
-                                if !worker.eligibility.isEligibleForAdvance,
-                                   let reason = SalaryAdvanceContract.describeWorkerEligibility(worker.eligibility) {
+                                if !eligibilityDesc.isEligible, let reason = eligibilityDesc.blockingMessage {
                                     Text(reason)
                                         .font(.caption.weight(.bold))
                                         .foregroundColor(SemanticColors.dangerText)
@@ -2732,11 +2738,11 @@ struct SalaryAdvanceCreateRequestSheet: View {
                                 }
 
                                 if viewModel.salaryAdvancePaymentMethod == SalaryAdvanceContract.paymentMethodBankTransfer {
-                                    if worker.eligibility.canRequestBankTransfer {
-                                        Text("Tài khoản thụ hưởng: \(worker.bankName ?? "—") · \(worker.bankAccountNumber ?? "—") · \(worker.bankAccountHolderName ?? "—")")
+                                    if bankDesc.canUseBankTransfer {
+                                        Text("Tài khoản thụ hưởng: \(bankDesc.institutionName ?? "—") · \(bankDesc.accountNumberDisplay ?? "—") · \(bankDesc.accountHolderName ?? "—")")
                                             .font(.caption)
                                             .foregroundColor(SemanticColors.successText)
-                                    } else if let bankReason = SalaryAdvanceContract.describeWorkerBankTransferEligibility(worker) {
+                                    } else if let bankReason = bankDesc.blockingMessage {
                                         Text(bankReason)
                                             .font(.caption.weight(.semibold))
                                             .foregroundColor(SemanticColors.dangerText)
@@ -2760,8 +2766,8 @@ struct SalaryAdvanceCreateRequestSheet: View {
                                     .padding(10)
                                     .background(Color(hex: 0xF8FAFC))
                                     .cornerRadius(8)
-                                    if let parsed = SalaryAdvanceContract.parsePositiveVndAmount(viewModel.salaryAdvanceAmountRaw) {
-                                        Text(" Hiển thị: \(SalaryAdvanceContract.formatVnd(parsed)) VNĐ")
+                                    if let parsed = SalaryAdvanceContract.normalizePositiveVndInput(viewModel.salaryAdvanceAmountRaw) {
+                                        Text(" Hiển thị: \(SalaryAdvanceContract.formatVndAmount(parsed))")
                                             .font(.caption2.weight(.semibold))
                                             .foregroundColor(theme.primary)
                                     }
@@ -2797,14 +2803,14 @@ struct SalaryAdvanceCreateRequestSheet: View {
 
                 let canSubmit: Bool = {
                     guard let worker = selectedWorker,
-                          worker.eligibility.isEligibleForAdvance,
+                          SalaryAdvanceContract.describeWorkerEligibility(worker).isEligible,
                           !viewModel.salaryAdvanceCreateSubmitting,
-                          SalaryAdvanceContract.parsePositiveVndAmount(viewModel.salaryAdvanceAmountRaw) != nil,
+                          SalaryAdvanceContract.normalizePositiveVndInput(viewModel.salaryAdvanceAmountRaw) != nil,
                           !viewModel.salaryAdvanceInitialContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                         return false
                     }
                     if viewModel.salaryAdvancePaymentMethod == SalaryAdvanceContract.paymentMethodBankTransfer &&
-                        !worker.eligibility.canRequestBankTransfer {
+                        !SalaryAdvanceContract.describeWorkerBankTransferEligibility(worker).canUseBankTransfer {
                         return false
                     }
                     return true
@@ -2883,7 +2889,7 @@ struct SalaryAdvanceWorkerHistorySheet: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 12) {
                         if let worker {
-                            Text("NLĐ: \(worker.workerName) (\(worker.workerCode))")
+                            Text("NLĐ: \(worker.displayName) (\(worker.employeeCode))")
                                 .font(.subheadline.weight(.bold))
                                 .foregroundColor(SemanticColors.textPrimary)
                         }
@@ -2937,12 +2943,12 @@ struct SalaryAdvanceWorkerHistorySheet: View {
 
                         if viewModel.salaryAdvanceHistoryPeriodMode == SalaryAdvanceContract.periodModeCustomRange {
                             HStack(spacing: 8) {
-                                TextField("Từ YYYY-MM-DD", text: $viewModel.salaryAdvanceHistoryFromDate)
+                                TextField("Từ DD/MM/YYYY", text: $viewModel.salaryAdvanceHistoryFromDate)
                                     .font(.caption)
                                     .padding(9)
                                     .background(Color.white)
                                     .cornerRadius(8)
-                                TextField("Đến YYYY-MM-DD", text: $viewModel.salaryAdvanceHistoryToDate)
+                                TextField("Đến DD/MM/YYYY", text: $viewModel.salaryAdvanceHistoryToDate)
                                     .font(.caption)
                                     .padding(9)
                                     .background(Color.white)
@@ -2971,12 +2977,12 @@ struct SalaryAdvanceWorkerHistorySheet: View {
                                 .foregroundColor(SemanticColors.dangerText)
                         }
 
-                        if let summary = viewModel.salaryAdvanceHistoryResponse?.periodSummary {
+                        if let summary = viewModel.salaryAdvanceHistoryResponse {
                             HStack {
                                 Text("Tổng số lần: \(summary.totalCount) lần")
                                     .font(.caption.weight(.bold))
                                 Spacer()
-                                Text("Tổng tiền: \(SalaryAdvanceContract.formatVnd(summary.totalAmountVnd)) đ")
+                                Text("Tổng tiền: \(SalaryAdvanceContract.formatVndAmount(summary.totalAmountVnd))")
                                     .font(.caption.weight(.bold))
                                     .foregroundColor(theme.primary)
                             }
@@ -3001,20 +3007,20 @@ struct SalaryAdvanceWorkerHistorySheet: View {
                             ForEach(viewModel.salaryAdvanceHistoryItems) { item in
                                 VStack(alignment: .leading, spacing: 4) {
                                     HStack {
-                                        Text(item.requestCode.isEmpty ? "Đề nghị ứng" : item.requestCode)
+                                        Text(item.requestId.isEmpty ? "Đề nghị ứng" : item.requestId)
                                             .font(.caption.weight(.bold))
                                         Spacer()
-                                        Text(SalaryAdvanceContract.formatRequestStatusVi(item.status))
+                                        Text("\(SalaryAdvanceContract.requestStateShortLabel(item.requestState)) · \(SalaryAdvanceContract.evidenceReviewStateShortLabel(item.evidenceReviewState))")
                                             .font(.caption2.weight(.bold))
                                             .foregroundColor(theme.primary)
                                     }
-                                    Text("Số tiền: \(SalaryAdvanceContract.formatVnd(item.requestedAmountVnd)) đ · \(SalaryAdvanceContract.formatPaymentMethodVi(item.paymentMethod))")
+                                    Text("Số tiền: \(SalaryAdvanceContract.formatVndAmount(item.requestedAmountVnd)) · \(SalaryAdvanceContract.paymentMethodLabel(item.paymentMethod))")
                                         .font(.caption.weight(.semibold))
-                                    Text("Dự án: \(item.projectName) · Ngày gửi: \(WorkReportsContract.formatIsoDateTimeVi(item.submittedAt))")
+                                    Text("Dự án: \(item.projectDisplayName) · Ngày gửi: \(WorkReportsContract.formatIsoDateTimeVi(item.createdAt))")
                                         .font(.caption2)
                                         .foregroundColor(SemanticColors.textSecondary)
-                                    if !item.initialContent.isEmpty {
-                                        Text("Nội dung: \(item.initialContent)")
+                                    if let content = item.initialContent, !content.isEmpty {
+                                        Text("Nội dung: \(content)")
                                             .font(.caption2)
                                             .foregroundColor(SemanticColors.textMuted)
                                     }

@@ -298,14 +298,22 @@ public struct SalaryAdvanceBankStatusDescription: Equatable, Sendable {
 // MARK: - Salary Advance Contract (`SalaryAdvanceContract`)
 
 public enum SalaryAdvanceContract {
-    public static let paymentMethods: [String] = ["CASH", "BANK_TRANSFER"]
+    public static let paymentMethodCash = "CASH"
+    public static let paymentMethodBankTransfer = "BANK_TRANSFER"
+    public static let paymentMethods: [String] = [paymentMethodCash, paymentMethodBankTransfer]
+
+    public static let periodModeCurrentMonth = "THIS_MONTH"
+    public static let periodModeLast30Days = "LAST_30_DAYS"
+    public static let periodModeMonth = "MONTH"
+    public static let periodModeAll = "ALL"
+    public static let periodModeCustomRange = "CUSTOM_RANGE"
 
     public static let historyPeriodModes: [(key: String, label: String)] = [
-        ("THIS_MONTH", "Tháng này"),
-        ("LAST_30_DAYS", "30 ngày gần nhất"),
-        ("MONTH", "Chọn tháng"),
-        ("ALL", "Toàn bộ"),
-        ("CUSTOM_RANGE", "Khoảng ngày")
+        (periodModeCurrentMonth, "Tháng này"),
+        (periodModeLast30Days, "30 ngày gần nhất"),
+        (periodModeMonth, "Chọn tháng"),
+        (periodModeAll, "Toàn bộ"),
+        (periodModeCustomRange, "Khoảng ngày")
     ]
 
     public static func canShowPmSalaryAdvanceEntry(_ context: SalaryAdvanceActorContext?) -> Bool {

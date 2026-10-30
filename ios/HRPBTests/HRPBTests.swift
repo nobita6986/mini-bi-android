@@ -1113,70 +1113,74 @@ final class HRPBTests: XCTestCase {
         // 1. QLDA Entry button visibility
         let pmContext = SalaryAdvanceContract.parseContextResponse([
             "data": [
-                "actor": ["app_user_id": "pm-1", "can_Use_Pm_Salary_Advance": true],
+                "app_user_id": "pm-1",
+                "display_name": "QLDA Bắc Giang",
+                "is_project_manager": true,
                 "managed_projects": [
-                    ["id": "proj-1", "code": "LUX", "name": "Luxshare Bắc Giang", "is_active": true]
-                ],
-                "defaults": ["project_id": "proj-1"]
+                    [
+                        "project_id": "proj-1",
+                        "display_name": "Luxshare Bắc Giang",
+                        "active": true,
+                        "has_active_accountant": true
+                    ]
+                ]
             ]
         ])
         XCTAssertTrue(SalaryAdvanceContract.canShowPmSalaryAdvanceEntry(pmContext))
 
         let nonPmContext = SalaryAdvanceContract.parseContextResponse([
             "data": [
-                "actor": ["app_user_id": "rec-1", "can_use_pm_salary_advance": false],
+                "app_user_id": "rec-1",
+                "is_project_manager": false,
                 "managed_projects": []
             ]
         ])
         XCTAssertFalse(SalaryAdvanceContract.canShowPmSalaryAdvanceEntry(nonPmContext))
 
         // 2. Worker filtering & eligibility reasons
-        let workersPage = SalaryAdvanceContract.parseProjectWorkersResponse([
+        let workersPage = SalaryAdvanceContract.parseProjectWorkersPage([
             "data": [
-                "items": [
+                "project_id": "proj-1",
+                "workers": [
                     [
                         "worker_entry_id": "w-eligible",
-                        "worker_code": "hrp-1026-000001",
-                        "worker_name": "Nguyễn Hợp Lệ",
+                        "employee_code": "hrp-1026-000001",
+                        "display_name": "Nguyễn Hợp Lệ",
                         "employment_status": "ON",
-                        "recruiter_source_type": "HRP",
-                        "recruiter_display": "Phạm Thị Sâm",
+                        "provider_type": "hrp",
+                        "recruiter_display_name": "Phạm Thị Sâm",
                         "first_work_date": "2026-10-01",
-                        "recent_30d_summary": ["count": 1, "total_amount_vnd": 1500000],
-                        "eligibility": [
-                            "is_eligible_for_advance": true,
-                            "ineligible_reasons": [],
-                            "can_request_cash": true,
-                            "can_request_bank_transfer": true
-                        ]
+                        "has_portrait": true,
+                        "is_eligible": true,
+                        "ineligible_reasons": [],
+                        "bank_transfer_eligible": true,
+                        "advance_30d_summary": ["total_count": 1, "total_amount_vnd": "1500000"]
                     ],
                     [
                         "worker_entry_id": "w-ineligible-hrp",
-                        "worker_code": "hrp-1026-000002",
-                        "worker_name": "Trần Trùng CCCD",
+                        "employee_code": "hrp-1026-000002",
+                        "display_name": "Trần Trùng CCCD",
                         "employment_status": "ON",
-                        "recruiter_source_type": "HRP",
-                        "eligibility": [
-                            "is_eligible_for_advance": false,
-                            "ineligible_reasons": ["DUPLICATE_CCCD", "MISSING_WORKER_PORTRAIT"],
-                            "can_request_cash": false,
-                            "can_request_bank_transfer": false,
-                            "bank_transfer_ineligible_reason": "BANK_ACCOUNT_HOLDER_UNVERIFIED"
-                        ]
+                        "provider_type": "hrp",
+                        "has_portrait": false,
+                        "is_eligible": false,
+                        "ineligible_reasons": ["WORKER_DUPLICATE_CCCD", "WORKER_PORTRAIT_MISSING"],
+                        "bank_transfer_eligible": false,
+                        "bank_ineligible_reason": "BANK_ACCOUNT_NOT_SELF_OWNED"
                     ],
                     [
                         "worker_entry_id": "w-off",
-                        "worker_code": "hrp-1026-000003",
-                        "worker_name": "Lê Đã Nghỉ",
+                        "employee_code": "hrp-1026-000003",
+                        "display_name": "Lê Đã Nghỉ",
                         "employment_status": "OFF",
-                        "recruiter_source_type": "HRP"
+                        "provider_type": "hrp"
                     ],
                     [
                         "worker_entry_id": "w-vendor",
-                        "worker_code": "hrp-1026-000004",
-                        "worker_name": "Phạm Vendor Tuyển",
+                        "employee_code": "hrp-1026-000004",
+                        "display_name": "Phạm Vendor Tuyển",
                         "employment_status": "ON",
-                        "recruiter_source_type": "VENDOR"
+                        "provider_type": "vendor"
                     ]
                 ],
                 "next_cursor": "cursor-2",
@@ -1184,52 +1188,56 @@ final class HRPBTests: XCTestCase {
             ]
         ])
 
-        let selectable = SalaryAdvanceContract.filterSelectableProjectWorkers(workersPage.items)
+        let selectable = SalaryAdvanceContract.filterSelectableProjectWorkers(workersPage.workers)
         // OFF and VENDOR workers must be hidden; HRP workers (both eligible and ineligible) are retained
         XCTAssertEqual(selectable.map(\.workerEntryId), ["w-eligible", "w-ineligible-hrp"])
 
-        let ineligibleReasonText = try XCTUnwrap(
-            SalaryAdvanceContract.describeWorkerEligibility(selectable[1].eligibility)
-        )
+        let ineligibleDesc = SalaryAdvanceContract.describeWorkerEligibility(selectable[1])
+        XCTAssertFalse(ineligibleDesc.isEligible)
+        let ineligibleReasonText = try XCTUnwrap(ineligibleDesc.blockingMessage)
         XCTAssertTrue(ineligibleReasonText.contains("trùng CCCD"))
         XCTAssertTrue(ineligibleReasonText.contains("ảnh chân dung"))
 
-        let bankReasonText = try XCTUnwrap(
-            SalaryAdvanceContract.describeWorkerBankTransferEligibility(selectable[1])
-        )
+        let bankDesc = SalaryAdvanceContract.describeWorkerBankTransferEligibility(selectable[1])
+        XCTAssertFalse(bankDesc.canUseBankTransfer)
+        let bankReasonText = try XCTUnwrap(bankDesc.blockingMessage)
         XCTAssertTrue(bankReasonText.contains("chính chủ"))
 
         // 3. Create request payload & History parsing
-        XCTAssertEqual(SalaryAdvanceContract.parsePositiveVndAmount("2.500.000"), 2_500_000)
-        XCTAssertNil(SalaryAdvanceContract.parsePositiveVndAmount("0"))
+        XCTAssertEqual(SalaryAdvanceContract.normalizePositiveVndInput("2.500.000"), "2500000")
+        XCTAssertNil(SalaryAdvanceContract.normalizePositiveVndInput("0"))
 
-        let reqPayload = SalaryAdvanceContract.buildCreateRequestPayload(
+        let reqPayload = try SalaryAdvanceContract.buildCreateRequestPayload(
             projectId: "proj-1",
             workerEntryId: "w-eligible",
-            requestedAmountVnd: 2_000_000,
+            requestedAmountRaw: "2000000",
             paymentMethod: "BANK_TRANSFER",
             initialContent: "  Ứng lương tuần 1  ",
-            idempotencyKey: "idem-sa-1"
+            idempotencyKey: "idem-sa-123456"
         )
         XCTAssertEqual(reqPayload["project_id"] as? String, "proj-1")
         XCTAssertEqual(reqPayload["worker_entry_id"] as? String, "w-eligible")
-        XCTAssertEqual(reqPayload["requested_amount_vnd"] as? Int64, 2_000_000)
+        XCTAssertEqual(reqPayload["requested_amount_vnd"] as? String, "2000000")
         XCTAssertEqual(reqPayload["payment_method"] as? String, "BANK_TRANSFER")
         XCTAssertEqual(reqPayload["initial_content"] as? String, "Ứng lương tuần 1")
-        XCTAssertEqual(reqPayload["idempotency_key"] as? String, "idem-sa-1")
+        XCTAssertEqual(reqPayload["idempotency_key"] as? String, "idem-sa-123456")
 
         let historyResp = SalaryAdvanceContract.parseWorkerHistoryResponse([
             "data": [
-                "period_summary": ["total_count": 2, "total_amount_vnd": 3500000],
+                "worker_entry_id": "w-eligible",
+                "worker_employee_code": "hrp-1026-000001",
+                "worker_display_name": "Nguyễn Hợp Lệ",
+                "period_mode": "LAST_30_DAYS",
+                "total_count": 2,
+                "total_amount_vnd": "3500000",
                 "items": [
                     [
-                        "id": "sa-req-1",
-                        "request_code": "SA-202610-0001",
-                        "submitted_at": "2026-10-30T03:00:00Z",
-                        "requested_amount_vnd": 1500000,
+                        "request_id": "SA-202610-0001",
+                        "created_at": "2026-10-30T03:00:00Z",
+                        "requested_amount_vnd": "1500000",
                         "payment_method": "CASH",
-                        "status": "SUBMITTED",
-                        "project_name": "Luxshare Bắc Giang",
+                        "request_state": "OPEN",
+                        "project_display_name": "Luxshare Bắc Giang",
                         "initial_content": "Ứng tiền ăn ở"
                     ]
                 ],
@@ -1237,9 +1245,9 @@ final class HRPBTests: XCTestCase {
                 "has_more": true
             ]
         ])
-        XCTAssertEqual(historyResp.periodSummary.totalCount, 2)
-        XCTAssertEqual(historyResp.periodSummary.totalAmountVnd, 3_500_000)
-        XCTAssertEqual(historyResp.items.first?.requestCode, "SA-202610-0001")
+        XCTAssertEqual(historyResp.totalCount, 2)
+        XCTAssertEqual(historyResp.totalAmountVnd, "3500000")
+        XCTAssertEqual(historyResp.items.first?.requestId, "SA-202610-0001")
         XCTAssertTrue(historyResp.hasMore)
     }
 
