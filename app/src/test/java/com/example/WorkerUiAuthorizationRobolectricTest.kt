@@ -572,6 +572,7 @@ class WorkerUiAuthorizationRobolectricTest {
 
         // Wait for catalog to load and default "Thời vụ" to populate
         composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
             vm.catalog.value != null
         }
         composeTestRule.waitForIdle()
@@ -2403,6 +2404,7 @@ class WorkerUiAuthorizationRobolectricTest {
         }
 
         composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
             vm.catalog.value != null
         }
         composeTestRule.waitForIdle()
