@@ -20,7 +20,7 @@ on:
       build_number:
         description: "Số thứ tự build tăng dần cho TestFlight (CURRENT_PROJECT_VERSION)"
         required: false
-        default: "38"
+        default: "39"
       scheme:
         description: "Scheme cần đóng gói IPA (HRP-BI hoặc HRP-BI2)"
         required: false
