@@ -1806,283 +1806,10 @@ struct WorkerDirectEditSheet: View {
                                 Spacer()
                             }
                         } else if let detail {
-                            // Section 1: Thông tin cá nhân
-                            VStack(alignment: .leading, spacing: 10) {
-                                Text("Thông tin cá nhân")
-                                    .font(.subheadline.weight(.bold))
-                                    .foregroundColor(theme.primary)
-
-                                directEditTextField("Họ và tên *", text: $form.hoTen, error: viewModel.directEditFieldErrors["display_name"] ?? viewModel.directEditFieldErrors["ho_ten"])
-
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text("Giới tính")
-                                        .font(.caption2.weight(.semibold))
-                                        .foregroundColor(SemanticColors.textSecondary)
-                                    HStack(spacing: 8) {
-                                        ForEach(["Nam", "Nữ", "Khác"], id: \.self) { g in
-                                            let selected = form.gioiTinh.caseInsensitiveCompare(g) == .orderedSame
-                                            Button {
-                                                form.gioiTinh = selected ? "" : g
-                                            } label: {
-                                                Text(g)
-                                                    .font(.caption.weight(selected ? .bold : .medium))
-                                                    .padding(.horizontal, 12)
-                                                    .padding(.vertical, 7)
-                                                    .background(selected ? theme.primary : Color(hex: 0xF1F5F9))
-                                                    .foregroundColor(selected ? .white : SemanticColors.textPrimary)
-                                                    .cornerRadius(8)
-                                            }
-                                            .buttonStyle(.plain)
-                                        }
-                                    }
-                                }
-
-                                directEditTextField(
-                                    "Ngày sinh (DD/MM/YYYY)",
-                                    text: $form.ngaySinh,
-                                    placeholder: "VD: 15/08/1995",
-                                    error: viewModel.directEditFieldErrors["date_of_birth"] ?? viewModel.directEditFieldErrors["ngay_sinh"]
-                                )
-                                directEditTextField(
-                                    "Số CCCD (12 chữ số)",
-                                    text: $form.soCccd,
-                                    keyboard: .numberPad,
-                                    error: viewModel.directEditFieldErrors["national_id_number"] ?? viewModel.directEditFieldErrors["so_cccd"]
-                                )
-                                directEditTextField(
-                                    "Ngày cấp CCCD (DD/MM/YYYY)",
-                                    text: $form.ngayCapCccd,
-                                    placeholder: "VD: 20/10/2021",
-                                    error: viewModel.directEditFieldErrors["national_id_issue_date"] ?? viewModel.directEditFieldErrors["ngay_cap_cccd"]
-                                )
-                                directEditTextField(
-                                    "Nơi cấp CCCD",
-                                    text: $form.noiCapCccd,
-                                    error: viewModel.directEditFieldErrors["noi_cap_cccd"]
-                                )
-                                directEditTextField(
-                                    "Địa chỉ / Quê quán",
-                                    text: $form.queQuan,
-                                    error: viewModel.directEditFieldErrors["que_quan"]
-                                )
-                                directEditTextField(
-                                    "Số điện thoại",
-                                    text: $form.sdt,
-                                    keyboard: .phonePad,
-                                    error: viewModel.directEditFieldErrors["sdt"]
-                                )
-                            }
-                            .padding(14)
-                            .background(Color.white)
-                            .cornerRadius(12)
-
-                            // Section 2: Thông tin công việc
-                            VStack(alignment: .leading, spacing: 10) {
-                                Text("Thông tin công việc")
-                                    .font(.subheadline.weight(.bold))
-                                    .foregroundColor(theme.primary)
-
-                                directEditTextField(
-                                    "Mã NLĐ (hrp-MMYY-XXXXXX) *",
-                                    text: $form.maNld,
-                                    placeholder: "VD: hrp-1026-000123",
-                                    error: viewModel.directEditFieldErrors["employee_code"] ?? viewModel.directEditFieldErrors["ma_nld"]
-                                )
-
-                                directEditPickerButton(
-                                    label: "Dự án",
-                                    value: form.duAn.isEmpty ? "Chọn dự án..." : form.duAn,
-                                    error: viewModel.directEditFieldErrors["du_an"]
-                                ) {
-                                    KeyboardDismissal.dismiss()
-                                    showProjectPicker = true
-                                }
-
-                                directEditPickerButton(
-                                    label: "Loại hình lao động",
-                                    value: form.nganhNghe.isEmpty ? "Chọn loại hình lao động..." : form.nganhNghe,
-                                    error: viewModel.directEditFieldErrors["nganh_nghe"]
-                                ) {
-                                    KeyboardDismissal.dismiss()
-                                    showLaborTypePicker = true
-                                }
-
-                                directEditPickerButton(
-                                    label: "Người tuyển",
-                                    value: form.nguoiTuyen.isEmpty ? "Chọn người tuyển..." : form.nguoiTuyen,
-                                    error: viewModel.directEditFieldErrors["nguoi_tuyen"]
-                                ) {
-                                    KeyboardDismissal.dismiss()
-                                    showRecruiterPicker = true
-                                }
-
-                                directEditTextField(
-                                    "Ngày bắt đầu (DD/MM/YYYY)",
-                                    text: $form.ngayVaoLam,
-                                    placeholder: "VD: 01/10/2026",
-                                    error: viewModel.directEditFieldErrors["started_on"] ?? viewModel.directEditFieldErrors["ngay_vao_lam"]
-                                )
-
-                                VStack(alignment: .leading, spacing: 6) {
-                                    Text("Trạng thái làm việc")
-                                        .font(.caption2.weight(.semibold))
-                                        .foregroundColor(SemanticColors.textSecondary)
-                                    HStack(spacing: 8) {
-                                        ForEach(["Đang làm", "Đã nghỉ"], id: \.self) { st in
-                                            let isSelected = (st == "Đã nghỉ" && form.trangThai.lowercased().contains("nghỉ")) ||
-                                                (st == "Đang làm" && !form.trangThai.lowercased().contains("nghỉ"))
-                                            Button {
-                                                form.trangThai = st
-                                                form.employmentStatusCode = st == "Đã nghỉ" ? "OFF" : "ON"
-                                            } label: {
-                                                Text(st)
-                                                    .font(.caption.weight(isSelected ? .bold : .medium))
-                                                    .padding(.horizontal, 14)
-                                                    .padding(.vertical, 8)
-                                                    .background(isSelected ? theme.primaryLight : Color(hex: 0xF8FAFC))
-                                                    .foregroundColor(isSelected ? theme.primary : SemanticColors.textSecondary)
-                                                    .cornerRadius(8)
-                                            }
-                                            .buttonStyle(.plain)
-                                        }
-                                    }
-                                }
-
-                                if form.trangThai.lowercased().contains("nghỉ") || form.employmentStatusCode.uppercased() == "OFF" {
-                                    directEditTextField(
-                                        "Ngày hiệu lực nghỉ việc (DD/MM/YYYY) *",
-                                        text: $form.employmentEffectiveDate,
-                                        placeholder: "VD: 30/10/2026",
-                                        error: viewModel.directEditFieldErrors["effective_date"] ?? viewModel.directEditFieldErrors["employment_effective_date"]
-                                    )
-                                    directEditTextField(
-                                        "Lý do nghỉ việc *",
-                                        text: $form.offReason,
-                                        placeholder: "Nhập lý do nghỉ việc...",
-                                        error: viewModel.directEditFieldErrors["reason"]
-                                    )
-                                }
-                            }
-                            .padding(14)
-                            .background(Color.white)
-                            .cornerRadius(12)
-
-                            // Section 3: Thông tin ngân hàng
-                            VStack(alignment: .leading, spacing: 10) {
-                                Text("Thông tin ngân hàng")
-                                    .font(.subheadline.weight(.bold))
-                                    .foregroundColor(theme.primary)
-
-                                directEditTextField(
-                                    "Tên chủ tài khoản",
-                                    text: $form.chuTaiKhoan,
-                                    error: viewModel.directEditFieldErrors["payment"] ?? viewModel.directEditFieldErrors["chu_tai_khoan"]
-                                )
-                                directEditTextField(
-                                    "Số tài khoản",
-                                    text: $form.soTaiKhoan,
-                                    error: viewModel.directEditFieldErrors["so_tai_khoan"]
-                                )
-
-                                let bankLabel: String = {
-                                    if form.isCustomBank {
-                                        return "Khác (nhập tên ngân hàng tham chiếu)"
-                                    }
-                                    if !form.nganHang.isEmpty {
-                                        return form.nganHang
-                                    }
-                                    return "Chọn ngân hàng VietQR..."
-                                }()
-
-                                directEditPickerButton(
-                                    label: "Ngân hàng",
-                                    value: bankLabel,
-                                    error: nil
-                                ) {
-                                    KeyboardDismissal.dismiss()
-                                    showBankPicker = true
-                                }
-
-                                if form.isCustomBank {
-                                    directEditTextField(
-                                        "Tên ngân hàng tham chiếu *",
-                                        text: $form.customBankName,
-                                        placeholder: "Nhập tên ngân hàng...",
-                                        error: viewModel.directEditFieldErrors["payment"] ?? viewModel.directEditFieldErrors["ngan_hang"]
-                                    )
-                                } else if let bankErr = viewModel.directEditFieldErrors["payment"] ?? viewModel.directEditFieldErrors["ngan_hang"] {
-                                    Text(bankErr)
-                                        .font(.caption2)
-                                        .foregroundColor(SemanticColors.dangerText)
-                                }
-                            }
-                            .padding(14)
-                            .background(Color.white)
-                            .cornerRadius(12)
-
-                            // Section 4: Hồ sơ đính kèm (4 loại tài liệu)
-                            VStack(alignment: .leading, spacing: 12) {
-                                Text("Hồ sơ đính kèm")
-                                    .font(.subheadline.weight(.bold))
-                                    .foregroundColor(theme.primary)
-
-                                directEditSingleImageDocCard(
-                                    title: "1. Ảnh chân dung NLĐ",
-                                    docType: DirectEntryContract.docTypeWorkerPortrait,
-                                    existingDoc: detail.documents.first(where: { $0.docType == DirectEntryContract.docTypeWorkerPortrait }),
-                                    pickerItem: $portraitPhotoItem
-                                )
-
-                                directEditSingleImageDocCard(
-                                    title: "2. CCCD mặt trước",
-                                    docType: DirectEntryContract.docTypeCccdFront,
-                                    existingDoc: detail.documents.first(where: { $0.docType == DirectEntryContract.docTypeCccdFront }),
-                                    pickerItem: $cccdFrontPhotoItem
-                                )
-
-                                directEditSingleImageDocCard(
-                                    title: "3. CCCD mặt sau",
-                                    docType: DirectEntryContract.docTypeCccdBack,
-                                    existingDoc: detail.documents.first(where: { $0.docType == DirectEntryContract.docTypeCccdBack }),
-                                    pickerItem: $cccdBackPhotoItem
-                                )
-
-                                VStack(alignment: .leading, spacing: 8) {
-                                    let contractDoc = detail.documents.first(where: { $0.docType == DirectEntryContract.docTypeEmploymentContract })
-                                    HStack {
-                                        Text("4. Hợp đồng lao động")
-                                            .font(.caption.weight(.bold))
-                                            .foregroundColor(SemanticColors.textPrimary)
-                                        Spacer()
-                                        Text(contractDoc?.hasFile == true ? "Đã có tệp trên hệ thống" : "Chưa có tệp")
-                                            .font(.caption2.weight(.semibold))
-                                            .foregroundColor(contractDoc?.hasFile == true ? SemanticColors.successText : SemanticColors.textMuted)
-                                    }
-
-                                    ContractMultiAttachmentPickerView(
-                                        title: "Chọn ảnh / PDF hợp đồng mới",
-                                        attachments: stagedFiles[DirectEntryContract.docTypeEmploymentContract] ?? [],
-                                        onAddAttachments: { added in
-                                            var cur = stagedFiles[DirectEntryContract.docTypeEmploymentContract] ?? []
-                                            cur.append(contentsOf: added)
-                                            stagedFiles[DirectEntryContract.docTypeEmploymentContract] = cur
-                                        },
-                                        onRemoveAttachment: { id in
-                                            var cur = stagedFiles[DirectEntryContract.docTypeEmploymentContract] ?? []
-                                            cur.removeAll(where: { $0.id == id })
-                                            stagedFiles[DirectEntryContract.docTypeEmploymentContract] = cur
-                                        }
-                                    )
-
-                                    directEditFileStatusRow(docType: DirectEntryContract.docTypeEmploymentContract)
-                                }
-                                .padding(10)
-                                .background(Color(hex: 0xF8FAFC))
-                                .cornerRadius(8)
-                            }
-                            .padding(14)
-                            .background(Color.white)
-                            .cornerRadius(12)
+                            personalSection(theme: theme)
+                            employmentSection(theme: theme)
+                            paymentSection(theme: theme)
+                            documentsSection(theme: theme, detail: detail)
                         }
                     }
                     .padding(14)
@@ -2244,6 +1971,311 @@ struct WorkerDirectEditSheet: View {
                 }
             }
         }
+    }
+
+    private func fieldError(_ primaryKey: String, _ fallbackKey: String? = nil) -> String? {
+        if let err = viewModel.directEditFieldErrors[primaryKey], !err.isEmpty {
+            return err
+        }
+        if let fallbackKey, let err = viewModel.directEditFieldErrors[fallbackKey], !err.isEmpty {
+            return err
+        }
+        return nil
+    }
+
+    @ViewBuilder
+    private func personalSection(theme: AppTheme) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Thông tin cá nhân")
+                .font(.subheadline.weight(.bold))
+                .foregroundColor(theme.primary)
+
+            directEditTextField("Họ và tên *", text: $form.hoTen, error: fieldError("display_name", "ho_ten"))
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Giới tính")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundColor(SemanticColors.textSecondary)
+                HStack(spacing: 8) {
+                    ForEach(["Nam", "Nữ", "Khác"], id: \.self) { g in
+                        let selected = form.gioiTinh.caseInsensitiveCompare(g) == .orderedSame
+                        Button {
+                            form.gioiTinh = selected ? "" : g
+                        } label: {
+                            Text(g)
+                                .font(.caption.weight(selected ? .bold : .medium))
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 7)
+                                .background(selected ? theme.primary : Color(hex: 0xF1F5F9))
+                                .foregroundColor(selected ? .white : SemanticColors.textPrimary)
+                                .cornerRadius(8)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+
+            directEditTextField(
+                "Ngày sinh (DD/MM/YYYY)",
+                text: $form.ngaySinh,
+                placeholder: "VD: 15/08/1995",
+                error: fieldError("date_of_birth", "ngay_sinh")
+            )
+            directEditTextField(
+                "Số CCCD (12 chữ số)",
+                text: $form.soCccd,
+                keyboard: .numberPad,
+                error: fieldError("national_id_number", "so_cccd")
+            )
+            directEditTextField(
+                "Ngày cấp CCCD (DD/MM/YYYY)",
+                text: $form.ngayCapCccd,
+                placeholder: "VD: 20/10/2021",
+                error: fieldError("national_id_issue_date", "ngay_cap_cccd")
+            )
+            directEditTextField(
+                "Nơi cấp CCCD",
+                text: $form.noiCapCccd,
+                error: fieldError("noi_cap_cccd")
+            )
+            directEditTextField(
+                "Địa chỉ / Quê quán",
+                text: $form.queQuan,
+                error: fieldError("que_quan")
+            )
+            directEditTextField(
+                "Số điện thoại",
+                text: $form.sdt,
+                keyboard: .phonePad,
+                error: fieldError("sdt")
+            )
+        }
+        .padding(14)
+        .background(Color.white)
+        .cornerRadius(12)
+    }
+
+    @ViewBuilder
+    private func employmentSection(theme: AppTheme) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Thông tin công việc")
+                .font(.subheadline.weight(.bold))
+                .foregroundColor(theme.primary)
+
+            directEditTextField(
+                "Mã NLĐ (hrp-MMYY-XXXXXX) *",
+                text: $form.maNld,
+                placeholder: "VD: hrp-1026-000123",
+                error: fieldError("employee_code", "ma_nld")
+            )
+
+            directEditPickerButton(
+                label: "Dự án",
+                value: form.duAn.isEmpty ? "Chọn dự án..." : form.duAn,
+                error: fieldError("du_an")
+            ) {
+                KeyboardDismissal.dismiss()
+                showProjectPicker = true
+            }
+
+            directEditPickerButton(
+                label: "Loại hình lao động",
+                value: form.nganhNghe.isEmpty ? "Chọn loại hình lao động..." : form.nganhNghe,
+                error: fieldError("nganh_nghe")
+            ) {
+                KeyboardDismissal.dismiss()
+                showLaborTypePicker = true
+            }
+
+            directEditPickerButton(
+                label: "Người tuyển",
+                value: form.nguoiTuyen.isEmpty ? "Chọn người tuyển..." : form.nguoiTuyen,
+                error: fieldError("nguoi_tuyen")
+            ) {
+                KeyboardDismissal.dismiss()
+                showRecruiterPicker = true
+            }
+
+            directEditTextField(
+                "Ngày bắt đầu (DD/MM/YYYY)",
+                text: $form.ngayVaoLam,
+                placeholder: "VD: 01/10/2026",
+                error: fieldError("started_on", "ngay_vao_lam")
+            )
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Trạng thái làm việc")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundColor(SemanticColors.textSecondary)
+                HStack(spacing: 8) {
+                    let isOff = form.employmentStatusCode.uppercased() == "OFF"
+                    Button {
+                        form.employmentStatusCode = "ON"
+                    } label: {
+                        Text("Đang làm")
+                            .font(.caption.weight(!isOff ? .bold : .medium))
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 8)
+                            .background(!isOff ? theme.primaryLight : Color(hex: 0xF8FAFC))
+                            .foregroundColor(!isOff ? theme.primary : SemanticColors.textSecondary)
+                            .cornerRadius(8)
+                    }
+                    .buttonStyle(.plain)
+
+                    Button {
+                        form.employmentStatusCode = "OFF"
+                    } label: {
+                        Text("Đã nghỉ")
+                            .font(.caption.weight(isOff ? .bold : .medium))
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 8)
+                            .background(isOff ? theme.primaryLight : Color(hex: 0xF8FAFC))
+                            .foregroundColor(isOff ? theme.primary : SemanticColors.textSecondary)
+                            .cornerRadius(8)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+
+            if form.employmentStatusCode.uppercased() == "OFF" {
+                directEditTextField(
+                    "Ngày hiệu lực nghỉ việc (DD/MM/YYYY) *",
+                    text: $form.employmentEffectiveDate,
+                    placeholder: "VD: 30/10/2026",
+                    error: fieldError("effective_date", "employment_effective_date")
+                )
+                directEditTextField(
+                    "Lý do nghỉ việc *",
+                    text: $form.leaveReason,
+                    placeholder: "Nhập lý do nghỉ việc...",
+                    error: fieldError("reason")
+                )
+            }
+        }
+        .padding(14)
+        .background(Color.white)
+        .cornerRadius(12)
+    }
+
+    @ViewBuilder
+    private func paymentSection(theme: AppTheme) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Thông tin ngân hàng")
+                .font(.subheadline.weight(.bold))
+                .foregroundColor(theme.primary)
+
+            directEditTextField(
+                "Tên chủ tài khoản",
+                text: $form.chuTaiKhoan,
+                error: fieldError("payment", "chu_tai_khoan")
+            )
+            directEditTextField(
+                "Số tài khoản",
+                text: $form.soTaiKhoan,
+                error: fieldError("so_tai_khoan")
+            )
+
+            let bankLabel: String = {
+                if form.isCustomBank {
+                    return "Khác (nhập tên ngân hàng tham chiếu)"
+                }
+                if !form.nganHang.isEmpty {
+                    return form.nganHang
+                }
+                return "Chọn ngân hàng VietQR..."
+            }()
+
+            directEditPickerButton(
+                label: "Ngân hàng",
+                value: bankLabel,
+                error: nil
+            ) {
+                KeyboardDismissal.dismiss()
+                showBankPicker = true
+            }
+
+            if form.isCustomBank {
+                directEditTextField(
+                    "Tên ngân hàng tham chiếu *",
+                    text: $form.customBankName,
+                    placeholder: "Nhập tên ngân hàng...",
+                    error: fieldError("payment", "ngan_hang")
+                )
+            } else if let bankErr = fieldError("payment", "ngan_hang") {
+                Text(bankErr)
+                    .font(.caption2)
+                    .foregroundColor(SemanticColors.dangerText)
+            }
+        }
+        .padding(14)
+        .background(Color.white)
+        .cornerRadius(12)
+    }
+
+    @ViewBuilder
+    private func documentsSection(theme: AppTheme, detail: WorkerEntryDetail) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Hồ sơ đính kèm")
+                .font(.subheadline.weight(.bold))
+                .foregroundColor(theme.primary)
+
+            directEditSingleImageDocCard(
+                title: "1. Ảnh chân dung NLĐ",
+                docType: DirectEntryContract.docTypeWorkerPortrait,
+                existingDoc: detail.documents.first(where: { $0.docType == DirectEntryContract.docTypeWorkerPortrait }),
+                pickerItem: $portraitPhotoItem
+            )
+
+            directEditSingleImageDocCard(
+                title: "2. CCCD mặt trước",
+                docType: DirectEntryContract.docTypeCccdFront,
+                existingDoc: detail.documents.first(where: { $0.docType == DirectEntryContract.docTypeCccdFront }),
+                pickerItem: $cccdFrontPhotoItem
+            )
+
+            directEditSingleImageDocCard(
+                title: "3. CCCD mặt sau",
+                docType: DirectEntryContract.docTypeCccdBack,
+                existingDoc: detail.documents.first(where: { $0.docType == DirectEntryContract.docTypeCccdBack }),
+                pickerItem: $cccdBackPhotoItem
+            )
+
+            VStack(alignment: .leading, spacing: 8) {
+                let contractDoc = detail.documents.first(where: { $0.docType == DirectEntryContract.docTypeEmploymentContract })
+                HStack {
+                    Text("4. Hợp đồng lao động")
+                        .font(.caption.weight(.bold))
+                        .foregroundColor(SemanticColors.textPrimary)
+                    Spacer()
+                    Text(contractDoc?.hasFile == true ? "Đã có tệp trên hệ thống" : "Chưa có tệp")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundColor(contractDoc?.hasFile == true ? SemanticColors.successText : SemanticColors.textMuted)
+                }
+
+                ContractMultiAttachmentPickerView(
+                    title: "Chọn ảnh / PDF hợp đồng mới",
+                    attachments: stagedFiles[DirectEntryContract.docTypeEmploymentContract] ?? [],
+                    onAddAttachments: { added in
+                        var cur = stagedFiles[DirectEntryContract.docTypeEmploymentContract] ?? []
+                        cur.append(contentsOf: added)
+                        stagedFiles[DirectEntryContract.docTypeEmploymentContract] = cur
+                    },
+                    onRemoveAttachment: { id in
+                        var cur = stagedFiles[DirectEntryContract.docTypeEmploymentContract] ?? []
+                        cur.removeAll(where: { $0.id == id })
+                        stagedFiles[DirectEntryContract.docTypeEmploymentContract] = cur
+                    }
+                )
+
+                directEditFileStatusRow(docType: DirectEntryContract.docTypeEmploymentContract)
+            }
+            .padding(10)
+            .background(Color(hex: 0xF8FAFC))
+            .cornerRadius(8)
+        }
+        .padding(14)
+        .background(Color.white)
+        .cornerRadius(12)
     }
 
     private func directEditTextField(
@@ -2411,7 +2443,7 @@ struct WorkerDirectEditSheet: View {
                     Text(st.message.isEmpty ? "Đang tải tệp..." : st.message)
                         .font(.caption2)
                         .foregroundColor(SemanticColors.infoText)
-                case .uploaded:
+                case .saved:
                     Image(systemName: "checkmark.circle.fill")
                         .foregroundColor(SemanticColors.successText)
                         .font(.caption)
@@ -2439,7 +2471,7 @@ struct WorkerDirectEditSheet: View {
                         .foregroundColor(SemanticColors.dangerText)
                         .cornerRadius(6)
                     }
-                case .idle:
+                case .idle, .pending:
                     EmptyView()
                 }
             }
