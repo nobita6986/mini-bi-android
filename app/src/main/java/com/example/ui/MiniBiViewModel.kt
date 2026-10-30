@@ -38,6 +38,12 @@ import com.example.data.NewWorkerEntryDraft
 import com.example.data.OwnSubmissionItem
 import com.example.data.PendingDuplicateCccdSubmission
 import com.example.data.PendingEntryAttachmentTask
+import com.example.data.CreateSalaryAdvanceValidationResult
+import com.example.data.SalaryAdvanceActorContext
+import com.example.data.SalaryAdvanceContract
+import com.example.data.SalaryAdvanceWorkerHistoryItem
+import com.example.data.SalaryAdvanceWorkerHistoryResponse
+import com.example.data.SalaryAdvanceWorkerOption
 import com.example.data.SavedLoginAccount
 import com.example.data.StagedDocumentRef
 import com.example.data.TeamReportSnapshot
@@ -396,6 +402,99 @@ class MiniBiViewModel internal constructor(
     private val _leaveInboxError = MutableStateFlow<String?>(null)
     val leaveInboxError: StateFlow<String?> = _leaveInboxError.asStateFlow()
 
+    // Salary Advance States (QLDA only on Android; backend authority only)
+    private val _salaryAdvanceContext = MutableStateFlow<SalaryAdvanceActorContext?>(null)
+    val salaryAdvanceContext: StateFlow<SalaryAdvanceActorContext?> = _salaryAdvanceContext.asStateFlow()
+
+    private val _salaryAdvanceContextLoading = MutableStateFlow(false)
+    val salaryAdvanceContextLoading: StateFlow<Boolean> = _salaryAdvanceContextLoading.asStateFlow()
+
+    private val _salaryAdvanceDialogOpen = MutableStateFlow(false)
+    val salaryAdvanceDialogOpen: StateFlow<Boolean> = _salaryAdvanceDialogOpen.asStateFlow()
+
+    private val _salaryAdvanceSelectedProjectId = MutableStateFlow("")
+    val salaryAdvanceSelectedProjectId: StateFlow<String> = _salaryAdvanceSelectedProjectId.asStateFlow()
+
+    private val _salaryAdvanceWorkerSearch = MutableStateFlow("")
+    val salaryAdvanceWorkerSearch: StateFlow<String> = _salaryAdvanceWorkerSearch.asStateFlow()
+
+    private val _salaryAdvanceWorkers = MutableStateFlow<List<SalaryAdvanceWorkerOption>>(emptyList())
+    val salaryAdvanceWorkers: StateFlow<List<SalaryAdvanceWorkerOption>> = _salaryAdvanceWorkers.asStateFlow()
+
+    private val _salaryAdvanceWorkersLoading = MutableStateFlow(false)
+    val salaryAdvanceWorkersLoading: StateFlow<Boolean> = _salaryAdvanceWorkersLoading.asStateFlow()
+
+    private val _salaryAdvanceWorkersLoadingMore = MutableStateFlow(false)
+    val salaryAdvanceWorkersLoadingMore: StateFlow<Boolean> = _salaryAdvanceWorkersLoadingMore.asStateFlow()
+
+    private val _salaryAdvanceWorkersError = MutableStateFlow<String?>(null)
+    val salaryAdvanceWorkersError: StateFlow<String?> = _salaryAdvanceWorkersError.asStateFlow()
+
+    private val _salaryAdvanceWorkersHasMore = MutableStateFlow(false)
+    val salaryAdvanceWorkersHasMore: StateFlow<Boolean> = _salaryAdvanceWorkersHasMore.asStateFlow()
+
+    private val _salaryAdvanceWorkersNextCursor = MutableStateFlow<String?>(null)
+
+    private val _salaryAdvanceSelectedWorkerId = MutableStateFlow("")
+    val salaryAdvanceSelectedWorkerId: StateFlow<String> = _salaryAdvanceSelectedWorkerId.asStateFlow()
+
+    private val _salaryAdvancePaymentMethod = MutableStateFlow("")
+    val salaryAdvancePaymentMethod: StateFlow<String> = _salaryAdvancePaymentMethod.asStateFlow()
+
+    private val _salaryAdvanceAmountRaw = MutableStateFlow("")
+    val salaryAdvanceAmountRaw: StateFlow<String> = _salaryAdvanceAmountRaw.asStateFlow()
+
+    private val _salaryAdvanceInitialContent = MutableStateFlow("")
+    val salaryAdvanceInitialContent: StateFlow<String> = _salaryAdvanceInitialContent.asStateFlow()
+
+    private val _salaryAdvanceCreateSubmitting = MutableStateFlow(false)
+    val salaryAdvanceCreateSubmitting: StateFlow<Boolean> = _salaryAdvanceCreateSubmitting.asStateFlow()
+
+    private val _salaryAdvanceCreateError = MutableStateFlow<String?>(null)
+    val salaryAdvanceCreateError: StateFlow<String?> = _salaryAdvanceCreateError.asStateFlow()
+
+    private val _salaryAdvanceHistoryOpen = MutableStateFlow(false)
+    val salaryAdvanceHistoryOpen: StateFlow<Boolean> = _salaryAdvanceHistoryOpen.asStateFlow()
+
+    private val _salaryAdvanceHistoryPeriodMode = MutableStateFlow("THIS_MONTH")
+    val salaryAdvanceHistoryPeriodMode: StateFlow<String> = _salaryAdvanceHistoryPeriodMode.asStateFlow()
+
+    private val _salaryAdvanceHistoryMonth = MutableStateFlow("")
+    val salaryAdvanceHistoryMonth: StateFlow<String> = _salaryAdvanceHistoryMonth.asStateFlow()
+
+    private val _salaryAdvanceHistoryFromDate = MutableStateFlow("")
+    val salaryAdvanceHistoryFromDate: StateFlow<String> = _salaryAdvanceHistoryFromDate.asStateFlow()
+
+    private val _salaryAdvanceHistoryToDate = MutableStateFlow("")
+    val salaryAdvanceHistoryToDate: StateFlow<String> = _salaryAdvanceHistoryToDate.asStateFlow()
+
+    private val _salaryAdvanceHistoryLoading = MutableStateFlow(false)
+    val salaryAdvanceHistoryLoading: StateFlow<Boolean> = _salaryAdvanceHistoryLoading.asStateFlow()
+
+    private val _salaryAdvanceHistoryLoadingMore = MutableStateFlow(false)
+    val salaryAdvanceHistoryLoadingMore: StateFlow<Boolean> = _salaryAdvanceHistoryLoadingMore.asStateFlow()
+
+    private val _salaryAdvanceHistoryError = MutableStateFlow<String?>(null)
+    val salaryAdvanceHistoryError: StateFlow<String?> = _salaryAdvanceHistoryError.asStateFlow()
+
+    private val _salaryAdvanceHistoryResponse = MutableStateFlow<SalaryAdvanceWorkerHistoryResponse?>(null)
+    val salaryAdvanceHistoryResponse: StateFlow<SalaryAdvanceWorkerHistoryResponse?> = _salaryAdvanceHistoryResponse.asStateFlow()
+
+    private val _salaryAdvanceHistoryItems = MutableStateFlow<List<SalaryAdvanceWorkerHistoryItem>>(emptyList())
+    val salaryAdvanceHistoryItems: StateFlow<List<SalaryAdvanceWorkerHistoryItem>> = _salaryAdvanceHistoryItems.asStateFlow()
+
+    private val _salaryAdvanceHistoryHasMore = MutableStateFlow(false)
+    val salaryAdvanceHistoryHasMore: StateFlow<Boolean> = _salaryAdvanceHistoryHasMore.asStateFlow()
+
+    private val _salaryAdvanceHistoryNextCursor = MutableStateFlow<String?>(null)
+
+    private var salaryAdvanceWorkersFetchJob: Job? = null
+    private var salaryAdvanceWorkersFetchToken: Long = 0L
+    private var salaryAdvanceHistoryFetchJob: Job? = null
+    private var salaryAdvanceHistoryFetchToken: Long = 0L
+    private var salaryAdvanceCreateIdempotencyKey: String = SalaryAdvanceContract.newIdempotencyKey("sa-create")
+    private var salaryAdvanceLastSubmittedFingerprint: String? = null
+
     init {
         bootstrapSession()
     }
@@ -404,6 +503,10 @@ class MiniBiViewModel internal constructor(
         clearBanner()
         workerFetchJob?.cancel()
         workerFetchJob = null
+        salaryAdvanceWorkersFetchJob?.cancel()
+        salaryAdvanceWorkersFetchJob = null
+        salaryAdvanceHistoryFetchJob?.cancel()
+        salaryAdvanceHistoryFetchJob = null
         viewModelScope.cancel()
         repository.closeForTest()
     }
@@ -449,6 +552,7 @@ class MiniBiViewModel internal constructor(
             MainDestination.WORKERS -> {
                 loadCatalogIfNeeded()
                 ensureInitialWorkerTabLoaded(actor)
+                loadSalaryAdvanceContextIfNeeded()
             }
             MainDestination.ATTENDANCE -> {
                 _activeAttendanceTab.value = AttendanceAreaTab.CHECK_IN
@@ -613,6 +717,7 @@ class MiniBiViewModel internal constructor(
             _leaveApprovalInbox.value = null
             _leaveInboxLoading.value = false
             _leaveInboxError.value = null
+            resetSalaryAdvanceAllState()
         }
     }
 
@@ -3573,6 +3678,590 @@ class MiniBiViewModel internal constructor(
                 showBanner(msg, isError = true)
             } finally {
                 _leaveMutationBusy.value = false
+            }
+        }
+    }
+
+    // =========================================================================
+    // Salary Advance Actions (QLDA Only on Android — Backend Authority Only)
+    // =========================================================================
+
+    private fun resetSalaryAdvanceAllState() {
+        ++salaryAdvanceWorkersFetchToken
+        salaryAdvanceWorkersFetchJob?.cancel()
+        salaryAdvanceWorkersFetchJob = null
+        ++salaryAdvanceHistoryFetchToken
+        salaryAdvanceHistoryFetchJob?.cancel()
+        salaryAdvanceHistoryFetchJob = null
+        _salaryAdvanceContext.value = null
+        _salaryAdvanceContextLoading.value = false
+        _salaryAdvanceDialogOpen.value = false
+        _salaryAdvanceSelectedProjectId.value = ""
+        _salaryAdvanceWorkerSearch.value = ""
+        _salaryAdvanceWorkers.value = emptyList()
+        _salaryAdvanceWorkersLoading.value = false
+        _salaryAdvanceWorkersLoadingMore.value = false
+        _salaryAdvanceWorkersError.value = null
+        _salaryAdvanceWorkersHasMore.value = false
+        _salaryAdvanceWorkersNextCursor.value = null
+        _salaryAdvanceSelectedWorkerId.value = ""
+        _salaryAdvancePaymentMethod.value = ""
+        _salaryAdvanceAmountRaw.value = ""
+        _salaryAdvanceInitialContent.value = ""
+        _salaryAdvanceCreateSubmitting.value = false
+        _salaryAdvanceCreateError.value = null
+        resetSalaryAdvanceHistoryState()
+        salaryAdvanceCreateIdempotencyKey = SalaryAdvanceContract.newIdempotencyKey("sa-create")
+        salaryAdvanceLastSubmittedFingerprint = null
+    }
+
+    private fun resetSalaryAdvanceHistoryState() {
+        ++salaryAdvanceHistoryFetchToken
+        salaryAdvanceHistoryFetchJob?.cancel()
+        salaryAdvanceHistoryFetchJob = null
+        _salaryAdvanceHistoryOpen.value = false
+        _salaryAdvanceHistoryPeriodMode.value = "THIS_MONTH"
+        _salaryAdvanceHistoryMonth.value = ""
+        _salaryAdvanceHistoryFromDate.value = ""
+        _salaryAdvanceHistoryToDate.value = ""
+        _salaryAdvanceHistoryLoading.value = false
+        _salaryAdvanceHistoryLoadingMore.value = false
+        _salaryAdvanceHistoryError.value = null
+        _salaryAdvanceHistoryResponse.value = null
+        _salaryAdvanceHistoryItems.value = emptyList()
+        _salaryAdvanceHistoryHasMore.value = false
+        _salaryAdvanceHistoryNextCursor.value = null
+    }
+
+    fun loadSalaryAdvanceContextIfNeeded(
+        force: Boolean = false,
+        actor: AppActor? = currentActor.value
+    ) {
+        if (_salaryAdvanceContextLoading.value) return
+        val resolvedActor = actor ?: currentActor.value
+        val existing = _salaryAdvanceContext.value
+        if (!force && existing != null && (resolvedActor == null || existing.appUserId == resolvedActor.appUserId)) {
+            return
+        }
+        _salaryAdvanceContextLoading.value = true
+        viewModelScope.launch {
+            try {
+                val ctx = repository.salaryAdvanceService.getContext()
+                _salaryAdvanceContext.value = ctx
+            } catch (e: Exception) {
+                e.rethrowIfCancelled()
+                _salaryAdvanceContext.value = null
+            } finally {
+                _salaryAdvanceContextLoading.value = false
+            }
+        }
+    }
+
+    fun openSalaryAdvanceDialog() {
+        val ctx = _salaryAdvanceContext.value
+        if (!SalaryAdvanceContract.canShowPmSalaryAdvanceEntry(ctx)) return
+        val activeProjects = ctx!!.activeManagedProjects
+        val defaultProject = activeProjects.firstOrNull { it.hasActiveAccountant }
+            ?: activeProjects.firstOrNull()
+        val initialProjectId = defaultProject?.projectId.orEmpty()
+
+        _salaryAdvanceSelectedProjectId.value = initialProjectId
+        _salaryAdvanceWorkerSearch.value = ""
+        _salaryAdvanceSelectedWorkerId.value = ""
+        _salaryAdvancePaymentMethod.value = ""
+        _salaryAdvanceAmountRaw.value = ""
+        _salaryAdvanceInitialContent.value = ""
+        _salaryAdvanceCreateError.value = null
+        _salaryAdvanceWorkersError.value = null
+        _salaryAdvanceWorkers.value = emptyList()
+        _salaryAdvanceWorkersHasMore.value = false
+        _salaryAdvanceWorkersNextCursor.value = null
+        resetSalaryAdvanceHistoryState()
+        salaryAdvanceCreateIdempotencyKey = SalaryAdvanceContract.newIdempotencyKey("sa-create")
+        salaryAdvanceLastSubmittedFingerprint = null
+        _salaryAdvanceDialogOpen.value = true
+
+        if (initialProjectId.isNotBlank()) {
+            loadSalaryAdvanceProjectWorkers(
+                projectId = initialProjectId,
+                search = "",
+                cursor = null,
+                append = false
+            )
+        }
+    }
+
+    fun closeSalaryAdvanceDialog() {
+        if (_salaryAdvanceCreateSubmitting.value) return
+        ++salaryAdvanceWorkersFetchToken
+        salaryAdvanceWorkersFetchJob?.cancel()
+        salaryAdvanceWorkersFetchJob = null
+        resetSalaryAdvanceHistoryState()
+        _salaryAdvanceDialogOpen.value = false
+        _salaryAdvanceCreateError.value = null
+    }
+
+    fun selectSalaryAdvanceProject(projectId: String) {
+        if (_salaryAdvanceCreateSubmitting.value) return
+        val ctx = _salaryAdvanceContext.value ?: return
+        val allowed = ctx.activeManagedProjects.any { it.projectId == projectId }
+        if (!allowed) return
+        if (_salaryAdvanceSelectedProjectId.value == projectId && _salaryAdvanceWorkers.value.isNotEmpty()) {
+            return
+        }
+        resetSalaryAdvanceHistoryState()
+        _salaryAdvanceSelectedProjectId.value = projectId
+        _salaryAdvanceSelectedWorkerId.value = ""
+        _salaryAdvanceCreateError.value = null
+        _salaryAdvanceWorkers.value = emptyList()
+        _salaryAdvanceWorkersHasMore.value = false
+        _salaryAdvanceWorkersNextCursor.value = null
+        loadSalaryAdvanceProjectWorkers(
+            projectId = projectId,
+            search = _salaryAdvanceWorkerSearch.value,
+            cursor = null,
+            append = false
+        )
+    }
+
+    fun updateSalaryAdvanceWorkerSearch(search: String) {
+        if (_salaryAdvanceCreateSubmitting.value) return
+        val clean = search.replace("\n", " ").replace("\r", " ").take(120)
+        _salaryAdvanceWorkerSearch.value = clean
+        val projectId = _salaryAdvanceSelectedProjectId.value
+        if (projectId.isNotBlank()) {
+            loadSalaryAdvanceProjectWorkers(
+                projectId = projectId,
+                search = clean,
+                cursor = null,
+                append = false
+            )
+        }
+    }
+
+    fun loadMoreSalaryAdvanceWorkers() {
+        val projectId = _salaryAdvanceSelectedProjectId.value
+        val cursor = _salaryAdvanceWorkersNextCursor.value
+        if (
+            projectId.isBlank() ||
+            cursor.isNullOrBlank() ||
+            !_salaryAdvanceWorkersHasMore.value ||
+            _salaryAdvanceWorkersLoading.value ||
+            _salaryAdvanceWorkersLoadingMore.value
+        ) {
+            return
+        }
+        loadSalaryAdvanceProjectWorkers(
+            projectId = projectId,
+            search = _salaryAdvanceWorkerSearch.value,
+            cursor = cursor,
+            append = true
+        )
+    }
+
+    private fun loadSalaryAdvanceProjectWorkers(
+        projectId: String,
+        search: String,
+        cursor: String?,
+        append: Boolean
+    ) {
+        val token = ++salaryAdvanceWorkersFetchToken
+        salaryAdvanceWorkersFetchJob?.cancel()
+        val isAppend = append && !cursor.isNullOrBlank()
+        if (isAppend) {
+            _salaryAdvanceWorkersLoadingMore.value = true
+        } else {
+            _salaryAdvanceWorkersLoading.value = true
+            _salaryAdvanceWorkersError.value = null
+        }
+
+        salaryAdvanceWorkersFetchJob = viewModelScope.launch {
+            try {
+                val res = repository.salaryAdvanceService.listProjectWorkers(
+                    projectId = projectId,
+                    search = search.trim().ifEmpty { null },
+                    cursor = if (isAppend) cursor else null,
+                    pageSize = 30
+                )
+                if (token != salaryAdvanceWorkersFetchToken) return@launch
+                val filtered = SalaryAdvanceContract.filterSelectableProjectWorkers(res.workers)
+                val combined = if (isAppend) {
+                    val existingIds = _salaryAdvanceWorkers.value.map { it.workerEntryId }.toHashSet()
+                    _salaryAdvanceWorkers.value + filtered.filterNot { it.workerEntryId in existingIds }
+                } else {
+                    filtered
+                }
+                _salaryAdvanceWorkers.value = combined
+                _salaryAdvanceWorkersHasMore.value = res.hasMore
+                _salaryAdvanceWorkersNextCursor.value = res.nextCursor
+                if (!isAppend) {
+                    val curSelected = _salaryAdvanceSelectedWorkerId.value
+                    if (curSelected.isNotBlank() && combined.none { it.workerEntryId == curSelected }) {
+                        _salaryAdvanceSelectedWorkerId.value = ""
+                    }
+                }
+            } catch (e: BackendApiException) {
+                if (token != salaryAdvanceWorkersFetchToken) return@launch
+                _salaryAdvanceWorkersError.value = e.message
+            } catch (e: Exception) {
+                e.rethrowIfCancelled()
+                if (token != salaryAdvanceWorkersFetchToken) return@launch
+                _salaryAdvanceWorkersError.value =
+                    SalaryAdvanceContract.errorMessageForCode("SALARY_ADVANCE_UNAVAILABLE")
+            } finally {
+                if (token == salaryAdvanceWorkersFetchToken) {
+                    _salaryAdvanceWorkersLoading.value = false
+                    _salaryAdvanceWorkersLoadingMore.value = false
+                }
+            }
+        }
+    }
+
+    fun selectSalaryAdvanceWorker(workerEntryId: String) {
+        if (_salaryAdvanceCreateSubmitting.value) return
+        if (_salaryAdvanceSelectedWorkerId.value != workerEntryId) {
+            resetSalaryAdvanceHistoryState()
+        }
+        _salaryAdvanceSelectedWorkerId.value = workerEntryId
+        _salaryAdvanceCreateError.value = null
+    }
+
+    fun updateSalaryAdvancePaymentMethod(method: String) {
+        if (_salaryAdvanceCreateSubmitting.value) return
+        _salaryAdvancePaymentMethod.value = method.trim().uppercase(Locale.ROOT)
+        _salaryAdvanceCreateError.value = null
+    }
+
+    fun updateSalaryAdvanceAmountRaw(raw: String) {
+        if (_salaryAdvanceCreateSubmitting.value) return
+        _salaryAdvanceAmountRaw.value = raw.take(32)
+        _salaryAdvanceCreateError.value = null
+    }
+
+    fun updateSalaryAdvanceInitialContent(content: String) {
+        if (_salaryAdvanceCreateSubmitting.value) return
+        _salaryAdvanceInitialContent.value = content.take(2000)
+        _salaryAdvanceCreateError.value = null
+    }
+
+    fun submitSalaryAdvanceRequest(onCreatedSuccess: (() -> Unit)? = null) {
+        if (_salaryAdvanceCreateSubmitting.value) return
+        _salaryAdvanceCreateError.value = null
+
+        val ctx = _salaryAdvanceContext.value
+        val projectId = _salaryAdvanceSelectedProjectId.value
+        val selectedProject = ctx?.activeManagedProjects?.firstOrNull { it.projectId == projectId }
+        val workerId = _salaryAdvanceSelectedWorkerId.value
+        val selectedWorker = _salaryAdvanceWorkers.value.firstOrNull { it.workerEntryId == workerId }
+
+        val validation = SalaryAdvanceContract.validateCreateDraft(
+            projectId = projectId,
+            hasActiveAccountant = selectedProject?.hasActiveAccountant,
+            workerEntryId = workerId,
+            selectedWorker = selectedWorker,
+            paymentMethod = _salaryAdvancePaymentMethod.value,
+            requestedAmountRaw = _salaryAdvanceAmountRaw.value,
+            initialContent = _salaryAdvanceInitialContent.value
+        )
+
+        if (validation is CreateSalaryAdvanceValidationResult.Invalid) {
+            _salaryAdvanceCreateError.value = validation.message
+            return
+        }
+        val payload = (validation as CreateSalaryAdvanceValidationResult.Valid).payload
+        val currentFingerprint = payload.fingerprintKey()
+        if (
+            salaryAdvanceLastSubmittedFingerprint != null &&
+            salaryAdvanceLastSubmittedFingerprint != currentFingerprint
+        ) {
+            salaryAdvanceCreateIdempotencyKey = SalaryAdvanceContract.newIdempotencyKey("sa-create")
+        }
+        salaryAdvanceLastSubmittedFingerprint = currentFingerprint
+        val idempotencyKey = salaryAdvanceCreateIdempotencyKey
+
+        _salaryAdvanceCreateSubmitting.value = true
+        viewModelScope.launch {
+            try {
+                val created = repository.salaryAdvanceService.createRequest(
+                    payload = payload,
+                    idempotencyKey = idempotencyKey
+                )
+                salaryAdvanceCreateIdempotencyKey = SalaryAdvanceContract.newIdempotencyKey("sa-create")
+                salaryAdvanceLastSubmittedFingerprint = null
+                resetSalaryAdvanceHistoryState()
+                _salaryAdvanceDialogOpen.value = false
+                showBanner(
+                    "Đã tạo yêu cầu ứng lương cho ${created.workerDisplayName} (${SalaryAdvanceContract.formatVndAmount(created.requestedAmountVnd)})."
+                )
+                onCreatedSuccess?.invoke()
+            } catch (e: BackendApiException) {
+                if (SalaryAdvanceContract.isConflictError(e.statusCode, e.backendCode)) {
+                    salaryAdvanceCreateIdempotencyKey = SalaryAdvanceContract.newIdempotencyKey("sa-create")
+                    salaryAdvanceLastSubmittedFingerprint = null
+                }
+                _salaryAdvanceCreateError.value = e.message
+            } catch (e: Exception) {
+                e.rethrowIfCancelled()
+                _salaryAdvanceCreateError.value =
+                    SalaryAdvanceContract.errorMessageForCode("SALARY_ADVANCE_UNAVAILABLE")
+            } finally {
+                _salaryAdvanceCreateSubmitting.value = false
+            }
+        }
+    }
+
+    fun openSalaryAdvanceWorkerHistory() {
+        val projectId = _salaryAdvanceSelectedProjectId.value
+        val workerId = _salaryAdvanceSelectedWorkerId.value
+        val selectedWorker = _salaryAdvanceWorkers.value.firstOrNull { it.workerEntryId == workerId }
+        if (projectId.isBlank() || selectedWorker == null) return
+
+        val authDate = _salaryAdvanceContext.value?.authorizationDate.orEmpty()
+        val defaultMonth = if (authDate.length >= 7) authDate.substring(0, 7) else "2026-10"
+        val defaultFrom = selectedWorker.advance30dSummary?.windowFromDate
+            ?: "$defaultMonth-01"
+        val defaultTo = selectedWorker.advance30dSummary?.windowToDate
+            ?: authDate.ifBlank { "$defaultMonth-30" }
+
+        _salaryAdvanceHistoryPeriodMode.value = "THIS_MONTH"
+        _salaryAdvanceHistoryMonth.value = defaultMonth
+        _salaryAdvanceHistoryFromDate.value = defaultFrom
+        _salaryAdvanceHistoryToDate.value = defaultTo
+        _salaryAdvanceHistoryError.value = null
+        _salaryAdvanceHistoryResponse.value = null
+        _salaryAdvanceHistoryItems.value = emptyList()
+        _salaryAdvanceHistoryHasMore.value = false
+        _salaryAdvanceHistoryNextCursor.value = null
+        _salaryAdvanceHistoryOpen.value = true
+
+        loadSalaryAdvanceWorkerHistoryPage(
+            projectId = projectId,
+            workerEntryId = selectedWorker.workerEntryId,
+            periodMode = "THIS_MONTH",
+            month = null,
+            fromDate = null,
+            toDate = null,
+            cursor = null,
+            append = false
+        )
+    }
+
+    fun closeSalaryAdvanceWorkerHistory() {
+        ++salaryAdvanceHistoryFetchToken
+        salaryAdvanceHistoryFetchJob?.cancel()
+        salaryAdvanceHistoryFetchJob = null
+        _salaryAdvanceHistoryOpen.value = false
+        _salaryAdvanceHistoryLoading.value = false
+        _salaryAdvanceHistoryLoadingMore.value = false
+    }
+
+    fun selectSalaryAdvanceHistoryPeriodMode(mode: String) {
+        val cleanMode = mode.trim().uppercase(Locale.ROOT)
+        if (SalaryAdvanceContract.HISTORY_PERIOD_MODES.none { it.first == cleanMode }) return
+        _salaryAdvanceHistoryPeriodMode.value = cleanMode
+        _salaryAdvanceHistoryError.value = null
+
+        val projectId = _salaryAdvanceSelectedProjectId.value
+        val workerId = _salaryAdvanceSelectedWorkerId.value
+        if (projectId.isBlank() || workerId.isBlank()) return
+
+        when (cleanMode) {
+            "THIS_MONTH", "LAST_30_DAYS", "ALL" -> {
+                loadSalaryAdvanceWorkerHistoryPage(
+                    projectId = projectId,
+                    workerEntryId = workerId,
+                    periodMode = cleanMode,
+                    month = null,
+                    fromDate = null,
+                    toDate = null,
+                    cursor = null,
+                    append = false
+                )
+            }
+            "MONTH" -> {
+                val normalizedMonth = SalaryAdvanceContract.normalizeIsoMonthInput(_salaryAdvanceHistoryMonth.value)
+                if (normalizedMonth != null) {
+                    loadSalaryAdvanceWorkerHistoryPage(
+                        projectId = projectId,
+                        workerEntryId = workerId,
+                        periodMode = "MONTH",
+                        month = normalizedMonth,
+                        fromDate = null,
+                        toDate = null,
+                        cursor = null,
+                        append = false
+                    )
+                }
+            }
+            "CUSTOM_RANGE" -> {
+                val normalizedFrom = SalaryAdvanceContract.normalizeIsoDateInput(_salaryAdvanceHistoryFromDate.value)
+                val normalizedTo = SalaryAdvanceContract.normalizeIsoDateInput(_salaryAdvanceHistoryToDate.value)
+                if (normalizedFrom != null && normalizedTo != null && normalizedFrom <= normalizedTo) {
+                    loadSalaryAdvanceWorkerHistoryPage(
+                        projectId = projectId,
+                        workerEntryId = workerId,
+                        periodMode = "CUSTOM_RANGE",
+                        month = null,
+                        fromDate = normalizedFrom,
+                        toDate = normalizedTo,
+                        cursor = null,
+                        append = false
+                    )
+                }
+            }
+        }
+    }
+
+    fun updateSalaryAdvanceHistoryMonth(monthInput: String) {
+        val clean = monthInput.trim().take(10)
+        _salaryAdvanceHistoryMonth.value = clean
+        _salaryAdvanceHistoryError.value = null
+        if (_salaryAdvanceHistoryPeriodMode.value != "MONTH") return
+        val normalizedMonth = SalaryAdvanceContract.normalizeIsoMonthInput(clean)
+        if (normalizedMonth == null) {
+            _salaryAdvanceHistoryError.value = "Vui lòng chọn tháng hợp lệ (YYYY-MM)."
+            return
+        }
+        val projectId = _salaryAdvanceSelectedProjectId.value
+        val workerId = _salaryAdvanceSelectedWorkerId.value
+        if (projectId.isBlank() || workerId.isBlank()) return
+        loadSalaryAdvanceWorkerHistoryPage(
+            projectId = projectId,
+            workerEntryId = workerId,
+            periodMode = "MONTH",
+            month = normalizedMonth,
+            fromDate = null,
+            toDate = null,
+            cursor = null,
+            append = false
+        )
+    }
+
+    fun updateSalaryAdvanceHistoryDateRange(fromDateInput: String, toDateInput: String) {
+        _salaryAdvanceHistoryFromDate.value = fromDateInput.trim().take(16)
+        _salaryAdvanceHistoryToDate.value = toDateInput.trim().take(16)
+        _salaryAdvanceHistoryError.value = null
+    }
+
+    fun applySalaryAdvanceHistoryCustomRange() {
+        val normalizedFrom = SalaryAdvanceContract.normalizeIsoDateInput(_salaryAdvanceHistoryFromDate.value)
+        val normalizedTo = SalaryAdvanceContract.normalizeIsoDateInput(_salaryAdvanceHistoryToDate.value)
+        if (normalizedFrom == null || normalizedTo == null) {
+            _salaryAdvanceHistoryError.value = "Vui lòng chọn đầy đủ từ ngày và đến ngày hợp lệ."
+            return
+        }
+        if (normalizedFrom > normalizedTo) {
+            _salaryAdvanceHistoryError.value = "Ngày bắt đầu không được lớn hơn ngày kết thúc."
+            return
+        }
+        _salaryAdvanceHistoryError.value = null
+        val projectId = _salaryAdvanceSelectedProjectId.value
+        val workerId = _salaryAdvanceSelectedWorkerId.value
+        if (projectId.isBlank() || workerId.isBlank()) return
+        loadSalaryAdvanceWorkerHistoryPage(
+            projectId = projectId,
+            workerEntryId = workerId,
+            periodMode = "CUSTOM_RANGE",
+            month = null,
+            fromDate = normalizedFrom,
+            toDate = normalizedTo,
+            cursor = null,
+            append = false
+        )
+    }
+
+    fun loadMoreSalaryAdvanceWorkerHistory() {
+        val projectId = _salaryAdvanceSelectedProjectId.value
+        val workerId = _salaryAdvanceSelectedWorkerId.value
+        val cursor = _salaryAdvanceHistoryNextCursor.value
+        val mode = _salaryAdvanceHistoryPeriodMode.value
+        if (
+            projectId.isBlank() ||
+            workerId.isBlank() ||
+            cursor.isNullOrBlank() ||
+            !_salaryAdvanceHistoryHasMore.value ||
+            _salaryAdvanceHistoryLoading.value ||
+            _salaryAdvanceHistoryLoadingMore.value
+        ) {
+            return
+        }
+        val month = if (mode == "MONTH") {
+            SalaryAdvanceContract.normalizeIsoMonthInput(_salaryAdvanceHistoryMonth.value)
+        } else null
+        val fromDate = if (mode == "CUSTOM_RANGE") {
+            SalaryAdvanceContract.normalizeIsoDateInput(_salaryAdvanceHistoryFromDate.value)
+        } else null
+        val toDate = if (mode == "CUSTOM_RANGE") {
+            SalaryAdvanceContract.normalizeIsoDateInput(_salaryAdvanceHistoryToDate.value)
+        } else null
+
+        loadSalaryAdvanceWorkerHistoryPage(
+            projectId = projectId,
+            workerEntryId = workerId,
+            periodMode = mode,
+            month = month,
+            fromDate = fromDate,
+            toDate = toDate,
+            cursor = cursor,
+            append = true
+        )
+    }
+
+    private fun loadSalaryAdvanceWorkerHistoryPage(
+        projectId: String,
+        workerEntryId: String,
+        periodMode: String,
+        month: String?,
+        fromDate: String?,
+        toDate: String?,
+        cursor: String?,
+        append: Boolean
+    ) {
+        val token = ++salaryAdvanceHistoryFetchToken
+        salaryAdvanceHistoryFetchJob?.cancel()
+        val isAppend = append && !cursor.isNullOrBlank()
+        if (isAppend) {
+            _salaryAdvanceHistoryLoadingMore.value = true
+        } else {
+            _salaryAdvanceHistoryLoading.value = true
+            _salaryAdvanceHistoryError.value = null
+        }
+
+        salaryAdvanceHistoryFetchJob = viewModelScope.launch {
+            try {
+                val res = repository.salaryAdvanceService.listProjectWorkerHistory(
+                    projectId = projectId,
+                    workerEntryId = workerEntryId,
+                    periodMode = periodMode,
+                    month = month,
+                    fromDate = fromDate,
+                    toDate = toDate,
+                    cursor = if (isAppend) cursor else null,
+                    pageSize = 20
+                )
+                if (token != salaryAdvanceHistoryFetchToken) return@launch
+                _salaryAdvanceHistoryResponse.value = res
+                _salaryAdvanceHistoryItems.value = if (isAppend) {
+                    val existingIds = _salaryAdvanceHistoryItems.value.map { it.requestId }.toHashSet()
+                    _salaryAdvanceHistoryItems.value + res.items.filterNot { it.requestId in existingIds }
+                } else {
+                    res.items
+                }
+                _salaryAdvanceHistoryHasMore.value = res.hasMore
+                _salaryAdvanceHistoryNextCursor.value = res.nextCursor
+            } catch (e: BackendApiException) {
+                if (token != salaryAdvanceHistoryFetchToken) return@launch
+                _salaryAdvanceHistoryError.value = e.message
+            } catch (e: Exception) {
+                e.rethrowIfCancelled()
+                if (token != salaryAdvanceHistoryFetchToken) return@launch
+                _salaryAdvanceHistoryError.value =
+                    SalaryAdvanceContract.errorMessageForCode("SALARY_ADVANCE_UNAVAILABLE")
+            } finally {
+                if (token == salaryAdvanceHistoryFetchToken) {
+                    _salaryAdvanceHistoryLoading.value = false
+                    _salaryAdvanceHistoryLoadingMore.value = false
+                }
             }
         }
     }

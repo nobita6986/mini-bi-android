@@ -139,7 +139,9 @@ class BackendHttpClient(
             backendMessage: String? = null
         ): BackendApiException {
             val knownBusinessMsg = backendCode?.let {
-                DIRECT_ENTRY_CODE_MESSAGES[it] ?: LeaveContract.LEAVE_ERROR_MESSAGES[it]
+                DIRECT_ENTRY_CODE_MESSAGES[it]
+                    ?: LeaveContract.LEAVE_ERROR_MESSAGES[it]
+                    ?: SalaryAdvanceContract.ERROR_MESSAGES[it]
             }
             return when {
                 statusCode == 401 -> BackendApiException(

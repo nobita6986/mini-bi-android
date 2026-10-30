@@ -3308,4 +3308,514 @@ class WorkerUiAuthorizationRobolectricTest {
         assertEquals("Nhóm đang cao điểm tuyển dụng", decisionPayload.getString("reason"))
         assertTrue(decisionPayload.getString("idempotency_key").startsWith("leave-decision-"))
     }
+
+    // -------------------------------------------------------------------------
+    // Salary Advance (Ứng lương QLDA) UI & E2E Flow Tests
+    // -------------------------------------------------------------------------
+    @Test
+    fun `salary advance button - hidden for non-QLDA and displayed strictly between worker_scope_grid and worker_search_input for QLDA`() {
+        var isPmOnServer = false
+        val server = MockWebServer()
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val path = request.path.orEmpty()
+                return when {
+                    path == "/api/salary-advance/context" -> MockResponse().setResponseCode(200).setBody(
+                        if (isPmOnServer) {
+                            """
+                            {
+                              "ok": true,
+                              "data": {
+                                "app_user_id": "pm-user-01",
+                                "display_name": "QLDA Kiểm Thử",
+                                "authorization_date": "2026-10-30",
+                                "is_full_admin": false,
+                                "is_bod": false,
+                                "is_project_manager": true,
+                                "is_project_accountant": false,
+                                "is_supervisory_viewer": false,
+                                "managed_projects": [
+                                  {
+                                    "project_id": "PRJ_01",
+                                    "display_name": "Dự án QLDA 01",
+                                    "active": true,
+                                    "has_active_accountant": true,
+                                    "accountant_user_id": "acc-1",
+                                    "accountant_display_name": "KT 1"
+                                  }
+                                ]
+                              }
+                            }
+                            """.trimIndent()
+                        } else {
+                            """
+                            {
+                              "ok": true,
+                              "data": {
+                                "app_user_id": "acc-user-01",
+                                "display_name": "Kế Toán Kiểm Thử",
+                                "authorization_date": "2026-10-30",
+                                "is_full_admin": false,
+                                "is_bod": false,
+                                "is_project_manager": false,
+                                "is_project_accountant": true,
+                                "is_supervisory_viewer": false,
+                                "managed_projects": []
+                              }
+                            }
+                            """.trimIndent()
+                        }
+                    )
+                    path.startsWith("/api/direct-entry/catalog") -> MockResponse().setResponseCode(200).setBody(
+                        """{"ok":true,"effective_date":"2026-10-30","projects":[],"recruiters":[],"banks":[],"labor_types":[]}"""
+                    )
+                    path.startsWith("/api/direct-entry/workers") -> MockResponse().setResponseCode(200).setBody(
+                        """{"ok":true,"rows":[],"has_more":false,"next_cursor":null,"summary":{"total_workers":0,"project_count":0,"recruiter_count":0}}"""
+                    )
+                    else -> MockResponse().setResponseCode(200).setBody("""{"ok":true}""")
+                }
+            }
+        }
+        server.start()
+
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val db = buildTestDb(app)
+        val cookieFile = File(app.cacheDir, "sa_btn_cookies_${System.nanoTime()}.enc")
+        val prefsFile = File(app.cacheDir, "sa_btn_prefs_${System.nanoTime()}.preferences_pb")
+        val repo = MiniBiRepository(
+            context = app,
+            database = db,
+            defaultServerUrl = server.url("/").toString().trimEnd('/'),
+            allowDebugUrlOverride = true,
+            cookieStorageFile = cookieFile,
+            preferencesStorageFile = prefsFile,
+            cookieCipher = JvmAes256GcmCookieCipher()
+        )
+        val vm = MiniBiViewModel(app, repo)
+        registerTestResourcesCleanup(vm, db, server, cookieFile, prefsFile)
+
+        val currentActorState = androidx.compose.runtime.mutableStateOf(
+            AppActor(
+                appUserId = "acc-user-01",
+                displayName = "Kế Toán Kiểm Thử",
+                capabilities = listOf("entry_read"),
+                scopes = listOf(ActorScope("project", "PRJ_01", "2026-01-01", null)),
+                selfRecruiterSuggestion = null
+            )
+        )
+
+        composeTestRule.setContent {
+            MyApplicationTheme {
+                WorkersAndDirectEntryScreen(
+                    actor = currentActorState.value,
+                    viewModel = vm,
+                    onBackToDashboard = {}
+                )
+            }
+        }
+
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            !vm.salaryAdvanceContextLoading.value && vm.salaryAdvanceContext.value != null
+        }
+        composeTestRule.waitForIdle()
+
+        // Non-QLDA (even if Accountant) must NOT see the Ứng lương button
+        composeTestRule.onNodeWithTag("salary_advance_open_button").assertDoesNotExist()
+
+        // Switch to QLDA actor and reload context
+        isPmOnServer = true
+        vm.loadSalaryAdvanceContextIfNeeded(force = true)
+        currentActorState.value = AppActor(
+            appUserId = "pm-user-01",
+            displayName = "QLDA Kiểm Thử",
+            capabilities = listOf("entry_read"),
+            scopes = listOf(ActorScope("project", "PRJ_01", "2026-01-01", null)),
+            selfRecruiterSuggestion = null
+        )
+
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            vm.salaryAdvanceContext.value?.isProjectManager == true
+        }
+        composeTestRule.waitForIdle()
+
+        val scopeGridBounds = composeTestRule.onNodeWithTag("worker_scope_grid")
+            .assertIsDisplayed()
+            .fetchSemanticsNode()
+            .boundsInRoot
+        val salaryAdvanceBtnBounds = composeTestRule.onNodeWithTag("salary_advance_open_button")
+            .assertIsDisplayed()
+            .fetchSemanticsNode()
+            .boundsInRoot
+        val searchInputBounds = composeTestRule.onNodeWithTag("worker_search_input")
+            .assertIsDisplayed()
+            .fetchSemanticsNode()
+            .boundsInRoot
+
+        assertTrue(
+            "Nút Ứng lương phải nằm ngay dưới hàng phạm vi nhân sự",
+            salaryAdvanceBtnBounds.top >= scopeGridBounds.bottom - 1f
+        )
+        assertTrue(
+            "Nút Ứng lương phải nằm ngay trên ô tìm kiếm NLĐ",
+            salaryAdvanceBtnBounds.bottom <= searchInputBounds.top + 1f
+        )
+    }
+
+    @Test
+    fun `salary advance create & history flow - filters OFF and vendor, locks ineligible worker, loads history period filters, and handles idempotency retry & conflict`() {
+        val capturedCreateRequests = java.util.Collections.synchronizedList(mutableListOf<Pair<String, JSONObject>>())
+        val capturedHistoryPaths = java.util.Collections.synchronizedList(mutableListOf<String>())
+        var nextCreateResponseMode = "SERVER_ERROR"
+
+        val server = MockWebServer()
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val path = request.path.orEmpty()
+                return when {
+                    path == "/api/salary-advance/context" -> MockResponse().setResponseCode(200).setBody(
+                        """
+                        {
+                          "ok": true,
+                          "data": {
+                            "app_user_id": "pm-user-01",
+                            "display_name": "QLDA Kiểm Thử",
+                            "authorization_date": "2026-10-30",
+                            "is_full_admin": false,
+                            "is_bod": false,
+                            "is_project_manager": true,
+                            "is_project_accountant": false,
+                            "is_supervisory_viewer": false,
+                            "managed_projects": [
+                              {
+                                "project_id": "PRJ_01",
+                                "display_name": "Dự án Điện Tử Bắc Ninh",
+                                "active": true,
+                                "has_active_accountant": true,
+                                "accountant_user_id": "acc-01",
+                                "accountant_display_name": "KT 01"
+                              }
+                            ]
+                          }
+                        }
+                        """.trimIndent()
+                    )
+                    path.startsWith("/api/salary-advance/projects/PRJ_01/workers?") -> MockResponse().setResponseCode(200).setBody(
+                        """
+                        {
+                          "ok": true,
+                          "data": {
+                            "project_id": "PRJ_01",
+                            "next_cursor": null,
+                            "has_more": false,
+                            "workers": [
+                              {
+                                "worker_entry_id": "w-off",
+                                "employee_code": "hrp-1026-000099",
+                                "display_name": "NLĐ Đã Nghỉ Ẩn",
+                                "employment_status": "OFF",
+                                "first_work_date": "2026-09-01",
+                                "provider_type": "hrp",
+                                "recruiter_display_name": "Tuyển dụng HRP 1",
+                                "has_portrait": true,
+                                "is_eligible": false,
+                                "ineligible_reasons": ["WORKER_STATUS_OFF"],
+                                "bank_transfer_eligible": false
+                              },
+                              {
+                                "worker_entry_id": "w-vendor",
+                                "employee_code": "hrp-1026-000098",
+                                "display_name": "NLĐ Vendor Ẩn",
+                                "employment_status": "ON",
+                                "first_work_date": "2026-10-01",
+                                "provider_type": "vendor",
+                                "recruiter_display_name": "Vendor ABC",
+                                "has_portrait": true,
+                                "is_eligible": false,
+                                "ineligible_reasons": ["WORKER_VENDOR_RECRUITED"],
+                                "bank_transfer_eligible": false
+                              },
+                              {
+                                "worker_entry_id": "w-ineligible-dup",
+                                "employee_code": "hrp-1026-000002",
+                                "display_name": "Phạm Thị Trùng Hồ Sơ",
+                                "employment_status": "ON",
+                                "first_work_date": "2026-10-03",
+                                "provider_type": "hrp",
+                                "recruiter_display_name": "Tuyển dụng HRP 2",
+                                "has_portrait": true,
+                                "is_eligible": false,
+                                "ineligible_reasons": ["WORKER_DUPLICATE_CCCD"],
+                                "bank_transfer_eligible": false,
+                                "bank_ineligible_reason": "BANK_ACCOUNT_MISSING"
+                              },
+                              {
+                                "worker_entry_id": "w-eligible",
+                                "employee_code": "hrp-1026-000001",
+                                "display_name": "Nguyễn Văn Hợp Lệ",
+                                "employment_status": "ON",
+                                "first_work_date": "2026-10-01",
+                                "provider_type": "hrp",
+                                "recruiter_display_name": "Tuyển dụng HRP 1",
+                                "has_portrait": true,
+                                "is_eligible": true,
+                                "ineligible_reasons": [],
+                                "bank_transfer_eligible": true,
+                                "bank_ineligible_reason": null,
+                                "bank_account": {
+                                  "has_bank_account": true,
+                                  "bank_id": "VCB",
+                                  "institution_name": "Vietcombank",
+                                  "account_number": "0123456789",
+                                  "account_holder_name": "NGUYEN VAN HOP LE",
+                                  "is_self_owned": true
+                                },
+                                "advance_30d_summary": {
+                                  "window_days": 30,
+                                  "window_from_date": "2026-10-01",
+                                  "window_to_date": "2026-10-30",
+                                  "total_count": 2,
+                                  "total_amount_vnd": "1500000"
+                                }
+                              }
+                            ]
+                          }
+                        }
+                        """.trimIndent()
+                    )
+                    path.startsWith("/api/salary-advance/projects/PRJ_01/workers/w-eligible/worker-history") -> {
+                        capturedHistoryPaths.add(path)
+                        MockResponse().setResponseCode(200).setBody(
+                            """
+                            {
+                              "ok": true,
+                              "data": {
+                                "worker_entry_id": "w-eligible",
+                                "worker_employee_code": "hrp-1026-000001",
+                                "worker_display_name": "Nguyễn Văn Hợp Lệ",
+                                "period_mode": "THIS_MONTH",
+                                "from_date": "2026-10-01",
+                                "to_date": "2026-10-30",
+                                "total_count": 1,
+                                "total_amount_vnd": "500000",
+                                "next_cursor": null,
+                                "has_more": false,
+                                "items": [
+                                  {
+                                    "request_id": "hist-req-1",
+                                    "request_state": "APPROVED",
+                                    "evidence_review_state": "REVIEWED",
+                                    "project_id": "PRJ_01",
+                                    "project_display_name": "Dự án Điện Tử Bắc Ninh",
+                                    "worker_entry_id": "w-eligible",
+                                    "worker_employee_code": "hrp-1026-000001",
+                                    "worker_display_name": "Nguyễn Văn Hợp Lệ",
+                                    "requested_amount_vnd": "500000",
+                                    "payment_method": "CASH",
+                                    "initial_content": "Ứng tiền ăn tuần đầu",
+                                    "created_by_display_name": "QLDA Kiểm Thử",
+                                    "effective_date": "2026-10-15",
+                                    "effective_at": "2026-10-15T06:00:00.000Z",
+                                    "created_at": "2026-10-15T04:00:00.000Z"
+                                  }
+                                ]
+                              }
+                            }
+                            """.trimIndent()
+                        )
+                    }
+                    path == "/api/salary-advance/requests" && request.method == "POST" -> {
+                        val headerKey = request.getHeader("Idempotency-Key").orEmpty()
+                        val bodyJson = JSONObject(request.body.readUtf8())
+                        capturedCreateRequests.add(headerKey to bodyJson)
+                        when (nextCreateResponseMode) {
+                            "SERVER_ERROR" -> MockResponse().setResponseCode(503).setBody(
+                                """{"ok":false,"code":"SALARY_ADVANCE_UNAVAILABLE","message":"Unavailable"}"""
+                            )
+                            "CONFLICT" -> MockResponse().setResponseCode(409).setBody(
+                                """{"ok":false,"code":"SALARY_ADVANCE_IDEMPOTENCY_CONFLICT","message":"Conflict"}"""
+                            )
+                            else -> MockResponse().setResponseCode(201).setBody(
+                                """
+                                {
+                                  "ok": true,
+                                  "data": {
+                                    "replayed": false,
+                                    "request": {
+                                      "request_id": "req-created-1",
+                                      "request_state": "OPEN",
+                                      "evidence_review_state": "NOT_UPLOADED",
+                                      "version": 1,
+                                      "project_id": "PRJ_01",
+                                      "project_display_name": "Dự án Điện Tử Bắc Ninh",
+                                      "worker_entry_id": "w-eligible",
+                                      "worker_employee_code": "hrp-1026-000001",
+                                      "worker_display_name": "Nguyễn Văn Hợp Lệ",
+                                      "requested_amount_vnd": "2000000",
+                                      "payment_method": "BANK_TRANSFER",
+                                      "initial_content": "Ứng lương đợt 1"
+                                    }
+                                  }
+                                }
+                                """.trimIndent()
+                            )
+                        }
+                    }
+                    path.startsWith("/api/direct-entry/catalog") -> MockResponse().setResponseCode(200).setBody(
+                        """{"ok":true,"effective_date":"2026-10-30","projects":[],"recruiters":[],"banks":[],"labor_types":[]}"""
+                    )
+                    path.startsWith("/api/direct-entry/workers") -> MockResponse().setResponseCode(200).setBody(
+                        """{"ok":true,"rows":[],"has_more":false,"next_cursor":null,"summary":{"total_workers":0,"project_count":0,"recruiter_count":0}}"""
+                    )
+                    else -> MockResponse().setResponseCode(200).setBody("""{"ok":true}""")
+                }
+            }
+        }
+        server.start()
+
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val db = buildTestDb(app)
+        val cookieFile = File(app.cacheDir, "sa_flow_cookies_${System.nanoTime()}.enc")
+        val prefsFile = File(app.cacheDir, "sa_flow_prefs_${System.nanoTime()}.preferences_pb")
+        val repo = MiniBiRepository(
+            context = app,
+            database = db,
+            defaultServerUrl = server.url("/").toString().trimEnd('/'),
+            allowDebugUrlOverride = true,
+            cookieStorageFile = cookieFile,
+            preferencesStorageFile = prefsFile,
+            cookieCipher = JvmAes256GcmCookieCipher()
+        )
+        val vm = MiniBiViewModel(app, repo)
+        registerTestResourcesCleanup(vm, db, server, cookieFile, prefsFile)
+
+        val pmActor = AppActor(
+            appUserId = "pm-user-01",
+            displayName = "QLDA Kiểm Thử",
+            capabilities = listOf("entry_read"),
+            scopes = listOf(ActorScope("project", "PRJ_01", "2026-01-01", null)),
+            selfRecruiterSuggestion = null
+        )
+
+        composeTestRule.setContent {
+            MyApplicationTheme {
+                WorkersAndDirectEntryScreen(
+                    actor = pmActor,
+                    viewModel = vm,
+                    onBackToDashboard = {}
+                )
+            }
+        }
+
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            vm.salaryAdvanceContext.value?.isProjectManager == true
+        }
+        composeTestRule.waitForIdle()
+
+        // 1. Open Salary Advance dialog
+        composeTestRule.onNodeWithTag("salary_advance_open_button").assertIsDisplayed().performClick()
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            !vm.salaryAdvanceWorkersLoading.value && vm.salaryAdvanceWorkers.value.isNotEmpty()
+        }
+        composeTestRule.waitForIdle()
+
+        // OFF and vendor workers must be hidden; HRP ineligible & eligible workers must be shown
+        composeTestRule.onNodeWithTag("salary_advance_worker_item_w-off").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("salary_advance_worker_item_w-vendor").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("salary_advance_worker_item_w-ineligible-dup").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("salary_advance_worker_item_w-eligible").assertIsDisplayed()
+
+        // 2. Select ineligible worker -> shows reason and locks submit button
+        composeTestRule.onNodeWithTag("salary_advance_worker_item_w-ineligible-dup").performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("salary_advance_submit_button").assertIsNotEnabled()
+
+        // 3. Select eligible worker -> shows first work date, recruiter, 30d summary, and enables submit
+        composeTestRule.onNodeWithTag("salary_advance_worker_item_w-eligible").performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("salary_advance_worker_first_work_date").assertTextContains("01/10/2026")
+        composeTestRule.onNodeWithTag("salary_advance_worker_recruiter").assertTextContains("Tuyển dụng HRP 1")
+        composeTestRule.onNodeWithTag("salary_advance_worker_30d_count").assertTextContains("2 lần")
+        composeTestRule.onNodeWithTag("salary_advance_worker_30d_amount").assertTextContains("1.500.000", substring = true)
+
+        // 4. Open Worker History dialog and test period filter modes
+        composeTestRule.onNodeWithTag("salary_advance_create_scroll")
+            .performScrollToNode(hasTestTag("salary_advance_open_history_button"))
+        composeTestRule.onNodeWithTag("salary_advance_open_history_button").performClick()
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            !vm.salaryAdvanceHistoryLoading.value && vm.salaryAdvanceHistoryItems.value.size == 1
+        }
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("salary_advance_history_item_hist-req-1").assertIsDisplayed()
+
+        // Switch history filter to LAST_30_DAYS and ALL
+        composeTestRule.onNodeWithTag("salary_advance_history_mode_LAST_30_DAYS").performClick()
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            capturedHistoryPaths.any { it.contains("period_mode=LAST_30_DAYS") }
+        }
+        composeTestRule.onNodeWithTag("salary_advance_history_close_button").performClick()
+        composeTestRule.waitForIdle()
+
+        // 5. Fill create form and verify idempotency key reuse on retry vs rotation on 409 conflict
+        composeTestRule.onNodeWithTag("salary_advance_create_scroll")
+            .performScrollToNode(hasTestTag("salary_advance_method_BANK_TRANSFER"))
+        composeTestRule.onNodeWithTag("salary_advance_method_BANK_TRANSFER").performClick()
+        composeTestRule.onNodeWithTag("salary_advance_create_scroll")
+            .performScrollToNode(hasTestTag("salary_advance_amount_input"))
+        composeTestRule.onNodeWithTag("salary_advance_amount_input").performTextReplacement("2000000")
+        composeTestRule.onNodeWithTag("salary_advance_create_scroll")
+            .performScrollToNode(hasTestTag("salary_advance_content_input"))
+        composeTestRule.onNodeWithTag("salary_advance_content_input").performTextReplacement("Ứng lương đợt 1")
+        composeTestRule.waitForIdle()
+
+        // Attempt 1: 503 error -> keeps dialog open and shows error
+        nextCreateResponseMode = "SERVER_ERROR"
+        composeTestRule.onNodeWithTag("salary_advance_submit_button").assertIsEnabled().performClick()
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            !vm.salaryAdvanceCreateSubmitting.value && capturedCreateRequests.size == 1
+        }
+        composeTestRule.waitForIdle()
+        assertTrue(vm.salaryAdvanceDialogOpen.value)
+        assertEquals(
+            "Hệ thống tạm thời chưa xử lý được yêu cầu. Vui lòng thử lại.",
+            vm.salaryAdvanceCreateError.value
+        )
+
+        // Attempt 2 (retry with identical payload): MUST reuse the exact same idempotency_key; returns 409 conflict
+        nextCreateResponseMode = "CONFLICT"
+        composeTestRule.onNodeWithTag("salary_advance_submit_button").performClick()
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            !vm.salaryAdvanceCreateSubmitting.value && capturedCreateRequests.size == 2
+        }
+        composeTestRule.waitForIdle()
+        val keyAttempt1 = capturedCreateRequests[0].first
+        val keyAttempt2 = capturedCreateRequests[1].first
+        assertEquals("Retry sau lỗi mạng/timeout phải dùng lại idempotency_key", keyAttempt1, keyAttempt2)
+
+        // Attempt 3 (after 409 conflict): MUST rotate to a new idempotency_key and succeed
+        nextCreateResponseMode = "SUCCESS"
+        composeTestRule.onNodeWithTag("salary_advance_submit_button").performClick()
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            !vm.salaryAdvanceCreateSubmitting.value && capturedCreateRequests.size == 3
+        }
+        composeTestRule.waitForIdle()
+        val keyAttempt3 = capturedCreateRequests[2].first
+        assertFalse("Sau lỗi 409 conflict phải xoay idempotency_key mới", keyAttempt3 == keyAttempt2)
+        assertFalse("Dialog phải đóng sau khi tạo thành công", vm.salaryAdvanceDialogOpen.value)
+        val submittedBody = capturedCreateRequests[2].second
+        assertEquals("PRJ_01", submittedBody.getString("project_id"))
+        assertEquals("w-eligible", submittedBody.getString("worker_entry_id"))
+        assertEquals("2000000", submittedBody.getString("requested_amount_vnd"))
+        assertEquals("BANK_TRANSFER", submittedBody.getString("payment_method"))
+        assertEquals("Ứng lương đợt 1", submittedBody.getString("initial_content"))
+        assertEquals(keyAttempt3, submittedBody.getString("idempotency_key"))
+    }
 }
