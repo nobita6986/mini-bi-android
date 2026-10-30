@@ -5,11 +5,10 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.math.BigInteger
 import java.text.NumberFormat
-import java.time.Instant
-import java.time.LocalDate
-import java.time.ZoneId
-import java.time.format.DateTimeFormatter
+import java.text.SimpleDateFormat
+import java.util.Calendar
 import java.util.Locale
+import java.util.TimeZone
 import java.util.UUID
 
 data class SalaryAdvanceManagedProjectOption(
@@ -202,9 +201,16 @@ object SalaryAdvanceContract {
     private val ISO_MONTH_PATTERN = Regex("^(\\d{4})-(0[1-9]|1[0-2])$")
     private val UI_MONTH_PATTERN = Regex("^(0[1-9]|1[0-2])/(\\d{4})$")
     private val MAX_PG_BIGINT = BigInteger("9223372036854775807")
-    private val VIETNAM_ZONE = ZoneId.of("Asia/Ho_Chi_Minh")
-    private val VI_DATE_TIME_FORMATTER =
-        DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm", Locale.forLanguageTag("vi-VN"))
+    private val VIETNAM_TIMEZONE: TimeZone = TimeZone.getTimeZone("Asia/Ho_Chi_Minh")
+
+    private fun isValidCalendarDate(year: Int, month: Int, day: Int): Boolean {
+        if (year < 1900 || year > 2100 || month !in 1..12 || day !in 1..31) return false
+        val cal = Calendar.getInstance(VIETNAM_TIMEZONE, Locale.US)
+        cal.isLenient = false
+        cal.clear()
+        cal.set(year, month - 1, day)
+        return runCatching { cal.timeInMillis }.isSuccess
+    }
 
     val ERROR_MESSAGES: Map<String, String> = mapOf(
         "UNAUTHENTICATED" to "Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.",
@@ -448,18 +454,35 @@ object SalaryAdvanceContract {
         val year = match.groupValues[1].toIntOrNull() ?: return fallbackLabel
         val month = match.groupValues[2].toIntOrNull() ?: return fallbackLabel
         val day = match.groupValues[3].toIntOrNull() ?: return fallbackLabel
-        val valid = runCatching { LocalDate.of(year, month, day) }.isSuccess
-        if (!valid) return fallbackLabel
+        if (!isValidCalendarDate(year, month, day)) return fallbackLabel
         return "${match.groupValues[3]}/${match.groupValues[2]}/${match.groupValues[1]}"
     }
 
     fun formatDateTimeVi(isoTimestamp: String?): String {
         val trimmed = isoTimestamp?.trim().orEmpty()
         if (trimmed.isEmpty()) return "—"
-        return runCatching {
-            val instant = Instant.parse(trimmed)
-            VI_DATE_TIME_FORMATTER.format(instant.atZone(VIETNAM_ZONE))
-        }.getOrElse { trimmed }
+        val patterns = listOf(
+            "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'",
+            "yyyy-MM-dd'T'HH:mm:ss'Z'",
+            "yyyy-MM-dd'T'HH:mm:ssXXX",
+            "yyyy-MM-dd'T'HH:mm:ss.SSSXXX"
+        )
+        for (pattern in patterns) {
+            val parser = SimpleDateFormat(pattern, Locale.US).apply {
+                isLenient = false
+                if (pattern.endsWith("'Z'")) {
+                    timeZone = TimeZone.getTimeZone("UTC")
+                }
+            }
+            val parsedDate = runCatching { parser.parse(trimmed) }.getOrNull()
+            if (parsedDate != null) {
+                val outFmt = SimpleDateFormat("dd/MM/yyyy HH:mm", Locale.US).apply {
+                    timeZone = VIETNAM_TIMEZONE
+                }
+                return outFmt.format(parsedDate)
+            }
+        }
+        return trimmed
     }
 
     private fun sanitizeNonUuidLabel(raw: String?): String? {
@@ -517,7 +540,7 @@ object SalaryAdvanceContract {
             val y = m.groupValues[1].toIntOrNull() ?: return null
             val mo = m.groupValues[2].toIntOrNull() ?: return null
             val d = m.groupValues[3].toIntOrNull() ?: return null
-            if (runCatching { LocalDate.of(y, mo, d) }.isSuccess) {
+            if (isValidCalendarDate(y, mo, d)) {
                 return trimmed
             }
             return null
@@ -526,7 +549,7 @@ object SalaryAdvanceContract {
             val d = m.groupValues[1].toIntOrNull() ?: return null
             val mo = m.groupValues[2].toIntOrNull() ?: return null
             val y = m.groupValues[3].toIntOrNull() ?: return null
-            if (runCatching { LocalDate.of(y, mo, d) }.isSuccess) {
+            if (isValidCalendarDate(y, mo, d)) {
                 return "${m.groupValues[3]}-${m.groupValues[2]}-${m.groupValues[1]}"
             }
             return null
