@@ -114,7 +114,7 @@ public final class DirectEntryService: @unchecked Sendable {
     public static let shared = DirectEntryService()
 
     private let httpClient: BackendHttpClient
-    private var lastLoadedCatalog: DirectEntryAssigneeOptions = DirectEntryAssigneeOptions()
+    public private(set) var lastLoadedCatalog: DirectEntryAssigneeOptions = DirectEntryAssigneeOptions()
 
     public init(httpClient: BackendHttpClient = .shared) {
         self.httpClient = httpClient

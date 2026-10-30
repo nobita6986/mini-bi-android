@@ -1541,7 +1541,9 @@ public final class MiniBiViewModel: ObservableObject {
         let selectedProject = salaryAdvanceContext?.activeManagedProjects.first(where: { $0.projectId == projectId })
         if selectedProject?.hasActiveAccountant == false {
             salaryAdvanceCreateError = SalaryAdvanceContract.describeSalaryAdvanceError(
-                code: "SALARY_ADVANCE_PROJECT_HAS_NO_ACTIVE_ACCOUNTANT"
+                code: "SALARY_ADVANCE_PROJECT_HAS_NO_ACTIVE_ACCOUNTANT",
+                httpStatus: 422,
+                fallback: nil
             )
             return
         }
@@ -1615,7 +1617,7 @@ public final class MiniBiViewModel: ObservableObject {
                 salaryAdvanceWorkspaceTab = "LIST"
             }
         case .failure(let message, let httpStatus, let errorCode, _):
-            if SalaryAdvanceContract.isConflictError(httpStatus: httpStatus, errorCode: errorCode) {
+            if SalaryAdvanceContract.isConflictError(statusCode: httpStatus, errorCode: errorCode) {
                 salaryAdvancePendingIdempotencyKey = nil
                 salaryAdvancePendingSignature = nil
             }
@@ -1704,13 +1706,13 @@ public final class MiniBiViewModel: ObservableObject {
         case .success(let payload, _):
             if isAppend {
                 let existingIds = Set(salaryAdvanceRequests.map { $0.requestId })
-                salaryAdvanceRequests = salaryAdvanceRequests + payload.items.filter { !existingIds.contains($0.requestId) }
+                salaryAdvanceRequests = salaryAdvanceRequests + payload.requests.filter { !existingIds.contains($0.requestId) }
             } else {
-                salaryAdvanceRequests = payload.items
+                salaryAdvanceRequests = payload.requests
             }
             salaryAdvanceRequestsHasMore = payload.hasMore
             salaryAdvanceRequestsNextCursor = payload.nextCursor
-            if let badge = payload.pmBadgeCount {
+            if let badge = payload.badgeCount {
                 salaryAdvancePmBadgeCount = badge
             }
             salaryAdvanceRequestsError = nil
@@ -1767,7 +1769,7 @@ public final class MiniBiViewModel: ObservableObject {
 
     private func applyUpdatedSalaryAdvanceDetail(_ detail: SalaryAdvanceRequestDetail) {
         salaryAdvanceActiveDetail = detail
-        let currentEvVer = detail.request.currentEvidence?.version ?? detail.evidenceVersions.first?.version
+        let currentEvVer = detail.request.currentEvidence?.evidenceVersion ?? detail.evidenceVersions.first?.evidenceVersion
         salaryAdvanceSelectedEvidenceVersion = currentEvVer
         if let idx = salaryAdvanceRequests.firstIndex(where: { $0.requestId == detail.request.requestId }) {
             salaryAdvanceRequests[idx] = detail.request
@@ -1818,7 +1820,7 @@ public final class MiniBiViewModel: ObservableObject {
             applyUpdatedSalaryAdvanceDetail(updated)
             showBanner("Đã gửi tin nhắn trao đổi.")
         case .failure(let message, let httpStatus, let errorCode, _):
-            if SalaryAdvanceContract.isConflictError(httpStatus: httpStatus, errorCode: errorCode) {
+            if SalaryAdvanceContract.isConflictError(statusCode: httpStatus, errorCode: errorCode) {
                 salaryAdvanceMessageIdempotencyKey = UUID().uuidString.lowercased()
                 salaryAdvanceConflictBanner = message
                 await loadSalaryAdvanceRequestDetail(reqId)
@@ -1879,7 +1881,7 @@ public final class MiniBiViewModel: ObservableObject {
             await loadSalaryAdvanceRequests(append: false, cursor: nil)
             showBanner(cleanAction == "WITHDRAW" ? "Đã rút yêu cầu ứng lương." : "Đã gửi bổ sung thông tin cho Kế toán.")
         case .failure(let message, let httpStatus, let errorCode, _):
-            if SalaryAdvanceContract.isConflictError(httpStatus: httpStatus, errorCode: errorCode) {
+            if SalaryAdvanceContract.isConflictError(statusCode: httpStatus, errorCode: errorCode) {
                 salaryAdvanceActionIdempotencyKey = UUID().uuidString.lowercased()
                 salaryAdvanceConflictBanner = message
                 await loadSalaryAdvanceRequestDetail(reqId)
@@ -1899,26 +1901,23 @@ public final class MiniBiViewModel: ObservableObject {
     public func uploadSalaryAdvanceEvidenceData(_ rawData: Data, fileName: String = "evidence.jpg") async {
         guard !salaryAdvanceEvidenceUploading,
               let detail = salaryAdvanceActiveDetail,
-              detail.request.allowedActions.canUploadCashEvidence else { return }
+              detail.request.allowedActions.canUploadEvidence else { return }
 
         salaryAdvanceEvidenceError = nil
         salaryAdvanceConflictBanner = nil
         salaryAdvanceEvidenceUploading = true
 
-        let attachment = ContractFileAttachment(
-            id: UUID(),
+        let attachment = LocalAttachmentItem(
             fileName: fileName,
             mimeType: "image/jpeg",
             data: rawData
         )
-        let payloadResult = PdfContractMerger.prepareContractUploadPayload(from: [attachment])
-        guard case .success(let preparedPayload) = payloadResult else {
+        let preparedPayload: PreparedContractUploadPayload
+        do {
+            preparedPayload = try PdfContractMerger.prepareContractUploadPayload(attachments: [attachment])
+        } catch {
             salaryAdvanceEvidenceUploading = false
-            if case .failure(let err) = payloadResult {
-                salaryAdvanceEvidenceError = err.localizedDescription
-            } else {
-                salaryAdvanceEvidenceError = "Không thể chuẩn bị tệp ảnh chứng từ."
-            }
+            salaryAdvanceEvidenceError = error.localizedDescription
             return
         }
 
@@ -1947,7 +1946,7 @@ public final class MiniBiViewModel: ObservableObject {
             await loadSalaryAdvanceRequests(append: false, cursor: nil)
             showBanner("Đã tải lên ảnh chứng từ nhận tiền thành công.")
         case .failure(let message, let httpStatus, let errorCode, _):
-            if SalaryAdvanceContract.isConflictError(httpStatus: httpStatus, errorCode: errorCode) {
+            if SalaryAdvanceContract.isConflictError(statusCode: httpStatus, errorCode: errorCode) {
                 salaryAdvanceConflictBanner = message
                 await loadSalaryAdvanceRequestDetail(reqId)
                 await loadSalaryAdvanceRequests(append: false, cursor: nil)
