@@ -1076,7 +1076,15 @@ object DirectEntryContract {
         val normalizedValue = if (isDateField) {
             val iso = toDirectEditDateInputValue(trimmed)
             if (!ISO_DATE_REGEX.matches(iso) || !isValidUiOrIsoDate(iso)) {
-                throw invalid("WORKER_INVALID", "Ngày nhập vào không đúng định dạng hợp lệ (DD/MM/YYYY hoặc YYYY-MM-DD).")
+                val fieldLabel = when (key) {
+                    "date_of_birth" -> "Ngày sinh"
+                    "national_id_issued_at" -> "Ngày cấp CCCD"
+                    else -> "Trường ngày"
+                }
+                throw invalid(
+                    "WORKER_INVALID",
+                    "$fieldLabel không hợp lệ. Vui lòng nhập đúng định dạng DD/MM/YYYY (ví dụ 15/05/1995) hoặc để trống."
+                )
             }
             iso
         } else {
@@ -1149,8 +1157,17 @@ object DirectEntryContract {
 
         if (!anyChanged) return null
 
-        if (cleanDisplayName.isEmpty() || cleanDisplayName.length > 256 || isFormulaLikeCell(cleanDisplayName) || hasControlCharacter(cleanDisplayName)) {
-            throw invalid("WORKER_INVALID", "Họ và tên người lao động không được để trống (tối đa 256 ký tự).")
+        val hasValid12DigitCccd = nationalIdResolved.optString("state") == "provided" &&
+            isValidCccd12(nationalIdResolved.optString("value", ""))
+        if ((cleanDisplayName.isEmpty() && !hasValid12DigitCccd) ||
+            cleanDisplayName.length > 256 ||
+            isFormulaLikeCell(cleanDisplayName) ||
+            hasControlCharacter(cleanDisplayName)
+        ) {
+            throw invalid(
+                "WORKER_INVALID",
+                "Họ và tên người lao động không được để trống (hoặc cần nhập đủ 12 chữ số CCCD hợp lệ, tối đa 256 ký tự)."
+            )
         }
         if (genderResolved != null && genderResolved.optString("state") == "provided") {
             val gVal = genderResolved.optString("value", "")
@@ -1333,11 +1350,17 @@ object DirectEntryContract {
         val cleanProjectId = form.projectId.trim()
         if (cleanProjectId != baseline.projectId.trim()) {
             if (!SAFE_CATALOG_ID_REGEX.matches(cleanProjectId)) {
-                throw invalid("WORKER_INVALID", "Dự án đã chọn không hợp lệ.")
+                throw invalid("WORKER_INVALID", "Dự án đã chọn không hợp lệ. Vui lòng chọn một dự án từ danh sách.")
             }
             patch.put("project_id", cleanProjectId)
         }
 
+        if (!isValidUiOrIsoDate(form.firstWorkDate.trim())) {
+            throw invalid(
+                "WORKER_INVALID",
+                "Ngày bắt đầu làm việc không hợp lệ. Vui lòng nhập đúng định dạng DD/MM/YYYY (ví dụ 30/10/2026)."
+            )
+        }
         val isoFirstWorkDate = uiDateToIsoDate(form.firstWorkDate)
         if (isoFirstWorkDate != baseline.firstWorkDate.trim()) {
             patch.put("first_work_date", isoFirstWorkDate)
@@ -1346,7 +1369,10 @@ object DirectEntryContract {
         val cleanEmployeeCode = form.employeeCode.trim()
         if (cleanEmployeeCode != baseline.employeeCode.trim()) {
             if (!EMPLOYEE_CODE_REGEX.matches(cleanEmployeeCode)) {
-                throw invalid("WORKER_INVALID", "Mã người lao động phải đúng định dạng chuẩn hrp-YYYY-XXXXXX (ví dụ hrp-2026-000123).")
+                throw invalid(
+                    "WORKER_INVALID",
+                    "Mã người lao động phải đúng định dạng hrp-XXXX-XXXXXX (4 chữ số và 6 chữ số, ví dụ hrp-2026-001456)."
+                )
             }
             patch.put("employee_code", cleanEmployeeCode)
         }
@@ -1354,7 +1380,7 @@ object DirectEntryContract {
         val cleanRecruiterId = form.recruiterId.trim()
         if (cleanRecruiterId != baseline.recruiterId.trim()) {
             if (!UUID_REGEX.matches(cleanRecruiterId)) {
-                throw invalid("WORKER_INVALID", "Người tuyển đã chọn không hợp lệ.")
+                throw invalid("WORKER_INVALID", "Người tuyển đã chọn không hợp lệ. Vui lòng chọn lại người tuyển từ danh sách.")
             }
             patch.put("recruiter_id", cleanRecruiterId)
         }
@@ -1362,7 +1388,7 @@ object DirectEntryContract {
         val cleanLaborType = form.laborType.trim()
         if (cleanLaborType != baseline.laborType.trim()) {
             if (!LABOR_TYPE_KEY_REGEX.matches(cleanLaborType)) {
-                throw invalid("WORKER_INVALID", "Loại hình lao động đã chọn không hợp lệ.")
+                throw invalid("WORKER_INVALID", "Loại hình lao động đã chọn không hợp lệ. Vui lòng chọn lại từ danh sách.")
             }
             patch.put("labor_type", cleanLaborType)
         }
@@ -1386,6 +1412,12 @@ object DirectEntryContract {
 
         val cleanStatus = form.employmentStatus.trim()
         if (cleanStatus.isNotEmpty()) {
+            if (!isValidUiOrIsoDate(form.employmentEffectiveDate.trim())) {
+                throw invalid(
+                    "WORKER_INVALID",
+                    "Ngày hiệu lực trạng thái không hợp lệ. Vui lòng nhập đúng định dạng DD/MM/YYYY (ví dụ 30/10/2026)."
+                )
+            }
             val isoEff = uiDateToIsoDate(form.employmentEffectiveDate)
             val statusChanged = cleanStatus != baseline.employmentStatus.trim() ||
                 isoEff != baseline.employmentEffectiveDate.trim() ||
@@ -1404,6 +1436,172 @@ object DirectEntryContract {
         }
 
         return patch
+    }
+
+    /**
+     * Validates each field in [DirectEditFormInput] and returns a map of `fieldKey -> actionableErrorMessage`
+     * so the UI can highlight the exact offending input box (`isError = true`) and show clear fix guidance.
+     */
+    fun validateDirectEditFormFields(
+        baseline: WorkerEntryDetail,
+        form: DirectEditFormInput
+    ): Map<String, String> {
+        val errors = linkedMapOf<String, String>()
+
+        val cleanEmployeeCode = form.employeeCode.trim()
+        if (cleanEmployeeCode != baseline.employeeCode.trim() && !EMPLOYEE_CODE_REGEX.matches(cleanEmployeeCode)) {
+            errors["employee_code"] =
+                "Mã NLĐ sai định dạng. Hãy nhập theo mẫu hrp-XXXX-XXXXXX (4 chữ số và 6 chữ số, ví dụ: hrp-2026-001456)."
+        }
+
+        val cleanProjectId = form.projectId.trim()
+        if (cleanProjectId != baseline.projectId.trim() && !SAFE_CATALOG_ID_REGEX.matches(cleanProjectId)) {
+            errors["project_id"] = "Vui lòng chọn một Dự án hợp lệ từ danh sách."
+        }
+
+        val cleanLaborType = form.laborType.trim()
+        if (cleanLaborType != baseline.laborType.trim() && !LABOR_TYPE_KEY_REGEX.matches(cleanLaborType)) {
+            errors["labor_type"] = "Vui lòng chọn Loại hình lao động hợp lệ từ danh sách."
+        }
+
+        val cleanRecruiterId = form.recruiterId.trim()
+        if (cleanRecruiterId != baseline.recruiterId.trim() && !UUID_REGEX.matches(cleanRecruiterId)) {
+            errors["recruiter_id"] = "Vui lòng chọn Người tuyển hợp lệ từ danh sách."
+        }
+
+        if (!isValidUiOrIsoDate(form.firstWorkDate.trim())) {
+            errors["first_work_date"] =
+                "Ngày bắt đầu không hợp lệ. Hãy nhập đúng DD/MM/YYYY (ví dụ: 30/10/2026)."
+        }
+
+        val cleanStatus = form.employmentStatus.trim()
+        if (cleanStatus.isNotEmpty()) {
+            if (!isValidUiOrIsoDate(form.employmentEffectiveDate.trim())) {
+                errors["employment_effective_date"] =
+                    "Ngày hiệu lực không hợp lệ. Hãy nhập đúng DD/MM/YYYY (ví dụ: 30/10/2026)."
+            } else {
+                val isoEff = uiDateToIsoDate(form.employmentEffectiveDate)
+                val statusChanged = cleanStatus != baseline.employmentStatus.trim() ||
+                    isoEff != baseline.employmentEffectiveDate.trim() ||
+                    (cleanStatus == "OFF" && form.employmentLeaveReason.trim() != baseline.employmentLeaveReason.orEmpty().trim())
+                if (statusChanged && cleanStatus == "OFF" && form.employmentLeaveReason.trim().isEmpty()) {
+                    errors["employment_leave_reason"] =
+                        "Khi chọn trạng thái Đã nghỉ, bắt buộc phải nhập Lý do nghỉ việc."
+                }
+            }
+        }
+
+        val cleanDisplayName = form.displayName.trim()
+        val cleanNationalId = form.nationalId.trim()
+        if (cleanNationalId.isNotEmpty() && (!isCanonicalNationalId(cleanNationalId) || cleanNationalId == "000000000000" || cleanNationalId == "000000000")) {
+            errors["national_id"] =
+                "Số CCCD/CMND phải gồm đúng 9 hoặc 12 chữ số hợp lệ (hiện đang nhập ${cleanNationalId.length} chữ số), hoặc xóa trống."
+        }
+
+        val hasValid12DigitCccd = isValidCccd12(cleanNationalId)
+        if (cleanDisplayName.isEmpty() && !hasValid12DigitCccd && cleanDisplayName != baseline.displayName.trim()) {
+            errors["display_name"] =
+                "Họ và tên không được để trống (trừ khi đã nhập đủ 12 chữ số CCCD hợp lệ)."
+        } else if (cleanDisplayName.length > 256 || isFormulaLikeCell(cleanDisplayName) || hasControlCharacter(cleanDisplayName)) {
+            errors["display_name"] =
+                "Họ và tên không hợp lệ (tối đa 256 ký tự, không bắt đầu bằng dấu =, +, -, @)."
+        }
+
+        val cleanDob = form.dateOfBirth.trim()
+        if (cleanDob.isNotEmpty()) {
+            val baseDobIso = toDirectEditDateInputValue(baseline.dateOfBirth)
+            val inputDobIso = toDirectEditDateInputValue(cleanDob)
+            if (inputDobIso != baseDobIso && (!ISO_DATE_REGEX.matches(inputDobIso) || !isValidUiOrIsoDate(inputDobIso))) {
+                errors["date_of_birth"] =
+                    "Ngày sinh không hợp lệ. Hãy nhập đúng DD/MM/YYYY (ví dụ: 15/05/1995) hoặc xóa trống."
+            }
+        }
+
+        val cleanIssuedAt = form.nationalIdIssuedAt.trim()
+        if (cleanIssuedAt.isNotEmpty()) {
+            val baseIssuedIso = toDirectEditDateInputValue(baseline.nationalIdIssuedAt)
+            val inputIssuedIso = toDirectEditDateInputValue(cleanIssuedAt)
+            if (inputIssuedIso != baseIssuedIso && (!ISO_DATE_REGEX.matches(inputIssuedIso) || !isValidUiOrIsoDate(inputIssuedIso))) {
+                errors["national_id_issued_at"] =
+                    "Ngày cấp CCCD không hợp lệ. Hãy nhập đúng DD/MM/YYYY (ví dụ: 20/08/2021) hoặc xóa trống."
+            }
+        }
+
+        val cleanAccount = form.accountNumber.trim()
+        if (cleanAccount.isNotEmpty() && !PAYMENT_ACCOUNT_DIGITS_REGEX.matches(cleanAccount)) {
+            errors["account_number"] =
+                "Số tài khoản chỉ được chứa chữ số (1–64 chữ số), không chứa dấu cách hay ký tự chữ."
+        }
+
+        val cleanBankText = form.bankQueryText.trim()
+        if (cleanBankText.isNotEmpty() && (cleanBankText.length > 256 || hasControlCharacter(cleanBankText) || isFormulaLikeCell(cleanBankText))) {
+            errors["bank_query_text"] =
+                "Tên ngân hàng không hợp lệ (tối đa 256 ký tự, không bắt đầu bằng ký tự công thức)."
+        }
+
+        val cleanHolder = form.accountHolderName.trim()
+        if (cleanHolder.isNotEmpty() && (cleanHolder.length > 256 || hasControlCharacter(cleanHolder) || isFormulaLikeCell(cleanHolder))) {
+            errors["account_holder_name"] =
+                "Tên chủ tài khoản không hợp lệ (tối đa 256 ký tự, không bắt đầu bằng ký tự công thức)."
+        }
+
+        return errors
+    }
+
+    /**
+     * Translates a server-side `PRIVILEGED_EDIT_INVALID` response into a specific, actionable Vietnamese
+     * error message based on the exact keys present in [patch], so the user never sees a vague umbrella
+     * error listing unrelated fields.
+     */
+    fun describePrivilegedEditInvalidError(patch: JSONObject): String {
+        val keys = mutableSetOf<String>()
+        val iter = patch.keys()
+        while (iter.hasNext()) {
+            keys.add(iter.next())
+        }
+
+        if (keys == setOf("payment")) {
+            val pay = patch.optJSONObject("payment")
+            val hasBankId = pay != null && pay.has("bank_id") && !pay.isNull("bank_id") &&
+                pay.optString("bank_id", "").trim().isNotEmpty()
+            return if (!hasBankId && pay?.optString("state") == "provided") {
+                "Không lưu được Thông tin tài khoản ngân hàng: Máy chủ từ chối giá trị ngân hàng hoặc thiếu thông tin. " +
+                    "Cách sửa: Hãy nhập Số tài khoản (chỉ gồm chữ số), bấm chọn một Ngân hàng từ danh sách gợi ý VietQR (ví dụ: Vietcombank, BIDV, Techcombank...) và nhập Tên chủ tài khoản rồi bấm Lưu thay đổi."
+            } else {
+                "Không lưu được Thông tin tài khoản ngân hàng: Máy chủ hiện tại từ chối cập nhật trường ngân hàng (kiểm tra Số tài khoản chỉ gồm chữ số, chọn Ngân hàng trong danh sách gợi ý VietQR và nhập Tên chủ tài khoản; hoặc kiểm tra máy chủ đã cập nhật bản hỗ trợ sửa trực tiếp ngân hàng chưa)."
+            }
+        }
+
+        val hints = mutableListOf<String>()
+        if ("employee_code" in keys) {
+            val codeVal = patch.optString("employee_code", "")
+            hints.add("• Mã NLĐ (\"$codeVal\"): Phải đúng định dạng hrp-XXXX-XXXXXX (4 chữ số và 6 chữ số, ví dụ hrp-2026-001456).")
+        }
+        if ("first_work_date" in keys || "project_id" in keys || "recruiter_id" in keys || "labor_type" in keys) {
+            hints.add(
+                "• Thông tin công việc: Kiểm tra Ngày bắt đầu (DD/MM/YYYY), Dự án, Người tuyển và Loại hình lao động phải đang hoạt động hợp lệ tại ngày bắt đầu làm việc."
+            )
+        }
+        if ("employment_status" in keys) {
+            hints.add(
+                "• Trạng thái làm việc: Kiểm tra Ngày hiệu lực (DD/MM/YYYY, không nhỏ hơn ngày hiệu lực hiện tại) và nhập Lý do nghỉ nếu chọn Đã nghỉ."
+            )
+        }
+        if ("worker_details" in keys) {
+            hints.add(
+                "• Thông tin cá nhân: Kiểm tra Họ và tên (không để trống nếu chưa có đủ 12 số CCCD), Số CCCD (đúng 9 hoặc 12 chữ số), Ngày sinh và Ngày cấp CCCD (đúng định dạng DD/MM/YYYY)."
+            )
+        }
+        if ("payment" in keys) {
+            hints.add(
+                "• Thông tin tài khoản ngân hàng: Kiểm tra Số tài khoản (chỉ gồm chữ số), chọn Ngân hàng từ danh sách gợi ý VietQR và nhập Tên chủ tài khoản."
+            )
+        }
+
+        if (hints.isEmpty()) {
+            return "Dữ liệu chỉnh sửa chưa hợp lệ. Vui lòng kiểm tra lại các trường vừa thay đổi."
+        }
+        return "Không lưu được do trường vừa sửa chưa hợp lệ:\n" + hints.joinToString("\n")
     }
 
     /**
@@ -3493,12 +3691,39 @@ class DirectEntryService(
         val intentSignature = "privileged_edit:$cleanId:$payload"
         val idempotencyKey = idempotencyStore.resolve(intentSignature)
         try {
-            val res = httpClient.postJson(
-                path = "/api/direct-entry/entries/$cleanId/privileged-edit",
-                bodyJson = payload,
-                idempotencyKey = idempotencyKey,
-                requireOkTrue = true
-            )
+            val res = try {
+                httpClient.postJson(
+                    path = "/api/direct-entry/entries/$cleanId/privileged-edit",
+                    bodyJson = payload,
+                    idempotencyKey = idempotencyKey,
+                    requireOkTrue = true
+                )
+            } catch (firstErr: BackendApiException) {
+                val payObj = patch.optJSONObject("payment")
+                val canFallbackWithoutBankName = firstErr.statusCode == 400 &&
+                    firstErr.backendCode == "PRIVILEGED_EDIT_INVALID" &&
+                    payObj != null &&
+                    payObj.has("bank_name") &&
+                    payObj.has("bank_id") &&
+                    !payObj.isNull("bank_id") &&
+                    payObj.optString("bank_id", "").trim().isNotEmpty()
+                if (!canFallbackWithoutBankName) {
+                    throw firstErr
+                }
+                val fallbackPatch = JSONObject(patch.toString())
+                fallbackPatch.optJSONObject("payment")?.remove("bank_name")
+                val fallbackPayload = DirectEntryContract.buildPrivilegedEditPayload(
+                    expectedEntryVersion = expectedEntryVersion,
+                    patch = fallbackPatch,
+                    reason = reason
+                )
+                httpClient.postJson(
+                    path = "/api/direct-entry/entries/$cleanId/privileged-edit",
+                    bodyJson = fallbackPayload,
+                    idempotencyKey = "$idempotencyKey:v1-pay",
+                    requireOkTrue = true
+                )
+            }
             val returnedEntryId = res.optString("entry_id", "").trim()
             val newVersion = res.optInt("version", 0)
             if (returnedEntryId != cleanId || newVersion < 1) {
@@ -3521,6 +3746,15 @@ class DirectEntryService(
         } catch (e: BackendApiException) {
             if (!idempotencyStore.shouldPreserveForRetry(e)) {
                 idempotencyStore.clear(intentSignature)
+            }
+            if (e.backendCode == "PRIVILEGED_EDIT_INVALID") {
+                throw BackendApiException(
+                    kind = e.kind,
+                    statusCode = e.statusCode,
+                    backendCode = e.backendCode,
+                    message = DirectEntryContract.describePrivilegedEditInvalidError(patch),
+                    cause = e
+                )
             }
             throw e
         }

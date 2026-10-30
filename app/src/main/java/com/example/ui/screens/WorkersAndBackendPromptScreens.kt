@@ -3605,6 +3605,9 @@ internal fun WorkerPrivilegedEditDialog(
     val selectableStatusCodes = remember(baselineDetail.employmentStatus) {
         DirectEntryContract.selectableDirectEditStatuses(baselineDetail.employmentStatus)
     }
+    val fieldErrors = remember(baselineDetail, form) {
+        DirectEntryContract.validateDirectEditFormFields(baselineDetail, form)
+    }
     var localError by remember { mutableStateOf<String?>(null) }
     var preparingDocType by remember { mutableStateOf<String?>(null) }
     var showBankSuggestions by remember { mutableStateOf(false) }
@@ -3826,7 +3829,11 @@ internal fun WorkerPrivilegedEditDialog(
                                 onValueChange = {
                                     form = form.copy(employeeCode = sanitizeSingleLineInput(it, 64))
                                 },
-                                label = { Text("Mã NLĐ (hrp-MMYY-XXXXXX) *") },
+                                label = { Text("Mã NLĐ (hrp-XXXX-XXXXXX) *") },
+                                isError = fieldErrors.containsKey("employee_code"),
+                                supportingText = fieldErrors["employee_code"]?.let { msg ->
+                                    { Text(msg) }
+                                },
                                 singleLine = true,
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -3921,6 +3928,10 @@ internal fun WorkerPrivilegedEditDialog(
                                     form = form.copy(firstWorkDate = sanitizeSingleLineInput(it, 10))
                                 },
                                 label = { Text("Ngày bắt đầu (DD/MM/YYYY)") },
+                                isError = fieldErrors.containsKey("first_work_date"),
+                                supportingText = fieldErrors["first_work_date"]?.let { msg ->
+                                    { Text(msg) }
+                                },
                                 singleLine = true,
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -3977,6 +3988,10 @@ internal fun WorkerPrivilegedEditDialog(
                                     form = form.copy(employmentEffectiveDate = sanitizeSingleLineInput(it, 10))
                                 },
                                 label = { Text("Ngày hiệu lực trạng thái (DD/MM/YYYY)") },
+                                isError = fieldErrors.containsKey("employment_effective_date"),
+                                supportingText = fieldErrors["employment_effective_date"]?.let { msg ->
+                                    { Text(msg) }
+                                },
                                 singleLine = true,
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -3989,6 +4004,10 @@ internal fun WorkerPrivilegedEditDialog(
                                         form = form.copy(employmentLeaveReason = sanitizeMultiLineInput(it, 4000))
                                     },
                                     label = { Text("Lý do nghỉ *") },
+                                    isError = fieldErrors.containsKey("employment_leave_reason"),
+                                    supportingText = fieldErrors["employment_leave_reason"]?.let { msg ->
+                                        { Text(msg) }
+                                    },
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .testTag("direct_edit_leave_reason_input")
@@ -4026,6 +4045,10 @@ internal fun WorkerPrivilegedEditDialog(
                                     form = form.copy(displayName = sanitizeSingleLineInput(it, 256))
                                 },
                                 label = { Text("Họ và tên *") },
+                                isError = fieldErrors.containsKey("display_name"),
+                                supportingText = fieldErrors["display_name"]?.let { msg ->
+                                    { Text(msg) }
+                                },
                                 singleLine = true,
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -4063,6 +4086,10 @@ internal fun WorkerPrivilegedEditDialog(
                                     },
                                     label = { Text("Ngày sinh") },
                                     placeholder = { Text("DD/MM/YYYY") },
+                                    isError = fieldErrors.containsKey("date_of_birth"),
+                                    supportingText = fieldErrors["date_of_birth"]?.let { msg ->
+                                        { Text(msg) }
+                                    },
                                     singleLine = true,
                                     modifier = Modifier
                                         .weight(1f)
@@ -4087,7 +4114,11 @@ internal fun WorkerPrivilegedEditDialog(
                                 onValueChange = {
                                     form = form.copy(nationalId = it.filter { ch -> ch.isDigit() }.take(12))
                                 },
-                                label = { Text("Số CCCD (12 chữ số)") },
+                                label = { Text("Số CCCD (9 hoặc 12 chữ số)") },
+                                isError = fieldErrors.containsKey("national_id"),
+                                supportingText = fieldErrors["national_id"]?.let { msg ->
+                                    { Text(msg) }
+                                },
                                 singleLine = true,
                                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                                 modifier = Modifier
@@ -4103,6 +4134,10 @@ internal fun WorkerPrivilegedEditDialog(
                                     },
                                     label = { Text("Ngày cấp CCCD") },
                                     placeholder = { Text("DD/MM/YYYY") },
+                                    isError = fieldErrors.containsKey("national_id_issued_at"),
+                                    supportingText = fieldErrors["national_id_issued_at"]?.let { msg ->
+                                        { Text(msg) }
+                                    },
                                     singleLine = true,
                                     modifier = Modifier
                                         .weight(1f)
@@ -4163,7 +4198,11 @@ internal fun WorkerPrivilegedEditDialog(
                                 onValueChange = {
                                     form = form.copy(accountNumber = it.filter { ch -> ch.isDigit() }.take(64))
                                 },
-                                label = { Text("Số tài khoản") },
+                                label = { Text("Số tài khoản (chỉ gồm chữ số)") },
+                                isError = fieldErrors.containsKey("account_number"),
+                                supportingText = fieldErrors["account_number"]?.let { msg ->
+                                    { Text(msg) }
+                                },
                                 singleLine = true,
                                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                                 modifier = Modifier
@@ -4171,6 +4210,15 @@ internal fun WorkerPrivilegedEditDialog(
                                     .testTag("direct_edit_account_number_input")
                             )
 
+                            val matchedBankOption = remember(mergedBanks, form.bankId, form.bankQueryText) {
+                                if (form.bankId.isNotBlank()) {
+                                    DirectEntryContract.resolveBankCatalogOption(mergedBanks, form.bankId)
+                                } else if (form.bankQueryText.isNotBlank()) {
+                                    DirectEntryContract.resolveBankCatalogOption(mergedBanks, form.bankQueryText)
+                                } else {
+                                    null
+                                }
+                            }
                             OutlinedTextField(
                                 value = form.bankQueryText,
                                 onValueChange = { rawText ->
@@ -4180,9 +4228,24 @@ internal fun WorkerPrivilegedEditDialog(
                                         bankQueryText = clean,
                                         bankId = matched?.bankId.orEmpty()
                                     )
+                                    showBankSuggestions = clean.isNotEmpty()
                                 },
                                 label = { Text("Ngân hàng (chọn hoặc nhập tên tham chiếu)") },
                                 placeholder = { Text("Tìm VietQR / chọn ngân hàng hoặc nhập tên") },
+                                isError = fieldErrors.containsKey("bank_query_text"),
+                                supportingText = {
+                                    val err = fieldErrors["bank_query_text"]
+                                    if (err != null) {
+                                        Text(err)
+                                    } else if (matchedBankOption != null) {
+                                        Text(
+                                            text = "Đã khớp ngân hàng chuẩn: ${matchedBankOption.label}",
+                                            color = SemanticColors.SuccessLight
+                                        )
+                                    } else if (form.bankQueryText.isNotBlank()) {
+                                        Text("Đang dùng tên ngân hàng tham chiếu tự nhập (bấm gợi ý bên dưới để chọn ngân hàng VietQR chuẩn nếu có).")
+                                    }
+                                },
                                 trailingIcon = {
                                     IconButton(
                                         onClick = { showBankSuggestions = !showBankSuggestions },
@@ -4505,6 +4568,11 @@ internal fun WorkerPrivilegedEditDialog(
                         modifier = Modifier.testTag("direct_edit_save_button"),
                         onClick = {
                             localError = null
+                            if (fieldErrors.isNotEmpty()) {
+                                localError = "Vui lòng kiểm tra và sửa các trường đang báo đỏ:\n" +
+                                    fieldErrors.values.joinToString("\n") { "• $it" }
+                                return@Button
+                            }
                             try {
                                 val patch = DirectEntryContract.buildDirectEditPatch(
                                     baseline = baselineDetail,

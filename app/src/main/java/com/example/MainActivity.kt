@@ -134,7 +134,10 @@ internal fun resolveBrandBadgeLabel(serverUrl: String = BuildConfig.DEFAULT_SERV
     return if (
         normalized.contains("://bi2.") ||
         normalized.contains("//bi2.") ||
-        normalized.startsWith("bi2.")
+        normalized.startsWith("bi2.") ||
+        normalized.contains("://bi.hrpvietnam.") ||
+        normalized.contains("//bi.hrpvietnam.") ||
+        normalized.startsWith("bi.hrpvietnam.")
     ) {
         "BI2"
     } else {

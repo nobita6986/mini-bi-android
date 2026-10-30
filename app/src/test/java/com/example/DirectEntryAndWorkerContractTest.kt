@@ -1808,4 +1808,103 @@ class DirectEntryAndWorkerContractTest {
         assertEquals(1, recordedPaths.count { it.contains("/privileged-edit") })
         assertEquals(0, recordedPaths.count { it.contains("/batches/full-profile") })
     }
+
+    @Test
+    fun `direct edit field validation, empty display_name with 12-digit CCCD exception, and patch-aware PRIVILEGED_EDIT_INVALID error messages`() = runBlocking {
+        val detailJson = JSONObject(
+            """
+            {
+              "ok": true,
+              "entry": {
+                "entry_id": "11111111-2222-4333-8444-555555555555",
+                "submission_id": "66666666-7777-4888-8999-000000000000",
+                "version": 1,
+                "project_id": "PRJ_01",
+                "first_work_date": "2026-10-30",
+                "employee_code": "hrp-2026-001456",
+                "recruiter_id": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+                "team_id": "TEAM_01",
+                "provider_type": "hrp",
+                "labor_type": "TEMPORARY",
+                "labor_type_display": "Thời vụ",
+                "worker_details": {
+                  "display_name": "",
+                  "national_id": { "state": "provided", "value": "079095000123" }
+                },
+                "payment": {
+                  "state": "omitted"
+                },
+                "employment_status": {
+                  "status": "ON",
+                  "effective_date": "2026-10-30",
+                  "version": 1
+                },
+                "documents": []
+              }
+            }
+            """.trimIndent()
+        )
+        val baseline = DirectEntryContract.parseEntryDetailResponse(detailJson)
+        val initialForm = DirectEntryContract.createInitialDirectEditFormInput(baseline)
+
+        // 1. Worker with empty display_name and valid 12-digit CCCD is valid when editing phone/payment
+        assertTrue(DirectEntryContract.validateDirectEditFormFields(baseline, initialForm).isEmpty())
+        val phoneEditedPatch = DirectEntryContract.buildDirectEditPatch(
+            baseline = baseline,
+            form = initialForm.copy(phone = "0912345678")
+        )
+        assertEquals("", phoneEditedPatch.getJSONObject("worker_details").getString("display_name"))
+
+        // 2. Field-level validation identifies exact invalid fields and how to fix them
+        val invalidForm = initialForm.copy(
+            employeeCode = "hrp-26-123",
+            firstWorkDate = "31/02/2026",
+            nationalId = "12345",
+            employmentStatus = "OFF",
+            employmentLeaveReason = ""
+        )
+        val fieldErrors = DirectEntryContract.validateDirectEditFormFields(baseline, invalidForm)
+        assertTrue(fieldErrors.containsKey("employee_code"))
+        assertTrue(fieldErrors.containsKey("first_work_date"))
+        assertTrue(fieldErrors.containsKey("national_id"))
+        assertTrue(fieldErrors.containsKey("employment_leave_reason"))
+
+        // 3. Patch-aware PRIVILEGED_EDIT_INVALID message when only payment is edited
+        val paymentOnlyPatch = DirectEntryContract.buildDirectEditPatch(
+            baseline = baseline,
+            form = initialForm.copy(
+                accountNumber = "1903000111",
+                bankId = "VCB",
+                bankQueryText = "Vietcombank (VCB) — Ngân hàng TMCP Ngoại thương Việt Nam",
+                accountHolderName = "NGUYEN VAN A"
+            )
+        )
+        val paymentInvalidMsg = DirectEntryContract.describePrivilegedEditInvalidError(paymentOnlyPatch)
+        assertTrue(paymentInvalidMsg.contains("Thông tin tài khoản ngân hàng"))
+        assertFalse(paymentInvalidMsg.contains("kiểm tra định dạng mã NLĐ, ngày làm việc"))
+
+        // 4. Service retries without bank_name if server returns 400 PRIVILEGED_EDIT_INVALID on bank_id + bank_name
+        val repo = createRepository()
+        server.enqueue(
+            MockResponse().setResponseCode(400).setBody(
+                """{"ok":false,"code":"PRIVILEGED_EDIT_INVALID"}"""
+            )
+        )
+        server.enqueue(
+            MockResponse().setResponseCode(200).setBody(
+                """{"ok":true,"entry_id":"${baseline.entryId}","version":2}"""
+            )
+        )
+        server.enqueue(
+            MockResponse().setResponseCode(200).setBody(detailJson.toString())
+        )
+        val saved = repo.directEntryService.privilegedEditEntry(
+            entryId = baseline.entryId,
+            expectedEntryVersion = 1,
+            patch = paymentOnlyPatch,
+            reason = null,
+            baselineFallback = baseline
+        )
+        assertEquals(baseline.entryId, saved.entryId)
+    }
 }
