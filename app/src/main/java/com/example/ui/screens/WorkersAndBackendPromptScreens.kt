@@ -108,8 +108,12 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import com.example.data.AppActor
 import com.example.data.CccdQrDecoder
+import com.example.data.DirectEditFileState
+import com.example.data.DirectEditFileStatus
+import com.example.data.DirectEditFormInput
 import com.example.data.DirectEntryCatalog
 import com.example.data.DirectEntryContract
+import com.example.data.MergedBankCatalogOption
 import com.example.data.NewWorkerEntryDraft
 import com.example.data.OwnSubmissionItem
 import com.example.data.PendingDuplicateCccdSubmission
@@ -2318,6 +2322,8 @@ fun WorkersAndDirectEntryScreen(
     val workerSummary by viewModel.workerSummary.collectAsStateWithLifecycle()
     val proposeTarget by viewModel.proposeChangeTarget.collectAsStateWithLifecycle()
     val directEditTarget by viewModel.directEditTarget.collectAsStateWithLifecycle()
+    val directEditProfileSaveMessage by viewModel.directEditProfileSaveMessage.collectAsStateWithLifecycle()
+    val directEditFileStatuses by viewModel.directEditFileStatuses.collectAsStateWithLifecycle()
     val mutationBusy by viewModel.workerMutationBusy.collectAsStateWithLifecycle()
     val mutationError by viewModel.workerMutationError.collectAsStateWithLifecycle()
     val pendingDuplicateSubmission by viewModel.pendingDuplicateCccdSubmission.collectAsStateWithLifecycle()
@@ -2726,6 +2732,24 @@ fun WorkersAndDirectEntryScreen(
                     patch = patch,
                     reason = reason
                 )
+            },
+            canUploadDocuments = actor.hasCapability("document_upload"),
+            profileSaveMessage = directEditProfileSaveMessage,
+            fileStatuses = directEditFileStatuses,
+            onPrepareLocalDocument = { docType, uri, onPrepared, onError ->
+                viewModel.prepareLocalStageDocument(docType, uri, onPrepared, onError)
+            },
+            onPrepareMultiImagePdfDocument = { docType, uris, existingRef, onPrepared, onError ->
+                viewModel.prepareLocalMultiImagePdfStageDocument(docType, uris, existingRef, onPrepared, onError)
+            },
+            onAttachStagedDocument = { docType, staged ->
+                viewModel.attachDirectEditStagedDocument(docType, staged)
+            },
+            onClearStagedDocument = { docType ->
+                viewModel.clearDirectEditStagedDocument(docType)
+            },
+            onRetryDocument = { docType, reason ->
+                viewModel.retryDirectEditDocument(docType, reason)
             }
         )
     }
@@ -3547,6 +3571,7 @@ internal fun WorkerProposeChangeDialog(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun WorkerPrivilegedEditDialog(
     worker: WorkerProfileEntity,
@@ -3556,22 +3581,152 @@ internal fun WorkerPrivilegedEditDialog(
     error: String?,
     onDismiss: () -> Unit,
     onSubmit: (expectedEntryVersion: Int, patch: JSONObject, reason: String?) -> Unit,
-    renderInDialog: Boolean = true
+    renderInDialog: Boolean = true,
+    canUploadDocuments: Boolean = true,
+    profileSaveMessage: String? = null,
+    fileStatuses: Map<String, DirectEditFileStatus> = emptyMap(),
+    onPrepareLocalDocument: ((documentType: String, uri: Uri, onPrepared: (StagedDocumentRef) -> Unit, onError: (String) -> Unit) -> Unit)? = null,
+    onPrepareMultiImagePdfDocument: ((documentType: String, uris: List<Uri>, existingRef: StagedDocumentRef?, onPrepared: (StagedDocumentRef) -> Unit, onError: (String) -> Unit) -> Unit)? = null,
+    onAttachStagedDocument: ((documentType: String, stagedRef: StagedDocumentRef) -> Unit)? = null,
+    onClearStagedDocument: ((documentType: String) -> Unit)? = null,
+    onRetryDocument: ((documentType: String, reason: String?) -> Unit)? = null
 ) {
-    var projectId by remember(baselineDetail) { mutableStateOf(baselineDetail.projectId) }
-    var firstWorkDateUi by remember(baselineDetail) {
-        mutableStateOf(DirectEntryContract.isoDateToUiDate(baselineDetail.firstWorkDate))
+    val context = LocalContext.current
+    val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
+
+    val catalogBanks = catalog?.banks.orEmpty()
+    val mergedBanks = remember(catalogBanks) {
+        DirectEntryContract.mergeVietQrBankCatalog(catalogBanks)
     }
-    var laborTypeKey by remember(baselineDetail) { mutableStateOf(baselineDetail.laborType) }
+    var form by remember(baselineDetail) {
+        mutableStateOf(DirectEntryContract.createInitialDirectEditFormInput(baselineDetail, catalogBanks))
+    }
     val selectableStatusCodes = remember(baselineDetail.employmentStatus) {
         DirectEntryContract.selectableDirectEditStatuses(baselineDetail.employmentStatus)
     }
-    var statusCode by remember(baselineDetail) { mutableStateOf(baselineDetail.employmentStatus) }
-    var statusEffectiveDateUi by remember(baselineDetail) {
-        mutableStateOf(DirectEntryContract.isoDateToUiDate(baselineDetail.employmentEffectiveDate))
-    }
-    var leaveReason by remember(baselineDetail) { mutableStateOf(baselineDetail.employmentLeaveReason.orEmpty()) }
     var localError by remember { mutableStateOf<String?>(null) }
+    var preparingDocType by remember { mutableStateOf<String?>(null) }
+    var showBankSuggestions by remember { mutableStateOf(false) }
+
+    var pendingFileTarget by remember { mutableStateOf<String?>(null) }
+    var pendingMultiImageTarget by remember { mutableStateOf<String?>(null) }
+    var pendingCameraCapture by remember { mutableStateOf<Pair<String, Uri>?>(null) }
+    var pendingCameraPermTarget by remember { mutableStateOf<String?>(null) }
+
+    fun handleSingleUriSelected(docType: String, uri: Uri) {
+        val prepareFn = onPrepareLocalDocument ?: return
+        val attachFn = onAttachStagedDocument ?: return
+        preparingDocType = docType
+        localError = null
+        prepareFn(
+            docType,
+            uri,
+            { staged ->
+                preparingDocType = null
+                attachFn(docType, staged)
+            },
+            { errMsg ->
+                preparingDocType = null
+                localError = errMsg
+            }
+        )
+    }
+
+    fun handleMultiImagesSelected(docType: String, uris: List<Uri>) {
+        if (uris.isEmpty()) return
+        val multiFn = onPrepareMultiImagePdfDocument
+        val attachFn = onAttachStagedDocument ?: return
+        if (multiFn == null) {
+            handleSingleUriSelected(docType, uris.first())
+            return
+        }
+        val existingRef = fileStatuses[docType]?.stagedRef
+        preparingDocType = docType
+        localError = null
+        multiFn(
+            docType,
+            uris,
+            existingRef,
+            { staged ->
+                preparingDocType = null
+                attachFn(docType, staged)
+            },
+            { errMsg ->
+                preparingDocType = null
+                localError = errMsg
+            }
+        )
+    }
+
+    val singleFilePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri: Uri? ->
+        val docType = pendingFileTarget
+        pendingFileTarget = null
+        if (uri != null && docType != null) {
+            handleSingleUriSelected(docType, uri)
+        }
+    }
+
+    val multiImagePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetMultipleContents()
+    ) { uris: List<Uri> ->
+        val docType = pendingMultiImageTarget
+        pendingMultiImageTarget = null
+        if (uris.isNotEmpty() && docType != null) {
+            handleMultiImagesSelected(docType, uris)
+        }
+    }
+
+    val cameraLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.TakePicture()
+    ) { success ->
+        val capture = pendingCameraCapture
+        pendingCameraCapture = null
+        if (success && capture != null) {
+            if (capture.first == "EMPLOYMENT_CONTRACT" && onPrepareMultiImagePdfDocument != null) {
+                handleMultiImagesSelected(capture.first, listOf(capture.second))
+            } else {
+                handleSingleUriSelected(capture.first, capture.second)
+            }
+        }
+    }
+
+    fun launchCameraNow(docType: String) {
+        runCatching {
+            val dir = File(context.cacheDir, "worker_captures").apply { mkdirs() }
+            val file = File(dir, "direct_edit_${docType.lowercase(Locale.ROOT)}_${System.currentTimeMillis()}.jpg")
+            val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+            pendingCameraCapture = docType to uri
+            cameraLauncher.launch(uri)
+        }.onFailure {
+            localError = "Không thể mở máy ảnh trên thiết bị."
+        }
+    }
+
+    val cameraPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        val docType = pendingCameraPermTarget
+        pendingCameraPermTarget = null
+        if (granted && docType != null) {
+            launchCameraNow(docType)
+        }
+    }
+
+    fun requestCameraForDoc(docType: String) {
+        focusManager.clearFocus()
+        keyboardController?.hide()
+        val hasPerm = ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
+            PackageManager.PERMISSION_GRANTED
+        if (hasPerm) {
+            launchCameraNow(docType)
+        } else {
+            pendingCameraPermTarget = docType
+            cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+        }
+    }
 
     val dialogBody: @Composable () -> Unit = {
         Surface(
@@ -3584,112 +3739,753 @@ internal fun WorkerPrivilegedEditDialog(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(20.dp),
-                verticalArrangement = Arrangement.spacedBy(14.dp)
+                verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 Column {
-                    Text("Sửa trực tiếp hồ sơ", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                    Text(
+                        text = "Sửa trực tiếp hồ sơ",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold
+                    )
                     Text(
                         text = "${baselineDetail.displayName} (${baselineDetail.employeeCode}) · v${baselineDetail.version}",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
+
+                if (!profileSaveMessage.isNullOrBlank()) {
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = SemanticColors.SuccessLight.copy(alpha = 0.14f),
+                        border = BorderStroke(1.dp, SemanticColors.SuccessLight.copy(alpha = 0.4f)),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("direct_edit_profile_save_status")
+                    ) {
+                        Text(
+                            text = profileSaveMessage,
+                            style = MaterialTheme.typography.bodySmall,
+                            fontWeight = FontWeight.SemiBold,
+                            color = SemanticColors.SuccessLight,
+                            modifier = Modifier.padding(12.dp)
+                        )
+                    }
+                }
+
+                (localError ?: error)?.let { errMsg ->
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.55f),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("direct_edit_error_banner")
+                    ) {
+                        Text(
+                            text = errMsg,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.padding(12.dp)
+                        )
+                    }
+                }
+
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .heightIn(max = 460.dp)
-                        .verticalScroll(rememberScrollState()),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                        .heightIn(max = if (renderInDialog) 500.dp else 1600.dp)
+                        .verticalScroll(rememberScrollState())
+                        .testTag("direct_edit_scroll_column"),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                if (catalog != null && catalog.projects.isNotEmpty()) {
-                    KeyedSelectDropdownField(
-                        label = "Dự án",
-                        selectedLabel = catalog.projects.firstOrNull { it.projectId == projectId }?.displayName ?: projectId,
-                        placeholder = "Chọn dự án",
-                        options = catalog.projects.map { DropdownOptionItem(it.projectId, it.displayName) },
-                        onSelect = { projectId = it.id },
-                        testTag = "edit_project_dropdown"
-                    )
-                }
-                if (catalog != null && catalog.laborTypes.isNotEmpty()) {
-                    KeyedSelectDropdownField(
-                        label = "Loại hình lao động",
-                        selectedLabel = catalog.laborTypes.firstOrNull { it.laborTypeKey == laborTypeKey }?.displayName ?: laborTypeKey,
-                        placeholder = "Chọn loại hình LĐ",
-                        options = catalog.laborTypes.map { DropdownOptionItem(it.laborTypeKey, it.displayName) },
-                        onSelect = { laborTypeKey = it.id },
-                        testTag = "edit_labor_type_dropdown"
-                    )
-                }
-                OutlinedTextField(
-                    value = firstWorkDateUi,
-                    onValueChange = { firstWorkDateUi = sanitizeSingleLineInput(it, 10) },
-                    label = { Text("Ngày bắt đầu (DD/MM/YYYY)") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                Text("Trạng thái làm việc", style = MaterialTheme.typography.labelLarge)
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    WORK_STATUS_FILTER_OPTIONS
-                        .filter { (code, _) -> code in selectableStatusCodes }
-                        .forEach { (code, label) ->
-                            FilterChip(
-                                selected = statusCode == code,
-                                onClick = {
-                                    if (code != statusCode) {
-                                        statusCode = code
-                                        val baselineEffUi = DirectEntryContract.isoDateToUiDate(
-                                            baselineDetail.employmentEffectiveDate
-                                        )
-                                        if (code != baselineDetail.employmentStatus &&
-                                            statusEffectiveDateUi == baselineEffUi &&
-                                            DirectEntryContract.todayIsoInHcm() >= baselineDetail.employmentEffectiveDate
-                                        ) {
-                                            statusEffectiveDateUi = DirectEntryContract.todayUiInHcm()
-                                        }
-                                    }
-                                },
-                                label = { Text(label) },
-                                modifier = Modifier.testTag("direct_edit_status_chip_$code")
-                            )
-                        }
-                }
-                if (baselineDetail.employmentStatus == "OFF") {
-                    Text(
-                        text = "Hồ sơ đã nghỉ việc, không thể chuyển trạng thái sang Đang làm hoặc Đang chờ việc.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                OutlinedTextField(
-                    value = statusEffectiveDateUi,
-                    onValueChange = { statusEffectiveDateUi = sanitizeSingleLineInput(it, 10) },
-                    label = { Text("Ngày hiệu lực trạng thái (DD/MM/YYYY)") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                if (statusCode == "OFF") {
-                    OutlinedTextField(
-                        value = leaveReason,
-                        onValueChange = { leaveReason = sanitizeMultiLineInput(it, 4000) },
-                        label = { Text("Lý do nghỉ *") },
+                    // =========================================================
+                    // NHÓM 1: THÔNG TIN CÔNG VIỆC & TRẠNG THÁI
+                    // =========================================================
+                    Surface(
+                        shape = RoundedCornerShape(14.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
                         modifier = Modifier
                             .fillMaxWidth()
-                            .testTag("direct_edit_leave_reason_input")
-                    )
-                }
-                (localError ?: error)?.let { errMsg ->
-                    Text(
-                        text = errMsg,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.error
-                    )
-                }
+                            .testTag("direct_edit_section_work")
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Text(
+                                text = "Thông tin công việc",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+
+                            OutlinedTextField(
+                                value = form.employeeCode,
+                                onValueChange = {
+                                    form = form.copy(employeeCode = sanitizeSingleLineInput(it, 64))
+                                },
+                                label = { Text("Mã NLĐ (hrp-MMYY-XXXXXX) *") },
+                                singleLine = true,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("direct_edit_employee_code_input")
+                            )
+
+                            if (catalog != null && catalog.projects.isNotEmpty()) {
+                                KeyedSelectDropdownField(
+                                    label = "Dự án",
+                                    selectedLabel = catalog.projects.firstOrNull { it.projectId == form.projectId }?.displayName
+                                        ?: form.projectId,
+                                    placeholder = "Chọn dự án",
+                                    options = catalog.projects.map { DropdownOptionItem(it.projectId, it.displayName) },
+                                    onSelect = { form = form.copy(projectId = it.id) },
+                                    testTag = "edit_project_dropdown"
+                                )
+                            } else {
+                                OutlinedTextField(
+                                    value = form.projectId,
+                                    onValueChange = {
+                                        form = form.copy(projectId = sanitizeSingleLineInput(it, 128))
+                                    },
+                                    label = { Text("Mã dự án *") },
+                                    singleLine = true,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .testTag("direct_edit_project_id_input")
+                                )
+                            }
+
+                            if (catalog != null && catalog.laborTypes.isNotEmpty()) {
+                                KeyedSelectDropdownField(
+                                    label = "Loại hình lao động",
+                                    selectedLabel = catalog.laborTypes.firstOrNull { it.laborTypeKey == form.laborType }?.displayName
+                                        ?: form.laborType,
+                                    placeholder = "Chọn loại hình LĐ",
+                                    options = catalog.laborTypes.map { DropdownOptionItem(it.laborTypeKey, it.displayName) },
+                                    onSelect = { form = form.copy(laborType = it.id) },
+                                    testTag = "edit_labor_type_dropdown"
+                                )
+                            } else {
+                                OutlinedTextField(
+                                    value = form.laborType,
+                                    onValueChange = {
+                                        form = form.copy(laborType = sanitizeSingleLineInput(it, 128))
+                                    },
+                                    label = { Text("Loại hình lao động *") },
+                                    singleLine = true,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .testTag("direct_edit_labor_type_input")
+                                )
+                            }
+
+                            if (catalog != null && catalog.recruiters.isNotEmpty()) {
+                                val selectedRecruiter = catalog.recruiters.firstOrNull { it.recruiterId == form.recruiterId }
+                                SearchableSelectDropdownField(
+                                    label = "Người tuyển",
+                                    selectedLabel = selectedRecruiter?.label ?: selectedRecruiter?.displayName ?: form.recruiterId,
+                                    placeholder = "Chọn người tuyển",
+                                    options = catalog.recruiters.map { rec ->
+                                        DropdownOptionItem(
+                                            id = rec.recruiterId,
+                                            label = rec.label.ifBlank { rec.displayName },
+                                            subtitle = listOfNotNull(
+                                                rec.personnelCode.takeIf { it.isNotBlank() },
+                                                rec.teamDisplayName?.takeIf { it.isNotBlank() }
+                                            ).joinToString(" · "),
+                                            searchKeywords = "${rec.displayName} ${rec.personnelCode} ${rec.providerType}"
+                                        )
+                                    },
+                                    onSelect = { form = form.copy(recruiterId = it.id) },
+                                    testTag = "direct_edit_recruiter_dropdown"
+                                )
+                            } else {
+                                OutlinedTextField(
+                                    value = form.recruiterId,
+                                    onValueChange = {
+                                        form = form.copy(recruiterId = sanitizeSingleLineInput(it, 64))
+                                    },
+                                    label = { Text("Mã người tuyển (UUID) *") },
+                                    singleLine = true,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .testTag("direct_edit_recruiter_id_input")
+                                )
+                            }
+
+                            OutlinedTextField(
+                                value = form.firstWorkDate,
+                                onValueChange = {
+                                    form = form.copy(firstWorkDate = sanitizeSingleLineInput(it, 10))
+                                },
+                                label = { Text("Ngày bắt đầu (DD/MM/YYYY)") },
+                                singleLine = true,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("direct_edit_first_work_date_input")
+                            )
+
+                            Text("Trạng thái làm việc", style = MaterialTheme.typography.labelLarge)
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                WORK_STATUS_FILTER_OPTIONS
+                                    .filter { (code, _) -> code in selectableStatusCodes }
+                                    .forEach { (code, label) ->
+                                        FilterChip(
+                                            selected = form.employmentStatus == code,
+                                            onClick = {
+                                                if (code != form.employmentStatus) {
+                                                    val baselineEffUi = DirectEntryContract.isoDateToUiDate(
+                                                        baselineDetail.employmentEffectiveDate
+                                                    )
+                                                    val nextEffUi = if (
+                                                        code != baselineDetail.employmentStatus &&
+                                                        form.employmentEffectiveDate == baselineEffUi &&
+                                                        DirectEntryContract.todayIsoInHcm() >= baselineDetail.employmentEffectiveDate
+                                                    ) {
+                                                        DirectEntryContract.todayUiInHcm()
+                                                    } else {
+                                                        form.employmentEffectiveDate
+                                                    }
+                                                    form = form.copy(
+                                                        employmentStatus = code,
+                                                        employmentEffectiveDate = nextEffUi
+                                                    )
+                                                }
+                                            },
+                                            label = { Text(label) },
+                                            modifier = Modifier.testTag("direct_edit_status_chip_$code")
+                                        )
+                                    }
+                            }
+                            if (baselineDetail.employmentStatus == "OFF") {
+                                Text(
+                                    text = "Hồ sơ đã nghỉ việc, không thể chuyển trạng thái sang Đang làm hoặc Đang chờ việc.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            OutlinedTextField(
+                                value = form.employmentEffectiveDate,
+                                onValueChange = {
+                                    form = form.copy(employmentEffectiveDate = sanitizeSingleLineInput(it, 10))
+                                },
+                                label = { Text("Ngày hiệu lực trạng thái (DD/MM/YYYY)") },
+                                singleLine = true,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("direct_edit_status_effective_date_input")
+                            )
+                            if (form.employmentStatus == "OFF") {
+                                OutlinedTextField(
+                                    value = form.employmentLeaveReason,
+                                    onValueChange = {
+                                        form = form.copy(employmentLeaveReason = sanitizeMultiLineInput(it, 4000))
+                                    },
+                                    label = { Text("Lý do nghỉ *") },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .testTag("direct_edit_leave_reason_input")
+                                )
+                            }
+                        }
+                    }
+
+                    // =========================================================
+                    // NHÓM 2: THÔNG TIN CÁ NHÂN
+                    // =========================================================
+                    Surface(
+                        shape = RoundedCornerShape(14.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("direct_edit_section_personal")
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Text(
+                                text = "Thông tin cá nhân",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+
+                            OutlinedTextField(
+                                value = form.displayName,
+                                onValueChange = {
+                                    form = form.copy(displayName = sanitizeSingleLineInput(it, 256))
+                                },
+                                label = { Text("Họ và tên *") },
+                                singleLine = true,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("direct_edit_display_name_input")
+                            )
+
+                            Text("Giới tính", style = MaterialTheme.typography.labelMedium)
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                listOf(
+                                    "" to "Chưa khai báo",
+                                    "MALE" to "Nam",
+                                    "FEMALE" to "Nữ",
+                                    "OTHER" to "Khác"
+                                ).forEach { (gCode, gLabel) ->
+                                    val tagSuffix = if (gCode.isEmpty()) "EMPTY" else gCode
+                                    FilterChip(
+                                        selected = form.gender == gCode,
+                                        onClick = { form = form.copy(gender = gCode) },
+                                        label = { Text(gLabel) },
+                                        modifier = Modifier.testTag("direct_edit_gender_chip_$tagSuffix")
+                                    )
+                                }
+                            }
+
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                OutlinedTextField(
+                                    value = form.dateOfBirth,
+                                    onValueChange = {
+                                        form = form.copy(dateOfBirth = sanitizeSingleLineInput(it, 10))
+                                    },
+                                    label = { Text("Ngày sinh") },
+                                    placeholder = { Text("DD/MM/YYYY") },
+                                    singleLine = true,
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .testTag("direct_edit_dob_input")
+                                )
+                                OutlinedTextField(
+                                    value = form.phone,
+                                    onValueChange = {
+                                        form = form.copy(phone = sanitizePhoneInput(it))
+                                    },
+                                    label = { Text("Số điện thoại") },
+                                    singleLine = true,
+                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .testTag("direct_edit_phone_input")
+                                )
+                            }
+
+                            OutlinedTextField(
+                                value = form.nationalId,
+                                onValueChange = {
+                                    form = form.copy(nationalId = it.filter { ch -> ch.isDigit() }.take(12))
+                                },
+                                label = { Text("Số CCCD (12 chữ số)") },
+                                singleLine = true,
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("direct_edit_national_id_input")
+                            )
+
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                OutlinedTextField(
+                                    value = form.nationalIdIssuedAt,
+                                    onValueChange = {
+                                        form = form.copy(nationalIdIssuedAt = sanitizeSingleLineInput(it, 10))
+                                    },
+                                    label = { Text("Ngày cấp CCCD") },
+                                    placeholder = { Text("DD/MM/YYYY") },
+                                    singleLine = true,
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .testTag("direct_edit_national_id_issued_at_input")
+                                )
+                                OutlinedTextField(
+                                    value = form.nationalIdIssuedPlace,
+                                    onValueChange = {
+                                        form = form.copy(nationalIdIssuedPlace = sanitizeSingleLineInput(it, 256))
+                                    },
+                                    label = { Text("Nơi cấp CCCD") },
+                                    singleLine = true,
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .testTag("direct_edit_national_id_issued_place_input")
+                                )
+                            }
+
+                            OutlinedTextField(
+                                value = form.address,
+                                onValueChange = {
+                                    form = form.copy(address = sanitizeSingleLineInput(it, 1024))
+                                },
+                                label = { Text("Địa chỉ") },
+                                singleLine = true,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("direct_edit_address_input")
+                            )
+                        }
+                    }
+
+                    // =========================================================
+                    // NHÓM 3: THÔNG TIN TÀI KHOẢN NGÂN HÀNG
+                    // =========================================================
+                    Surface(
+                        shape = RoundedCornerShape(14.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("direct_edit_section_payment")
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Text(
+                                text = "Thông tin tài khoản ngân hàng",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+
+                            OutlinedTextField(
+                                value = form.accountNumber,
+                                onValueChange = {
+                                    form = form.copy(accountNumber = it.filter { ch -> ch.isDigit() }.take(64))
+                                },
+                                label = { Text("Số tài khoản") },
+                                singleLine = true,
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("direct_edit_account_number_input")
+                            )
+
+                            OutlinedTextField(
+                                value = form.bankQueryText,
+                                onValueChange = { rawText ->
+                                    val clean = sanitizeSingleLineInput(rawText, 256)
+                                    val matched = DirectEntryContract.resolveBankCatalogOption(mergedBanks, clean)
+                                    form = form.copy(
+                                        bankQueryText = clean,
+                                        bankId = matched?.bankId.orEmpty()
+                                    )
+                                },
+                                label = { Text("Ngân hàng (chọn hoặc nhập tên tham chiếu)") },
+                                placeholder = { Text("Tìm VietQR / chọn ngân hàng hoặc nhập tên") },
+                                trailingIcon = {
+                                    IconButton(
+                                        onClick = { showBankSuggestions = !showBankSuggestions },
+                                        modifier = Modifier.testTag("direct_edit_bank_suggestions_toggle")
+                                    ) {
+                                        Icon(
+                                            imageVector = if (showBankSuggestions) Icons.Default.ExpandLess else Icons.Default.ArrowDropDown,
+                                            contentDescription = "Danh sách ngân hàng"
+                                        )
+                                    }
+                                },
+                                singleLine = true,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("direct_edit_bank_query_input")
+                            )
+
+                            if (showBankSuggestions) {
+                                val normalizedQuery = normalizeVietnameseForSearch(form.bankQueryText)
+                                val matchingBanks = remember(mergedBanks, normalizedQuery) {
+                                    if (normalizedQuery.isEmpty()) {
+                                        mergedBanks.take(20)
+                                    } else {
+                                        mergedBanks.filter { b ->
+                                            val hay = normalizeVietnameseForSearch(
+                                                "${b.shortName} ${b.bankCode} ${b.displayName} ${b.bankId}"
+                                            )
+                                            hay.contains(normalizedQuery)
+                                        }.take(20)
+                                    }
+                                }
+                                Surface(
+                                    shape = RoundedCornerShape(10.dp),
+                                    color = MaterialTheme.colorScheme.surface,
+                                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.35f)),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .testTag("direct_edit_bank_suggestions_list")
+                                ) {
+                                    Column(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(8.dp),
+                                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                                    ) {
+                                        matchingBanks.forEach { bankOpt ->
+                                            val refLabel = bankOpt.label
+                                            Surface(
+                                                shape = RoundedCornerShape(8.dp),
+                                                color = if (form.bankId == bankOpt.bankId) {
+                                                    MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f)
+                                                } else {
+                                                    Color.Transparent
+                                                },
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .clickable {
+                                                        form = form.copy(
+                                                            bankId = bankOpt.bankId,
+                                                            bankQueryText = refLabel
+                                                        )
+                                                        showBankSuggestions = false
+                                                    }
+                                                    .testTag("direct_edit_bank_option_${bankOpt.bankId}")
+                                            ) {
+                                                Text(
+                                                    text = refLabel,
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp)
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            OutlinedTextField(
+                                value = form.accountHolderName,
+                                onValueChange = {
+                                    form = form.copy(accountHolderName = sanitizeSingleLineInput(it, 256))
+                                },
+                                label = { Text("Tên chủ tài khoản") },
+                                singleLine = true,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("direct_edit_account_holder_name_input")
+                            )
+                        }
+                    }
+
+                    // =========================================================
+                    // NHÓM 4: TÀI LIỆU HỒ SƠ
+                    // =========================================================
+                    Surface(
+                        shape = RoundedCornerShape(14.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("direct_edit_section_documents")
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Text(
+                                text = "Tài liệu hồ sơ",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                            Text(
+                                text = "Tệp chỉ tải lên sau khi thông tin hồ sơ đã lưu thành công (tối đa 10 MB/tệp; ảnh chân dung: JPEG/PNG; CCCD & HĐLĐ: JPEG/PNG/PDF).",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+
+                            if (!canUploadDocuments) {
+                                Text(
+                                    text = "Tài khoản hiện tại không có quyền tải tài liệu.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.testTag("direct_edit_doc_upload_denied_notice")
+                                )
+                            } else {
+                                DirectEntryContract.DIRECT_EDIT_DOCUMENT_TYPES.forEach { spec ->
+                                    val status = fileStatuses[spec.type]
+                                    val serverVer = baselineDetail.fileVersions[spec.type]
+                                    val isPreparingThis = preparingDocType == spec.type
+                                    val statusText = when {
+                                        isPreparingThis -> "${spec.label}: Đang chuẩn bị tệp đính kèm..."
+                                        status != null && status.message.isNotBlank() -> status.message
+                                        serverVer != null -> "Đang lưu trên hệ thống (v$serverVer). Chọn tệp mới nếu muốn thay thế."
+                                        else -> "Chưa có tệp trên hệ thống."
+                                    }
+                                    val statusColor = when (status?.state) {
+                                        DirectEditFileState.SAVED -> SemanticColors.SuccessLight
+                                        DirectEditFileState.ERROR -> MaterialTheme.colorScheme.error
+                                        DirectEditFileState.UPLOADING, DirectEditFileState.SELECTED -> MaterialTheme.colorScheme.primary
+                                        else -> MaterialTheme.colorScheme.onSurfaceVariant
+                                    }
+
+                                    Surface(
+                                        shape = RoundedCornerShape(10.dp),
+                                        color = MaterialTheme.colorScheme.surface,
+                                        border = BorderStroke(
+                                            1.dp,
+                                            when (status?.state) {
+                                                DirectEditFileState.ERROR -> MaterialTheme.colorScheme.error.copy(alpha = 0.55f)
+                                                DirectEditFileState.SAVED -> SemanticColors.SuccessLight.copy(alpha = 0.55f)
+                                                else -> MaterialTheme.colorScheme.outline.copy(alpha = 0.3f)
+                                            }
+                                        ),
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .testTag("direct_edit_doc_card_${spec.type}")
+                                    ) {
+                                        Column(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(10.dp),
+                                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                                        ) {
+                                            Text(
+                                                text = spec.label,
+                                                style = MaterialTheme.typography.labelLarge,
+                                                fontWeight = FontWeight.SemiBold
+                                            )
+                                            Text(
+                                                text = statusText,
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = statusColor,
+                                                modifier = Modifier.testTag("direct_edit_doc_status_${spec.type}")
+                                            )
+
+                                            FlowRow(
+                                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                                            ) {
+                                                OutlinedButton(
+                                                    onClick = { requestCameraForDoc(spec.type) },
+                                                    enabled = !busy && !isPreparingThis,
+                                                    shape = RoundedCornerShape(8.dp),
+                                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                                    modifier = Modifier
+                                                        .height(34.dp)
+                                                        .testTag("direct_edit_doc_camera_${spec.type}")
+                                                ) {
+                                                    Icon(
+                                                        imageVector = Icons.Default.CameraAlt,
+                                                        contentDescription = null,
+                                                        modifier = Modifier.size(14.dp)
+                                                    )
+                                                    Spacer(modifier = Modifier.width(4.dp))
+                                                    Text("Chụp ảnh", style = MaterialTheme.typography.labelSmall)
+                                                }
+
+                                                OutlinedButton(
+                                                    onClick = {
+                                                        focusManager.clearFocus()
+                                                        keyboardController?.hide()
+                                                        pendingFileTarget = spec.type
+                                                        singleFilePickerLauncher.launch("image/*")
+                                                    },
+                                                    enabled = !busy && !isPreparingThis,
+                                                    shape = RoundedCornerShape(8.dp),
+                                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                                    modifier = Modifier
+                                                        .height(34.dp)
+                                                        .testTag("direct_edit_doc_pick_image_${spec.type}")
+                                                ) {
+                                                    Icon(
+                                                        imageVector = Icons.Default.PhotoLibrary,
+                                                        contentDescription = null,
+                                                        modifier = Modifier.size(14.dp)
+                                                    )
+                                                    Spacer(modifier = Modifier.width(4.dp))
+                                                    Text("Chọn ảnh", style = MaterialTheme.typography.labelSmall)
+                                                }
+
+                                                if (spec.type != "WORKER_PORTRAIT") {
+                                                    OutlinedButton(
+                                                        onClick = {
+                                                            focusManager.clearFocus()
+                                                            keyboardController?.hide()
+                                                            pendingFileTarget = spec.type
+                                                            singleFilePickerLauncher.launch("application/pdf")
+                                                        },
+                                                        enabled = !busy && !isPreparingThis,
+                                                        shape = RoundedCornerShape(8.dp),
+                                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                                        modifier = Modifier
+                                                            .height(34.dp)
+                                                            .testTag("direct_edit_doc_pick_pdf_${spec.type}")
+                                                    ) {
+                                                        Icon(
+                                                            imageVector = Icons.Default.FileUpload,
+                                                            contentDescription = null,
+                                                            modifier = Modifier.size(14.dp)
+                                                        )
+                                                        Spacer(modifier = Modifier.width(4.dp))
+                                                        Text("Chọn PDF", style = MaterialTheme.typography.labelSmall)
+                                                    }
+                                                }
+
+                                                if (spec.type == "EMPLOYMENT_CONTRACT" && onPrepareMultiImagePdfDocument != null) {
+                                                    OutlinedButton(
+                                                        onClick = {
+                                                            focusManager.clearFocus()
+                                                            keyboardController?.hide()
+                                                            pendingMultiImageTarget = spec.type
+                                                            multiImagePickerLauncher.launch("image/*")
+                                                        },
+                                                        enabled = !busy && !isPreparingThis,
+                                                        shape = RoundedCornerShape(8.dp),
+                                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                                        modifier = Modifier
+                                                            .height(34.dp)
+                                                            .testTag("direct_edit_doc_pick_multi_${spec.type}")
+                                                    ) {
+                                                        Text("Ghép ảnh PDF", style = MaterialTheme.typography.labelSmall)
+                                                    }
+                                                }
+
+                                                if (status?.stagedRef != null && !busy && status.state != DirectEditFileState.UPLOADING) {
+                                                    TextButton(
+                                                        onClick = { onClearStagedDocument?.invoke(spec.type) },
+                                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                                                        modifier = Modifier
+                                                            .height(34.dp)
+                                                            .testTag("direct_edit_doc_clear_${spec.type}")
+                                                    ) {
+                                                        Text(
+                                                            text = "Bỏ chọn",
+                                                            style = MaterialTheme.typography.labelSmall,
+                                                            color = MaterialTheme.colorScheme.error
+                                                        )
+                                                    }
+                                                }
+
+                                                if (status?.state == DirectEditFileState.ERROR && !busy && onRetryDocument != null) {
+                                                    Button(
+                                                        onClick = {
+                                                            localError = null
+                                                            onRetryDocument(spec.type, null)
+                                                        },
+                                                        shape = RoundedCornerShape(8.dp),
+                                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                                        modifier = Modifier
+                                                            .height(34.dp)
+                                                            .testTag("direct_edit_doc_retry_${spec.type}")
+                                                    ) {
+                                                        Text("Thử lại tệp này", style = MaterialTheme.typography.labelSmall)
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
 
                 Row(
@@ -3697,41 +4493,31 @@ internal fun WorkerPrivilegedEditDialog(
                     horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    TextButton(onClick = onDismiss, enabled = !busy) {
+                    TextButton(
+                        onClick = onDismiss,
+                        enabled = !busy,
+                        modifier = Modifier.testTag("direct_edit_cancel_button")
+                    ) {
                         Text("Hủy")
                     }
                     Button(
-                        enabled = !busy,
+                        enabled = !busy && preparingDocType == null,
+                        modifier = Modifier.testTag("direct_edit_save_button"),
                         onClick = {
                             localError = null
                             try {
-                                val patch = JSONObject()
-                                if (projectId.isNotBlank() && projectId != baselineDetail.projectId) {
-                                    patch.put("project_id", projectId.trim())
-                                }
-                                val isoFirst = DirectEntryContract.uiDateToIsoDate(firstWorkDateUi)
-                                if (isoFirst != baselineDetail.firstWorkDate) {
-                                    patch.put("first_work_date", isoFirst)
-                                }
-                                if (laborTypeKey.isNotBlank() && laborTypeKey != baselineDetail.laborType) {
-                                    patch.put("labor_type", laborTypeKey.trim())
-                                }
-                                val isoEff = DirectEntryContract.uiDateToIsoDate(statusEffectiveDateUi)
-                                if (statusCode != baselineDetail.employmentStatus ||
-                                    isoEff != baselineDetail.employmentEffectiveDate ||
-                                    (statusCode == "OFF" && leaveReason.trim() != baselineDetail.employmentLeaveReason.orEmpty())
-                                ) {
-                                    patch.put(
-                                        "employment_status",
-                                        DirectEntryContract.buildPrivilegedEditEmploymentStatus(
-                                            status = statusCode,
-                                            effectiveDateUiOrIso = isoEff,
-                                            leaveReason = leaveReason,
-                                            baselineStatus = baselineDetail.employmentStatus
-                                        )
-                                    )
-                                }
-                                if (patch.length() == 0) {
+                                val patch = DirectEntryContract.buildDirectEditPatch(
+                                    baseline = baselineDetail,
+                                    form = form,
+                                    catalogBanks = catalogBanks
+                                )
+                                val hasPendingFiles = canUploadDocuments &&
+                                    DirectEntryContract.DIRECT_EDIT_DOCUMENT_TYPES.any { spec ->
+                                        val st = fileStatuses[spec.type]
+                                        st != null && st.stagedRef != null &&
+                                            (st.state == DirectEditFileState.SELECTED || st.state == DirectEditFileState.ERROR)
+                                    }
+                                if (patch.length() == 0 && !hasPendingFiles) {
                                     localError = "Chưa có trường nào thay đổi so với dữ liệu gốc."
                                     return@Button
                                 }

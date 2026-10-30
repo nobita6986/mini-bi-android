@@ -18,6 +18,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.text.Normalizer
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
@@ -80,16 +81,46 @@ object DirectEntryContract {
     /** Synchronized with App BI `DIRECT_ENTRY_GENDER_OPTIONS` (only Nam / Nữ selectable in UI). */
     val DIRECT_ENTRY_GENDER_OPTIONS = listOf("Nam", "Nữ")
 
+    /** Synchronized with App BI `DIRECT_EDIT_DOCUMENT_TYPES` (`worker-operations-model.ts`). */
+    val DIRECT_EDIT_DOCUMENT_TYPES = listOf(
+        DirectEditDocumentTypeSpec(
+            type = "WORKER_PORTRAIT",
+            label = "Ảnh NLĐ",
+            acceptMimeTypes = listOf("image/jpeg", "image/png")
+        ),
+        DirectEditDocumentTypeSpec(
+            type = "CCCD_FRONT",
+            label = "CCCD mặt trước",
+            acceptMimeTypes = listOf("image/jpeg", "image/png", "application/pdf")
+        ),
+        DirectEditDocumentTypeSpec(
+            type = "CCCD_BACK",
+            label = "CCCD mặt sau",
+            acceptMimeTypes = listOf("image/jpeg", "image/png", "application/pdf")
+        ),
+        DirectEditDocumentTypeSpec(
+            type = "EMPLOYMENT_CONTRACT",
+            label = "Hợp đồng lao động",
+            acceptMimeTypes = listOf("image/jpeg", "image/png", "application/pdf")
+        )
+    )
+
     private val UUID_REGEX = Regex(
         "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
         RegexOption.IGNORE_CASE
     )
 
     private val ISO_DATE_REGEX = Regex("^(\\d{4})-(\\d{2})-(\\d{2})$")
+    private val DMY_FLEX_DATE_REGEX = Regex("^(\\d{1,2})[/-](\\d{1,2})[/-](\\d{4})$")
     private val CANONICAL_NATIONAL_ID_REGEX = Regex("^(\\d{9}|\\d{12})$")
     private val CCCD_12_DIGITS_REGEX = Regex("^\\d{12}$")
     private val PAYMENT_ACCOUNT_DIGITS_REGEX = Regex("^\\d{1,64}$")
     private val SAFE_CATALOG_ID_REGEX = Regex("^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+    private val EMPLOYEE_CODE_REGEX = Regex("^hrp-(\\d{4})-(\\d{6})$")
+    private val LABOR_TYPE_KEY_REGEX = Regex("^[A-Z][A-Z0-9_]{0,63}$")
+    private val COMBINING_DIACRITICS_REGEX = Regex("\\p{InCombiningDiacriticalMarks}+")
+    private val NON_ALPHANUM_REGEX = Regex("[^a-z0-9]+")
+    private val MULTI_SPACE_REGEX = Regex("\\s+")
 
     fun isUuid(raw: String): Boolean = UUID_REGEX.matches(raw.trim())
 
@@ -643,6 +674,839 @@ object DirectEntryContract {
         }
     }
 
+    /**
+     * Canonical VietQR bank catalog synchronized with App BI `vietqr-bank-catalog.ts` (all 60 entries).
+     */
+    val VIETQR_BANK_CATALOG: List<VietQrBankCatalogDefinition> = listOf(
+        VietQrBankCatalogDefinition("ICB", "ICB", "VietinBank", "Ngân hàng TMCP Công thương Việt Nam", "970415", listOf("CTG", "VIETINBANK")),
+        VietQrBankCatalogDefinition("VCB", "VCB", "Vietcombank", "Ngân hàng TMCP Ngoại Thương Việt Nam", "970436", listOf("VIETCOMBANK")),
+        VietQrBankCatalogDefinition("BIDV", "BIDV", "BIDV", "Ngân hàng TMCP Đầu tư và Phát triển Việt Nam", "970418"),
+        VietQrBankCatalogDefinition("VBA", "VBA", "Agribank", "Ngân hàng Nông nghiệp và Phát triển Nông thôn Việt Nam", "970405", listOf("AGRIBANK", "VBARD")),
+        VietQrBankCatalogDefinition("OCB", "OCB", "OCB", "Ngân hàng TMCP Phương Đông", "970448", listOf("PHUONG DONG")),
+        VietQrBankCatalogDefinition("MB", "MB", "MBBank", "Ngân hàng TMCP Quân đội", "970422", listOf("MBBANK", "QUAN DOI")),
+        VietQrBankCatalogDefinition("TCB", "TCB", "Techcombank", "Ngân hàng TMCP Kỹ thương Việt Nam", "970407", listOf("TECHCOMBANK", "KY THUONG")),
+        VietQrBankCatalogDefinition("ACB", "ACB", "ACB", "Ngân hàng TMCP Á Châu", "970416", listOf("A CHAU")),
+        VietQrBankCatalogDefinition("VPB", "VPB", "VPBank", "Ngân hàng TMCP Việt Nam Thịnh Vượng", "970432", listOf("VPBANK", "VIET NAM THINH VUONG")),
+        VietQrBankCatalogDefinition("TPB", "TPB", "TPBank", "Ngân hàng TMCP Tiên Phong", "970423", listOf("TPBANK", "TIEN PHONG")),
+        VietQrBankCatalogDefinition("STB", "STB", "Sacombank", "Ngân hàng TMCP Sài Gòn Thương Tín", "970403", listOf("SACOMBANK", "SAI GON THUONG TIN")),
+        VietQrBankCatalogDefinition("HDB", "HDB", "HDBank", "Ngân hàng TMCP Phát triển Thành phố Hồ Chí Minh", "970437", listOf("HDBANK")),
+        VietQrBankCatalogDefinition("VCCB", "VCCB", "VietCapitalBank", "Ngân hàng TMCP Bản Việt", "970454", listOf("BVBANK", "BAN VIET", "VIETCAPITALBANK")),
+        VietQrBankCatalogDefinition("SCB", "SCB", "SCB", "Ngân hàng TMCP Sài Gòn", "970429", listOf("SAI GON")),
+        VietQrBankCatalogDefinition("VIB", "VIB", "VIB", "Ngân hàng TMCP Quốc tế Việt Nam", "970441", listOf("QUOC TE VIET NAM")),
+        VietQrBankCatalogDefinition("SHB", "SHB", "SHB", "Ngân hàng TMCP Sài Gòn - Hà Nội", "970443", listOf("SAI GON HA NOI")),
+        VietQrBankCatalogDefinition("EIB", "EIB", "Eximbank", "Ngân hàng TMCP Xuất Nhập khẩu Việt Nam", "970431", listOf("EXIMBANK", "XUAT NHAP KHAU")),
+        VietQrBankCatalogDefinition("MSB", "MSB", "MSB", "Ngân hàng TMCP Hàng Hải Việt Nam", "970426", listOf("MARITIMEBANK", "HANG HAI")),
+        VietQrBankCatalogDefinition("CAKE", "CAKE", "CAKE", "TMCP Việt Nam Thịnh Vượng - Ngân hàng số CAKE by VPBank", "546034", listOf("CAKE BY VPBANK")),
+        VietQrBankCatalogDefinition("UBANK", "Ubank", "Ubank", "TMCP Việt Nam Thịnh Vượng - Ngân hàng số Ubank by VPBank", "546035", listOf("UBANK BY VPBANK")),
+        VietQrBankCatalogDefinition("VIKKI", "VIKKI", "Vikki", "Ngân hàng TNHH MTV Số Vikki", "970406", listOf("DONGABANK", "DAB", "DONG A", "VIKKI BY HDBANK")),
+        VietQrBankCatalogDefinition("TIMO", "TIMO", "Timo", "Ngân hàng số Timo by Ban Viet Bank (Timo by Ban Viet Bank)", "963388", listOf("TIMO BY BAN VIET BANK")),
+        VietQrBankCatalogDefinition("VNPTMONEY", "VNPTMONEY", "VNPTMoney", "Trung tâm Dịch vụ tài chính số VNPT - Chi nhánh Tổng công ty truyền thông", "971011", listOf("VNPT MONEY")),
+        VietQrBankCatalogDefinition("VIETTEL_PAY", "VIETTEL PAY", "ViettelMoney", "Tổng Công ty Dịch vụ số Viettel - Chi nhánh tập đoàn công nghiệp viễn thông Quân Đội", "971005", listOf("VIETTELMONEY", "VIETTEL MONEY", "VIETTELPAY")),
+        VietQrBankCatalogDefinition("SGICB", "SGICB", "SaigonBank", "Ngân hàng TMCP Sài Gòn Công Thương", "970400", listOf("SAIGONBANK", "SAI GON CONG THUONG")),
+        VietQrBankCatalogDefinition("BAB", "BAB", "BacABank", "Ngân hàng TMCP Bắc Á", "970409", listOf("BACABANK", "BAC A")),
+        VietQrBankCatalogDefinition("PVCB", "PVCB", "PVcomBank", "Ngân hàng TMCP Đại Chúng Việt Nam", "970412", listOf("PVCOMBANK", "DAI CHUNG")),
+        VietQrBankCatalogDefinition("PVDB", "PVDB", "PVcomBank Pay", "Ngân hàng TMCP Đại Chúng Việt Nam Ngân hàng số", "971133", listOf("PVCOMBANK PAY")),
+        VietQrBankCatalogDefinition("PBVN", "PBVN", "PublicBank", "Ngân hàng TNHH MTV Public Việt Nam", "970439", listOf("PUBLICBANK", "PUBLIC BANK", "VID PUBLIC")),
+        VietQrBankCatalogDefinition("MBV", "MBV", "MBV", "Ngân hàng TNHH MTV Việt Nam Hiện Đại", "970414", listOf("OCEANBANK", "DAI DUONG", "VIET NAM HIEN DAI")),
+        VietQrBankCatalogDefinition("NCB", "NCB", "NCB", "Ngân hàng TMCP Quốc Dân", "970419", listOf("QUOC DAN")),
+        VietQrBankCatalogDefinition("SHBVN", "SHBVN", "ShinhanBank", "Ngân hàng TNHH MTV Shinhan Việt Nam", "970424", listOf("SHINHAN", "SHINHANBANK")),
+        VietQrBankCatalogDefinition("ABB", "ABB", "ABBANK", "Ngân hàng TMCP An Bình", "970425", listOf("ABBANK", "AN BINH")),
+        VietQrBankCatalogDefinition("VAB", "VAB", "VietABank", "Ngân hàng TMCP Việt Á", "970427", listOf("VIETABANK", "VIET A")),
+        VietQrBankCatalogDefinition("NAB", "NAB", "NamABank", "Ngân hàng TMCP Nam Á", "970428", listOf("NAMABANK", "NAM A")),
+        VietQrBankCatalogDefinition("PGB", "PGB", "PGBank", "Ngân hàng TMCP Thịnh vượng và Phát triển", "970430", listOf("PGBANK", "XANG DAU PETROLIMEX")),
+        VietQrBankCatalogDefinition("VIETBANK", "VIETBANK", "VietBank", "Ngân hàng TMCP Việt Nam Thương Tín", "970433", listOf("VIET NAM THUONG TIN")),
+        VietQrBankCatalogDefinition("BVB", "BVB", "BaoVietBank", "Ngân hàng TMCP Bảo Việt", "970438", listOf("BAOVIETBANK", "BAO VIET")),
+        VietQrBankCatalogDefinition("SEAB", "SEAB", "SeABank", "Ngân hàng TMCP Đông Nam Á", "970440", listOf("SEABANK", "DONG NAM A")),
+        VietQrBankCatalogDefinition("COOPBANK", "COOPBANK", "COOPBANK", "Ngân hàng Hợp tác xã Việt Nam", "970446", listOf("HOP TAC XA")),
+        VietQrBankCatalogDefinition("LPB", "LPB", "LPBank", "Ngân hàng TMCP Lộc Phát Việt Nam", "970449", listOf("LPBANK", "LIENVIETPOSTBANK", "LOC PHAT", "BUU DIEN LIEN VIET")),
+        VietQrBankCatalogDefinition("KLB", "KLB", "KienLongBank", "Ngân hàng TMCP Kiên Long", "970452", listOf("KIENLONGBANK", "KIEN LONG")),
+        VietQrBankCatalogDefinition("KBANK", "KBank", "KBank", "Ngân hàng Đại chúng TNHH Kasikornbank", "668888", listOf("KASIKORNBANK", "KBANK HCM")),
+        VietQrBankCatalogDefinition("KBHN", "KBHN", "KookminHN", "Ngân hàng Kookmin - Chi nhánh Hà Nội", "970462", listOf("KOOKMIN HN", "KOOKMIN HA NOI")),
+        VietQrBankCatalogDefinition("KBHCM", "KBHCM", "KookminHCM", "Ngân hàng Kookmin - Chi nhánh Thành phố Hồ Chí Minh", "970463", listOf("KOOKMIN HCM", "KOOKMIN HO CHI MINH")),
+        VietQrBankCatalogDefinition("KEBHANAHCM", "KEBHANAHCM", "KEBHanaHCM", "Ngân hàng KEB Hana – Chi nhánh Thành phố Hồ Chí Minh", "970466", listOf("KEB HANA HCM")),
+        VietQrBankCatalogDefinition("KEBHANAHN", "KEBHANAHN", "KEBHanaHN", "Ngân hàng KEB Hana – Chi nhánh Hà Nội", "970467", listOf("KEBHN", "KEB HANA HN", "KEB HANA HA NOI")),
+        VietQrBankCatalogDefinition("MAFC", "MAFC", "MAFC", "Công ty Tài chính TNHH MTV Mirae Asset (Việt Nam)", "977777", listOf("MIRAE ASSET")),
+        VietQrBankCatalogDefinition("CITIBANK", "CITIBANK", "Citibank", "Ngân hàng Citibank, N.A. - Chi nhánh Hà Nội", "533948", listOf("CITI")),
+        VietQrBankCatalogDefinition("VBSP", "VBSP", "VBSP", "Ngân hàng Chính sách Xã hội", "999888", listOf("CHINH SACH XA HOI")),
+        VietQrBankCatalogDefinition("CBB", "CBB", "CBBank", "Ngân hàng Thương mại TNHH MTV Xây dựng Việt Nam", "970444", listOf("CBBANK", "XAY DUNG", "VNCB")),
+        VietQrBankCatalogDefinition("CIMB", "CIMB", "CIMB", "Ngân hàng TNHH MTV CIMB Việt Nam", "422589", listOf("CIMB VIET NAM")),
+        VietQrBankCatalogDefinition("DBS", "DBS", "DBSBank", "DBS Bank Ltd - Chi nhánh Thành phố Hồ Chí Minh", "796500", listOf("DBSBANK")),
+        VietQrBankCatalogDefinition("GPB", "GPB", "GPBank", "Ngân hàng Thương mại TNHH MTV Dầu Khí Toàn Cầu", "970408", listOf("GPBANK", "DAU KHI TOAN CAU")),
+        VietQrBankCatalogDefinition("HLBVN", "HLBVN", "HongLeong", "Ngân hàng TNHH MTV Hong Leong Việt Nam", "970442", listOf("HONGLEONG", "HONG LEONG")),
+        VietQrBankCatalogDefinition("HSBC", "HSBC", "HSBC", "Ngân hàng TNHH MTV HSBC (Việt Nam)", "458761"),
+        VietQrBankCatalogDefinition("IBKHN", "IBK - HN", "IBKHN", "Ngân hàng Công nghiệp Hàn Quốc - Chi nhánh Hà Nội", "970455", listOf("IBK", "IBK HN")),
+        VietQrBankCatalogDefinition("IBKHCM", "IBK - HCM", "IBKHCM", "Ngân hàng Công nghiệp Hàn Quốc - Chi nhánh TP. Hồ Chí Minh", "970456", listOf("IBK HCM")),
+        VietQrBankCatalogDefinition("IVB", "IVB", "IndovinaBank", "Ngân hàng TNHH Indovina", "970434", listOf("INDOVINABANK", "INDOVINA")),
+        VietQrBankCatalogDefinition("NHB_HN", "NHB HN", "Nonghyup", "Ngân hàng Nonghyup - Chi nhánh Hà Nội", "801011", listOf("NONGHYUP", "NHB")),
+        VietQrBankCatalogDefinition("SCVN", "SCVN", "StandardChartered", "Ngân hàng TNHH MTV Standard Chartered Bank Việt Nam", "970410", listOf("STANDARD CHARTERED", "STANDARDCHARTERED")),
+        VietQrBankCatalogDefinition("UOB", "UOB", "UnitedOverseas", "Ngân hàng United Overseas - Chi nhánh TP. Hồ Chí Minh", "970458", listOf("UNITED OVERSEAS", "UNITEDOVERSEAS")),
+        VietQrBankCatalogDefinition("VRB", "VRB", "VRB", "Ngân hàng Liên doanh Việt - Nga", "970421", listOf("VIET NGA")),
+        VietQrBankCatalogDefinition("WVN", "WVN", "Woori", "Ngân hàng TNHH MTV Woori Việt Nam", "970457", listOf("WRB", "WOORI", "WOORIBANK")),
+        VietQrBankCatalogDefinition("LIOBANK", "LioBank", "Liobank", "Ngân hàng số Liobank by OCB", "963369", listOf("LIOBANK BY OCB")),
+        VietQrBankCatalogDefinition("UMEE", "UMEE", "Umee", "Ngân hàng số Umee by Kienlongbank", "963399", listOf("UMEE BY KIENLONGBANK")),
+        VietQrBankCatalogDefinition("VDB", "VDB", "VDB", "Ngân hàng Phát triển Việt Nam", "970460", listOf("PHAT TRIEN VIET NAM")),
+        VietQrBankCatalogDefinition("BNPHN", "BNPHN", "BNPParibasHN", "Ngân hàng BNP Paribas - Chi nhánh Hà Nội", "963668", listOf("BNP PARIBAS HN")),
+        VietQrBankCatalogDefinition("BNPHCM", "BNPHCM", "BNPParibasHCM", "Ngân hàng BNP Paribas - Chi nhánh TP. Hồ Chí Minh", "963666", listOf("BNP PARIBAS HCM")),
+        VietQrBankCatalogDefinition("CUB", "cathay", "CathayBank", "Ngân hàng Cathay United Bank - Chi nhánh TP. Hồ Chí Minh", "963366", listOf("CATHAY", "CATHAY UNITED BANK")),
+        VietQrBankCatalogDefinition("CFC", "CFC", "VietCredit", "Công ty Tài chính Cổ phần Tín Việt", "970465", listOf("VIETCREDIT", "TIN VIET")),
+        VietQrBankCatalogDefinition("ZALOPAY", "ZALOPAY", "ZaloPay", "Ví điện tử ZaloPay", "963386"),
+        VietQrBankCatalogDefinition("VETC", "VETC", "VETC", "Ví điện tử VETC", "963368"),
+        VietQrBankCatalogDefinition("MOMO", "MOMO", "MoMo", "Ví điện tử MoMo", "971025"),
+        VietQrBankCatalogDefinition("VNPAY", "VNPAY", "VNPAY", "Ví điện tử VNPAY", "971018")
+    )
+
+    internal fun normalizeBankLookupToken(value: String): String {
+        if (value.isBlank()) return ""
+        val decomposed = Normalizer.normalize(value, Normalizer.Form.NFD)
+        return COMBINING_DIACRITICS_REGEX.replace(decomposed, "")
+            .replace('đ', 'd')
+            .replace('Đ', 'd')
+            .lowercase(Locale.ROOT)
+            .replace(NON_ALPHANUM_REGEX, " ")
+            .replace(MULTI_SPACE_REGEX, " ")
+            .trim()
+    }
+
+    private fun buildBankOptionLabel(
+        shortName: String,
+        bankCode: String,
+        officialName: String
+    ): String {
+        val trimmedShort = shortName.trim()
+        val trimmedCode = bankCode.trim()
+        val trimmedOfficial = officialName.trim()
+        val prefix = if (trimmedShort.equals(trimmedCode, ignoreCase = true)) {
+            trimmedShort
+        } else {
+            "$trimmedShort ($trimmedCode)"
+        }
+        return if (trimmedOfficial.isEmpty() || trimmedOfficial.equals(trimmedShort, ignoreCase = true)) {
+            prefix
+        } else {
+            "$prefix — $trimmedOfficial"
+        }
+    }
+
+    private fun matchesVietQrDefinition(
+        existing: CatalogBankOption,
+        def: VietQrBankCatalogDefinition
+    ): Boolean {
+        val idNorm = normalizeBankLookupToken(existing.bankId)
+        val nameNorm = normalizeBankLookupToken(existing.displayName)
+        val defTokens = buildList {
+            add(def.bankId)
+            add(def.bankCode)
+            add(def.shortName)
+            add(def.officialName)
+            addAll(def.aliases)
+        }.map { normalizeBankLookupToken(it) }
+        return idNorm in defTokens || (nameNorm.isNotEmpty() && nameNorm in defTokens)
+    }
+
+    fun mergeVietQrBankCatalog(
+        existingBanks: List<CatalogBankOption> = emptyList()
+    ): List<MergedBankCatalogOption> {
+        val result = mutableListOf<MergedBankCatalogOption>()
+        val matchedVietQrIds = mutableSetOf<String>()
+        val seenBankIds = mutableSetOf<String>()
+
+        for (existing in existingBanks) {
+            val bankId = existing.bankId.trim()
+            if (bankId.isEmpty() || !seenBankIds.add(bankId)) continue
+
+            val matchedDef = VIETQR_BANK_CATALOG.firstOrNull { def ->
+                def.bankId !in matchedVietQrIds && matchesVietQrDefinition(existing, def)
+            }
+            if (matchedDef != null) {
+                matchedVietQrIds.add(matchedDef.bankId)
+                val label = buildBankOptionLabel(
+                    shortName = matchedDef.shortName,
+                    bankCode = matchedDef.bankCode,
+                    officialName = matchedDef.officialName
+                )
+                val keywords = buildList {
+                    add(bankId)
+                    add(existing.displayName)
+                    add(matchedDef.bankId)
+                    add(matchedDef.bankCode)
+                    add(matchedDef.shortName)
+                    add(matchedDef.officialName)
+                    add(matchedDef.bin)
+                    addAll(matchedDef.aliases)
+                }.joinToString(" ")
+                result.add(
+                    MergedBankCatalogOption(
+                        bankId = bankId,
+                        bankCode = matchedDef.bankCode,
+                        shortName = matchedDef.shortName,
+                        officialName = matchedDef.officialName,
+                        displayName = existing.displayName.trim().ifEmpty { matchedDef.shortName },
+                        label = label,
+                        keywords = keywords
+                    )
+                )
+            } else {
+                val displayName = existing.displayName.trim().ifEmpty { bankId }
+                result.add(
+                    MergedBankCatalogOption(
+                        bankId = bankId,
+                        bankCode = bankId,
+                        shortName = displayName,
+                        officialName = displayName,
+                        displayName = displayName,
+                        label = if (displayName.equals(bankId, ignoreCase = true)) {
+                            displayName
+                        } else {
+                            "$displayName ($bankId)"
+                        },
+                        keywords = "$bankId $displayName"
+                    )
+                )
+            }
+        }
+
+        for (def in VIETQR_BANK_CATALOG) {
+            if (def.bankId in matchedVietQrIds || !seenBankIds.add(def.bankId)) continue
+            val label = buildBankOptionLabel(
+                shortName = def.shortName,
+                bankCode = def.bankCode,
+                officialName = def.officialName
+            )
+            val keywords = buildList {
+                add(def.bankId)
+                add(def.bankCode)
+                add(def.shortName)
+                add(def.officialName)
+                add(def.bin)
+                addAll(def.aliases)
+            }.joinToString(" ")
+            result.add(
+                MergedBankCatalogOption(
+                    bankId = def.bankId,
+                    bankCode = def.bankCode,
+                    shortName = def.shortName,
+                    officialName = def.officialName,
+                    displayName = def.shortName,
+                    label = label,
+                    keywords = keywords
+                )
+            )
+        }
+        return result
+    }
+
+    fun resolveBankCatalogOption(
+        options: List<MergedBankCatalogOption>,
+        rawInput: String?
+    ): MergedBankCatalogOption? {
+        val trimmed = rawInput?.trim().orEmpty()
+        if (trimmed.isEmpty()) return null
+
+        options.firstOrNull { it.bankId == trimmed }?.let { return it }
+
+        val norm = normalizeBankLookupToken(trimmed)
+        if (norm.isEmpty()) return null
+
+        for (opt in options) {
+            if (normalizeBankLookupToken(opt.bankId) == norm ||
+                normalizeBankLookupToken(opt.bankCode) == norm ||
+                normalizeBankLookupToken(opt.shortName) == norm ||
+                normalizeBankLookupToken(opt.officialName) == norm ||
+                normalizeBankLookupToken(opt.displayName) == norm ||
+                normalizeBankLookupToken(opt.label) == norm
+            ) {
+                return opt
+            }
+        }
+
+        val defMatch = VIETQR_BANK_CATALOG.firstOrNull { def ->
+            def.aliases.any { alias -> normalizeBankLookupToken(alias) == norm }
+        }
+        if (defMatch != null) {
+            return options.firstOrNull { opt ->
+                opt.bankId == defMatch.bankId ||
+                    normalizeBankLookupToken(opt.bankCode) == normalizeBankLookupToken(defMatch.bankCode)
+            }
+        }
+        return null
+    }
+
+    fun formatBankReferenceDisplay(
+        bankId: String?,
+        bankName: String?,
+        existingBanks: List<CatalogBankOption> = emptyList()
+    ): String? {
+        val merged = mergeVietQrBankCatalog(existingBanks)
+        if (!bankId.isNullOrBlank()) {
+            val matched = resolveBankCatalogOption(merged, bankId)
+            if (matched != null) return matched.shortName
+        }
+        if (!bankName.isNullOrBlank()) return bankName.trim()
+        if (!bankId.isNullOrBlank()) return bankId.trim()
+        return null
+    }
+
+    fun initialDirectEditBankQueryText(
+        baseline: WorkerEntryDetail,
+        catalogBanks: List<CatalogBankOption> = emptyList()
+    ): String {
+        if (baseline.paymentState != "provided") return ""
+        val merged = mergeVietQrBankCatalog(catalogBanks)
+        if (!baseline.bankId.isNullOrBlank()) {
+            val matched = resolveBankCatalogOption(merged, baseline.bankId)
+            if (matched != null) return matched.shortName
+        }
+        if (!baseline.rawBankName.isNullOrBlank()) {
+            return baseline.rawBankName.trim()
+        }
+        return baseline.bankId?.trim().orEmpty()
+    }
+
+    /**
+     * Normalizes a stored raw date string (e.g. "DD/MM/YYYY", "DD-MM-YYYY", or "YYYY-MM-DD")
+     * into "YYYY-MM-DD" when it is a valid calendar date, matching App BI `toDirectEditDateInputValue`.
+     */
+    fun toDirectEditDateInputValue(raw: String?): String {
+        val trimmed = raw?.trim().orEmpty()
+        if (trimmed.isEmpty()) return ""
+        if (ISO_DATE_REGEX.matches(trimmed) && isValidUiOrIsoDate(trimmed)) {
+            return trimmed
+        }
+        val dmyMatch = DMY_FLEX_DATE_REGEX.matchEntire(trimmed)
+        if (dmyMatch != null) {
+            val day = dmyMatch.groupValues[1].padStart(2, '0')
+            val month = dmyMatch.groupValues[2].padStart(2, '0')
+            val year = dmyMatch.groupValues[3]
+            val isoCandidate = "$year-$month-$day"
+            if (isValidUiOrIsoDate(isoCandidate)) {
+                return isoCandidate
+            }
+        }
+        return trimmed
+    }
+
+    fun createInitialDirectEditFormInput(
+        detail: WorkerEntryDetail,
+        catalogBanks: List<CatalogBankOption> = emptyList()
+    ): DirectEditFormInput {
+        val dobNormalized = detail.dateOfBirth?.let { isoDateToUiDate(toDirectEditDateInputValue(it)) }.orEmpty()
+        val issuedAtNormalized = detail.nationalIdIssuedAt?.let { isoDateToUiDate(toDirectEditDateInputValue(it)) }.orEmpty()
+        val paymentProvided = detail.paymentState == "provided"
+        return DirectEditFormInput(
+            displayName = detail.displayName,
+            gender = detail.gender?.trim()?.uppercase(Locale.ROOT).orEmpty(),
+            dateOfBirth = dobNormalized,
+            nationalId = detail.nationalId?.trim().orEmpty(),
+            nationalIdIssuedAt = issuedAtNormalized,
+            nationalIdIssuedPlace = detail.nationalIdIssuedPlace?.trim().orEmpty(),
+            address = detail.address?.trim().orEmpty(),
+            phone = detail.phone?.trim().orEmpty(),
+            employeeCode = detail.employeeCode,
+            projectId = detail.projectId,
+            firstWorkDate = isoDateToUiDate(detail.firstWorkDate),
+            recruiterId = detail.recruiterId,
+            laborType = detail.laborType,
+            employmentStatus = detail.employmentStatus,
+            employmentEffectiveDate = isoDateToUiDate(detail.employmentEffectiveDate),
+            employmentLeaveReason = detail.employmentLeaveReason.orEmpty(),
+            accountNumber = if (paymentProvided) detail.accountNumber?.trim().orEmpty() else "",
+            bankId = if (paymentProvided) detail.bankId?.trim().orEmpty() else "",
+            bankQueryText = initialDirectEditBankQueryText(detail, catalogBanks),
+            accountHolderName = if (paymentProvided) detail.accountHolderName?.trim().orEmpty() else "",
+            reason = ""
+        )
+    }
+
+    private fun baselineOptionalFieldStateAndValue(
+        baseline: WorkerEntryDetail,
+        key: String
+    ): Pair<String?, String?> {
+        val rawValue = when (key) {
+            "gender" -> baseline.gender
+            "date_of_birth" -> baseline.dateOfBirth
+            "national_id" -> baseline.nationalId
+            "national_id_issued_at" -> baseline.nationalIdIssuedAt
+            "national_id_issued_place" -> baseline.nationalIdIssuedPlace
+            "address" -> baseline.address
+            "phone" -> baseline.phone
+            else -> null
+        }?.trim()?.ifEmpty { null }
+
+        val explicitState = baseline.workerDetailsStates[key]?.trim()?.ifEmpty { null }
+        val resolvedState = when {
+            explicitState != null -> explicitState
+            rawValue != null -> "provided"
+            key in setOf("date_of_birth", "national_id", "address", "phone") -> "omitted"
+            else -> null
+        }
+        return resolvedState to rawValue
+    }
+
+    private fun resolveDirectEditOptionalField(
+        key: String,
+        baseState: String?,
+        baseValue: String?,
+        rawInput: String,
+        isDateField: Boolean
+    ): JSONObject? {
+        val trimmed = rawInput.trim()
+        if (trimmed.isEmpty()) {
+            if (baseState == "provided") {
+                return JSONObject().put("state", "intentionally_blank")
+            }
+            if (baseState == null) {
+                return if (key in setOf("date_of_birth", "national_id", "address", "phone")) {
+                    JSONObject().put("state", "omitted")
+                } else {
+                    null
+                }
+            }
+            return JSONObject().put("state", baseState)
+        }
+
+        if (baseState == "provided" && baseValue != null) {
+            if (isDateField && toDirectEditDateInputValue(baseValue) == toDirectEditDateInputValue(trimmed)) {
+                return JSONObject().put("state", "provided").put("value", baseValue)
+            }
+            if (baseValue.trim() == trimmed) {
+                return JSONObject().put("state", "provided").put("value", baseValue)
+            }
+        }
+
+        val normalizedValue = if (isDateField) {
+            val iso = toDirectEditDateInputValue(trimmed)
+            if (!ISO_DATE_REGEX.matches(iso) || !isValidUiOrIsoDate(iso)) {
+                throw invalid("WORKER_INVALID", "Ngày nhập vào không đúng định dạng hợp lệ (DD/MM/YYYY hoặc YYYY-MM-DD).")
+            }
+            iso
+        } else {
+            trimmed
+        }
+        return JSONObject().put("state", "provided").put("value", normalizedValue)
+    }
+
+    /**
+     * Pure builder for `worker_details` in Direct Edit (`mode === "correction"`),
+     * matching App BI `buildDirectEditWorkerDetailsProposal`:
+     * - Untouched empty fields (`omitted`, `unknown`, `intentionally_blank`, or absent)
+     *   keep their exact baseline state.
+     * - Existing `provided` fields cleared to empty transition to `intentionally_blank`.
+     * - Returns `null` when no field in `worker_details` changed compared to `baseline`.
+     */
+    fun buildDirectEditWorkerDetailsProposal(
+        baseline: WorkerEntryDetail,
+        form: DirectEditFormInput
+    ): JSONObject? {
+        val (genderBaseState, genderBaseVal) = baselineOptionalFieldStateAndValue(baseline, "gender")
+        val (dobBaseState, dobBaseVal) = baselineOptionalFieldStateAndValue(baseline, "date_of_birth")
+        val (nidBaseState, nidBaseVal) = baselineOptionalFieldStateAndValue(baseline, "national_id")
+        val (issuedAtBaseState, issuedAtBaseVal) = baselineOptionalFieldStateAndValue(baseline, "national_id_issued_at")
+        val (issuedPlaceBaseState, issuedPlaceBaseVal) = baselineOptionalFieldStateAndValue(baseline, "national_id_issued_place")
+        val (addressBaseState, addressBaseVal) = baselineOptionalFieldStateAndValue(baseline, "address")
+        val (phoneBaseState, phoneBaseVal) = baselineOptionalFieldStateAndValue(baseline, "phone")
+
+        val normalizedGenderInput = when (val g = form.gender.trim()) {
+            "Nam", "NAM", "MALE" -> "MALE"
+            "Nữ", "NỮ", "FEMALE" -> "FEMALE"
+            "Khác", "KHÁC", "OTHER" -> "OTHER"
+            "" -> ""
+            else -> g
+        }
+
+        val genderResolved = resolveDirectEditOptionalField("gender", genderBaseState, genderBaseVal, normalizedGenderInput, false)
+        val dobResolved = resolveDirectEditOptionalField("date_of_birth", dobBaseState, dobBaseVal, form.dateOfBirth, true)
+            ?: JSONObject().put("state", "omitted")
+        val nationalIdResolved = resolveDirectEditOptionalField("national_id", nidBaseState, nidBaseVal, form.nationalId, false)
+            ?: JSONObject().put("state", "omitted")
+        val issuedAtResolved = resolveDirectEditOptionalField("national_id_issued_at", issuedAtBaseState, issuedAtBaseVal, form.nationalIdIssuedAt, true)
+        val issuedPlaceResolved = resolveDirectEditOptionalField("national_id_issued_place", issuedPlaceBaseState, issuedPlaceBaseVal, form.nationalIdIssuedPlace, false)
+        val addressResolved = resolveDirectEditOptionalField("address", addressBaseState, addressBaseVal, form.address, false)
+            ?: JSONObject().put("state", "omitted")
+        val phoneResolved = resolveDirectEditOptionalField("phone", phoneBaseState, phoneBaseVal, form.phone, false)
+            ?: JSONObject().put("state", "omitted")
+
+        fun fieldChanged(resolved: JSONObject?, baseState: String?, baseVal: String?, isRequiredEnvelopeKey: Boolean): Boolean {
+            val effectiveBaseState = baseState ?: if (isRequiredEnvelopeKey) "omitted" else null
+            if (resolved == null && effectiveBaseState == null) return false
+            if (resolved == null || effectiveBaseState == null) return true
+            val resState = resolved.optString("state", "")
+            if (resState != effectiveBaseState) return true
+            if (resState == "provided") {
+                return resolved.optString("value", "") != baseVal.orEmpty()
+            }
+            return false
+        }
+
+        val cleanDisplayName = form.displayName.trim()
+        val anyChanged = cleanDisplayName != baseline.displayName.trim() ||
+            fieldChanged(genderResolved, genderBaseState, genderBaseVal, false) ||
+            fieldChanged(dobResolved, dobBaseState, dobBaseVal, true) ||
+            fieldChanged(nationalIdResolved, nidBaseState, nidBaseVal, true) ||
+            fieldChanged(issuedAtResolved, issuedAtBaseState, issuedAtBaseVal, false) ||
+            fieldChanged(issuedPlaceResolved, issuedPlaceBaseState, issuedPlaceBaseVal, false) ||
+            fieldChanged(addressResolved, addressBaseState, addressBaseVal, true) ||
+            fieldChanged(phoneResolved, phoneBaseState, phoneBaseVal, true)
+
+        if (!anyChanged) return null
+
+        if (cleanDisplayName.isEmpty() || cleanDisplayName.length > 256 || isFormulaLikeCell(cleanDisplayName) || hasControlCharacter(cleanDisplayName)) {
+            throw invalid("WORKER_INVALID", "Họ và tên người lao động không được để trống (tối đa 256 ký tự).")
+        }
+        if (genderResolved != null && genderResolved.optString("state") == "provided") {
+            val gVal = genderResolved.optString("value", "")
+            if (gVal !in setOf("MALE", "FEMALE", "OTHER")) {
+                throw invalid("WORKER_INVALID", "Giới tính không thuộc danh mục cho phép (Nam, Nữ, Khác).")
+            }
+        }
+        if (dobResolved.optString("state") == "provided") {
+            val v = dobResolved.optString("value", "")
+            if (v.isEmpty() || v.length > 10 || isFormulaLikeCell(v) || hasControlCharacter(v)) {
+                throw invalid("WORKER_INVALID", "Ngày sinh không hợp lệ.")
+            }
+        }
+        if (nationalIdResolved.optString("state") == "provided") {
+            val v = nationalIdResolved.optString("value", "")
+            if (!isCanonicalNationalId(v) || v == "000000000000" || v == "000000000") {
+                throw invalid("NATIONAL_ID_INVALID", "Số CCCD/CMND phải gồm đúng 9 hoặc 12 chữ số hợp lệ.")
+            }
+        }
+        if (issuedAtResolved != null && issuedAtResolved.optString("state") == "provided") {
+            val v = issuedAtResolved.optString("value", "")
+            if (v.isEmpty() || v.length > 10 || isFormulaLikeCell(v) || hasControlCharacter(v)) {
+                throw invalid("WORKER_INVALID", "Ngày cấp CCCD không hợp lệ.")
+            }
+        }
+        if (issuedPlaceResolved != null && issuedPlaceResolved.optString("state") == "provided") {
+            val v = issuedPlaceResolved.optString("value", "")
+            if (v.isEmpty() || v.length > 256 || isFormulaLikeCell(v) || hasControlCharacter(v)) {
+                throw invalid("WORKER_INVALID", "Nơi cấp CCCD không hợp lệ (tối đa 256 ký tự).")
+            }
+        }
+        if (addressResolved.optString("state") == "provided") {
+            val v = addressResolved.optString("value", "")
+            if (v.length > 1024 || isFormulaLikeCell(v) || hasControlCharacter(v)) {
+                throw invalid("WORKER_INVALID", "Địa chỉ không hợp lệ (tối đa 1024 ký tự).")
+            }
+        }
+        if (phoneResolved.optString("state") == "provided") {
+            val v = phoneResolved.optString("value", "")
+            if (v.length > 64 || isFormulaLikeCell(v) || hasControlCharacter(v)) {
+                throw invalid("WORKER_INVALID", "Số điện thoại không hợp lệ (tối đa 64 ký tự).")
+            }
+        }
+
+        return JSONObject().apply {
+            put("display_name", cleanDisplayName)
+            if (genderResolved != null) put("gender", genderResolved)
+            put("date_of_birth", dobResolved)
+            put("national_id", nationalIdResolved)
+            if (issuedAtResolved != null) put("national_id_issued_at", issuedAtResolved)
+            if (issuedPlaceResolved != null) put("national_id_issued_place", issuedPlaceResolved)
+            put("address", addressResolved)
+            put("phone", phoneResolved)
+        }
+    }
+
+    /**
+     * Pure builder for `payment` patch in Direct Edit (`mode === "correction"`),
+     * matching App BI `buildDirectEditPaymentPatch`.
+     * Returns `null` when unchanged.
+     */
+    fun buildDirectEditPaymentPatch(
+        baseline: WorkerEntryDetail,
+        accountNumber: String,
+        bankId: String,
+        bankQueryText: String,
+        accountHolderName: String,
+        catalogBanks: List<CatalogBankOption> = emptyList()
+    ): JSONObject? {
+        val trimmedAccount = accountNumber.trim()
+        val trimmedHolder = accountHolderName.trim()
+        val trimmedBankId = bankId.trim()
+        val trimmedBankText = bankQueryText.trim()
+
+        val allEmpty = trimmedAccount.isEmpty() &&
+            trimmedHolder.isEmpty() &&
+            trimmedBankId.isEmpty() &&
+            trimmedBankText.isEmpty()
+
+        if (allEmpty) {
+            if (baseline.paymentState != "provided") {
+                return null
+            }
+            return JSONObject()
+                .put("state", "intentionally_blank")
+                .put("account_number", JSONObject.NULL)
+                .put("bank_id", JSONObject.NULL)
+                .put("bank_name", JSONObject.NULL)
+                .put("account_holder_name", JSONObject.NULL)
+        }
+
+        if (trimmedAccount.isNotEmpty() && !PAYMENT_ACCOUNT_DIGITS_REGEX.matches(trimmedAccount)) {
+            throw invalid("PAYMENT_INVALID", "Số tài khoản ngân hàng chỉ gồm chữ số (tối đa 64 ký tự).")
+        }
+        if (trimmedHolder.isNotEmpty() && (trimmedHolder.length > 256 || hasControlCharacter(trimmedHolder) || isFormulaLikeCell(trimmedHolder))) {
+            throw invalid("PAYMENT_INVALID", "Tên chủ tài khoản không hợp lệ (tối đa 256 ký tự).")
+        }
+
+        val mergedBanks = mergeVietQrBankCatalog(catalogBanks)
+        val initialBankText = initialDirectEditBankQueryText(baseline, catalogBanks)
+
+        var resolvedBankId: String? = null
+        var resolvedBankName: String? = null
+
+        if (trimmedBankText.isNotEmpty() || trimmedBankId.isNotEmpty()) {
+            if (baseline.paymentState == "provided" &&
+                trimmedBankId == baseline.bankId.orEmpty() &&
+                trimmedBankText == initialBankText
+            ) {
+                resolvedBankId = baseline.bankId?.trim()?.ifEmpty { null }
+                resolvedBankName = baseline.rawBankName?.trim()?.ifEmpty { null }
+                    ?: resolvedBankId?.let { resolveBankCatalogOption(mergedBanks, it)?.shortName }
+            } else {
+                val selectedById = if (trimmedBankId.isNotEmpty()) {
+                    resolveBankCatalogOption(mergedBanks, trimmedBankId)
+                } else null
+                val matchedByText = if (trimmedBankText.isNotEmpty()) {
+                    resolveBankCatalogOption(mergedBanks, trimmedBankText)
+                } else null
+
+                if (selectedById != null && (trimmedBankText.isEmpty() || matchedByText?.bankId == selectedById.bankId)) {
+                    resolvedBankId = selectedById.bankId
+                    resolvedBankName = selectedById.shortName
+                } else if (matchedByText != null) {
+                    resolvedBankId = matchedByText.bankId
+                    resolvedBankName = matchedByText.shortName
+                } else if (trimmedBankText.isNotEmpty()) {
+                    if (trimmedBankText.length > 256 || hasControlCharacter(trimmedBankText) || isFormulaLikeCell(trimmedBankText)) {
+                        throw invalid("PAYMENT_INVALID", "Tên ngân hàng tham chiếu không hợp lệ (tối đa 256 ký tự).")
+                    }
+                    resolvedBankId = null
+                    resolvedBankName = trimmedBankText
+                } else if (trimmedBankId.isNotEmpty()) {
+                    if (!SAFE_CATALOG_ID_REGEX.matches(trimmedBankId)) {
+                        throw invalid("PAYMENT_INVALID", "Mã ngân hàng không hợp lệ.")
+                    }
+                    resolvedBankId = trimmedBankId
+                    resolvedBankName = null
+                }
+            }
+        }
+
+        val nextAccountNumber = trimmedAccount.ifEmpty { null }
+        val nextAccountHolder = trimmedHolder.ifEmpty { null }
+
+        if (baseline.paymentState == "provided") {
+            val baseAccount = baseline.accountNumber?.trim()?.ifEmpty { null }
+            val baseBankId = baseline.bankId?.trim()?.ifEmpty { null }
+            val baseBankName = baseline.rawBankName?.trim()?.ifEmpty { null }
+            val baseHolder = baseline.accountHolderName?.trim()?.ifEmpty { null }
+            val bankUnchanged = baseBankId == resolvedBankId &&
+                (resolvedBankId != null || baseBankName == resolvedBankName)
+            if (baseAccount == nextAccountNumber && bankUnchanged && baseHolder == nextAccountHolder) {
+                return null
+            }
+        }
+
+        return JSONObject().apply {
+            put("state", "provided")
+            put("account_number", nextAccountNumber ?: JSONObject.NULL)
+            put("bank_id", resolvedBankId ?: JSONObject.NULL)
+            if (resolvedBankName != null || resolvedBankId == null) {
+                put("bank_name", resolvedBankName ?: JSONObject.NULL)
+            }
+            put("account_holder_name", nextAccountHolder ?: JSONObject.NULL)
+        }
+    }
+
+    /**
+     * Builds the complete `patch` object for `POST /api/direct-entry/entries/{entryId}/privileged-edit`
+     * across all 3 data groups (Cá nhân `worker_details`, Công việc `project_id`/`first_work_date`/`employee_code`/`recruiter_id`/`labor_type`/`employment_status`, Ngân hàng `payment`).
+     */
+    fun buildDirectEditPatch(
+        baseline: WorkerEntryDetail,
+        form: DirectEditFormInput,
+        catalogBanks: List<CatalogBankOption> = emptyList()
+    ): JSONObject {
+        val patch = JSONObject()
+
+        val cleanProjectId = form.projectId.trim()
+        if (cleanProjectId != baseline.projectId.trim()) {
+            if (!SAFE_CATALOG_ID_REGEX.matches(cleanProjectId)) {
+                throw invalid("WORKER_INVALID", "Dự án đã chọn không hợp lệ.")
+            }
+            patch.put("project_id", cleanProjectId)
+        }
+
+        val isoFirstWorkDate = uiDateToIsoDate(form.firstWorkDate)
+        if (isoFirstWorkDate != baseline.firstWorkDate.trim()) {
+            patch.put("first_work_date", isoFirstWorkDate)
+        }
+
+        val cleanEmployeeCode = form.employeeCode.trim()
+        if (cleanEmployeeCode != baseline.employeeCode.trim()) {
+            if (!EMPLOYEE_CODE_REGEX.matches(cleanEmployeeCode)) {
+                throw invalid("WORKER_INVALID", "Mã người lao động phải đúng định dạng chuẩn hrp-YYYY-XXXXXX (ví dụ hrp-2026-000123).")
+            }
+            patch.put("employee_code", cleanEmployeeCode)
+        }
+
+        val cleanRecruiterId = form.recruiterId.trim()
+        if (cleanRecruiterId != baseline.recruiterId.trim()) {
+            if (!UUID_REGEX.matches(cleanRecruiterId)) {
+                throw invalid("WORKER_INVALID", "Người tuyển đã chọn không hợp lệ.")
+            }
+            patch.put("recruiter_id", cleanRecruiterId)
+        }
+
+        val cleanLaborType = form.laborType.trim()
+        if (cleanLaborType != baseline.laborType.trim()) {
+            if (!LABOR_TYPE_KEY_REGEX.matches(cleanLaborType)) {
+                throw invalid("WORKER_INVALID", "Loại hình lao động đã chọn không hợp lệ.")
+            }
+            patch.put("labor_type", cleanLaborType)
+        }
+
+        val workerDetailsPatch = buildDirectEditWorkerDetailsProposal(baseline, form)
+        if (workerDetailsPatch != null) {
+            patch.put("worker_details", workerDetailsPatch)
+        }
+
+        val paymentPatch = buildDirectEditPaymentPatch(
+            baseline = baseline,
+            accountNumber = form.accountNumber,
+            bankId = form.bankId,
+            bankQueryText = form.bankQueryText,
+            accountHolderName = form.accountHolderName,
+            catalogBanks = catalogBanks
+        )
+        if (paymentPatch != null) {
+            patch.put("payment", paymentPatch)
+        }
+
+        val cleanStatus = form.employmentStatus.trim()
+        if (cleanStatus.isNotEmpty()) {
+            val isoEff = uiDateToIsoDate(form.employmentEffectiveDate)
+            val statusChanged = cleanStatus != baseline.employmentStatus.trim() ||
+                isoEff != baseline.employmentEffectiveDate.trim() ||
+                (cleanStatus == "OFF" && form.employmentLeaveReason.trim() != baseline.employmentLeaveReason.orEmpty().trim())
+            if (statusChanged) {
+                patch.put(
+                    "employment_status",
+                    buildPrivilegedEditEmploymentStatus(
+                        status = cleanStatus,
+                        effectiveDateUiOrIso = isoEff,
+                        leaveReason = form.employmentLeaveReason,
+                        baselineStatus = baseline.employmentStatus
+                    )
+                )
+            }
+        }
+
+        return patch
+    }
+
+    /**
+     * Applies a saved `privileged-edit` `patch` and `newVersion` onto a local `WorkerEntryDetail` baseline
+     * so that subsequent document uploads or retries within the same open dialog see the updated baseline
+     * without re-submitting already-saved profile fields.
+     */
+    fun applyDirectEditPatchToDetail(
+        baseline: WorkerEntryDetail,
+        patch: JSONObject,
+        newVersion: Int
+    ): WorkerEntryDetail {
+        var next = baseline.copy(version = newVersion)
+        if (patch.has("project_id") && !patch.isNull("project_id")) {
+            next = next.copy(projectId = patch.optString("project_id", next.projectId))
+        }
+        if (patch.has("first_work_date") && !patch.isNull("first_work_date")) {
+            next = next.copy(firstWorkDate = patch.optString("first_work_date", next.firstWorkDate))
+        }
+        if (patch.has("employee_code") && !patch.isNull("employee_code")) {
+            next = next.copy(employeeCode = patch.optString("employee_code", next.employeeCode))
+        }
+        if (patch.has("recruiter_id") && !patch.isNull("recruiter_id")) {
+            next = next.copy(recruiterId = patch.optString("recruiter_id", next.recruiterId))
+        }
+        if (patch.has("labor_type") && !patch.isNull("labor_type")) {
+            next = next.copy(laborType = patch.optString("labor_type", next.laborType))
+        }
+        val wd = patch.optJSONObject("worker_details")
+        if (wd != null) {
+            val nextStates = LinkedHashMap(next.workerDetailsStates)
+            for (k in listOf("gender", "date_of_birth", "national_id", "national_id_issued_at", "national_id_issued_place", "address", "phone")) {
+                val fObj = wd.optJSONObject(k)
+                if (fObj != null) {
+                    val st = fObj.optString("state", "").trim()
+                    if (st.isNotEmpty()) nextStates[k] = st
+                }
+            }
+            next = next.copy(
+                displayName = wd.optString("display_name", next.displayName),
+                gender = wd.extractOptionalFieldValue("gender"),
+                dateOfBirth = wd.extractOptionalFieldValue("date_of_birth"),
+                nationalId = wd.extractOptionalFieldValue("national_id"),
+                nationalIdIssuedAt = wd.extractOptionalFieldValue("national_id_issued_at"),
+                nationalIdIssuedPlace = wd.extractOptionalFieldValue("national_id_issued_place"),
+                address = wd.extractOptionalFieldValue("address"),
+                phone = wd.extractOptionalFieldValue("phone"),
+                workerDetailsStates = nextStates
+            )
+        }
+        val pay = patch.optJSONObject("payment")
+        if (pay != null) {
+            val st = pay.optNullableString("state")
+            val bId = pay.optNullableString("bank_id")
+            val rawBName = pay.optNullableString("bank_name")
+            next = next.copy(
+                paymentState = st,
+                bankId = bId,
+                rawBankName = rawBName,
+                bankName = rawBName ?: bId,
+                accountNumber = pay.optNullableString("account_number"),
+                accountHolderName = pay.optNullableString("account_holder_name")
+            )
+        }
+        val emp = patch.optJSONObject("employment_status")
+        if (emp != null) {
+            next = next.copy(
+                employmentStatus = emp.optString("status", next.employmentStatus),
+                employmentEffectiveDate = emp.optString("effective_date", next.employmentEffectiveDate),
+                employmentLeaveReason = emp.optNullableString("leave_reason")
+            )
+        }
+        return next
+    }
+
+    fun directEditDocumentLabel(docType: String): String {
+        return when (docType.trim().uppercase(Locale.ROOT)) {
+            "WORKER_PORTRAIT" -> "Ảnh NLĐ"
+            "CCCD_FRONT" -> "CCCD mặt trước"
+            "CCCD_BACK" -> "CCCD mặt sau"
+            "EMPLOYMENT_CONTRACT" -> "Hợp đồng lao động"
+            else -> "Tài liệu đính kèm"
+        }
+    }
+
+    fun directEditDocumentErrorMessage(docType: String, code: String?): String {
+        val label = directEditDocumentLabel(docType)
+        return when (code) {
+            "DOCUMENT_FILE_REQUIRED" -> "$label: Chưa chọn tệp."
+            "DOCUMENT_SIZE_INVALID", "DOCUMENT_TOO_LARGE" -> "$label: Dung lượng tệp phải lớn hơn 0 và tối đa 10 MB."
+            "DOCUMENT_MIME_INVALID" -> if (docType == "WORKER_PORTRAIT") {
+                "$label: Chỉ chấp nhận ảnh JPEG hoặc PNG."
+            } else {
+                "$label: Chỉ chấp nhận JPEG, PNG hoặc PDF."
+            }
+            "DOCUMENT_DENIED", "ACTOR_NOT_AVAILABLE" -> "$label: Tài khoản không còn quyền tải tài liệu này."
+            "DOCUMENT_VERSION_CONFLICT", "VERSION_CONFLICT" -> "$label: Hồ sơ vừa được cập nhật ở nơi khác (lệch phiên bản). Vui lòng bấm Thử lại tệp này."
+            "DOCUMENT_CHECKSUM_MISMATCH", "DOCUMENT_OBJECT_MISSING", "DOCUMENT_SCAN_REJECTED" -> "$label: Tệp tải lên chưa hợp lệ trên kho lưu trữ. Vui lòng chọn lại hoặc bấm Thử lại."
+            "DOCUMENT_STORAGE_UNAVAILABLE", "DOCUMENT_RESERVE_UNAVAILABLE", "DOCUMENT_FINALIZE_UNAVAILABLE" -> "$label: Kho lưu trữ tạm thời gián đoạn. Vui lòng bấm Thử lại tệp này."
+            else -> "$label: Không tải được tệp lên máy chủ. Vui lòng bấm Thử lại tệp này."
+        }
+    }
+
     fun parseCatalogResponse(json: JSONObject): DirectEntryCatalog {
         val catObj = json.optJSONObject("catalog") ?: throw contractInvalid("CATALOG_MISSING")
         val effectiveDate = catObj.optString("effective_date", "").trim()
@@ -942,9 +1806,24 @@ object DirectEntryContract {
         val paymentState = paymentObj?.optNullableString("state")
         val paymentVersion = paymentObj?.optInt("version", 0)?.takeIf { it > 0 }
         val bankId = paymentObj?.optNullableString("bank_id")
-        val bankName = paymentObj?.optNullableString("bank_name") ?: bankId
+        val rawBankName = paymentObj?.optNullableString("bank_name")
+        val bankName = rawBankName ?: bankId
         val accountNumber = paymentObj?.optNullableString("account_number")
         val accountHolderName = paymentObj?.optNullableString("account_holder_name")
+
+        val workerDetailsStates = buildMap {
+            for (field in listOf(
+                "gender",
+                "date_of_birth",
+                "national_id",
+                "national_id_issued_at",
+                "national_id_issued_place",
+                "address",
+                "phone"
+            )) {
+                workerObj.extractOptionalFieldState(field)?.let { put(field, it) }
+            }
+        }
 
         val statusObj = entry.optJSONObject("employment_status") ?: throw contractInvalid("EMPLOYMENT_STATUS_MISSING")
         val statusCode = statusObj.optString("status", "").trim()
@@ -997,6 +1876,18 @@ object DirectEntryContract {
             }
         }
 
+        val fileVersions = buildMap {
+            for (spec in DIRECT_EDIT_DOCUMENT_TYPES) {
+                val readyMatches = documents.filter { it.documentType == spec.type && it.uploadStatus == "READY" }
+                if (readyMatches.isNotEmpty()) {
+                    val maxVer = readyMatches.maxOf { it.version.coerceAtLeast(1) }
+                    put(spec.type, maxVer)
+                } else if (spec.type == "WORKER_PORTRAIT" && portraitDocId != null && portraitCurrent != null) {
+                    put("WORKER_PORTRAIT", portraitCurrent.optInt("version", 1).coerceAtLeast(1))
+                }
+            }
+        }
+
         return WorkerEntryDetail(
             entryId = entryId,
             submissionId = submissionId,
@@ -1022,6 +1913,7 @@ object DirectEntryContract {
             paymentVersion = paymentVersion,
             bankId = bankId,
             bankName = bankName,
+            rawBankName = rawBankName,
             accountNumber = accountNumber,
             accountHolderName = accountHolderName,
             employmentStatus = statusCode,
@@ -1030,7 +1922,9 @@ object DirectEntryContract {
             employmentLeaveReason = leaveReason,
             portraitPreviewPath = portraitPreviewPath,
             portraitDownloadPath = portraitDownloadPath,
-            documents = documents
+            documents = documents,
+            workerDetailsStates = workerDetailsStates,
+            fileVersions = fileVersions
         )
     }
 
@@ -1425,6 +2319,15 @@ object DirectEntryContract {
                 }
             }
             is String -> raw.trim().ifEmpty { null }
+            else -> null
+        }
+    }
+
+    private fun JSONObject.extractOptionalFieldState(key: String): String? {
+        if (!has(key) || isNull(key)) return null
+        return when (val raw = opt(key)) {
+            is JSONObject -> raw.optNullableString("state")
+            is String -> if (raw.trim().isNotEmpty()) "provided" else "omitted"
             else -> null
         }
     }
@@ -2578,7 +3481,8 @@ class DirectEntryService(
         entryId: String,
         expectedEntryVersion: Int,
         patch: JSONObject,
-        reason: String?
+        reason: String?,
+        baselineFallback: WorkerEntryDetail? = null
     ): WorkerEntryDetail = withContext(Dispatchers.IO) {
         val cleanId = entryId.trim()
         val payload = DirectEntryContract.buildPrivilegedEditPayload(
@@ -2606,14 +3510,255 @@ class DirectEntryService(
                 )
             }
             idempotencyStore.clear(intentSignature)
-            // Always refetch authoritative entry detail from backend after mutation
-            getEntryDetail(cleanId)
+            // Always refetch authoritative entry detail from backend after mutation; fall back to local patch application if refetch fails
+            runCatching { getEntryDetail(cleanId) }.getOrElse { err ->
+                if (baselineFallback != null) {
+                    DirectEntryContract.applyDirectEditPatchToDetail(baselineFallback, patch, newVersion)
+                } else {
+                    throw err
+                }
+            }
         } catch (e: BackendApiException) {
             if (!idempotencyStore.shouldPreserveForRetry(e)) {
                 idempotencyStore.clear(intentSignature)
             }
             throw e
         }
+    }
+
+    /**
+     * Direct Edit single-document upload matching Web `uploadDirectEditDocument` in `workers.js`:
+     * - Reserve -> PUT to presigned URL -> Finalize
+     * - Increments `entryVersion` by 1 if finalize returns HTTP 422
+     * - Never logs file names, presigned URLs, storage keys, CCCD, or bank account numbers.
+     */
+    suspend fun uploadDirectEditDocument(
+        entryId: String,
+        expectedEntryVersion: Int,
+        documentType: String,
+        fileBytes: ByteArray,
+        mimeType: String,
+        reason: String? = null,
+        idempotencyBaseKey: String = UUID.randomUUID().toString()
+    ): DirectEditSingleDocumentUploadResult = withContext(Dispatchers.IO) {
+        val currentEntryVersion = expectedEntryVersion.coerceAtLeast(1)
+        val label = DirectEntryContract.directEditDocumentLabel(documentType)
+        val cleanEntryId = entryId.trim()
+        if (!DirectEntryContract.isUuid(cleanEntryId)) {
+            return@withContext DirectEditSingleDocumentUploadResult(
+                ok = false,
+                entryVersion = currentEntryVersion,
+                message = "$label: Mã hồ sơ người lao động không hợp lệ.",
+                code = "ENTRY_ID_INVALID"
+            )
+        }
+        if (fileBytes.isEmpty()) {
+            return@withContext DirectEditSingleDocumentUploadResult(
+                ok = false,
+                entryVersion = currentEntryVersion,
+                message = "$label: Tệp rỗng hoặc không đọc được.",
+                code = "DOCUMENT_SIZE_INVALID"
+            )
+        }
+        if (fileBytes.size > DirectEntryContract.MAX_STAGE_BYTES) {
+            return@withContext DirectEditSingleDocumentUploadResult(
+                ok = false,
+                entryVersion = currentEntryVersion,
+                message = "$label: Tệp vượt quá giới hạn 10 MB.",
+                code = "DOCUMENT_SIZE_INVALID"
+            )
+        }
+        val cleanMime = mimeType.trim().lowercase(Locale.ROOT)
+        val allowedMimes = if (documentType == "WORKER_PORTRAIT") {
+            setOf("image/jpeg", "image/png")
+        } else {
+            setOf("image/jpeg", "image/png", "application/pdf")
+        }
+        if (cleanMime !in allowedMimes) {
+            return@withContext DirectEditSingleDocumentUploadResult(
+                ok = false,
+                entryVersion = currentEntryVersion,
+                message = if (documentType == "WORKER_PORTRAIT") {
+                    "$label: Chỉ chấp nhận JPEG hoặc PNG."
+                } else {
+                    "$label: Chỉ chấp nhận JPEG, PNG hoặc PDF."
+                },
+                code = "DOCUMENT_MIME_INVALID"
+            )
+        }
+
+        val cleanReason = reason?.trim()?.takeIf { it.isNotEmpty() }
+        val reserveBody = JSONObject()
+            .put("document_type", documentType)
+            .put("expected_entry_version", currentEntryVersion)
+            .put("size_bytes", fileBytes.size)
+            .put("mime_type", cleanMime)
+            .put("reason", cleanReason ?: JSONObject.NULL)
+
+        val reserveJson = try {
+            httpClient.postJson(
+                path = "/api/direct-entry/entries/$cleanEntryId/documents",
+                bodyJson = reserveBody,
+                idempotencyKey = "$idempotencyBaseKey:reserve",
+                requireOkTrue = true
+            )
+        } catch (e: BackendApiException) {
+            val code = e.backendCode?.trim().orEmpty()
+            val msg = if (code.isNotEmpty()) {
+                DirectEntryContract.directEditDocumentErrorMessage(documentType, code)
+            } else if (e.kind == BackendFailureKind.NETWORK) {
+                "$label: Không kết nối được máy chủ khi khởi tạo tải tệp."
+            } else {
+                DirectEntryContract.directEditDocumentErrorMessage(documentType, null)
+            }
+            return@withContext DirectEditSingleDocumentUploadResult(
+                ok = false,
+                entryVersion = currentEntryVersion,
+                message = msg,
+                code = code.ifEmpty { null }
+            )
+        } catch (_: Throwable) {
+            return@withContext DirectEditSingleDocumentUploadResult(
+                ok = false,
+                entryVersion = currentEntryVersion,
+                message = "$label: Không kết nối được máy chủ khi khởi tạo tải tệp."
+            )
+        }
+
+        val documentId = reserveJson.optString("document_id", "").trim()
+        val reservedEntryVersion = reserveJson.optInt("entry_version", currentEntryVersion).takeIf { it >= 1 }
+            ?: currentEntryVersion
+        val uploadObj = if (reserveJson.has("upload") && !reserveJson.isNull("upload")) {
+            reserveJson.optJSONObject("upload")
+        } else {
+            null
+        }
+        val signedUrl = uploadObj?.optString("url", "")?.trim().orEmpty()
+        if (!DirectEntryContract.isUuid(documentId) || signedUrl.isEmpty()) {
+            return@withContext DirectEditSingleDocumentUploadResult(
+                ok = false,
+                entryVersion = reservedEntryVersion,
+                message = "$label: Máy chủ không trả về phiên tải tệp hợp lệ.",
+                code = "DOCUMENT_RESERVE_INVALID"
+            )
+        }
+
+        val headersMap = linkedMapOf<String, String>()
+        val headersJson = uploadObj?.optJSONObject("headers")
+        if (headersJson != null) {
+            val keys = headersJson.keys()
+            while (keys.hasNext()) {
+                val key = keys.next()
+                val value = headersJson.optString(key, "")
+                if (key.isNotBlank() && value.isNotEmpty()) {
+                    headersMap[key] = value
+                }
+            }
+        }
+
+        try {
+            httpClient.putBinaryToSignedUrl(
+                signedUrl = signedUrl,
+                headers = headersMap,
+                bytes = fileBytes,
+                fallbackMimeType = cleanMime
+            )
+        } catch (e: BackendApiException) {
+            val msg = if (e.kind == BackendFailureKind.NETWORK) {
+                "$label: Tải tệp lên kho lưu trữ thất bại. Vui lòng bấm Thử lại tệp này."
+            } else {
+                "$label: Kho lưu trữ từ chối tệp tải lên. Vui lòng bấm Thử lại tệp này."
+            }
+            return@withContext DirectEditSingleDocumentUploadResult(
+                ok = false,
+                entryVersion = reservedEntryVersion,
+                message = msg,
+                code = e.backendCode
+            )
+        } catch (_: Throwable) {
+            return@withContext DirectEditSingleDocumentUploadResult(
+                ok = false,
+                entryVersion = reservedEntryVersion,
+                message = "$label: Tải tệp lên kho lưu trữ thất bại. Vui lòng bấm Thử lại tệp này."
+            )
+        }
+
+        val finalizeBody = JSONObject().put("expected_entry_version", reservedEntryVersion)
+        val finalizeJson = try {
+            httpClient.postJson(
+                path = "/api/direct-entry/entries/$cleanEntryId/documents/$documentId/finalize",
+                bodyJson = finalizeBody,
+                idempotencyKey = "$idempotencyBaseKey:finalize",
+                requireOkTrue = true
+            )
+        } catch (e: BackendApiException) {
+            val code = e.backendCode?.trim().orEmpty()
+            val nextEntryVersion = if (e.statusCode == 422) reservedEntryVersion + 1 else reservedEntryVersion
+            val msg = if (code.isNotEmpty()) {
+                DirectEntryContract.directEditDocumentErrorMessage(documentType, code)
+            } else if (e.kind == BackendFailureKind.NETWORK) {
+                "$label: Không xác nhận được tệp sau khi tải lên. Vui lòng bấm Thử lại tệp này."
+            } else {
+                DirectEntryContract.directEditDocumentErrorMessage(documentType, null)
+            }
+            return@withContext DirectEditSingleDocumentUploadResult(
+                ok = false,
+                entryVersion = nextEntryVersion,
+                message = msg,
+                code = code.ifEmpty { null }
+            )
+        } catch (_: Throwable) {
+            return@withContext DirectEditSingleDocumentUploadResult(
+                ok = false,
+                entryVersion = reservedEntryVersion,
+                message = "$label: Không xác nhận được tệp sau khi tải lên. Vui lòng bấm Thử lại tệp này."
+            )
+        }
+
+        val finalizedEntryVersion = finalizeJson.optInt("entry_version", reservedEntryVersion).takeIf { it >= 1 }
+            ?: reservedEntryVersion
+        val finalizedDocVersion = finalizeJson.optInt("version", 1).coerceAtLeast(1)
+        DirectEditSingleDocumentUploadResult(
+            ok = true,
+            entryVersion = finalizedEntryVersion,
+            documentVersion = finalizedDocVersion,
+            documentId = documentId
+        )
+    }
+
+    suspend fun uploadDirectEditDocument(
+        entryId: String,
+        expectedEntryVersion: Int,
+        documentType: String,
+        stagedRef: StagedDocumentRef,
+        reason: String? = null
+    ): DirectEditSingleDocumentUploadResult = withContext(Dispatchers.IO) {
+        val label = DirectEntryContract.directEditDocumentLabel(documentType)
+        val path = stagedRef.localFilePath?.trim().orEmpty()
+        if (path.isEmpty()) {
+            return@withContext DirectEditSingleDocumentUploadResult(
+                ok = false,
+                entryVersion = expectedEntryVersion.coerceAtLeast(1),
+                message = "$label: Tệp rỗng hoặc không đọc được.",
+                code = "FILE_READ_FAILED"
+            )
+        }
+        val fileBytes = runCatching { File(path).readBytes() }.getOrElse {
+            return@withContext DirectEditSingleDocumentUploadResult(
+                ok = false,
+                entryVersion = expectedEntryVersion.coerceAtLeast(1),
+                message = "$label: Tệp rỗng hoặc không đọc được.",
+                code = "FILE_READ_FAILED"
+            )
+        }
+        uploadDirectEditDocument(
+            entryId = entryId,
+            expectedEntryVersion = expectedEntryVersion,
+            documentType = documentType,
+            fileBytes = fileBytes,
+            mimeType = stagedRef.mimeType,
+            reason = reason
+        )
     }
 
     suspend fun exportWorkersExcel(

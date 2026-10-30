@@ -1428,4 +1428,384 @@ class DirectEntryAndWorkerContractTest {
             assertFalse(File(pagePath).exists())
         }
     }
+
+    @Test
+    fun `direct edit patch builder - edits personal, work, payment groups, preserves untouched empty states, and transitions cleared provided fields to intentionally_blank`() {
+        val detailJson = JSONObject(
+            """
+            {
+              "ok": true,
+              "entry": {
+                "entry_id": "11111111-2222-4333-8444-555555555555",
+                "submission_id": "66666666-7777-4888-8999-000000000000",
+                "version": 5,
+                "project_id": "PRJ_01",
+                "first_work_date": "2026-10-01",
+                "employee_code": "hrp-1026-000123",
+                "recruiter_id": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+                "team_id": "TEAM_01",
+                "provider_type": "hrp",
+                "labor_type": "TEMPORARY",
+                "labor_type_display": "Thời vụ",
+                "worker_details": {
+                  "display_name": "Nguyễn Văn Gốc",
+                  "gender": { "state": "provided", "value": "MALE" },
+                  "date_of_birth": { "state": "unknown" },
+                  "national_id": { "state": "provided", "value": "001099012345" },
+                  "national_id_issued_at": { "state": "omitted" },
+                  "address": { "state": "intentionally_blank" },
+                  "phone": { "state": "provided", "value": "0901234567" }
+                },
+                "payment": {
+                  "state": "provided",
+                  "version": 2,
+                  "account_number": "1903000111222",
+                  "bank_id": "VCB",
+                  "bank_name": "Vietcombank",
+                  "account_holder_name": "NGUYEN VAN GOC"
+                },
+                "employment_status": {
+                  "status": "ON",
+                  "effective_date": "2026-10-01",
+                  "version": 1
+                },
+                "documents": [
+                  {
+                    "document_id": "dddddddd-1111-4222-8333-444444444441",
+                    "document_type": "WORKER_PORTRAIT",
+                    "version": 2,
+                    "size_bytes": 12000,
+                    "mime_type": "image/jpeg",
+                    "upload_status": "READY",
+                    "scan_status": "CLEAN",
+                    "validation_status": "VALID"
+                  }
+                ]
+              }
+            }
+            """.trimIndent()
+        )
+        val baseline = DirectEntryContract.parseEntryDetailResponse(detailJson)
+        assertEquals("unknown", baseline.workerDetailsStates["date_of_birth"])
+        assertEquals("omitted", baseline.workerDetailsStates["national_id_issued_at"])
+        assertEquals("intentionally_blank", baseline.workerDetailsStates["address"])
+        assertEquals(2, baseline.fileVersions["WORKER_PORTRAIT"])
+
+        // 1. Unchanged form produces an empty patch
+        val initialForm = DirectEntryContract.createInitialDirectEditFormInput(baseline)
+        val noOpPatch = DirectEntryContract.buildDirectEditPatch(baseline, initialForm)
+        assertEquals(0, noOpPatch.length())
+
+        // 2. Clear provided phone & gender while leaving date_of_birth (unknown), national_id_issued_at (omitted),
+        //    and address (intentionally_blank) untouched; also clear provided payment -> intentionally_blank
+        val clearedForm = initialForm.copy(
+            displayName = "Nguyễn Văn Đã Sửa",
+            gender = "",
+            phone = "",
+            nationalIdIssuedPlace = "Cục Cảnh sát QLHC về TTXH",
+            employeeCode = "hrp-1026-000999",
+            projectId = "PRJ_02",
+            firstWorkDate = "05/10/2026",
+            recruiterId = "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff",
+            laborType = "OFFICIAL",
+            employmentStatus = "OFF",
+            employmentEffectiveDate = "20/10/2026",
+            employmentLeaveReason = "Hoàn thành hợp đồng thời vụ",
+            accountNumber = "",
+            bankId = "",
+            bankQueryText = "",
+            accountHolderName = ""
+        )
+        val patch = DirectEntryContract.buildDirectEditPatch(baseline, clearedForm)
+        assertEquals("hrp-1026-000999", patch.getString("employee_code"))
+        assertEquals("PRJ_02", patch.getString("project_id"))
+        assertEquals("2026-10-05", patch.getString("first_work_date"))
+        assertEquals("bbbbbbbb-cccc-4ddd-8eee-ffffffffffff", patch.getString("recruiter_id"))
+        assertEquals("OFFICIAL", patch.getString("labor_type"))
+
+        val empStatusObj = patch.getJSONObject("employment_status")
+        assertEquals("OFF", empStatusObj.getString("status"))
+        assertEquals("2026-10-20", empStatusObj.getString("effective_date"))
+        assertEquals("Hoàn thành hợp đồng thời vụ", empStatusObj.getString("leave_reason"))
+
+        val wdObj = patch.getJSONObject("worker_details")
+        assertEquals("Nguyễn Văn Đã Sửa", wdObj.getString("display_name"))
+        // Cleared provided fields transition to intentionally_blank
+        assertEquals("intentionally_blank", wdObj.getJSONObject("gender").getString("state"))
+        assertEquals("intentionally_blank", wdObj.getJSONObject("phone").getString("state"))
+        // Untouched empty states are preserved verbatim
+        assertEquals("unknown", wdObj.getJSONObject("date_of_birth").getString("state"))
+        assertEquals("omitted", wdObj.getJSONObject("national_id_issued_at").getString("state"))
+        assertEquals("intentionally_blank", wdObj.getJSONObject("address").getString("state"))
+        // Unchanged provided national_id stays provided
+        assertEquals("provided", wdObj.getJSONObject("national_id").getString("state"))
+        assertEquals("001099012345", wdObj.getJSONObject("national_id").getString("value"))
+        // Newly provided national_id_issued_place becomes provided
+        assertEquals("provided", wdObj.getJSONObject("national_id_issued_place").getString("state"))
+        assertEquals("Cục Cảnh sát QLHC về TTXH", wdObj.getJSONObject("national_id_issued_place").getString("value"))
+
+        val payObj = patch.getJSONObject("payment")
+        assertEquals("intentionally_blank", payObj.getString("state"))
+        assertTrue(payObj.isNull("account_number"))
+        assertTrue(payObj.isNull("bank_id"))
+        assertTrue(payObj.isNull("bank_name"))
+        assertTrue(payObj.isNull("account_holder_name"))
+    }
+
+    @Test
+    fun `direct edit bank catalog merge and custom reference - supports VietQR lookup and custom reference bank_name with null bank_id`() {
+        val detailJson = JSONObject(
+            """
+            {
+              "ok": true,
+              "entry": {
+                "entry_id": "11111111-2222-4333-8444-555555555555",
+                "submission_id": "66666666-7777-4888-8999-000000000000",
+                "version": 3,
+                "project_id": "PRJ_01",
+                "first_work_date": "2026-10-01",
+                "employee_code": "hrp-1026-000123",
+                "recruiter_id": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+                "team_id": "TEAM_01",
+                "provider_type": "hrp",
+                "labor_type": "TEMPORARY",
+                "labor_type_display": "Thời vụ",
+                "worker_details": {
+                  "display_name": "Trần Thị B"
+                },
+                "payment": {
+                  "state": "omitted"
+                },
+                "employment_status": {
+                  "status": "ON",
+                  "effective_date": "2026-10-01",
+                  "version": 1
+                },
+                "documents": []
+              }
+            }
+            """.trimIndent()
+        )
+        val baseline = DirectEntryContract.parseEntryDetailResponse(detailJson)
+        val baseForm = DirectEntryContract.createInitialDirectEditFormInput(baseline)
+
+        // 1. Selecting a VietQR catalog bank (e.g., Techcombank / TCB) sets bank_id = "TCB" and bank_name = "Techcombank"
+        val tcbPatch = DirectEntryContract.buildDirectEditPaymentPatch(
+            baseline = baseline,
+            accountNumber = "1903555666",
+            bankId = "TCB",
+            bankQueryText = "Techcombank (TCB) — Ngân hàng TMCP Kỹ thương Việt Nam",
+            accountHolderName = "TRAN THI B"
+        )
+        assertNotNull(tcbPatch)
+        assertEquals("provided", tcbPatch!!.getString("state"))
+        assertEquals("1903555666", tcbPatch.getString("account_number"))
+        assertEquals("TCB", tcbPatch.getString("bank_id"))
+        assertEquals("Techcombank", tcbPatch.getString("bank_name"))
+        assertEquals("TRAN THI B", tcbPatch.getString("account_holder_name"))
+
+        // 2. Typing a custom reference bank name not in catalog sets bank_id = JSONObject.NULL and bank_name = custom text
+        val customBankPatch = DirectEntryContract.buildDirectEditPaymentPatch(
+            baseline = baseline,
+            accountNumber = "8888999900",
+            bankId = "",
+            bankQueryText = "Ngân hàng Nông thôn Chi nhánh X",
+            accountHolderName = "TRAN THI B"
+        )
+        assertNotNull(customBankPatch)
+        assertEquals("provided", customBankPatch!!.getString("state"))
+        assertTrue(customBankPatch.isNull("bank_id"))
+        assertEquals("Ngân hàng Nông thôn Chi nhánh X", customBankPatch.getString("bank_name"))
+        assertEquals("8888999900", customBankPatch.getString("account_number"))
+
+        // 3. Leaving non-provided payment empty returns null (preserves omitted state)
+        val untouchedPaymentPatch = DirectEntryContract.buildDirectEditPaymentPatch(
+            baseline = baseline,
+            accountNumber = baseForm.accountNumber,
+            bankId = baseForm.bankId,
+            bankQueryText = baseForm.bankQueryText,
+            accountHolderName = baseForm.accountHolderName
+        )
+        assertNull(untouchedPaymentPatch)
+    }
+
+    @Test
+    fun `direct edit upload all 4 document types and retry single failed document without re-creating or re-posting profile`() = runBlocking {
+        val repo = createRepository()
+        val entryId = "11111111-2222-4333-8444-555555555555"
+        val signedStorageUrl = server.url("/r2-presigned/direct-edit-doc").toString()
+
+        // Step 1: Save profile via POST /privileged-edit (v5 -> v6) + GET /entries/{id}
+        server.enqueue(
+            MockResponse().setResponseCode(200).setBody(
+                """{"ok": true, "entry_id": "$entryId", "version": 6}"""
+            )
+        )
+        server.enqueue(
+            MockResponse().setResponseCode(200).setBody(
+                """
+                {
+                  "ok": true,
+                  "entry": {
+                    "entry_id": "$entryId",
+                    "submission_id": "66666666-7777-4888-8999-000000000000",
+                    "version": 6,
+                    "project_id": "PRJ_01",
+                    "first_work_date": "2026-10-01",
+                    "employee_code": "hrp-1026-000123",
+                    "recruiter_id": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+                    "team_id": "TEAM_01",
+                    "provider_type": "hrp",
+                    "labor_type": "OFFICIAL",
+                    "labor_type_display": "Chính thức",
+                    "worker_details": { "display_name": "Lê Văn Sửa" },
+                    "employment_status": { "status": "ON", "effective_date": "2026-10-01", "version": 1 },
+                    "documents": []
+                  }
+                }
+                """.trimIndent()
+            )
+        )
+
+        val savedDetail = repo.directEntryService.privilegedEditEntry(
+            entryId = entryId,
+            expectedEntryVersion = 5,
+            patch = JSONObject().put("labor_type", "OFFICIAL"),
+            reason = null
+        )
+        assertEquals(6, savedDetail.version)
+
+        // Step 2: Upload all 4 document types sequentially, with CCCD_BACK failing on finalize (422) first and then succeeding on individual retry!
+        // 2a. WORKER_PORTRAIT: reserve (v6 -> v7) -> PUT -> finalize (v7 -> v8)
+        val docIdPortrait = "dddddddd-1111-4222-8333-444444444401"
+        server.enqueue(
+            MockResponse().setResponseCode(201).setBody(
+                """{"ok":true,"document_id":"$docIdPortrait","entry_version":7,"upload_status":"STAGED","upload":{"url":"$signedStorageUrl","headers":{"Content-Type":"image/jpeg"}}}"""
+            )
+        )
+        server.enqueue(MockResponse().setResponseCode(200))
+        server.enqueue(
+            MockResponse().setResponseCode(200).setBody(
+                """{"ok":true,"document_id":"$docIdPortrait","entry_version":8,"version":1,"upload_status":"READY"}"""
+            )
+        )
+
+        val resPortrait = repo.directEntryService.uploadDirectEditDocument(
+            entryId = entryId,
+            expectedEntryVersion = 6,
+            documentType = "WORKER_PORTRAIT",
+            fileBytes = byteArrayOf(1, 2, 3, 4),
+            mimeType = "image/jpeg"
+        )
+        assertTrue(resPortrait.ok)
+        assertEquals(8, resPortrait.entryVersion)
+
+        // 2b. CCCD_FRONT: reserve (v8 -> v9) -> PUT -> finalize (v9 -> v10)
+        val docIdFront = "dddddddd-1111-4222-8333-444444444402"
+        server.enqueue(
+            MockResponse().setResponseCode(201).setBody(
+                """{"ok":true,"document_id":"$docIdFront","entry_version":9,"upload_status":"STAGED","upload":{"url":"$signedStorageUrl","headers":{"Content-Type":"image/png"}}}"""
+            )
+        )
+        server.enqueue(MockResponse().setResponseCode(200))
+        server.enqueue(
+            MockResponse().setResponseCode(200).setBody(
+                """{"ok":true,"document_id":"$docIdFront","entry_version":10,"version":1,"upload_status":"READY"}"""
+            )
+        )
+
+        val resFront = repo.directEntryService.uploadDirectEditDocument(
+            entryId = entryId,
+            expectedEntryVersion = resPortrait.entryVersion,
+            documentType = "CCCD_FRONT",
+            fileBytes = byteArrayOf(5, 6, 7, 8),
+            mimeType = "image/png"
+        )
+        assertTrue(resFront.ok)
+        assertEquals(10, resFront.entryVersion)
+
+        // 2c. CCCD_BACK fails at finalize with 422 DOCUMENT_OBJECT_MISSING (reserve v10 -> v11, finalize 422 increments version to 12)
+        val docIdBackFail = "dddddddd-1111-4222-8333-444444444403"
+        server.enqueue(
+            MockResponse().setResponseCode(201).setBody(
+                """{"ok":true,"document_id":"$docIdBackFail","entry_version":11,"upload_status":"STAGED","upload":{"url":"$signedStorageUrl","headers":{"Content-Type":"image/jpeg"}}}"""
+            )
+        )
+        server.enqueue(MockResponse().setResponseCode(200))
+        server.enqueue(
+            MockResponse().setResponseCode(422).setBody(
+                """{"ok":false,"code":"DOCUMENT_OBJECT_MISSING","message":"Object missing"}"""
+            )
+        )
+
+        val resBackFail = repo.directEntryService.uploadDirectEditDocument(
+            entryId = entryId,
+            expectedEntryVersion = resFront.entryVersion,
+            documentType = "CCCD_BACK",
+            fileBytes = byteArrayOf(9, 10, 11),
+            mimeType = "image/jpeg"
+        )
+        assertFalse(resBackFail.ok)
+        assertEquals("DOCUMENT_OBJECT_MISSING", resBackFail.code)
+        // Version incremented from 11 to 12 on 422 finalize failure so subsequent document/retry uses v12
+        assertEquals(12, resBackFail.entryVersion)
+
+        // 2d. EMPLOYMENT_CONTRACT still proceeds and succeeds using v12 -> v13 -> v14!
+        val docIdContract = "dddddddd-1111-4222-8333-444444444404"
+        server.enqueue(
+            MockResponse().setResponseCode(201).setBody(
+                """{"ok":true,"document_id":"$docIdContract","entry_version":13,"upload_status":"STAGED","upload":{"url":"$signedStorageUrl","headers":{"Content-Type":"application/pdf"}}}"""
+            )
+        )
+        server.enqueue(MockResponse().setResponseCode(200))
+        server.enqueue(
+            MockResponse().setResponseCode(200).setBody(
+                """{"ok":true,"document_id":"$docIdContract","entry_version":14,"version":1,"upload_status":"READY"}"""
+            )
+        )
+
+        val resContract = repo.directEntryService.uploadDirectEditDocument(
+            entryId = entryId,
+            expectedEntryVersion = resBackFail.entryVersion,
+            documentType = "EMPLOYMENT_CONTRACT",
+            fileBytes = "%PDF-1.4 mock".toByteArray(),
+            mimeType = "application/pdf"
+        )
+        assertTrue(resContract.ok)
+        assertEquals(14, resContract.entryVersion)
+
+        // 2e. Retry ONLY CCCD_BACK using v14 -> v15 -> v16 without re-calling /privileged-edit or /batches/full-profile
+        val docIdBackRetry = "dddddddd-1111-4222-8333-444444444405"
+        server.enqueue(
+            MockResponse().setResponseCode(201).setBody(
+                """{"ok":true,"document_id":"$docIdBackRetry","entry_version":15,"upload_status":"STAGED","upload":{"url":"$signedStorageUrl","headers":{"Content-Type":"image/jpeg"}}}"""
+            )
+        )
+        server.enqueue(MockResponse().setResponseCode(200))
+        server.enqueue(
+            MockResponse().setResponseCode(200).setBody(
+                """{"ok":true,"document_id":"$docIdBackRetry","entry_version":16,"version":2,"upload_status":"READY"}"""
+            )
+        )
+
+        val resBackRetry = repo.directEntryService.uploadDirectEditDocument(
+            entryId = entryId,
+            expectedEntryVersion = resContract.entryVersion,
+            documentType = "CCCD_BACK",
+            fileBytes = byteArrayOf(9, 10, 11),
+            mimeType = "image/jpeg"
+        )
+        assertTrue(resBackRetry.ok)
+        assertEquals(16, resBackRetry.entryVersion)
+        assertEquals(2, resBackRetry.documentVersion)
+
+        // Verify exact request sequence on server: only 1 POST /privileged-edit and 0 POST /batches/full-profile
+        val recordedPaths = mutableListOf<String>()
+        while (true) {
+            val req = server.takeRequest(10, java.util.concurrent.TimeUnit.MILLISECONDS) ?: break
+            recordedPaths.add("${req.method} ${req.path}")
+        }
+        assertEquals(1, recordedPaths.count { it.contains("/privileged-edit") })
+        assertEquals(0, recordedPaths.count { it.contains("/batches/full-profile") })
+    }
 }
