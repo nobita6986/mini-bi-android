@@ -18,7 +18,7 @@ final class HRPBTests: XCTestCase {
         )
         let stagingEnv = AppEnvironmentConfig.forVariant(.staging)
         XCTAssertEqual(stagingEnv.defaultBaseUrl, "https://bi.hrpvietnam.com")
-        XCTAssertTrue(stagingEnv.isStaging)
+        XCTAssertEqual(stagingEnv.variant, .staging)
         // Release enforces HTTPS
         XCTAssertNil(
             BackendHttpClient.normalizeBaseUrl("http://bi.hrpartner.vn", enforceHttps: true)

@@ -18,6 +18,8 @@ public struct AppEnvironmentConfig: Equatable, Sendable {
     public let marketingVersion: String
     public let buildNumber: String
 
+    public var isStaging: Bool { variant == .staging }
+
     public init(
         variant: AppEnvironmentVariant,
         appBrandTitle: String,
