@@ -1475,7 +1475,7 @@ public struct AuthenticatedRemoteImageView: View {
         loadFailed = false
         let res = await BackendHttpClient.shared.fetchBinaryData(path: trimmed, useCache: !forceReload)
         isLoading = false
-        if case .success(let (data, _), _) = res, let uiImg = UIImage(data: data) {
+        if res.isSuccess && !res.rawData.isEmpty, let uiImg = UIImage(data: res.rawData) {
             loadedImage = uiImg
             loadFailed = false
         } else {
@@ -2013,7 +2013,7 @@ struct WorkerDetailSheet: View {
                             await downloadAndShareDocument(
                                 docType: docType,
                                 path: downloadPath,
-                                suggestedFileName: doc?.fileName
+                                suggestedFileName: nil
                             )
                         }
                     } label: {
@@ -2056,8 +2056,11 @@ struct WorkerDetailSheet: View {
         downloadingDocType = docType
         let res = await BackendHttpClient.shared.fetchBinaryData(path: path, useCache: false)
         downloadingDocType = nil
-        switch res {
-        case .success(let (data, mime), _):
+        if res.isSuccess && !res.rawData.isEmpty {
+            let data = res.rawData
+            let mime = (res.headers["Content-Type"] as? String)
+                ?? (res.headers["content-type"] as? String)
+                ?? ""
             let ext: String
             if mime.lowercased().contains("pdf") || docType == DirectEntryContract.docTypeEmploymentContract {
                 ext = "pdf"
@@ -2070,13 +2073,13 @@ struct WorkerDetailSheet: View {
             let fileName = baseName.isEmpty ? "\(docType.lowercased())-\(Int(Date().timeIntervalSince1970)).\(ext)" : baseName
             let tempUrl = FileManager.default.temporaryDirectory.appendingPathComponent(fileName)
             do {
-                try data.write(to: tempUrl, options: .atomic)
+                try data.write(to: tempUrl, options: [.atomic])
                 downloadedShareUrl = tempUrl
             } catch {
                 viewModel.showBanner("Không thể lưu tệp tạm để mở.", isError: true)
             }
-        case .failure(let msg, _, _, _):
-            viewModel.showBanner(msg, isError: true)
+        } else {
+            viewModel.showBanner(res.errorMessage ?? "Không thể tải tệp đính kèm.", isError: true)
         }
     }
 

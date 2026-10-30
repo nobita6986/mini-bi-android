@@ -1216,6 +1216,32 @@ public struct WorkerEntryDetail: Equatable, Sendable {
     public let fileVersions: [String: Int]
     public let canDirectEdit: Bool
 
+    // Vietnamese UI convenience aliases for read-only detail display
+    public var soCccd: String { nationalId ?? "" }
+    public var gioiTinh: String {
+        switch (gender ?? "").uppercased() {
+        case "MALE", "NAM": return "Nam"
+        case "FEMALE", "NỮ", "NU": return "Nữ"
+        default: return gender ?? ""
+        }
+    }
+    public var ngayCapCccd: String { DirectEntryContract.isoDateToUiDate(nationalIdIssuedAt ?? "") }
+    public var noiCapCccd: String { nationalIdIssuedPlace ?? "" }
+    public var queQuan: String { address ?? "" }
+    public var sdt: String { phone ?? "" }
+    public var duAn: String { projectDisplay }
+    public var nganhNghe: String { laborTypeDisplay }
+    public var nguoiTuyen: String { recruiterDisplay }
+    public var trangThaiLabel: String { employmentStatus.uppercased() == "OFF" ? "Đã nghỉ" : "Đang làm việc" }
+    public var chuTaiKhoan: String { accountHolderName ?? "" }
+    public var soTaiKhoan: String { accountNumber ?? "" }
+    public var nganHang: String {
+        if let bn = bankName, !bn.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return bn
+        }
+        return rawBankName ?? ""
+    }
+
     public init(
         entryId: String,
         submissionId: String = "",
