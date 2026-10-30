@@ -3931,14 +3931,8 @@ class MiniBiViewModel internal constructor(
         salaryAdvanceLastSubmittedFingerprint = null
         _salaryAdvanceDialogOpen.value = true
 
-        if (initialProjectId.isNotBlank()) {
-            loadSalaryAdvanceProjectWorkers(
-                projectId = initialProjectId,
-                search = "",
-                cursor = null,
-                append = false
-            )
-        }
+        // Không tự động tải toàn bộ danh sách NLĐ khi mở màn hình (tránh loạn UI với dự án 100-1000 NLĐ).
+        // Chỉ tải danh sách yêu cầu dự án cho badge và chờ người dùng nhập từ khóa tìm kiếm NLĐ.
         loadSalaryAdvanceRequests(append = false)
     }
 
@@ -3990,23 +3984,32 @@ class MiniBiViewModel internal constructor(
         val ctx = _salaryAdvanceContext.value ?: return
         val allowed = ctx.activeManagedProjects.any { it.projectId == projectId }
         if (!allowed) return
-        if (_salaryAdvanceSelectedProjectId.value == projectId && _salaryAdvanceWorkers.value.isNotEmpty()) {
+        if (_salaryAdvanceSelectedProjectId.value == projectId) {
             return
         }
         resetSalaryAdvanceHistoryState()
+        ++salaryAdvanceWorkersFetchToken
+        salaryAdvanceWorkersFetchJob?.cancel()
+        salaryAdvanceWorkersFetchJob = null
         _salaryAdvanceSelectedProjectId.value = projectId
         _salaryAdvanceSelectedWorkerId.value = ""
         _salaryAdvanceWorkerPickerExpanded.value = true
         _salaryAdvanceCreateError.value = null
+        _salaryAdvanceWorkersError.value = null
         _salaryAdvanceWorkers.value = emptyList()
+        _salaryAdvanceWorkersLoading.value = false
+        _salaryAdvanceWorkersLoadingMore.value = false
         _salaryAdvanceWorkersHasMore.value = false
         _salaryAdvanceWorkersNextCursor.value = null
-        loadSalaryAdvanceProjectWorkers(
-            projectId = projectId,
-            search = _salaryAdvanceWorkerSearch.value,
-            cursor = null,
-            append = false
-        )
+        val currentQuery = _salaryAdvanceWorkerSearch.value.trim()
+        if (currentQuery.isNotEmpty()) {
+            loadSalaryAdvanceProjectWorkers(
+                projectId = projectId,
+                search = currentQuery,
+                cursor = null,
+                append = false
+            )
+        }
     }
 
     fun updateSalaryAdvanceWorkerSearch(search: String) {
@@ -4015,10 +4018,29 @@ class MiniBiViewModel internal constructor(
         _salaryAdvanceWorkerSearch.value = clean
         _salaryAdvanceWorkerPickerExpanded.value = true
         val projectId = _salaryAdvanceSelectedProjectId.value
+        val trimmed = clean.trim()
+        if (trimmed.isEmpty()) {
+            ++salaryAdvanceWorkersFetchToken
+            salaryAdvanceWorkersFetchJob?.cancel()
+            salaryAdvanceWorkersFetchJob = null
+            _salaryAdvanceWorkersLoading.value = false
+            _salaryAdvanceWorkersLoadingMore.value = false
+            _salaryAdvanceWorkersError.value = null
+            _salaryAdvanceWorkersHasMore.value = false
+            _salaryAdvanceWorkersNextCursor.value = null
+            val selectedId = _salaryAdvanceSelectedWorkerId.value
+            val preserved = if (selectedId.isNotBlank()) {
+                _salaryAdvanceWorkers.value.filter { it.workerEntryId == selectedId }
+            } else {
+                emptyList()
+            }
+            _salaryAdvanceWorkers.value = preserved
+            return
+        }
         if (projectId.isNotBlank()) {
             loadSalaryAdvanceProjectWorkers(
                 projectId = projectId,
-                search = clean,
+                search = trimmed,
                 cursor = null,
                 append = false
             )
@@ -4028,8 +4050,10 @@ class MiniBiViewModel internal constructor(
     fun loadMoreSalaryAdvanceWorkers() {
         val projectId = _salaryAdvanceSelectedProjectId.value
         val cursor = _salaryAdvanceWorkersNextCursor.value
+        val currentQuery = _salaryAdvanceWorkerSearch.value.trim()
         if (
             projectId.isBlank() ||
+            currentQuery.isEmpty() ||
             cursor.isNullOrBlank() ||
             !_salaryAdvanceWorkersHasMore.value ||
             _salaryAdvanceWorkersLoading.value ||
@@ -4039,7 +4063,7 @@ class MiniBiViewModel internal constructor(
         }
         loadSalaryAdvanceProjectWorkers(
             projectId = projectId,
-            search = _salaryAdvanceWorkerSearch.value,
+            search = currentQuery,
             cursor = cursor,
             append = true
         )
@@ -4051,6 +4075,8 @@ class MiniBiViewModel internal constructor(
         cursor: String?,
         append: Boolean
     ) {
+        val trimmedSearch = search.trim()
+        if (trimmedSearch.isEmpty()) return
         val token = ++salaryAdvanceWorkersFetchToken
         salaryAdvanceWorkersFetchJob?.cancel()
         val isAppend = append && !cursor.isNullOrBlank()
@@ -4063,14 +4089,39 @@ class MiniBiViewModel internal constructor(
 
         salaryAdvanceWorkersFetchJob = viewModelScope.launch {
             try {
-                val res = repository.salaryAdvanceService.listProjectWorkers(
+                var res = repository.salaryAdvanceService.listProjectWorkers(
                     projectId = projectId,
-                    search = search.trim().ifEmpty { null },
+                    search = trimmedSearch,
                     cursor = if (isAppend) cursor else null,
                     pageSize = 30
                 )
                 if (token != salaryAdvanceWorkersFetchToken) return@launch
-                val filtered = SalaryAdvanceContract.filterSelectableProjectWorkers(res.workers)
+                var filtered = SalaryAdvanceContract.filterSelectableProjectWorkers(res.workers)
+
+                // Hỗ trợ tìm không dấu tiếng Việt khi câu lệnh LIKE phía máy chủ phân biệt dấu
+                if (!isAppend && filtered.isEmpty()) {
+                    val fallbackRes = repository.salaryAdvanceService.listProjectWorkers(
+                        projectId = projectId,
+                        search = null,
+                        cursor = null,
+                        pageSize = 100
+                    )
+                    if (token != salaryAdvanceWorkersFetchToken) return@launch
+                    val fallbackSelectable = SalaryAdvanceContract.filterSelectableProjectWorkers(fallbackRes.workers)
+                    filtered = fallbackSelectable.filter { worker ->
+                        SalaryAdvanceContract.matchesWorkerSearchQuery(
+                            worker = worker,
+                            query = trimmedSearch,
+                            eligibilityFilter = "ALL"
+                        )
+                    }
+                    res = res.copy(
+                        workers = filtered,
+                        hasMore = false,
+                        nextCursor = null
+                    )
+                }
+
                 val combined = if (isAppend) {
                     val existingIds = _salaryAdvanceWorkers.value.map { it.workerEntryId }.toHashSet()
                     _salaryAdvanceWorkers.value + filtered.filterNot { it.workerEntryId in existingIds }
@@ -4085,12 +4136,6 @@ class MiniBiViewModel internal constructor(
                 _salaryAdvanceWorkers.value = combined
                 _salaryAdvanceWorkersHasMore.value = res.hasMore
                 _salaryAdvanceWorkersNextCursor.value = res.nextCursor
-                if (!isAppend && search.trim().isEmpty()) {
-                    val curSelected = _salaryAdvanceSelectedWorkerId.value
-                    if (curSelected.isNotBlank() && combined.none { it.workerEntryId == curSelected }) {
-                        _salaryAdvanceSelectedWorkerId.value = ""
-                    }
-                }
             } catch (e: BackendApiException) {
                 if (token != salaryAdvanceWorkersFetchToken) return@launch
                 _salaryAdvanceWorkersError.value = e.message

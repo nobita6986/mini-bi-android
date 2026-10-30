@@ -3816,15 +3816,23 @@ class WorkerUiAuthorizationRobolectricTest {
 
         // 1. Open standalone Salary Advance workspace (replaces workers_lazy_column instead of popup dialog)
         composeTestRule.onNodeWithTag("salary_advance_open_button").assertIsDisplayed().performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("salary_advance_workspace_screen").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("workers_lazy_column").assertDoesNotExist()
+
+        // Search-first UX: before typing a search query, worker cards must NOT be proactively rendered
+        composeTestRule.onNodeWithTag("salary_advance_worker_search_prompt").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("salary_advance_worker_item_w-eligible").assertDoesNotExist()
+
+        // Type search query to look up workers in the project
+        composeTestRule.onNodeWithTag("salary_advance_worker_search_input").performTextReplacement("hrp-1026")
         composeTestRule.waitUntil(timeoutMillis = 5_000) {
             org.robolectric.shadows.ShadowLooper.idleMainLooper()
             !vm.salaryAdvanceWorkersLoading.value && vm.salaryAdvanceWorkers.value.isNotEmpty()
         }
         composeTestRule.waitForIdle()
-        composeTestRule.onNodeWithTag("salary_advance_workspace_screen").assertIsDisplayed()
-        composeTestRule.onNodeWithTag("workers_lazy_column").assertDoesNotExist()
 
-        // OFF and vendor workers must be hidden; HRP ineligible & eligible workers must be shown
+        // OFF and vendor workers must be hidden; HRP ineligible & eligible workers matching search must be shown
         composeTestRule.onNodeWithTag("salary_advance_worker_item_w-off").assertDoesNotExist()
         composeTestRule.onNodeWithTag("salary_advance_worker_item_w-vendor").assertDoesNotExist()
         composeTestRule.onNodeWithTag("salary_advance_worker_item_w-ineligible-dup").assertIsDisplayed()
