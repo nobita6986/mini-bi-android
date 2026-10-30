@@ -3935,8 +3935,19 @@ class WorkerUiAuthorizationRobolectricTest {
         assertEquals("Ứng lương đợt 1", submittedBody.getString("initial_content"))
         assertEquals(keyAttempt3, submittedBody.getString("idempotency_key"))
 
-        // 6. Back button returns to Nhân sự list
-        composeTestRule.onNodeWithTag("salary_advance_back_to_workers_button").performClick()
+        // 6. Switch to LIST tab -> verify collapsible filter is closed by default (only search input shown), then opens when toggled
+        composeTestRule.onNodeWithTag("salary_advance_tab_requests").performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("salary_advance_list_search_input").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("salary_advance_list_project_filter").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("salary_advance_list_toggle_filter_button").assertIsDisplayed().performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("salary_advance_list_project_filter").assertIsDisplayed()
+
+        // 7. Bottom navigation to Nhân sự (or system Back) returns to Nhân sự list
+        composeTestRule.runOnIdle {
+            vm.navigateTo(com.example.ui.MainDestination.WORKERS)
+        }
         composeTestRule.waitForIdle()
         assertFalse(vm.salaryAdvanceDialogOpen.value)
         composeTestRule.onNodeWithTag("workers_lazy_column").assertIsDisplayed()

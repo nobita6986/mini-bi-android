@@ -40,6 +40,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -50,6 +51,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -83,6 +85,7 @@ import com.example.ui.theme.SemanticColors
 import org.json.JSONArray
 import org.json.JSONObject
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun WorkReportsScreen(
     actor: AppActor,
@@ -158,6 +161,11 @@ fun WorkReportsScreen(
     val safeTab = selectedTab.coerceIn(0, (tabDefs.size - 1).coerceAtLeast(0))
     val currentTabKey = tabDefs.getOrNull(safeTab)?.first ?: "active"
 
+    PullToRefreshBox(
+        isRefreshing = loading,
+        onRefresh = { viewModel.refreshWorkReportsData(actor) },
+        modifier = Modifier.fillMaxSize()
+    ) {
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
@@ -494,6 +502,7 @@ fun WorkReportsScreen(
                 }
             }
         }
+    }
     }
 }
 

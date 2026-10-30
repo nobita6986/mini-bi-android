@@ -4012,6 +4012,22 @@ class MiniBiViewModel internal constructor(
         }
     }
 
+    fun refreshSalaryAdvanceCreateTab() {
+        if (_salaryAdvanceCreateSubmitting.value) return
+        loadSalaryAdvanceContextIfNeeded(force = true)
+        loadSalaryAdvanceRequests(append = false)
+        val projectId = _salaryAdvanceSelectedProjectId.value
+        val currentQuery = _salaryAdvanceWorkerSearch.value.trim()
+        if (projectId.isNotBlank() && currentQuery.isNotEmpty()) {
+            loadSalaryAdvanceProjectWorkers(
+                projectId = projectId,
+                search = currentQuery,
+                cursor = null,
+                append = false
+            )
+        }
+    }
+
     fun updateSalaryAdvanceWorkerSearch(search: String) {
         if (_salaryAdvanceCreateSubmitting.value) return
         val clean = search.replace("\n", " ").replace("\r", " ").take(120)

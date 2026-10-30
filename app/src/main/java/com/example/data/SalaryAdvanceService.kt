@@ -648,13 +648,13 @@ object SalaryAdvanceContract {
 
     fun formatVndAmount(amountRaw: String?): String {
         val trimmed = amountRaw?.trim().orEmpty()
-        if (trimmed.isEmpty()) return "0 ₫"
+        if (trimmed.isEmpty()) return "0 đ"
         val digits = if (trimmed.all { it.isDigit() }) trimmed else normalizePositiveVndInput(trimmed)
-        if (digits.isNullOrEmpty()) return "0 ₫"
-        val parsed = runCatching { BigInteger(digits) }.getOrNull() ?: return "0 ₫"
-        if (parsed <= BigInteger.ZERO) return "0 ₫"
+        if (digits.isNullOrEmpty()) return "0 đ"
+        val parsed = runCatching { BigInteger(digits) }.getOrNull() ?: return "0 đ"
+        if (parsed <= BigInteger.ZERO) return "0 đ"
         val nf = NumberFormat.getIntegerInstance(Locale.forLanguageTag("vi-VN"))
-        return "${nf.format(parsed)} ₫"
+        return "${nf.format(parsed)} đ"
     }
 
     fun formatWorkDateVi(isoDate: String?, fallbackLabel: String = "Chưa cập nhật"): String {
