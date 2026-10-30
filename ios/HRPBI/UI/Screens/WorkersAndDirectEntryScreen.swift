@@ -4271,7 +4271,10 @@ struct SalaryAdvanceWorkspaceView: View {
                     .foregroundColor(SemanticColors.textPrimary)
 
                 AuthenticatedRemoteImageView(
-                    path: SalaryAdvanceContract.buildWorkerPortraitPreviewPath(requestId: req.requestId),
+                    path: SalaryAdvanceContract.buildWorkerPortraitPreviewPath(
+                        requestId: req.requestId,
+                        expectedDocumentId: req.workerPortrait?.documentId
+                    ),
                     maxHeight: 190,
                     contentMode: .fit
                 )
@@ -4314,7 +4317,7 @@ struct SalaryAdvanceWorkspaceView: View {
                 }
 
                 if let activeEv = activeEvidenceItem {
-                    Text("Tải lên bởi: \(activeEv.uploadedByDisplayName ?? activeEv.uploadedByUsername ?? "QLDA") · \(SalaryAdvanceContract.formatDateTimeVi(activeEv.uploadedAt)) · \(SalaryAdvanceContract.formatFileSizeBytes(activeEv.sizeBytes))")
+                    Text("Tải lên bởi: \(SalaryAdvanceContract.resolveActorDisplayName(activeEv.uploadedByDisplayName, fallbackLabel: "QLDA")) · \(SalaryAdvanceContract.formatDateTimeVi(activeEv.uploadedAt)) · \(SalaryAdvanceContract.formatFileSizeBytes(activeEv.sizeBytes))")
                         .font(.caption2)
                         .foregroundColor(SemanticColors.textSecondary)
                     if let note = activeEv.captionNote, !note.isEmpty {

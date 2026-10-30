@@ -1015,8 +1015,8 @@ public final class DirectEntryService: @unchecked Sendable {
             ?? entryObj.optString("project_display", "project_name", "du_an")
         let projectDisplay: String = {
             if (rawProjectDisplay.isEmpty || rawProjectDisplay == projectId),
-               let matchedProj = catalog?.projects.first(where: { $0.id.caseInsensitiveCompare(projectId) == .orderedSame }) {
-                return matchedProj.name
+               let matchedProj = catalog.catalogProjects.first(where: { $0.projectId.caseInsensitiveCompare(projectId) == .orderedSame }) {
+                return matchedProj.displayName
             }
             return rawProjectDisplay.isEmpty ? projectId : rawProjectDisplay
         }()
@@ -1031,8 +1031,8 @@ public final class DirectEntryService: @unchecked Sendable {
                 return rawRecruiterDisplay
             }
             if !recruiterId.isEmpty,
-               let matchedRec = catalog?.recruiters.first(where: { $0.id.caseInsensitiveCompare(recruiterId) == .orderedSame }) {
-                return matchedRec.name
+               let matchedRec = catalog.catalogRecruiters.first(where: { $0.recruiterId.caseInsensitiveCompare(recruiterId) == .orderedSame }) {
+                return matchedRec.displayName
             }
             return WorkerItem.isUuidLike(rawRecruiterDisplay) ? "" : rawRecruiterDisplay
         }()
@@ -1041,8 +1041,8 @@ public final class DirectEntryService: @unchecked Sendable {
         let laborType = entryObj.optString("labor_type", defaultValue: "thoi_vu")
         let rawLaborTypeDisplay = entryObj.optString("labor_type_display", defaultValue: laborType)
         let laborTypeDisplay: String = {
-            if let matchedLt = catalog?.laborTypes.first(where: { $0.id.caseInsensitiveCompare(laborType) == .orderedSame }) {
-                return matchedLt.name
+            if let matchedLt = catalog.catalogLaborTypes.first(where: { $0.laborTypeKey.caseInsensitiveCompare(laborType) == .orderedSame }) {
+                return matchedLt.displayName
             }
             let lower = rawLaborTypeDisplay.lowercased()
             if lower == "thoi_vu" || lower == "temporary" { return "Thời vụ" }
@@ -1574,8 +1574,8 @@ public final class DirectEntryService: @unchecked Sendable {
         guard !cleanId.isEmpty else {
             return .failure(message: "Không tìm thấy mã định danh hồ sơ NLĐ.")
         }
-        if lastLoadedCatalog == nil {
-            _ = await fetchCatalogOptions()
+        if self.lastLoadedCatalog.catalogProjects.isEmpty && self.lastLoadedCatalog.catalogRecruiters.isEmpty {
+            _ = await fetchAssigneeOptions()
         }
         let encoded = cleanId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? cleanId
         let response = await httpClient.request(

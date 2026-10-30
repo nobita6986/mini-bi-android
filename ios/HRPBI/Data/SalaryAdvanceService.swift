@@ -12,6 +12,13 @@ public struct SalaryAdvanceManagedProjectOption: Identifiable, Equatable, Sendab
     public let accountantUserId: String?
     public let accountantDisplayName: String?
 
+    public var accountantDisplayNames: [String] {
+        if let name = accountantDisplayName?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty {
+            return [name]
+        }
+        return []
+    }
+
     public init(
         projectId: String,
         displayName: String,
@@ -302,6 +309,11 @@ public struct SalaryAdvancePaymentDestinationSnapshot: Equatable, Sendable {
     public let accountNumber: String
     public let accountNumberMasked: String
     public let accountHolderName: String
+
+    public var bankShortName: String? { institutionName.isEmpty ? nil : institutionName }
+    public var bankCode: String? { bankId }
+    public var bankAccountNumber: String? { accountNumberMasked.isEmpty ? (accountNumber.isEmpty ? nil : accountNumber) : accountNumberMasked }
+    public var bankAccountHolderName: String? { accountHolderName.isEmpty ? nil : accountHolderName }
 }
 
 public struct SalaryAdvanceWorkerPortraitMeta: Equatable, Sendable {
@@ -310,6 +322,8 @@ public struct SalaryAdvanceWorkerPortraitMeta: Equatable, Sendable {
     public let mimeType: String
     public let sizeBytes: Int64
     public let checksumSha256: String
+
+    public var available: Bool { !documentId.isEmpty }
 }
 
 public struct SalaryAdvanceCurrentEvidenceMeta: Equatable, Sendable {
@@ -327,6 +341,8 @@ public struct SalaryAdvanceCurrentEvidenceMeta: Equatable, Sendable {
     public let reviewNote: String?
     public let reviewedWorkerPortraitDocumentId: String?
     public let reviewedWorkerPortraitVersion: Int?
+
+    public var version: Int { evidenceVersion }
 }
 
 public struct SalaryAdvanceAllowedActions: Equatable, Sendable {
@@ -339,6 +355,8 @@ public struct SalaryAdvanceAllowedActions: Equatable, Sendable {
     public let canReject: Bool
     public let canMarkHandledExternally: Bool
     public let canReviewEvidence: Bool
+
+    public var canUploadCashEvidence: Bool { canUploadEvidence }
 
     public init(
         canPostMessage: Bool = false,
@@ -366,6 +384,9 @@ public struct SalaryAdvanceAllowedActions: Equatable, Sendable {
 public struct SalaryAdvanceProjectAccountantActor: Equatable, Sendable {
     public let appUserId: String
     public let displayName: String
+
+    public var userId: String { appUserId }
+    public var username: String? { nil }
 }
 
 public struct SalaryAdvanceRequestSummary: Identifiable, Equatable, Sendable {
@@ -404,10 +425,21 @@ public struct SalaryAdvanceRequestSummary: Identifiable, Equatable, Sendable {
     public let withdrawnNote: String?
     public let currentEvidence: SalaryAdvanceCurrentEvidenceMeta?
     public let currentProjectAccountant: SalaryAdvanceProjectAccountantActor?
+    public let workerAdvance30dSummary: SalaryAdvanceWorkerRollingAdvanceSummary
     public let allowedActions: SalaryAdvanceAllowedActions
     public let lastActivityAt: String
     public let createdAt: String
     public let updatedAt: String
+
+    public var workerStartDate: String? { workerFirstWorkDate }
+    public var workerRecruiterUsername: String? { workerRecruiterCode }
+    public var createdByUsername: String? { nil }
+    public var projectAccountants: [SalaryAdvanceProjectAccountantActor] {
+        if let acc = currentProjectAccountant {
+            return [acc]
+        }
+        return []
+    }
 }
 
 public struct SalaryAdvanceRequestListResponse: Equatable, Sendable {
@@ -439,6 +471,9 @@ public struct SalaryAdvanceEventItem: Identifiable, Equatable, Sendable {
     public let reviewedWorkerPortraitDocumentId: String?
     public let reviewedWorkerPortraitVersion: Int?
     public let createdAt: String
+
+    public var actorUsername: String? { nil }
+    public var actorRoleContext: String { actorRole }
 }
 
 public struct SalaryAdvanceEvidenceVersionItem: Identifiable, Equatable, Sendable {
@@ -453,6 +488,8 @@ public struct SalaryAdvanceEvidenceVersionItem: Identifiable, Equatable, Sendabl
     public let uploadedByUserId: String
     public let uploadedByDisplayName: String
     public let uploadedAt: String
+
+    public var version: Int { evidenceVersion }
 }
 
 public struct SalaryAdvanceRequestDetail: Equatable, Sendable {
@@ -468,6 +505,9 @@ public struct SalaryAdvanceRequestAttentionView: Equatable, Sendable {
     public let needsPmEvidenceUpload: Bool
     public let needsPmAttention: Bool
     public let pmAttentionReason: String?
+
+    public var pmNeedsAction: Bool { needsPmAttention }
+    public var pmReasonLabel: String? { pmAttentionReason }
 }
 
 // MARK: - Salary Advance Contract (`SalaryAdvanceContract`)
@@ -717,6 +757,22 @@ public enum SalaryAdvanceContract {
         return trimmed
     }
 
+    public static func resolveActorDisplayName(
+        displayName: String?,
+        username: String? = nil,
+        fallback: String = "Chưa cập nhật tên"
+    ) -> String {
+        let safeDisplay = displayName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !safeDisplay.isEmpty && !WorkerItem.isUuidLike(safeDisplay) {
+            return safeDisplay
+        }
+        let safeUser = username?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !safeUser.isEmpty && !WorkerItem.isUuidLike(safeUser) {
+            return safeUser
+        }
+        return fallback
+    }
+
     public static func formatWorkerRecruiterLabel(
         recruiterDisplayName: String?,
         recruiterCode: String? = nil,
@@ -840,15 +896,22 @@ public enum SalaryAdvanceContract {
         return tokens.allSatisfy { searchable.contains($0) }
     }
 
-    public static func buildWorkerPortraitPreviewPath(requestId: String, expectedDocumentId: String) -> String {
+    public static func buildWorkerPortraitPreviewPath(requestId: String, expectedDocumentId: String? = nil) -> String {
         let encodedReq = requestId.trimmingCharacters(in: .whitespacesAndNewlines).addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? requestId
-        let encodedDoc = expectedDocumentId.trimmingCharacters(in: .whitespacesAndNewlines).addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? expectedDocumentId
-        return "/api/salary-advance/requests/\(encodedReq)/worker-portrait?expected_document_id=\(encodedDoc)"
+        if let docId = expectedDocumentId?.trimmingCharacters(in: .whitespacesAndNewlines), !docId.isEmpty {
+            let encodedDoc = docId.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? docId
+            return "/api/salary-advance/requests/\(encodedReq)/worker-portrait?expected_document_id=\(encodedDoc)"
+        }
+        return "/api/salary-advance/requests/\(encodedReq)/worker-portrait"
     }
 
     public static func buildEvidencePhotoPreviewPath(requestId: String, evidenceVersion: Int) -> String {
         let encodedReq = requestId.trimmingCharacters(in: .whitespacesAndNewlines).addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? requestId
         return "/api/salary-advance/requests/\(encodedReq)/evidence/\(evidenceVersion)/preview"
+    }
+
+    public static func buildEvidencePhotoPreviewPath(requestId: String, version: Int) -> String {
+        buildEvidencePhotoPreviewPath(requestId: requestId, evidenceVersion: version)
     }
 
     public static func isConflictError(statusCode: Int?, errorCode: String?) -> Bool {
@@ -942,6 +1005,100 @@ public enum SalaryAdvanceContract {
             "requested_amount_vnd": normalizedAmount,
             "payment_method": cleanMethod,
             "initial_content": cleanContent,
+            "idempotency_key": cleanIdem
+        ]
+    }
+
+    public static func buildPostMessagePayload(
+        expectedVersion: Int,
+        messageText: String,
+        idempotencyKey: String
+    ) throws -> [String: Any] {
+        let cleanText = messageText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanText.isEmpty else {
+            throw NSError(domain: "SalaryAdvance", code: 400, userInfo: [NSLocalizedDescriptionKey: "Vui lòng nhập nội dung tin nhắn trao đổi."])
+        }
+        guard cleanText.count <= 2000 else {
+            throw NSError(domain: "SalaryAdvance", code: 400, userInfo: [NSLocalizedDescriptionKey: "Nội dung tin nhắn tối đa 2.000 ký tự."])
+        }
+        let cleanIdem = idempotencyKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard cleanIdem.count >= 8 else {
+            throw NSError(domain: "SalaryAdvance", code: 400, userInfo: [NSLocalizedDescriptionKey: "Mã chống gửi trùng không hợp lệ."])
+        }
+        return [
+            "expected_version": max(1, expectedVersion),
+            "message_text": cleanText,
+            "idempotency_key": cleanIdem
+        ]
+    }
+
+    public static func buildTransitionActionPayload(
+        action: String,
+        expectedVersion: Int,
+        messageText: String?,
+        idempotencyKey: String
+    ) throws -> [String: Any] {
+        let cleanAction = action.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        guard !cleanAction.isEmpty else {
+            throw NSError(domain: "SalaryAdvance", code: 400, userInfo: [NSLocalizedDescriptionKey: "Thao tác xử lý không hợp lệ."])
+        }
+        let cleanMsg = messageText?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if cleanAction == "PROVIDE_INFO" && cleanMsg.isEmpty {
+            throw NSError(domain: "SalaryAdvance", code: 400, userInfo: [NSLocalizedDescriptionKey: "Vui lòng nhập nội dung phản hồi bổ sung thông tin cho Kế toán."])
+        }
+        let cleanIdem = idempotencyKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard cleanIdem.count >= 8 else {
+            throw NSError(domain: "SalaryAdvance", code: 400, userInfo: [NSLocalizedDescriptionKey: "Mã chống gửi trùng không hợp lệ."])
+        }
+        return [
+            "action": cleanAction,
+            "expected_version": max(1, expectedVersion),
+            "message_text": cleanMsg.isEmpty ? NSNull() : cleanMsg,
+            "idempotency_key": cleanIdem
+        ]
+    }
+
+    public static func buildReserveEvidenceUploadPayload(
+        expectedVersion: Int,
+        mimeType: String,
+        sizeBytes: Int64,
+        sha256: String,
+        captionNote: String?,
+        idempotencyKey: String
+    ) throws -> [String: Any] {
+        let cleanMime = mimeType.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard ["image/jpeg", "image/png", "image/webp"].contains(cleanMime) else {
+            throw NSError(domain: "SalaryAdvance", code: 422, userInfo: [NSLocalizedDescriptionKey: "Ảnh chứng từ chỉ hỗ trợ định dạng JPG, PNG hoặc WEBP."])
+        }
+        guard sizeBytes > 0 && sizeBytes <= Int64(evidenceMaxBytes) else {
+            throw NSError(domain: "SalaryAdvance", code: 422, userInfo: [NSLocalizedDescriptionKey: "Dung lượng ảnh chứng từ vượt quá giới hạn 10 MB."])
+        }
+        let cleanSha = sha256.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let cleanCaption = captionNote?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let cleanIdem = idempotencyKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard cleanIdem.count >= 8 else {
+            throw NSError(domain: "SalaryAdvance", code: 400, userInfo: [NSLocalizedDescriptionKey: "Mã chống gửi trùng không hợp lệ."])
+        }
+        return [
+            "expected_version": max(1, expectedVersion),
+            "mime_type": cleanMime,
+            "size_bytes": sizeBytes,
+            "checksum_sha256": cleanSha,
+            "caption_note": cleanCaption.isEmpty ? NSNull() : cleanCaption,
+            "idempotency_key": cleanIdem
+        ]
+    }
+
+    public static func buildFinalizeEvidenceUploadPayload(
+        expectedVersion: Int,
+        idempotencyKey: String
+    ) throws -> [String: Any] {
+        let cleanIdem = idempotencyKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard cleanIdem.count >= 8 else {
+            throw NSError(domain: "SalaryAdvance", code: 400, userInfo: [NSLocalizedDescriptionKey: "Mã chống gửi trùng không hợp lệ."])
+        }
+        return [
+            "expected_version": max(1, expectedVersion),
             "idempotency_key": cleanIdem
         ]
     }
@@ -1104,183 +1261,231 @@ public enum SalaryAdvanceContract {
         guard let obj = obj else { return SalaryAdvanceAllowedActions() }
         return SalaryAdvanceAllowedActions(
             canPostMessage: obj.optBool("can_post_message"),
-            canRequestInfo: obj.optBool("can_request_info"),
             canProvideInfo: obj.optBool("can_provide_info"),
+            canWithdraw: obj.optBool("can_withdraw"),
+            canUploadEvidence: obj.optBool("can_upload_evidence", "can_upload_cash_evidence"),
+            canRequestInfo: obj.optBool("can_request_info"),
             canApprove: obj.optBool("can_approve"),
             canReject: obj.optBool("can_reject"),
-            canWithdraw: obj.optBool("can_withdraw"),
-            canUploadCashEvidence: obj.optBool("can_upload_cash_evidence"),
-            canConfirmCashEvidence: obj.optBool("can_confirm_cash_evidence"),
-            canRequestEvidenceReupload: obj.optBool("can_request_evidence_reupload")
+            canMarkHandledExternally: obj.optBool("can_mark_handled_externally"),
+            canReviewEvidence: obj.optBool("can_review_evidence", "can_confirm_cash_evidence")
         )
     }
 
-    public static func parseRequestSummary(_ obj: [String: Any]) -> SalaryAdvanceRequestSummary {
-        let paySnap: SalaryAdvancePaymentDestinationSnapshot? = obj.optObject("payment_destination_snapshot").map { p in
-            SalaryAdvancePaymentDestinationSnapshot(
-                bankBin: p.optNullableString("bank_bin"),
-                bankCode: p.optNullableString("bank_code"),
-                bankShortName: p.optNullableString("bank_short_name"),
-                bankAccountNumber: p.optNullableString("bank_account_number"),
-                bankAccountHolderName: p.optNullableString("bank_account_holder_name")
-            )
-        }
-        let portraitMeta: SalaryAdvanceWorkerPortraitMeta? = obj.optObject("worker_portrait").map { p in
-            SalaryAdvanceWorkerPortraitMeta(
-                available: p.optBool("available"),
-                documentId: p.optNullableString("document_id"),
-                version: p["version"] != nil && !(p["version"] is NSNull) ? p.optInt("version") : nil,
-                mimeType: p.optNullableString("mime_type"),
-                sizeBytes: p["size_bytes"] != nil && !(p["size_bytes"] is NSNull) ? Int64(p.optInt("size_bytes")) : nil
-            )
-        }
-        let currentEvidence: SalaryAdvanceCurrentEvidenceMeta? = obj.optObject("current_evidence").map { e in
-            SalaryAdvanceCurrentEvidenceMeta(
-                evidenceId: e.optString("evidence_id"),
-                version: max(1, e.optInt("version", defaultValue: 1)),
-                uploadStatus: e.optString("upload_status", defaultValue: "READY"),
-                mimeType: e.optNullableString("mime_type"),
-                sizeBytes: Int64(e.optInt("size_bytes", defaultValue: 0)),
-                captionNote: e.optNullableString("caption_note"),
-                uploadedByUserId: e.optString("uploaded_by_user_id"),
-                uploadedByDisplayName: e.optNullableString("uploaded_by_display_name"),
-                uploadedAt: e.optNullableString("uploaded_at")
-            )
-        }
-        let sumObj = obj.optObject("worker_advance_30d_summary")
-        let summary30d = SalaryAdvanceWorkerAdvance30dSummary(
-            count30d: max(0, sumObj?.optInt("count_30d", defaultValue: 0) ?? 0),
-            totalAmountVnd30d: sumObj?.optString("total_amount_vnd_30d", defaultValue: "0") ?? "0"
+    public static func parseRolling30dSummary(_ obj: [String: Any]?) -> SalaryAdvanceWorkerRollingAdvanceSummary? {
+        guard let obj = obj else { return nil }
+        let windowDays = obj.optInt("window_days", defaultValue: 30)
+        let fromDate = obj.optString("window_from_date")
+        let toDate = obj.optString("window_to_date")
+        let totalCount = max(0, obj.optInt("total_count", "count_30d", defaultValue: 0))
+        let totalAmount = obj.optString("total_amount_vnd", "total_amount_vnd_30d", defaultValue: "0")
+        return SalaryAdvanceWorkerRollingAdvanceSummary(
+            windowDays: windowDays > 0 ? windowDays : 30,
+            windowFromDate: fromDate,
+            windowToDate: toDate,
+            totalCount: totalCount,
+            totalAmountVnd: totalAmount.isEmpty ? "0" : totalAmount
         )
-        let allowed = parseAllowedActions(obj.optObject("allowed_actions"))
-        let accountants = obj.optObjectArray("project_accountants").compactMap { acc -> SalaryAdvanceProjectAccountantActor? in
-            let uid = acc.optString("user_id")
-            guard !uid.isEmpty else { return nil }
-            return SalaryAdvanceProjectAccountantActor(
-                userId: uid,
-                username: acc.optString("username"),
-                displayName: acc.optNullableString("display_name")
+    }
+
+    public static func parseRequestSummary(_ obj: [String: Any], fallback30d: SalaryAdvanceWorkerRollingAdvanceSummary? = nil) -> SalaryAdvanceRequestSummary {
+        let portraitMeta: SalaryAdvanceWorkerPortraitMeta? = {
+            guard let p = obj["worker_portrait"] as? [String: Any] else { return nil }
+            let docId = p.optString("document_id")
+            guard !docId.isEmpty else { return nil }
+            return SalaryAdvanceWorkerPortraitMeta(
+                documentId: docId,
+                version: max(1, p.optInt("version", defaultValue: 1)),
+                mimeType: p.optString("mime_type", defaultValue: "image/jpeg"),
+                sizeBytes: p.optInt64("size_bytes") ?? 0,
+                checksumSha256: p.optString("checksum_sha256")
             )
-        }
+        }()
+
+        let currentEvidence: SalaryAdvanceCurrentEvidenceMeta? = {
+            guard let ev = obj["current_evidence"] as? [String: Any] else { return nil }
+            let ver = ev.optInt("evidence_version", "version", defaultValue: 0)
+            guard ver > 0 else { return nil }
+            let revVer = ev.optInt("reviewed_worker_portrait_version", defaultValue: 0)
+            return SalaryAdvanceCurrentEvidenceMeta(
+                evidenceVersion: ver,
+                evidenceKind: ev.optString("evidence_kind", defaultValue: "CASH_HANDOVER_PHOTO"),
+                mimeType: ev.optString("mime_type", defaultValue: "image/jpeg"),
+                sizeBytes: ev.optInt64("size_bytes") ?? 0,
+                checksumSha256: ev.optString("checksum_sha256"),
+                uploadedByUserId: ev.optString("uploaded_by_user_id"),
+                uploadedByDisplayName: ev.optString("uploaded_by_display_name"),
+                uploadedAt: ev.optString("uploaded_at"),
+                reviewedByUserId: ev.optNullableString("reviewed_by_user_id"),
+                reviewedByDisplayName: ev.optNullableString("reviewed_by_display_name"),
+                reviewedAt: ev.optNullableString("reviewed_at"),
+                reviewNote: ev.optNullableString("review_note"),
+                reviewedWorkerPortraitDocumentId: ev.optNullableString("reviewed_worker_portrait_document_id"),
+                reviewedWorkerPortraitVersion: revVer > 0 ? revVer : nil
+            )
+        }()
+
+        let paySnap: SalaryAdvancePaymentDestinationSnapshot? = {
+            guard let s = obj["payment_destination_snapshot"] as? [String: Any] else { return nil }
+            let inst = s.optString("institution_name", "bank_short_name")
+            let acct = s.optString("account_number", "bank_account_number")
+            let holder = s.optString("account_holder_name", "bank_account_holder_name")
+            if inst.isEmpty && acct.isEmpty && holder.isEmpty { return nil }
+            let masked = s.optString("account_number_masked")
+            return SalaryAdvancePaymentDestinationSnapshot(
+                bankId: s.optNullableString("bank_id", "bank_code"),
+                institutionName: inst,
+                accountNumber: acct,
+                accountNumberMasked: masked.isEmpty ? acct : masked,
+                accountHolderName: holder
+            )
+        }()
+
+        let currentProjectAccountant: SalaryAdvanceProjectAccountantActor? = {
+            if let a = obj["current_project_accountant"] as? [String: Any] {
+                let userId = a.optString("app_user_id", "user_id")
+                let name = a.optString("display_name")
+                if !userId.isEmpty || !name.isEmpty {
+                    return SalaryAdvanceProjectAccountantActor(appUserId: userId, displayName: name)
+                }
+            }
+            if let firstAcc = obj.optObjectArray("project_accountants").first {
+                let userId = firstAcc.optString("app_user_id", "user_id")
+                let name = firstAcc.optString("display_name")
+                if !userId.isEmpty || !name.isEmpty {
+                    return SalaryAdvanceProjectAccountantActor(appUserId: userId, displayName: name)
+                }
+            }
+            return nil
+        }()
+
+        let summary30d = parseRolling30dSummary(obj["worker_advance_30d_summary"] as? [String: Any])
+            ?? fallback30d
+            ?? SalaryAdvanceWorkerRollingAdvanceSummary()
 
         return SalaryAdvanceRequestSummary(
             requestId: obj.optString("request_id"),
-            version: max(1, obj.optInt("version", defaultValue: 1)),
-            requestState: obj.optString("request_state", defaultValue: "OPEN"),
-            evidenceReviewState: obj.optString("evidence_review_state", defaultValue: "NOT_UPLOADED"),
             projectId: obj.optString("project_id"),
-            projectCode: obj.optNullableString("project_code"),
             projectDisplayName: obj.optString("project_display_name"),
             workerEntryId: obj.optString("worker_entry_id"),
             workerEmployeeCode: obj.optString("worker_employee_code"),
             workerDisplayName: obj.optString("worker_display_name"),
-            workerStartDate: obj.optNullableString("worker_start_date"),
-            workerRecruiterUserId: obj.optNullableString("worker_recruiter_user_id"),
-            workerRecruiterUsername: obj.optNullableString("worker_recruiter_username"),
+            workerFirstWorkDate: obj.optNullableString("worker_first_work_date", "worker_start_date"),
             workerRecruiterDisplayName: obj.optNullableString("worker_recruiter_display_name"),
+            workerRecruiterCode: obj.optNullableString("worker_recruiter_code", "worker_recruiter_username"),
+            workerProviderType: obj.optNullableString("worker_provider_type"),
+            workerPortrait: portraitMeta,
             requestedAmountVnd: obj.optString("requested_amount_vnd", defaultValue: "0"),
             paymentMethod: obj.optString("payment_method", defaultValue: "CASH"),
             paymentDestinationSnapshot: paySnap,
             initialContent: obj.optString("initial_content"),
+            requestState: obj.optString("request_state", defaultValue: "OPEN"),
+            evidenceReviewState: obj.optString("evidence_review_state", defaultValue: "NOT_UPLOADED"),
+            version: max(1, obj.optInt("version", defaultValue: 1)),
             createdByUserId: obj.optString("created_by_user_id"),
-            createdByUsername: obj.optNullableString("created_by_username"),
-            createdByDisplayName: obj.optNullableString("created_by_display_name"),
+            createdByDisplayName: obj.optString("created_by_display_name"),
             decidedByUserId: obj.optNullableString("decided_by_user_id"),
-            decidedByUsername: obj.optNullableString("decided_by_username"),
             decidedByDisplayName: obj.optNullableString("decided_by_display_name"),
             decidedAt: obj.optNullableString("decided_at"),
-            effectiveAt: obj.optNullableString("effective_at"),
-            effectiveDate: obj.optNullableString("effective_date"),
+            decisionNote: obj.optNullableString("decision_note"),
+            handledExternallyByUserId: obj.optNullableString("handled_externally_by_user_id"),
+            handledExternallyByDisplayName: obj.optNullableString("handled_externally_by_display_name"),
+            handledExternallyAt: obj.optNullableString("handled_externally_at"),
+            handledExternallyNote: obj.optNullableString("handled_externally_note"),
+            withdrawnByUserId: obj.optNullableString("withdrawn_by_user_id"),
+            withdrawnByDisplayName: obj.optNullableString("withdrawn_by_display_name"),
             withdrawnAt: obj.optNullableString("withdrawn_at"),
-            evidenceConfirmedByUserId: obj.optNullableString("evidence_confirmed_by_user_id"),
-            evidenceConfirmedByUsername: obj.optNullableString("evidence_confirmed_by_username"),
-            evidenceConfirmedByDisplayName: obj.optNullableString("evidence_confirmed_by_display_name"),
-            evidenceConfirmedAt: obj.optNullableString("evidence_confirmed_at"),
+            withdrawnNote: obj.optNullableString("withdrawn_note"),
+            currentEvidence: currentEvidence,
+            currentProjectAccountant: currentProjectAccountant,
+            workerAdvance30dSummary: summary30d,
+            allowedActions: parseAllowedActions(obj["allowed_actions"] as? [String: Any]),
             lastActivityAt: obj.optString("last_activity_at"),
             createdAt: obj.optString("created_at"),
-            updatedAt: obj.optString("updated_at"),
-            workerPortrait: portraitMeta,
-            currentEvidence: currentEvidence,
-            workerAdvance30dSummary: summary30d,
-            allowedActions: allowed,
-            projectAccountants: accountants
+            updatedAt: obj.optString("updated_at")
         )
     }
 
     public static func parseRequestListResponse(_ root: [String: Any]) -> SalaryAdvanceRequestListResponse {
         let data = (root["data"] as? [String: Any]) ?? root
-        let items = data.optObjectArray("items").compactMap { item -> SalaryAdvanceRequestSummary? in
+        let rawList = data.optObjectArray("requests", "items")
+        let requests = rawList.compactMap { item -> SalaryAdvanceRequestSummary? in
             let parsed = parseRequestSummary(item)
-            return parsed.requestId.isEmpty ? nil : parsed
+            return (parsed.requestId.isEmpty || parsed.projectId.isEmpty || parsed.workerEntryId.isEmpty) ? nil : parsed
         }
-        var pmCount: Int? = nil
-        var accCount: Int? = nil
-        if let badge = data.optObject("badge") {
-            if badge["pm_badge_count"] != nil && !(badge["pm_badge_count"] is NSNull) {
-                pmCount = max(0, badge.optInt("pm_badge_count"))
-            }
-            if badge["accountant_badge_count"] != nil && !(badge["accountant_badge_count"] is NSNull) {
-                accCount = max(0, badge.optInt("accountant_badge_count"))
-            }
+        var badgeCount: Int? = nil
+        if data["badge_count"] != nil && !(data["badge_count"] is NSNull) {
+            badgeCount = max(0, data.optInt("badge_count", defaultValue: 0))
+        } else if let badgeObj = data["badge"] as? [String: Any],
+                  badgeObj["pm_badge_count"] != nil && !(badgeObj["pm_badge_count"] is NSNull) {
+            badgeCount = max(0, badgeObj.optInt("pm_badge_count", defaultValue: 0))
         }
         return SalaryAdvanceRequestListResponse(
-            queue: data.optString("queue", defaultValue: "PM"),
-            nextCursor: data.optNullableString("next_cursor"),
+            requests: requests,
             hasMore: data.optBool("has_more"),
-            items: items,
-            pmBadgeCount: pmCount,
-            accountantBadgeCount: accCount
+            nextCursor: data.optNullableString("next_cursor"),
+            badgeCount: badgeCount,
+            badgeCountCapped: data.optBool("badge_count_capped")
         )
     }
 
     public static func parseRequestDetail(_ root: [String: Any]) -> SalaryAdvanceRequestDetail {
         let data = (root["data"] as? [String: Any]) ?? root
-        let reqObj = data.optObject("request") ?? data
-        let summary = parseRequestSummary(reqObj)
-        let events = data.optObjectArray("events").compactMap { ev -> SalaryAdvanceEventItem? in
+        let reqObj = (data["request"] as? [String: Any]) ?? data
+        let rootSummary30d = parseRolling30dSummary(data["worker_advance_30d_summary"] as? [String: Any])
+        let summary = parseRequestSummary(reqObj, fallback30d: rootSummary30d)
+
+        let events = data.optObjectArray("events").enumerated().compactMap { idx, ev -> SalaryAdvanceEventItem? in
             let eid = ev.optString("event_id")
             guard !eid.isEmpty else { return nil }
+            let evVer = ev.optInt("evidence_version", defaultValue: 0)
+            let revVer = ev.optInt("reviewed_worker_portrait_version", defaultValue: 0)
+            let evSize = ev.optInt64("evidence_size_bytes") ?? 0
             return SalaryAdvanceEventItem(
                 eventId: eid,
-                requestId: ev.optString("request_id", defaultValue: summary.requestId),
-                eventSeq: max(1, ev.optInt("event_seq", defaultValue: 1)),
+                eventSeq: max(1, ev.optInt("event_seq", defaultValue: idx + 1)),
                 eventType: ev.optString("event_type"),
                 actorUserId: ev.optString("actor_user_id"),
-                actorUsername: ev.optNullableString("actor_username"),
-                actorDisplayName: ev.optNullableString("actor_display_name"),
-                actorRoleContext: ev.optString("actor_role_context", defaultValue: "SYSTEM"),
+                actorDisplayName: ev.optString("actor_display_name"),
+                actorRole: ev.optString("actor_role", "actor_role_context"),
                 fromRequestState: ev.optNullableString("from_request_state"),
-                toRequestState: ev.optNullableString("to_request_state"),
+                toRequestState: ev.optString("to_request_state"),
                 fromEvidenceReviewState: ev.optNullableString("from_evidence_review_state"),
-                toEvidenceReviewState: ev.optNullableString("to_evidence_review_state"),
+                toEvidenceReviewState: ev.optString("to_evidence_review_state"),
                 messageText: ev.optNullableString("message_text"),
-                metadata: ev.optObject("metadata"),
+                evidenceVersion: evVer > 0 ? evVer : nil,
+                evidenceKind: ev.optNullableString("evidence_kind"),
+                evidenceMimeType: ev.optNullableString("evidence_mime_type"),
+                evidenceSizeBytes: evSize > 0 ? evSize : nil,
+                evidenceChecksumSha256: ev.optNullableString("evidence_checksum_sha256"),
+                reviewedWorkerPortraitDocumentId: ev.optNullableString("reviewed_worker_portrait_document_id"),
+                reviewedWorkerPortraitVersion: revVer > 0 ? revVer : nil,
                 createdAt: ev.optString("created_at")
             )
-        }
+        }.sorted { $0.eventSeq < $1.eventSeq }
         let evidenceVersions = data.optObjectArray("evidence_versions").compactMap { ev -> SalaryAdvanceEvidenceVersionItem? in
-            let evid = ev.optString("evidence_id")
-            guard !evid.isEmpty else { return nil }
+            let ver = ev.optInt("evidence_version", "version", defaultValue: 0)
+            guard ver > 0 else { return nil }
             return SalaryAdvanceEvidenceVersionItem(
-                evidenceId: evid,
-                requestId: ev.optString("request_id", defaultValue: summary.requestId),
-                version: max(1, ev.optInt("version", defaultValue: 1)),
-                uploadStatus: ev.optString("upload_status", defaultValue: "READY"),
+                evidenceVersion: ver,
+                evidenceKind: ev.optString("evidence_kind", defaultValue: "CASH_HANDOVER_PHOTO"),
+                eventId: ev.optString("event_id", "evidence_id", defaultValue: "ev-\(ver)"),
                 mimeType: ev.optString("mime_type", defaultValue: "image/jpeg"),
-                sizeBytes: Int64(ev.optInt("size_bytes", defaultValue: 0)),
-                sha256: ev.optString("sha256"),
+                sizeBytes: ev.optInt64("size_bytes") ?? 0,
+                checksumSha256: ev.optString("checksum_sha256", "sha256"),
                 captionNote: ev.optNullableString("caption_note"),
                 uploadedByUserId: ev.optString("uploaded_by_user_id"),
-                uploadedByUsername: ev.optNullableString("uploaded_by_username"),
-                uploadedByDisplayName: ev.optNullableString("uploaded_by_display_name"),
-                uploadedAt: ev.optNullableString("uploaded_at"),
-                createdAt: ev.optString("created_at")
+                uploadedByDisplayName: ev.optString("uploaded_by_display_name"),
+                uploadedAt: ev.optString("uploaded_at")
             )
-        }
+        }.sorted { $0.evidenceVersion > $1.evidenceVersion }
+
         return SalaryAdvanceRequestDetail(
             request: summary,
             events: events,
-            evidenceVersions: evidenceVersions
+            evidenceVersions: evidenceVersions,
+            workerAdvance30dSummary: rootSummary30d ?? summary.workerAdvance30dSummary,
+            replayed: data.optBool("replayed")
         )
     }
 }
@@ -1608,20 +1813,18 @@ public final class SalaryAdvanceService {
         }
 
         let reserveData = (reserveRoot["data"] as? [String: Any]) ?? reserveRoot
-        let uploadObj = reserveData.optObject("upload") ?? reserveData
-        let uploadId = uploadObj.optString("upload_id").isEmpty
-            ? uploadObj.optString("evidence_id")
-            : uploadObj.optString("upload_id")
-        let putUrl = uploadObj.optString("put_url").isEmpty
-            ? uploadObj.optString("presigned_put_url")
-            : uploadObj.optString("put_url")
+        let uploadObj = (reserveData["upload"] as? [String: Any]) ?? reserveData
+        let uploadId = reserveData.optString("upload_id", "evidence_id").isEmpty
+            ? uploadObj.optString("upload_id", "evidence_id")
+            : reserveData.optString("upload_id", "evidence_id")
+        let putUrl = uploadObj.optString("url", "put_url", "presigned_put_url")
 
         guard !uploadId.isEmpty && !putUrl.isEmpty else {
             return .failure(message: "Máy chủ không trả về liên kết tải ảnh chứng từ hợp lệ.")
         }
 
         var extraPutHeaders: [String: String] = [:]
-        if let headersObj = uploadObj.optObject("required_headers") ?? uploadObj.optObject("headers") {
+        if let headersObj = (uploadObj["required_headers"] as? [String: Any]) ?? (uploadObj["headers"] as? [String: Any]) {
             for (k, v) in headersObj {
                 if let strVal = v as? String, !strVal.isEmpty, k.lowercased() != "content-type" {
                     extraPutHeaders[k] = strVal
@@ -1630,10 +1833,10 @@ public final class SalaryAdvanceService {
         }
 
         let putResp = await httpClient.putPresignedUrl(
-            presignedUrl: putUrl,
-            data: imageData,
+            uploadUrl: putUrl,
+            fileData: imageData,
             contentType: mimeType.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
-            extraHeaders: extraPutHeaders
+            additionalHeaders: extraPutHeaders
         )
         guard putResp.isSuccess else {
             return .failure(
