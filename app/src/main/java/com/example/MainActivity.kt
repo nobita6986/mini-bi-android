@@ -153,6 +153,7 @@ fun MiniBiAppRoot(viewModel: MiniBiViewModel) {
     val loginError by viewModel.loginError.collectAsStateWithLifecycle()
     val savedAccounts by viewModel.savedAccounts.collectAsStateWithLifecycle()
     val currentDestination by viewModel.currentDestination.collectAsStateWithLifecycle()
+    val salaryAdvanceDialogOpen by viewModel.salaryAdvanceDialogOpen.collectAsStateWithLifecycle()
     val bannerMessage by viewModel.statusBannerMessage.collectAsStateWithLifecycle()
     val bannerIsError by viewModel.statusBannerIsError.collectAsStateWithLifecycle()
     val hasFailedBackgroundUploads by viewModel.hasFailedBackgroundUploads.collectAsStateWithLifecycle()
@@ -547,8 +548,15 @@ fun MiniBiAppRoot(viewModel: MiniBiViewModel) {
                                         )
                                     }
                                 }
+                                val topBarSubtitleLabel = if (
+                                    currentDestination == MainDestination.WORKERS && salaryAdvanceDialogOpen
+                                ) {
+                                    "Ứng lương"
+                                } else {
+                                    currentDestination.label
+                                }
                                 Text(
-                                    text = "${currentDestination.label} · ${authenticatedActor.displayName}",
+                                    text = "$topBarSubtitleLabel · ${authenticatedActor.displayName}",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     maxLines = 1,

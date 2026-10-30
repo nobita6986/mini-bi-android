@@ -4,6 +4,8 @@ import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import org.json.JSONArray
 import org.json.JSONObject
 import java.math.BigInteger
+import java.security.MessageDigest
+import java.text.Normalizer
 import java.text.NumberFormat
 import java.text.SimpleDateFormat
 import java.util.Calendar
@@ -181,8 +183,203 @@ data class SalaryAdvanceCreatedRequestSummary(
     val replayed: Boolean
 )
 
+data class SalaryAdvancePaymentDestinationSnapshot(
+    val bankId: String?,
+    val institutionName: String,
+    val accountNumber: String,
+    val accountNumberMasked: String,
+    val accountHolderName: String
+)
+
+data class SalaryAdvanceWorkerPortraitMeta(
+    val documentId: String,
+    val version: Int,
+    val mimeType: String,
+    val sizeBytes: Long,
+    val checksumSha256: String
+)
+
+data class SalaryAdvanceCurrentEvidenceMeta(
+    val evidenceVersion: Int,
+    val evidenceKind: String,
+    val mimeType: String,
+    val sizeBytes: Long,
+    val checksumSha256: String,
+    val uploadedByUserId: String,
+    val uploadedByDisplayName: String,
+    val uploadedAt: String,
+    val reviewedByUserId: String?,
+    val reviewedByDisplayName: String?,
+    val reviewedAt: String?,
+    val reviewNote: String?,
+    val reviewedWorkerPortraitDocumentId: String?,
+    val reviewedWorkerPortraitVersion: Int?
+)
+
+data class SalaryAdvanceAllowedActions(
+    val canPostMessage: Boolean = false,
+    val canProvideInfo: Boolean = false,
+    val canWithdraw: Boolean = false,
+    val canUploadEvidence: Boolean = false,
+    val canRequestInfo: Boolean = false,
+    val canApprove: Boolean = false,
+    val canReject: Boolean = false,
+    val canMarkHandledExternally: Boolean = false,
+    val canReviewEvidence: Boolean = false
+)
+
+data class SalaryAdvanceProjectAccountantActor(
+    val appUserId: String,
+    val displayName: String
+)
+
+data class SalaryAdvanceRequestSummary(
+    val requestId: String,
+    val projectId: String,
+    val projectDisplayName: String,
+    val workerEntryId: String,
+    val workerEmployeeCode: String,
+    val workerDisplayName: String,
+    val workerFirstWorkDate: String?,
+    val workerRecruiterDisplayName: String?,
+    val workerRecruiterCode: String?,
+    val workerProviderType: String?,
+    val workerPortrait: SalaryAdvanceWorkerPortraitMeta?,
+    val requestedAmountVnd: String,
+    val paymentMethod: String,
+    val paymentDestinationSnapshot: SalaryAdvancePaymentDestinationSnapshot?,
+    val initialContent: String,
+    val requestState: String,
+    val evidenceReviewState: String,
+    val version: Int,
+    val createdByUserId: String,
+    val createdByDisplayName: String,
+    val decidedByUserId: String?,
+    val decidedByDisplayName: String?,
+    val decidedAt: String?,
+    val decisionNote: String?,
+    val handledExternallyByUserId: String?,
+    val handledExternallyByDisplayName: String?,
+    val handledExternallyAt: String?,
+    val handledExternallyNote: String?,
+    val withdrawnByUserId: String?,
+    val withdrawnByDisplayName: String?,
+    val withdrawnAt: String?,
+    val withdrawnNote: String?,
+    val currentEvidence: SalaryAdvanceCurrentEvidenceMeta?,
+    val currentProjectAccountant: SalaryAdvanceProjectAccountantActor?,
+    val allowedActions: SalaryAdvanceAllowedActions,
+    val lastActivityAt: String,
+    val createdAt: String,
+    val updatedAt: String
+)
+
+data class SalaryAdvanceRequestListResponse(
+    val requests: List<SalaryAdvanceRequestSummary>,
+    val hasMore: Boolean,
+    val nextCursor: String?,
+    val badgeCount: Int? = null,
+    val badgeCountCapped: Boolean = false
+)
+
+data class SalaryAdvanceEventItem(
+    val eventId: String,
+    val eventSeq: Int,
+    val eventType: String,
+    val actorUserId: String,
+    val actorDisplayName: String,
+    val actorRole: String,
+    val fromRequestState: String?,
+    val toRequestState: String,
+    val fromEvidenceReviewState: String?,
+    val toEvidenceReviewState: String,
+    val messageText: String?,
+    val evidenceVersion: Int?,
+    val evidenceKind: String?,
+    val evidenceMimeType: String?,
+    val evidenceSizeBytes: Long?,
+    val evidenceChecksumSha256: String?,
+    val reviewedWorkerPortraitDocumentId: String?,
+    val reviewedWorkerPortraitVersion: Int?,
+    val createdAt: String
+)
+
+data class SalaryAdvanceEvidenceVersionItem(
+    val evidenceVersion: Int,
+    val evidenceKind: String,
+    val eventId: String,
+    val mimeType: String,
+    val sizeBytes: Long,
+    val checksumSha256: String,
+    val captionNote: String?,
+    val uploadedByUserId: String,
+    val uploadedByDisplayName: String,
+    val uploadedAt: String
+)
+
+data class SalaryAdvanceRequestDetail(
+    val request: SalaryAdvanceRequestSummary,
+    val events: List<SalaryAdvanceEventItem>,
+    val evidenceVersions: List<SalaryAdvanceEvidenceVersionItem>,
+    val workerAdvance30dSummary: SalaryAdvanceWorker30dSummary?,
+    val replayed: Boolean = false
+)
+
+data class SalaryAdvancePresignedUploadTarget(
+    val method: String,
+    val url: String,
+    val expiresAt: String,
+    val headers: Map<String, String>
+)
+
+data class SalaryAdvanceEvidenceReserveResponse(
+    val requestId: String,
+    val uploadId: String,
+    val expectedVersion: Int,
+    val mimeType: String,
+    val sizeBytes: Long,
+    val checksumSha256: String,
+    val expiresAt: String,
+    val upload: SalaryAdvancePresignedUploadTarget,
+    val replayed: Boolean
+)
+
+data class SalaryAdvanceRequestAttentionView(
+    val needsPmInfoResponse: Boolean,
+    val needsPmEvidenceUpload: Boolean,
+    val needsPmAttention: Boolean,
+    val pmAttentionReason: String?
+)
+
 object SalaryAdvanceContract {
     val PAYMENT_METHODS = setOf("CASH", "BANK_TRANSFER")
+    const val EVIDENCE_MAX_BYTES: Long = 10L * 1024L * 1024L // 10 MB
+    val EVIDENCE_MIME_TYPES = setOf("image/jpeg", "image/png")
+
+    val REQUEST_STATE_FILTER_OPTIONS = listOf(
+        "ALL" to "Tất cả trạng thái",
+        "OPEN" to "Đang mở",
+        "NEEDS_INFO" to "Cần bổ sung",
+        "APPROVED" to "Đã chấp thuận",
+        "REJECTED" to "Đã từ chối",
+        "WITHDRAWN" to "Đã rút",
+        "HANDLED_EXTERNALLY" to "Xử lý ngoài BI"
+    )
+
+    val EVIDENCE_REVIEW_STATE_FILTER_OPTIONS = listOf(
+        "ALL" to "Tất cả đối chiếu",
+        "NOT_UPLOADED" to "Chưa có ảnh",
+        "PENDING_REVIEW" to "Chờ đối chiếu",
+        "REVIEWED" to "Đã đối chiếu",
+        "RETAKE_REQUIRED" to "Cần gửi lại ảnh"
+    )
+
+    val WORKER_PICKER_ELIGIBILITY_FILTER_OPTIONS = listOf(
+        "ALL" to "Tất cả",
+        "ELIGIBLE" to "Đủ điều kiện",
+        "INELIGIBLE" to "Chưa đủ ĐK"
+    )
+
     val HISTORY_PERIOD_MODES = listOf(
         "THIS_MONTH" to "Tháng này",
         "LAST_30_DAYS" to "30 ngày gần nhất",
@@ -250,6 +447,19 @@ object SalaryAdvanceContract {
         "SALARY_ADVANCE_WORKER_INVALID" to "Dữ liệu gửi lên không hợp lệ. Vui lòng kiểm tra lại các trường thông tin.",
         "SALARY_ADVANCE_REQUEST_INVALID" to "Dữ liệu gửi lên không hợp lệ. Vui lòng kiểm tra lại các trường thông tin.",
         "SALARY_ADVANCE_PAYLOAD_INVALID" to "Dữ liệu gửi lên không hợp lệ. Vui lòng kiểm tra lại các trường thông tin.",
+        "SALARY_ADVANCE_ACTION_INVALID" to "Thao tác chuyển trạng thái không hợp lệ.",
+        "SALARY_ADVANCE_DECISION_INVALID" to "Quyết định đối chiếu chứng từ không hợp lệ.",
+        "SALARY_ADVANCE_EVIDENCE_MIME_INVALID" to "Định dạng ảnh chứng từ không hợp lệ (chỉ chấp nhận JPEG hoặc PNG).",
+        "SALARY_ADVANCE_EVIDENCE_SIZE_INVALID" to "Dung lượng ảnh chứng từ vượt quá giới hạn 10 MB hoặc tệp rỗng.",
+        "SALARY_ADVANCE_EVIDENCE_CHECKSUM_INVALID" to "Mã kiểm tra toàn vẹn ảnh chứng từ (SHA-256) không khớp. Vui lòng thử tải lại.",
+        "SALARY_ADVANCE_EVIDENCE_CONTENT_INVALID" to "Nội dung tệp ảnh chứng từ bị lỗi hoặc không đúng định dạng JPEG/PNG.",
+        "SALARY_ADVANCE_EVIDENCE_UPLOAD_MISSING" to "Chưa tìm thấy tệp ảnh chứng từ trên kho lưu trữ. Vui lòng thực hiện tải lên lại.",
+        "SALARY_ADVANCE_EVIDENCE_VERSION_INVALID" to "Phiên bản ảnh chứng từ không hợp lệ.",
+        "SALARY_ADVANCE_EVIDENCE_VERSION_CONFLICT" to "Ảnh chứng từ vừa được cập nhật sang phiên bản mới hơn. Hệ thống đã tải lại dữ liệu.",
+        "SALARY_ADVANCE_UPLOAD_ID_INVALID" to "Phiên tải ảnh chứng từ không hợp lệ. Vui lòng thử lại.",
+        "SALARY_ADVANCE_UPLOAD_SUPERSEDED" to "Phiên tải ảnh này đã bị thay thế bởi một lần tải mới hơn.",
+        "SALARY_ADVANCE_UPLOAD_EXPIRED" to "Phiên tải ảnh chứng từ đã hết hạn (quá 15 phút). Vui lòng thử tải lên lại.",
+        "SALARY_ADVANCE_STORAGE_UNAVAILABLE" to "Kho lưu trữ ảnh chứng từ tạm thời gián đoạn. Vui lòng thử lại sau.",
         "SALARY_ADVANCE_UNAVAILABLE" to "Hệ thống tạm thời chưa xử lý được yêu cầu. Vui lòng thử lại."
     )
 
@@ -948,6 +1158,483 @@ object SalaryAdvanceContract {
             replayed = data.optBoolean("replayed", false)
         )
     }
+
+    fun normalizeVietnameseForSearch(raw: String?): String {
+        val text = raw?.trim().orEmpty()
+        if (text.isEmpty()) return ""
+        val normalized = Normalizer.normalize(text, Normalizer.Form.NFD)
+        return normalized
+            .replace(Regex("\\p{InCombiningDiacriticalMarks}+"), "")
+            .replace('đ', 'd')
+            .replace('Đ', 'd')
+            .lowercase(Locale.ROOT)
+            .replace(Regex("\\s+"), " ")
+            .trim()
+    }
+
+    fun matchesWorkerSearchQuery(
+        worker: SalaryAdvanceWorkerOption,
+        query: String?,
+        eligibilityFilter: String = "ALL"
+    ): Boolean {
+        val cleanFilter = eligibilityFilter.trim().uppercase(Locale.ROOT)
+        if (cleanFilter == "ELIGIBLE" || cleanFilter == "INELIGIBLE") {
+            val isEligible = describeWorkerEligibility(worker).isEligible
+            if (cleanFilter == "ELIGIBLE" && !isEligible) return false
+            if (cleanFilter == "INELIGIBLE" && isEligible) return false
+        }
+        val normalizedQuery = normalizeVietnameseForSearch(query)
+        if (normalizedQuery.isEmpty()) return true
+        val tokens = normalizedQuery.split(" ").filter { it.isNotEmpty() }
+        if (tokens.isEmpty()) return true
+        val searchable = buildString {
+            append(normalizeVietnameseForSearch(worker.displayName))
+            append(' ')
+            append(normalizeVietnameseForSearch(worker.employeeCode))
+            append(' ')
+            append(normalizeVietnameseForSearch(worker.recruiterDisplayName))
+            append(' ')
+            append(normalizeVietnameseForSearch(worker.recruiterCode))
+        }
+        return tokens.all { token -> searchable.contains(token) }
+    }
+
+    fun eventTypeLabel(eventType: String?): String {
+        return when (eventType?.trim()?.uppercase(Locale.ROOT)) {
+            "REQUEST_CREATED" -> "QLDA tạo yêu cầu ứng lương"
+            "MESSAGE_POSTED" -> "Gửi tin nhắn trao đổi"
+            "INFO_REQUESTED" -> "Kế toán yêu cầu bổ sung thông tin"
+            "INFO_PROVIDED" -> "QLDA đã bổ sung thông tin"
+            "REQUEST_APPROVED" -> "Kế toán chấp thuận ứng lương"
+            "REQUEST_REJECTED" -> "Kế toán từ chối yêu cầu"
+            "REQUEST_WITHDRAWN" -> "QLDA đã rút yêu cầu"
+            "HANDLED_EXTERNALLY_MARKED" -> "Đánh dấu xử lý ngoài hệ thống"
+            "EVIDENCE_UPLOADED" -> "Tải lên ảnh chứng từ nhận tiền"
+            "EVIDENCE_REVIEWED" -> "Kế toán xác nhận đã đối chiếu chứng từ"
+            "EVIDENCE_RETAKE_REQUESTED" -> "Kế toán yêu cầu gửi lại ảnh chứng từ"
+            else -> eventType.orEmpty()
+        }
+    }
+
+    fun actorRoleLabel(role: String?): String {
+        return when (role?.trim()?.uppercase(Locale.ROOT)) {
+            "PROJECT_MANAGER" -> "Quản lý dự án (QLDA)"
+            "PROJECT_ACCOUNTANT" -> "Kế toán dự án"
+            else -> role.orEmpty()
+        }
+    }
+
+    fun evaluateRequestAttention(item: SalaryAdvanceRequestSummary): SalaryAdvanceRequestAttentionView {
+        val state = item.requestState.uppercase(Locale.ROOT)
+        val evState = item.evidenceReviewState.uppercase(Locale.ROOT)
+        val isCash = !item.paymentMethod.equals("BANK_TRANSFER", ignoreCase = true)
+        val needsPmInfoResponse = state == "NEEDS_INFO"
+        val needsPmEvidenceUpload =
+            isCash &&
+                state == "APPROVED" &&
+                (evState == "NOT_UPLOADED" || evState == "RETAKE_REQUIRED")
+        val needsPmAttention = needsPmInfoResponse || needsPmEvidenceUpload
+        val pmAttentionReason = when {
+            needsPmInfoResponse -> "Cần bổ sung thông tin theo yêu cầu của Kế toán"
+            state == "APPROVED" && isCash && evState == "RETAKE_REQUIRED" ->
+                "Cần chụp/tải lại ảnh NLĐ nhận tiền mặt"
+            state == "APPROVED" && isCash && evState == "NOT_UPLOADED" ->
+                "Đã duyệt — chờ QLDA tải ảnh NLĐ nhận tiền mặt"
+            else -> null
+        }
+        return SalaryAdvanceRequestAttentionView(
+            needsPmInfoResponse = needsPmInfoResponse,
+            needsPmEvidenceUpload = needsPmEvidenceUpload,
+            needsPmAttention = needsPmAttention,
+            pmAttentionReason = pmAttentionReason
+        )
+    }
+
+    fun formatFileSizeBytes(sizeBytes: Long?): String {
+        if (sizeBytes == null || sizeBytes <= 0L) return "0 B"
+        if (sizeBytes < 1024L) return "$sizeBytes B"
+        if (sizeBytes < 1024L * 1024L) return String.format(Locale.US, "%.1f KB", sizeBytes / 1024.0)
+        return String.format(Locale.US, "%.2f MB", sizeBytes / (1024.0 * 1024.0))
+    }
+
+    fun sha256Hex(bytes: ByteArray): String {
+        val digest = MessageDigest.getInstance("SHA-256").digest(bytes)
+        return digest.joinToString("") { "%02x".format(it) }
+    }
+
+    fun buildRequestListPath(
+        queue: String = "PM",
+        projectFilter: String = "ALL",
+        requestStateFilter: String = "ALL",
+        evidenceStateFilter: String = "ALL",
+        search: String? = null,
+        cursor: String? = null,
+        pageSize: Int = 25,
+        includeBadge: Boolean = true
+    ): String {
+        val base = "https://placeholder.local/api/salary-advance/requests".toHttpUrlOrNull()!!
+            .newBuilder()
+            .addQueryParameter("queue", queue.trim().uppercase(Locale.ROOT).ifEmpty { "PM" })
+            .addQueryParameter("page_size", pageSize.coerceIn(1, 100).toString())
+
+        val cleanProject = projectFilter.trim()
+        if (cleanProject.isNotEmpty() && !cleanProject.equals("ALL", ignoreCase = true)) {
+            base.addQueryParameter("project_id", cleanProject)
+        }
+        val cleanReqState = requestStateFilter.trim().uppercase(Locale.ROOT)
+        if (cleanReqState.isNotEmpty() && cleanReqState != "ALL") {
+            base.addQueryParameter("request_state", cleanReqState)
+        }
+        val cleanEvState = evidenceStateFilter.trim().uppercase(Locale.ROOT)
+        if (cleanEvState.isNotEmpty() && cleanEvState != "ALL") {
+            base.addQueryParameter("evidence_review_state", cleanEvState)
+        }
+        val cleanSearch = search?.trim().orEmpty()
+        if (cleanSearch.isNotEmpty()) {
+            base.addQueryParameter("search", cleanSearch.take(120))
+        }
+        val cleanCursor = cursor?.trim().orEmpty()
+        if (cleanCursor.isNotEmpty()) {
+            base.addQueryParameter("cursor", cleanCursor)
+        }
+        if (includeBadge) {
+            base.addQueryParameter("include_badge", "1")
+        }
+        val built = base.build()
+        return "${built.encodedPath}?${built.encodedQuery}"
+    }
+
+    fun buildRequestDetailPath(requestId: String): String {
+        val built = "https://placeholder.local/api/salary-advance/requests".toHttpUrlOrNull()!!
+            .newBuilder()
+            .addPathSegment(requestId.trim())
+            .build()
+        return built.encodedPath
+    }
+
+    fun buildWorkerPortraitPreviewPath(requestId: String, expectedDocumentId: String): String {
+        val built = "https://placeholder.local/api/salary-advance/requests".toHttpUrlOrNull()!!
+            .newBuilder()
+            .addPathSegment(requestId.trim())
+            .addPathSegment("worker-portrait")
+            .addQueryParameter("expected_document_id", expectedDocumentId.trim())
+            .build()
+        return "${built.encodedPath}?${built.encodedQuery}"
+    }
+
+    fun buildEvidencePhotoPreviewPath(requestId: String, evidenceVersion: Int): String {
+        val built = "https://placeholder.local/api/salary-advance/requests".toHttpUrlOrNull()!!
+            .newBuilder()
+            .addPathSegment(requestId.trim())
+            .addPathSegment("evidence")
+            .addPathSegment(evidenceVersion.toString())
+            .addPathSegment("preview")
+            .build()
+        return built.encodedPath
+    }
+
+    fun buildRequestWorkerHistoryPath(
+        requestId: String,
+        periodMode: String,
+        month: String? = null,
+        fromDate: String? = null,
+        toDate: String? = null,
+        cursor: String? = null,
+        pageSize: Int = 20
+    ): String {
+        val cleanMode = periodMode.trim().uppercase(Locale.ROOT).ifEmpty { "THIS_MONTH" }
+        val base = "https://placeholder.local/api/salary-advance/requests".toHttpUrlOrNull()!!
+            .newBuilder()
+            .addPathSegment(requestId.trim())
+            .addPathSegment("worker-history")
+            .addQueryParameter("period_mode", cleanMode)
+            .addQueryParameter("page_size", pageSize.coerceIn(1, 100).toString())
+
+        if (cleanMode == "MONTH" && !month.isNullOrBlank()) {
+            base.addQueryParameter("month", month.trim())
+        }
+        if (cleanMode == "CUSTOM_RANGE") {
+            if (!fromDate.isNullOrBlank()) {
+                base.addQueryParameter("from_date", fromDate.trim())
+            }
+            if (!toDate.isNullOrBlank()) {
+                base.addQueryParameter("to_date", toDate.trim())
+            }
+        }
+        if (!cursor.isNullOrBlank()) {
+            base.addQueryParameter("cursor", cursor.trim())
+        }
+        val built = base.build()
+        return "${built.encodedPath}?${built.encodedQuery}"
+    }
+
+    fun parseAllowedActions(obj: JSONObject?): SalaryAdvanceAllowedActions {
+        if (obj == null) return SalaryAdvanceAllowedActions()
+        return SalaryAdvanceAllowedActions(
+            canPostMessage = obj.optBoolean("can_post_message", false),
+            canProvideInfo = obj.optBoolean("can_provide_info", false),
+            canWithdraw = obj.optBoolean("can_withdraw", false),
+            canUploadEvidence = obj.optBoolean("can_upload_evidence", false),
+            canRequestInfo = obj.optBoolean("can_request_info", false),
+            canApprove = obj.optBoolean("can_approve", false),
+            canReject = obj.optBoolean("can_reject", false),
+            canMarkHandledExternally = obj.optBoolean("can_mark_handled_externally", false),
+            canReviewEvidence = obj.optBoolean("can_review_evidence", false)
+        )
+    }
+
+    fun parseRequestSummary(obj: JSONObject): SalaryAdvanceRequestSummary {
+        val portraitObj = obj.optJSONObject("worker_portrait")
+        val workerPortrait = portraitObj?.let { p ->
+            val docId = p.optString("document_id").trim()
+            if (docId.isEmpty()) null else SalaryAdvanceWorkerPortraitMeta(
+                documentId = docId,
+                version = p.optInt("version", 1),
+                mimeType = p.optString("mime_type", "image/jpeg").trim(),
+                sizeBytes = p.optLong("size_bytes", 0L),
+                checksumSha256 = p.optString("checksum_sha256").trim()
+            )
+        }
+
+        val currentEvObj = obj.optJSONObject("current_evidence")
+        val currentEvidence = currentEvObj?.let { ev ->
+            val version = ev.optInt("evidence_version", 0)
+            if (version <= 0) null else SalaryAdvanceCurrentEvidenceMeta(
+                evidenceVersion = version,
+                evidenceKind = ev.optString("evidence_kind", "CASH_HANDOVER_PHOTO").trim().ifEmpty { "CASH_HANDOVER_PHOTO" },
+                mimeType = ev.optString("mime_type", "image/jpeg").trim(),
+                sizeBytes = ev.optLong("size_bytes", 0L),
+                checksumSha256 = ev.optString("checksum_sha256").trim(),
+                uploadedByUserId = ev.optString("uploaded_by_user_id").trim(),
+                uploadedByDisplayName = ev.optString("uploaded_by_display_name").trim(),
+                uploadedAt = ev.optString("uploaded_at").trim(),
+                reviewedByUserId = if (ev.isNull("reviewed_by_user_id")) null else ev.optString("reviewed_by_user_id").trim().ifEmpty { null },
+                reviewedByDisplayName = if (ev.isNull("reviewed_by_display_name")) null else ev.optString("reviewed_by_display_name").trim().ifEmpty { null },
+                reviewedAt = if (ev.isNull("reviewed_at")) null else ev.optString("reviewed_at").trim().ifEmpty { null },
+                reviewNote = if (ev.isNull("review_note")) null else ev.optString("review_note").trim().ifEmpty { null },
+                reviewedWorkerPortraitDocumentId = if (ev.isNull("reviewed_worker_portrait_document_id")) null else ev.optString("reviewed_worker_portrait_document_id").trim().ifEmpty { null },
+                reviewedWorkerPortraitVersion = if (ev.isNull("reviewed_worker_portrait_version")) null else ev.optInt("reviewed_worker_portrait_version", 0).takeIf { it > 0 }
+            )
+        }
+
+        val snapObj = obj.optJSONObject("payment_destination_snapshot")
+        val paymentDestinationSnapshot = snapObj?.let { s ->
+            val inst = s.optString("institution_name").trim()
+            val acct = s.optString("account_number").trim()
+            val holder = s.optString("account_holder_name").trim()
+            if (inst.isEmpty() && acct.isEmpty() && holder.isEmpty()) null else SalaryAdvancePaymentDestinationSnapshot(
+                bankId = if (s.isNull("bank_id")) null else s.optString("bank_id").trim().ifEmpty { null },
+                institutionName = inst,
+                accountNumber = acct,
+                accountNumberMasked = s.optString("account_number_masked").trim().ifEmpty { acct },
+                accountHolderName = holder
+            )
+        }
+
+        val acctObj = obj.optJSONObject("current_project_accountant")
+        val currentProjectAccountant = acctObj?.let { a ->
+            val userId = a.optString("app_user_id").trim()
+            val name = a.optString("display_name").trim()
+            if (userId.isEmpty() && name.isEmpty()) null else SalaryAdvanceProjectAccountantActor(
+                appUserId = userId,
+                displayName = name
+            )
+        }
+
+        return SalaryAdvanceRequestSummary(
+            requestId = obj.optString("request_id").trim(),
+            projectId = obj.optString("project_id").trim(),
+            projectDisplayName = obj.optString("project_display_name").trim(),
+            workerEntryId = obj.optString("worker_entry_id").trim(),
+            workerEmployeeCode = obj.optString("worker_employee_code").trim(),
+            workerDisplayName = obj.optString("worker_display_name").trim(),
+            workerFirstWorkDate = if (obj.isNull("worker_first_work_date")) null else obj.optString("worker_first_work_date").trim().ifEmpty { null },
+            workerRecruiterDisplayName = if (obj.isNull("worker_recruiter_display_name")) null else obj.optString("worker_recruiter_display_name").trim().ifEmpty { null },
+            workerRecruiterCode = if (obj.isNull("worker_recruiter_code")) null else obj.optString("worker_recruiter_code").trim().ifEmpty { null },
+            workerProviderType = if (obj.isNull("worker_provider_type")) null else obj.optString("worker_provider_type").trim().ifEmpty { null },
+            workerPortrait = workerPortrait,
+            requestedAmountVnd = obj.optString("requested_amount_vnd", "0").trim().ifEmpty { "0" },
+            paymentMethod = obj.optString("payment_method", "CASH").trim().ifEmpty { "CASH" },
+            paymentDestinationSnapshot = paymentDestinationSnapshot,
+            initialContent = obj.optString("initial_content").trim(),
+            requestState = obj.optString("request_state", "OPEN").trim().ifEmpty { "OPEN" },
+            evidenceReviewState = obj.optString("evidence_review_state", "NOT_UPLOADED").trim().ifEmpty { "NOT_UPLOADED" },
+            version = obj.optInt("version", 1).coerceAtLeast(1),
+            createdByUserId = obj.optString("created_by_user_id").trim(),
+            createdByDisplayName = obj.optString("created_by_display_name").trim(),
+            decidedByUserId = if (obj.isNull("decided_by_user_id")) null else obj.optString("decided_by_user_id").trim().ifEmpty { null },
+            decidedByDisplayName = if (obj.isNull("decided_by_display_name")) null else obj.optString("decided_by_display_name").trim().ifEmpty { null },
+            decidedAt = if (obj.isNull("decided_at")) null else obj.optString("decided_at").trim().ifEmpty { null },
+            decisionNote = if (obj.isNull("decision_note")) null else obj.optString("decision_note").trim().ifEmpty { null },
+            handledExternallyByUserId = if (obj.isNull("handled_externally_by_user_id")) null else obj.optString("handled_externally_by_user_id").trim().ifEmpty { null },
+            handledExternallyByDisplayName = if (obj.isNull("handled_externally_by_display_name")) null else obj.optString("handled_externally_by_display_name").trim().ifEmpty { null },
+            handledExternallyAt = if (obj.isNull("handled_externally_at")) null else obj.optString("handled_externally_at").trim().ifEmpty { null },
+            handledExternallyNote = if (obj.isNull("handled_externally_note")) null else obj.optString("handled_externally_note").trim().ifEmpty { null },
+            withdrawnByUserId = if (obj.isNull("withdrawn_by_user_id")) null else obj.optString("withdrawn_by_user_id").trim().ifEmpty { null },
+            withdrawnByDisplayName = if (obj.isNull("withdrawn_by_display_name")) null else obj.optString("withdrawn_by_display_name").trim().ifEmpty { null },
+            withdrawnAt = if (obj.isNull("withdrawn_at")) null else obj.optString("withdrawn_at").trim().ifEmpty { null },
+            withdrawnNote = if (obj.isNull("withdrawn_note")) null else obj.optString("withdrawn_note").trim().ifEmpty { null },
+            currentEvidence = currentEvidence,
+            currentProjectAccountant = currentProjectAccountant,
+            allowedActions = parseAllowedActions(obj.optJSONObject("allowed_actions")),
+            lastActivityAt = obj.optString("last_activity_at").trim(),
+            createdAt = obj.optString("created_at").trim(),
+            updatedAt = obj.optString("updated_at").trim()
+        )
+    }
+
+    fun parseRequestListResponse(data: JSONObject): SalaryAdvanceRequestListResponse {
+        val requestsArr = data.optJSONArray("requests") ?: data.optJSONArray("items") ?: JSONArray()
+        val requests = buildList {
+            for (i in 0 until requestsArr.length()) {
+                val obj = requestsArr.optJSONObject(i) ?: continue
+                val parsed = parseRequestSummary(obj)
+                if (parsed.requestId.isNotEmpty() && parsed.projectId.isNotEmpty() && parsed.workerEntryId.isNotEmpty()) {
+                    add(parsed)
+                }
+            }
+        }
+        val badgeCount = if (data.has("badge_count") && !data.isNull("badge_count")) {
+            data.optInt("badge_count", 0).coerceAtLeast(0)
+        } else {
+            null
+        }
+        return SalaryAdvanceRequestListResponse(
+            requests = requests,
+            hasMore = data.optBoolean("has_more", false),
+            nextCursor = if (data.isNull("next_cursor")) null else data.optString("next_cursor").trim().ifEmpty { null },
+            badgeCount = badgeCount,
+            badgeCountCapped = data.optBoolean("badge_count_capped", false)
+        )
+    }
+
+    fun parseRequestDetail(data: JSONObject): SalaryAdvanceRequestDetail {
+        val reqObj = data.optJSONObject("request") ?: throw BackendApiException(
+            kind = BackendFailureKind.CONTRACT_INVALID,
+            statusCode = 200,
+            backendCode = "SALARY_ADVANCE_PAYLOAD_INVALID",
+            message = errorMessageForCode("SALARY_ADVANCE_PAYLOAD_INVALID")
+        )
+        val request = parseRequestSummary(reqObj)
+        if (request.requestId.isEmpty()) {
+            throw BackendApiException(
+                kind = BackendFailureKind.CONTRACT_INVALID,
+                statusCode = 200,
+                backendCode = "SALARY_ADVANCE_PAYLOAD_INVALID",
+                message = errorMessageForCode("SALARY_ADVANCE_PAYLOAD_INVALID")
+            )
+        }
+
+        val eventsArr = data.optJSONArray("events") ?: JSONArray()
+        val events = buildList {
+            for (i in 0 until eventsArr.length()) {
+                val obj = eventsArr.optJSONObject(i) ?: continue
+                val eventId = obj.optString("event_id").trim()
+                if (eventId.isEmpty()) continue
+                add(
+                    SalaryAdvanceEventItem(
+                        eventId = eventId,
+                        eventSeq = obj.optInt("event_seq", i + 1),
+                        eventType = obj.optString("event_type").trim(),
+                        actorUserId = obj.optString("actor_user_id").trim(),
+                        actorDisplayName = obj.optString("actor_display_name").trim(),
+                        actorRole = obj.optString("actor_role").trim(),
+                        fromRequestState = if (obj.isNull("from_request_state")) null else obj.optString("from_request_state").trim().ifEmpty { null },
+                        toRequestState = obj.optString("to_request_state").trim(),
+                        fromEvidenceReviewState = if (obj.isNull("from_evidence_review_state")) null else obj.optString("from_evidence_review_state").trim().ifEmpty { null },
+                        toEvidenceReviewState = obj.optString("to_evidence_review_state").trim(),
+                        messageText = if (obj.isNull("message_text")) null else obj.optString("message_text").trim().ifEmpty { null },
+                        evidenceVersion = if (obj.isNull("evidence_version")) null else obj.optInt("evidence_version", 0).takeIf { it > 0 },
+                        evidenceKind = if (obj.isNull("evidence_kind")) null else obj.optString("evidence_kind").trim().ifEmpty { null },
+                        evidenceMimeType = if (obj.isNull("evidence_mime_type")) null else obj.optString("evidence_mime_type").trim().ifEmpty { null },
+                        evidenceSizeBytes = if (obj.isNull("evidence_size_bytes")) null else obj.optLong("evidence_size_bytes", 0L).takeIf { it > 0L },
+                        evidenceChecksumSha256 = if (obj.isNull("evidence_checksum_sha256")) null else obj.optString("evidence_checksum_sha256").trim().ifEmpty { null },
+                        reviewedWorkerPortraitDocumentId = if (obj.isNull("reviewed_worker_portrait_document_id")) null else obj.optString("reviewed_worker_portrait_document_id").trim().ifEmpty { null },
+                        reviewedWorkerPortraitVersion = if (obj.isNull("reviewed_worker_portrait_version")) null else obj.optInt("reviewed_worker_portrait_version", 0).takeIf { it > 0 },
+                        createdAt = obj.optString("created_at").trim()
+                    )
+                )
+            }
+        }.sortedBy { it.eventSeq }
+
+        val versionsArr = data.optJSONArray("evidence_versions") ?: JSONArray()
+        val evidenceVersions = buildList {
+            for (i in 0 until versionsArr.length()) {
+                val obj = versionsArr.optJSONObject(i) ?: continue
+                val version = obj.optInt("evidence_version", 0)
+                if (version <= 0) continue
+                add(
+                    SalaryAdvanceEvidenceVersionItem(
+                        evidenceVersion = version,
+                        evidenceKind = obj.optString("evidence_kind", "CASH_HANDOVER_PHOTO").trim().ifEmpty { "CASH_HANDOVER_PHOTO" },
+                        eventId = obj.optString("event_id", "ev-$version").trim().ifEmpty { "ev-$version" },
+                        mimeType = obj.optString("mime_type", "image/jpeg").trim(),
+                        sizeBytes = obj.optLong("size_bytes", 0L),
+                        checksumSha256 = obj.optString("checksum_sha256").trim(),
+                        captionNote = if (obj.isNull("caption_note")) null else obj.optString("caption_note").trim().ifEmpty { null },
+                        uploadedByUserId = obj.optString("uploaded_by_user_id").trim(),
+                        uploadedByDisplayName = obj.optString("uploaded_by_display_name").trim(),
+                        uploadedAt = obj.optString("uploaded_at").trim()
+                    )
+                )
+            }
+        }.sortedByDescending { it.evidenceVersion }
+
+        return SalaryAdvanceRequestDetail(
+            request = request,
+            events = events,
+            evidenceVersions = evidenceVersions,
+            workerAdvance30dSummary = parseWorker30dSummary(data.optJSONObject("worker_advance_30d_summary")),
+            replayed = data.optBoolean("replayed", false)
+        )
+    }
+
+    fun parseEvidenceReserveResponse(data: JSONObject): SalaryAdvanceEvidenceReserveResponse {
+        val uploadObj = data.optJSONObject("upload") ?: throw BackendApiException(
+            kind = BackendFailureKind.CONTRACT_INVALID,
+            statusCode = 200,
+            backendCode = "SALARY_ADVANCE_PAYLOAD_INVALID",
+            message = errorMessageForCode("SALARY_ADVANCE_PAYLOAD_INVALID")
+        )
+        val url = uploadObj.optString("url").trim()
+        val uploadId = data.optString("upload_id").trim()
+        if (url.isEmpty() || uploadId.isEmpty()) {
+            throw BackendApiException(
+                kind = BackendFailureKind.CONTRACT_INVALID,
+                statusCode = 200,
+                backendCode = "SALARY_ADVANCE_PAYLOAD_INVALID",
+                message = errorMessageForCode("SALARY_ADVANCE_PAYLOAD_INVALID")
+            )
+        }
+        val headersObj = uploadObj.optJSONObject("headers")
+        val headers = linkedMapOf<String, String>()
+        if (headersObj != null) {
+            val keys = headersObj.keys()
+            while (keys.hasNext()) {
+                val key = keys.next()
+                val value = headersObj.optString(key)
+                if (key.isNotBlank() && value.isNotBlank()) {
+                    headers[key] = value
+                }
+            }
+        }
+        return SalaryAdvanceEvidenceReserveResponse(
+            requestId = data.optString("request_id").trim(),
+            uploadId = uploadId,
+            expectedVersion = data.optInt("expected_version", 1),
+            mimeType = data.optString("mime_type", "image/jpeg").trim(),
+            sizeBytes = data.optLong("size_bytes", 0L),
+            checksumSha256 = data.optString("checksum_sha256").trim(),
+            expiresAt = data.optString("expires_at").trim(),
+            upload = SalaryAdvancePresignedUploadTarget(
+                method = uploadObj.optString("method", "PUT").trim().ifEmpty { "PUT" },
+                url = url,
+                expiresAt = uploadObj.optString("expires_at").trim(),
+                headers = headers
+            ),
+            replayed = data.optBoolean("replayed", false)
+        )
+    }
 }
 
 class SalaryAdvanceService(
@@ -962,6 +1649,48 @@ class SalaryAdvanceService(
             message = SalaryAdvanceContract.errorMessageForCode("SALARY_ADVANCE_PAYLOAD_INVALID")
         )
         return SalaryAdvanceContract.parseActorContext(data)
+    }
+
+    suspend fun listRequests(
+        queue: String = "PM",
+        projectFilter: String = "ALL",
+        requestStateFilter: String = "ALL",
+        evidenceStateFilter: String = "ALL",
+        search: String? = null,
+        cursor: String? = null,
+        pageSize: Int = 25,
+        includeBadge: Boolean = true
+    ): SalaryAdvanceRequestListResponse {
+        val path = SalaryAdvanceContract.buildRequestListPath(
+            queue = queue,
+            projectFilter = projectFilter,
+            requestStateFilter = requestStateFilter,
+            evidenceStateFilter = evidenceStateFilter,
+            search = search,
+            cursor = cursor,
+            pageSize = pageSize,
+            includeBadge = includeBadge
+        )
+        val root = httpClient.getJson(path)
+        val data = root.optJSONObject("data") ?: throw BackendApiException(
+            kind = BackendFailureKind.CONTRACT_INVALID,
+            statusCode = 200,
+            backendCode = "SALARY_ADVANCE_PAYLOAD_INVALID",
+            message = SalaryAdvanceContract.errorMessageForCode("SALARY_ADVANCE_PAYLOAD_INVALID")
+        )
+        return SalaryAdvanceContract.parseRequestListResponse(data)
+    }
+
+    suspend fun getRequestDetail(requestId: String): SalaryAdvanceRequestDetail {
+        val path = SalaryAdvanceContract.buildRequestDetailPath(requestId)
+        val root = httpClient.getJson(path)
+        val data = root.optJSONObject("data") ?: throw BackendApiException(
+            kind = BackendFailureKind.CONTRACT_INVALID,
+            statusCode = 200,
+            backendCode = "SALARY_ADVANCE_PAYLOAD_INVALID",
+            message = SalaryAdvanceContract.errorMessageForCode("SALARY_ADVANCE_PAYLOAD_INVALID")
+        )
+        return SalaryAdvanceContract.parseRequestDetail(data)
     }
 
     suspend fun listProjectWorkers(
@@ -1016,6 +1745,34 @@ class SalaryAdvanceService(
         return SalaryAdvanceContract.parseWorkerHistoryResponse(data)
     }
 
+    suspend fun listRequestWorkerHistory(
+        requestId: String,
+        periodMode: String,
+        month: String? = null,
+        fromDate: String? = null,
+        toDate: String? = null,
+        cursor: String? = null,
+        pageSize: Int = 20
+    ): SalaryAdvanceWorkerHistoryResponse {
+        val path = SalaryAdvanceContract.buildRequestWorkerHistoryPath(
+            requestId = requestId,
+            periodMode = periodMode,
+            month = month,
+            fromDate = fromDate,
+            toDate = toDate,
+            cursor = cursor,
+            pageSize = pageSize
+        )
+        val root = httpClient.getJson(path)
+        val data = root.optJSONObject("data") ?: throw BackendApiException(
+            kind = BackendFailureKind.CONTRACT_INVALID,
+            statusCode = 200,
+            backendCode = "SALARY_ADVANCE_PAYLOAD_INVALID",
+            message = SalaryAdvanceContract.errorMessageForCode("SALARY_ADVANCE_PAYLOAD_INVALID")
+        )
+        return SalaryAdvanceContract.parseWorkerHistoryResponse(data)
+    }
+
     suspend fun createRequest(
         payload: CreateSalaryAdvancePayload,
         idempotencyKey: String
@@ -1041,5 +1798,147 @@ class SalaryAdvanceService(
             message = SalaryAdvanceContract.errorMessageForCode("SALARY_ADVANCE_PAYLOAD_INVALID")
         )
         return SalaryAdvanceContract.parseCreatedRequestResponse(data)
+    }
+
+    suspend fun postMessage(
+        requestId: String,
+        expectedVersion: Int,
+        messageText: String,
+        idempotencyKey: String
+    ): SalaryAdvanceRequestDetail {
+        val cleanKey = idempotencyKey.trim()
+        val body = JSONObject().apply {
+            put("expected_version", expectedVersion)
+            put("message_text", messageText.trim())
+            put("idempotency_key", cleanKey)
+        }
+        val root = httpClient.postJson(
+            path = "/api/salary-advance/requests/${requestId.trim()}/messages",
+            bodyJson = body,
+            idempotencyKey = cleanKey
+        )
+        val data = root.optJSONObject("data") ?: throw BackendApiException(
+            kind = BackendFailureKind.CONTRACT_INVALID,
+            statusCode = 200,
+            backendCode = "SALARY_ADVANCE_PAYLOAD_INVALID",
+            message = SalaryAdvanceContract.errorMessageForCode("SALARY_ADVANCE_PAYLOAD_INVALID")
+        )
+        return SalaryAdvanceContract.parseRequestDetail(data)
+    }
+
+    suspend fun submitTransitionAction(
+        requestId: String,
+        action: String,
+        expectedVersion: Int,
+        messageText: String?,
+        idempotencyKey: String
+    ): SalaryAdvanceRequestDetail {
+        val cleanKey = idempotencyKey.trim()
+        val cleanMessage = messageText?.trim()?.takeIf { it.isNotEmpty() }
+        val body = JSONObject().apply {
+            put("action", action.trim().uppercase(Locale.ROOT))
+            put("expected_version", expectedVersion)
+            if (cleanMessage != null) {
+                put("message_text", cleanMessage)
+            } else {
+                put("message_text", JSONObject.NULL)
+            }
+            put("idempotency_key", cleanKey)
+        }
+        val root = httpClient.postJson(
+            path = "/api/salary-advance/requests/${requestId.trim()}/actions",
+            bodyJson = body,
+            idempotencyKey = cleanKey
+        )
+        val data = root.optJSONObject("data") ?: throw BackendApiException(
+            kind = BackendFailureKind.CONTRACT_INVALID,
+            statusCode = 200,
+            backendCode = "SALARY_ADVANCE_PAYLOAD_INVALID",
+            message = SalaryAdvanceContract.errorMessageForCode("SALARY_ADVANCE_PAYLOAD_INVALID")
+        )
+        return SalaryAdvanceContract.parseRequestDetail(data)
+    }
+
+    suspend fun uploadEvidenceBytes(
+        requestId: String,
+        expectedVersion: Int,
+        imageBytes: ByteArray,
+        mimeType: String,
+        captionNote: String?,
+        reserveIdempotencyKey: String,
+        finalizeIdempotencyKey: String
+    ): SalaryAdvanceRequestDetail {
+        val cleanMime = mimeType.trim().lowercase(Locale.ROOT)
+        if (cleanMime !in SalaryAdvanceContract.EVIDENCE_MIME_TYPES) {
+            throw BackendApiException(
+                kind = BackendFailureKind.CONTRACT_INVALID,
+                statusCode = 422,
+                backendCode = "SALARY_ADVANCE_EVIDENCE_MIME_INVALID",
+                message = SalaryAdvanceContract.errorMessageForCode("SALARY_ADVANCE_EVIDENCE_MIME_INVALID")
+            )
+        }
+        val sizeBytes = imageBytes.size.toLong()
+        if (sizeBytes <= 0L || sizeBytes > SalaryAdvanceContract.EVIDENCE_MAX_BYTES) {
+            throw BackendApiException(
+                kind = BackendFailureKind.CONTRACT_INVALID,
+                statusCode = 422,
+                backendCode = "SALARY_ADVANCE_EVIDENCE_SIZE_INVALID",
+                message = SalaryAdvanceContract.errorMessageForCode("SALARY_ADVANCE_EVIDENCE_SIZE_INVALID")
+            )
+        }
+        val checksumSha256 = SalaryAdvanceContract.sha256Hex(imageBytes)
+        val cleanCaption = captionNote?.trim()?.takeIf { it.isNotEmpty() }
+        val cleanReserveKey = reserveIdempotencyKey.trim()
+        val cleanFinalizeKey = finalizeIdempotencyKey.trim()
+
+        val reserveBody = JSONObject().apply {
+            put("expected_version", expectedVersion)
+            put("mime_type", cleanMime)
+            put("size_bytes", sizeBytes)
+            put("checksum_sha256", checksumSha256)
+            if (cleanCaption != null) {
+                put("caption_note", cleanCaption)
+            } else {
+                put("caption_note", JSONObject.NULL)
+            }
+            put("idempotency_key", cleanReserveKey)
+        }
+
+        val reserveRoot = httpClient.postJson(
+            path = "/api/salary-advance/requests/${requestId.trim()}/evidence/reserve",
+            bodyJson = reserveBody,
+            idempotencyKey = cleanReserveKey
+        )
+        val reserveData = reserveRoot.optJSONObject("data") ?: throw BackendApiException(
+            kind = BackendFailureKind.CONTRACT_INVALID,
+            statusCode = 200,
+            backendCode = "SALARY_ADVANCE_PAYLOAD_INVALID",
+            message = SalaryAdvanceContract.errorMessageForCode("SALARY_ADVANCE_PAYLOAD_INVALID")
+        )
+        val reservation = SalaryAdvanceContract.parseEvidenceReserveResponse(reserveData)
+
+        httpClient.putBinaryToSignedUrl(
+            signedUrl = reservation.upload.url,
+            headers = reservation.upload.headers,
+            bytes = imageBytes,
+            fallbackMimeType = reservation.mimeType
+        )
+
+        val finalizeBody = JSONObject().apply {
+            put("expected_version", reservation.expectedVersion)
+            put("idempotency_key", cleanFinalizeKey)
+        }
+        val finalizeRoot = httpClient.postJson(
+            path = "/api/salary-advance/requests/${requestId.trim()}/evidence/${reservation.uploadId}/finalize",
+            bodyJson = finalizeBody,
+            idempotencyKey = cleanFinalizeKey
+        )
+        val finalizeData = finalizeRoot.optJSONObject("data") ?: throw BackendApiException(
+            kind = BackendFailureKind.CONTRACT_INVALID,
+            statusCode = 200,
+            backendCode = "SALARY_ADVANCE_PAYLOAD_INVALID",
+            message = SalaryAdvanceContract.errorMessageForCode("SALARY_ADVANCE_PAYLOAD_INVALID")
+        )
+        return SalaryAdvanceContract.parseRequestDetail(finalizeData)
     }
 }

@@ -39,6 +39,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.CameraAlt
@@ -53,6 +55,7 @@ import androidx.compose.material.icons.filled.FilterAltOff
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.RateReview
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Visibility
@@ -116,7 +119,11 @@ import com.example.data.OwnSubmissionItem
 import com.example.data.PendingDuplicateCccdSubmission
 import com.example.data.SalaryAdvanceActorContext
 import com.example.data.SalaryAdvanceContract
+import com.example.data.SalaryAdvanceEventItem
+import com.example.data.SalaryAdvanceEvidenceVersionItem
 import com.example.data.SalaryAdvanceManagedProjectOption
+import com.example.data.SalaryAdvanceRequestDetail
+import com.example.data.SalaryAdvanceRequestSummary
 import com.example.data.SalaryAdvanceWorkerHistoryItem
 import com.example.data.SalaryAdvanceWorkerHistoryResponse
 import com.example.data.SalaryAdvanceWorkerOption
@@ -2332,30 +2339,6 @@ fun WorkersAndDirectEntryScreen(
 
     val salaryAdvanceContext by viewModel.salaryAdvanceContext.collectAsStateWithLifecycle()
     val salaryAdvanceDialogOpen by viewModel.salaryAdvanceDialogOpen.collectAsStateWithLifecycle()
-    val salaryAdvanceSelectedProjectId by viewModel.salaryAdvanceSelectedProjectId.collectAsStateWithLifecycle()
-    val salaryAdvanceWorkerSearch by viewModel.salaryAdvanceWorkerSearch.collectAsStateWithLifecycle()
-    val salaryAdvanceWorkers by viewModel.salaryAdvanceWorkers.collectAsStateWithLifecycle()
-    val salaryAdvanceWorkersLoading by viewModel.salaryAdvanceWorkersLoading.collectAsStateWithLifecycle()
-    val salaryAdvanceWorkersLoadingMore by viewModel.salaryAdvanceWorkersLoadingMore.collectAsStateWithLifecycle()
-    val salaryAdvanceWorkersError by viewModel.salaryAdvanceWorkersError.collectAsStateWithLifecycle()
-    val salaryAdvanceWorkersHasMore by viewModel.salaryAdvanceWorkersHasMore.collectAsStateWithLifecycle()
-    val salaryAdvanceSelectedWorkerId by viewModel.salaryAdvanceSelectedWorkerId.collectAsStateWithLifecycle()
-    val salaryAdvancePaymentMethod by viewModel.salaryAdvancePaymentMethod.collectAsStateWithLifecycle()
-    val salaryAdvanceAmountRaw by viewModel.salaryAdvanceAmountRaw.collectAsStateWithLifecycle()
-    val salaryAdvanceInitialContent by viewModel.salaryAdvanceInitialContent.collectAsStateWithLifecycle()
-    val salaryAdvanceCreateSubmitting by viewModel.salaryAdvanceCreateSubmitting.collectAsStateWithLifecycle()
-    val salaryAdvanceCreateError by viewModel.salaryAdvanceCreateError.collectAsStateWithLifecycle()
-    val salaryAdvanceHistoryOpen by viewModel.salaryAdvanceHistoryOpen.collectAsStateWithLifecycle()
-    val salaryAdvanceHistoryPeriodMode by viewModel.salaryAdvanceHistoryPeriodMode.collectAsStateWithLifecycle()
-    val salaryAdvanceHistoryMonth by viewModel.salaryAdvanceHistoryMonth.collectAsStateWithLifecycle()
-    val salaryAdvanceHistoryFromDate by viewModel.salaryAdvanceHistoryFromDate.collectAsStateWithLifecycle()
-    val salaryAdvanceHistoryToDate by viewModel.salaryAdvanceHistoryToDate.collectAsStateWithLifecycle()
-    val salaryAdvanceHistoryLoading by viewModel.salaryAdvanceHistoryLoading.collectAsStateWithLifecycle()
-    val salaryAdvanceHistoryLoadingMore by viewModel.salaryAdvanceHistoryLoadingMore.collectAsStateWithLifecycle()
-    val salaryAdvanceHistoryError by viewModel.salaryAdvanceHistoryError.collectAsStateWithLifecycle()
-    val salaryAdvanceHistoryResponse by viewModel.salaryAdvanceHistoryResponse.collectAsStateWithLifecycle()
-    val salaryAdvanceHistoryItems by viewModel.salaryAdvanceHistoryItems.collectAsStateWithLifecycle()
-    val salaryAdvanceHistoryHasMore by viewModel.salaryAdvanceHistoryHasMore.collectAsStateWithLifecycle()
 
     val visibleTabs = remember(actor) { resolveVisibleWorkerTabs(actor) }
     val safeTabIdx = visibleTabs.indexOfFirst { it.key == activeTabKeyFromVm }.takeIf { it >= 0 } ?: 0
@@ -2406,6 +2389,14 @@ fun WorkersAndDirectEntryScreen(
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
     val isSubmissionTab = activeScopeKey == "uploader"
+
+    if (salaryAdvanceDialogOpen && canShowSalaryAdvance && salaryAdvanceContext != null) {
+        SalaryAdvanceWorkspaceScreen(
+            viewModel = viewModel,
+            context = salaryAdvanceContext!!
+        )
+        return
+    }
 
     LazyColumn(
         modifier = Modifier
@@ -2799,60 +2790,6 @@ fun WorkersAndDirectEntryScreen(
             onDismissKeepDraft = { viewModel.dismissDuplicateCccdConfirmation() },
             onConfirmSubmit = { viewModel.confirmDuplicateCccdSubmission() }
         )
-    }
-
-    if (salaryAdvanceDialogOpen && canShowSalaryAdvance && salaryAdvanceContext != null) {
-        if (salaryAdvanceHistoryOpen) {
-            val selectedWorkerForHistory = salaryAdvanceWorkers.firstOrNull {
-                it.workerEntryId == salaryAdvanceSelectedWorkerId
-            }
-            SalaryAdvanceWorkerHistoryDialog(
-                selectedWorker = selectedWorkerForHistory,
-                periodMode = salaryAdvanceHistoryPeriodMode,
-                monthInput = salaryAdvanceHistoryMonth,
-                fromDateInput = salaryAdvanceHistoryFromDate,
-                toDateInput = salaryAdvanceHistoryToDate,
-                loading = salaryAdvanceHistoryLoading,
-                loadingMore = salaryAdvanceHistoryLoadingMore,
-                error = salaryAdvanceHistoryError,
-                historyResponse = salaryAdvanceHistoryResponse,
-                historyItems = salaryAdvanceHistoryItems,
-                hasMore = salaryAdvanceHistoryHasMore,
-                onSelectPeriodMode = { viewModel.selectSalaryAdvanceHistoryPeriodMode(it) },
-                onUpdateMonth = { viewModel.updateSalaryAdvanceHistoryMonth(it) },
-                onUpdateDateRange = { from, to -> viewModel.updateSalaryAdvanceHistoryDateRange(from, to) },
-                onApplyCustomRange = { viewModel.applySalaryAdvanceHistoryCustomRange() },
-                onLoadMore = { viewModel.loadMoreSalaryAdvanceWorkerHistory() },
-                onDismiss = { viewModel.closeSalaryAdvanceWorkerHistory() }
-            )
-        } else {
-            SalaryAdvanceCreateRequestDialog(
-                context = salaryAdvanceContext!!,
-                selectedProjectId = salaryAdvanceSelectedProjectId,
-                workerSearch = salaryAdvanceWorkerSearch,
-                workers = salaryAdvanceWorkers,
-                workersLoading = salaryAdvanceWorkersLoading,
-                workersLoadingMore = salaryAdvanceWorkersLoadingMore,
-                workersError = salaryAdvanceWorkersError,
-                workersHasMore = salaryAdvanceWorkersHasMore,
-                selectedWorkerId = salaryAdvanceSelectedWorkerId,
-                paymentMethod = salaryAdvancePaymentMethod,
-                amountRaw = salaryAdvanceAmountRaw,
-                initialContent = salaryAdvanceInitialContent,
-                submitting = salaryAdvanceCreateSubmitting,
-                createError = salaryAdvanceCreateError,
-                onSelectProject = { viewModel.selectSalaryAdvanceProject(it) },
-                onWorkerSearchChange = { viewModel.updateSalaryAdvanceWorkerSearch(it) },
-                onLoadMoreWorkers = { viewModel.loadMoreSalaryAdvanceWorkers() },
-                onSelectWorker = { viewModel.selectSalaryAdvanceWorker(it) },
-                onSelectPaymentMethod = { viewModel.updateSalaryAdvancePaymentMethod(it) },
-                onAmountChange = { viewModel.updateSalaryAdvanceAmountRaw(it) },
-                onInitialContentChange = { viewModel.updateSalaryAdvanceInitialContent(it) },
-                onOpenWorkerHistory = { viewModel.openSalaryAdvanceWorkerHistory() },
-                onSubmit = { viewModel.submitSalaryAdvanceRequest() },
-                onDismiss = { viewModel.closeSalaryAdvanceDialog() }
-            )
-        }
     }
 }
 
@@ -3894,8 +3831,349 @@ internal fun DetailItemRow(label: String, value: String) {
 }
 
 // ============================================================================
-// 3. ỨNG LƯƠNG QLDA (`SalaryAdvanceCreateRequestDialog` + `SalaryAdvanceWorkerHistoryDialog`)
+// 3. ỨNG LƯƠNG QLDA — STANDALONE WORKSPACE (`SalaryAdvanceWorkspaceScreen`)
 // ============================================================================
+
+@Composable
+internal fun SalaryAdvanceWorkspaceScreen(
+    viewModel: MiniBiViewModel,
+    context: SalaryAdvanceActorContext
+) {
+    val serverUrl by viewModel.serverUrl.collectAsStateWithLifecycle()
+    val workspaceTab by viewModel.salaryAdvanceWorkspaceTab.collectAsStateWithLifecycle()
+    val workerEligibilityFilter by viewModel.salaryAdvanceWorkerEligibilityFilter.collectAsStateWithLifecycle()
+    val workerPickerExpanded by viewModel.salaryAdvanceWorkerPickerExpanded.collectAsStateWithLifecycle()
+
+    val selectedProjectId by viewModel.salaryAdvanceSelectedProjectId.collectAsStateWithLifecycle()
+    val workerSearch by viewModel.salaryAdvanceWorkerSearch.collectAsStateWithLifecycle()
+    val workers by viewModel.salaryAdvanceWorkers.collectAsStateWithLifecycle()
+    val workersLoading by viewModel.salaryAdvanceWorkersLoading.collectAsStateWithLifecycle()
+    val workersLoadingMore by viewModel.salaryAdvanceWorkersLoadingMore.collectAsStateWithLifecycle()
+    val workersError by viewModel.salaryAdvanceWorkersError.collectAsStateWithLifecycle()
+    val workersHasMore by viewModel.salaryAdvanceWorkersHasMore.collectAsStateWithLifecycle()
+    val selectedWorkerId by viewModel.salaryAdvanceSelectedWorkerId.collectAsStateWithLifecycle()
+    val paymentMethod by viewModel.salaryAdvancePaymentMethod.collectAsStateWithLifecycle()
+    val amountRaw by viewModel.salaryAdvanceAmountRaw.collectAsStateWithLifecycle()
+    val initialContent by viewModel.salaryAdvanceInitialContent.collectAsStateWithLifecycle()
+    val createSubmitting by viewModel.salaryAdvanceCreateSubmitting.collectAsStateWithLifecycle()
+    val createError by viewModel.salaryAdvanceCreateError.collectAsStateWithLifecycle()
+
+    val requests by viewModel.salaryAdvanceRequests.collectAsStateWithLifecycle()
+    val requestsLoading by viewModel.salaryAdvanceRequestsLoading.collectAsStateWithLifecycle()
+    val requestsLoadingMore by viewModel.salaryAdvanceRequestsLoadingMore.collectAsStateWithLifecycle()
+    val requestsError by viewModel.salaryAdvanceRequestsError.collectAsStateWithLifecycle()
+    val requestsHasMore by viewModel.salaryAdvanceRequestsHasMore.collectAsStateWithLifecycle()
+    val pmBadgeCount by viewModel.salaryAdvancePmBadgeCount.collectAsStateWithLifecycle()
+    val listProjectFilter by viewModel.salaryAdvanceListProjectFilter.collectAsStateWithLifecycle()
+    val listStateFilter by viewModel.salaryAdvanceListStateFilter.collectAsStateWithLifecycle()
+    val listEvidenceFilter by viewModel.salaryAdvanceListEvidenceFilter.collectAsStateWithLifecycle()
+    val listSearch by viewModel.salaryAdvanceListSearch.collectAsStateWithLifecycle()
+
+    val activeDetail by viewModel.salaryAdvanceActiveDetail.collectAsStateWithLifecycle()
+    val detailLoading by viewModel.salaryAdvanceDetailLoading.collectAsStateWithLifecycle()
+    val detailError by viewModel.salaryAdvanceDetailError.collectAsStateWithLifecycle()
+    val conflictBanner by viewModel.salaryAdvanceConflictBanner.collectAsStateWithLifecycle()
+    val selectedEvidenceVersion by viewModel.salaryAdvanceSelectedEvidenceVersion.collectAsStateWithLifecycle()
+    val messageDraft by viewModel.salaryAdvanceMessageDraft.collectAsStateWithLifecycle()
+    val messageSubmitting by viewModel.salaryAdvanceMessageSubmitting.collectAsStateWithLifecycle()
+    val actionNoteDraft by viewModel.salaryAdvanceActionNoteDraft.collectAsStateWithLifecycle()
+    val actionSubmitting by viewModel.salaryAdvanceActionSubmitting.collectAsStateWithLifecycle()
+    val evidenceCaptionDraft by viewModel.salaryAdvanceEvidenceCaptionDraft.collectAsStateWithLifecycle()
+    val evidenceUploading by viewModel.salaryAdvanceEvidenceUploading.collectAsStateWithLifecycle()
+    val evidenceError by viewModel.salaryAdvanceEvidenceError.collectAsStateWithLifecycle()
+
+    val historyOpen by viewModel.salaryAdvanceHistoryOpen.collectAsStateWithLifecycle()
+    val historyPeriodMode by viewModel.salaryAdvanceHistoryPeriodMode.collectAsStateWithLifecycle()
+    val historyMonth by viewModel.salaryAdvanceHistoryMonth.collectAsStateWithLifecycle()
+    val historyFromDate by viewModel.salaryAdvanceHistoryFromDate.collectAsStateWithLifecycle()
+    val historyToDate by viewModel.salaryAdvanceHistoryToDate.collectAsStateWithLifecycle()
+    val historyLoading by viewModel.salaryAdvanceHistoryLoading.collectAsStateWithLifecycle()
+    val historyLoadingMore by viewModel.salaryAdvanceHistoryLoadingMore.collectAsStateWithLifecycle()
+    val historyError by viewModel.salaryAdvanceHistoryError.collectAsStateWithLifecycle()
+    val historyResponse by viewModel.salaryAdvanceHistoryResponse.collectAsStateWithLifecycle()
+    val historyItems by viewModel.salaryAdvanceHistoryItems.collectAsStateWithLifecycle()
+    val historyHasMore by viewModel.salaryAdvanceHistoryHasMore.collectAsStateWithLifecycle()
+
+    val anyMutationBusy =
+        createSubmitting || messageSubmitting || actionSubmitting || evidenceUploading
+
+    BackHandler(enabled = true) {
+        when {
+            historyOpen -> viewModel.closeSalaryAdvanceWorkerHistory()
+            workspaceTab == "DETAIL" && !anyMutationBusy -> viewModel.backFromSalaryAdvanceDetailToList()
+            !anyMutationBusy -> viewModel.closeSalaryAdvanceDialog()
+        }
+    }
+
+    val actionableCount = remember(requests, pmBadgeCount) {
+        pmBadgeCount ?: requests.count { SalaryAdvanceContract.evaluateRequestAttention(it).needsPmAttention }
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(horizontal = 14.dp, vertical = 10.dp)
+            .testTag("salary_advance_workspace_screen"),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        // Header điều hướng độc lập + chuyển tab Tạo mới / Lịch sử dự án & Đối chiếu
+        Surface(
+            shape = RoundedCornerShape(18.dp),
+            color = MaterialTheme.colorScheme.surface,
+            tonalElevation = 2.dp,
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.2f)),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    OutlinedButton(
+                        onClick = { viewModel.closeSalaryAdvanceDialog() },
+                        enabled = !anyMutationBusy,
+                        shape = RoundedCornerShape(12.dp),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                        modifier = Modifier.testTag("salary_advance_back_to_workers_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = "Quay lại Nhân sự",
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Nhân sự", fontWeight = FontWeight.SemiBold)
+                    }
+
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(horizontal = 10.dp)
+                    ) {
+                        Text(
+                            text = "Phân hệ Ứng lương (QLDA)",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.ExtraBold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            text = "Tạo đề nghị, trao đổi & tải chứng từ với Kế toán",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    val isCreateActive = workspaceTab == "CREATE"
+                    val isListOrDetailActive = workspaceTab == "LIST" || workspaceTab == "DETAIL"
+
+                    Button(
+                        onClick = { viewModel.switchSalaryAdvanceWorkspaceTab("CREATE") },
+                        enabled = !anyMutationBusy,
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (isCreateActive) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.65f)
+                            },
+                            contentColor = if (isCreateActive) {
+                                MaterialTheme.colorScheme.onPrimary
+                            } else {
+                                MaterialTheme.colorScheme.onSurface
+                            }
+                        ),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp),
+                        modifier = Modifier
+                            .weight(1f)
+                            .testTag("salary_advance_tab_create")
+                    ) {
+                        Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = "Tạo yêu cầu mới",
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+
+                    Button(
+                        onClick = { viewModel.switchSalaryAdvanceWorkspaceTab("LIST") },
+                        enabled = !anyMutationBusy,
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (isListOrDetailActive) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.65f)
+                            },
+                            contentColor = if (isListOrDetailActive) {
+                                MaterialTheme.colorScheme.onPrimary
+                            } else {
+                                MaterialTheme.colorScheme.onSurface
+                            }
+                        ),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp),
+                        modifier = Modifier
+                            .weight(1.15f)
+                            .testTag("salary_advance_tab_requests")
+                    ) {
+                        val listLabel = buildString {
+                            append("Yêu cầu dự án")
+                            if (requests.isNotEmpty()) {
+                                append(" (${requests.size})")
+                            }
+                            if (actionableCount > 0) {
+                                append(" · $actionableCount cần xử lý")
+                            }
+                        }
+                        Text(
+                            text = listLabel,
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+            }
+        }
+
+        // Nội dung chính của từng phân khu trong Workspace
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth()
+        ) {
+            when (workspaceTab) {
+                "LIST" -> {
+                    SalaryAdvanceRequestListTabContent(
+                        context = context,
+                        requests = requests,
+                        loading = requestsLoading,
+                        loadingMore = requestsLoadingMore,
+                        error = requestsError,
+                        hasMore = requestsHasMore,
+                        projectFilter = listProjectFilter,
+                        stateFilter = listStateFilter,
+                        evidenceFilter = listEvidenceFilter,
+                        searchQuery = listSearch,
+                        onProjectFilterChange = { viewModel.updateSalaryAdvanceListProjectFilter(it) },
+                        onStateFilterChange = { viewModel.updateSalaryAdvanceListStateFilter(it) },
+                        onEvidenceFilterChange = { viewModel.updateSalaryAdvanceListEvidenceFilter(it) },
+                        onSearchChange = { viewModel.updateSalaryAdvanceListSearch(it) },
+                        onRefresh = { viewModel.refreshSalaryAdvanceRequests() },
+                        onLoadMore = { viewModel.loadMoreSalaryAdvanceRequests() },
+                        onOpenRequestDetail = { viewModel.openSalaryAdvanceRequestDetail(it) },
+                        onSwitchToCreate = { viewModel.switchSalaryAdvanceWorkspaceTab("CREATE") }
+                    )
+                }
+
+                "DETAIL" -> {
+                    SalaryAdvanceRequestDetailTabContent(
+                        serverUrl = serverUrl,
+                        detail = activeDetail,
+                        loading = detailLoading,
+                        error = detailError,
+                        conflictBanner = conflictBanner,
+                        selectedEvidenceVersion = selectedEvidenceVersion,
+                        messageDraft = messageDraft,
+                        messageSubmitting = messageSubmitting,
+                        actionNoteDraft = actionNoteDraft,
+                        actionSubmitting = actionSubmitting,
+                        evidenceCaptionDraft = evidenceCaptionDraft,
+                        evidenceUploading = evidenceUploading,
+                        evidenceError = evidenceError,
+                        onBackToList = { viewModel.backFromSalaryAdvanceDetailToList() },
+                        onRefresh = { viewModel.refreshSalaryAdvanceActiveDetail() },
+                        onOpenWorkerHistory = { reqId -> viewModel.openSalaryAdvanceRequestWorkerHistory(reqId) },
+                        onSelectEvidenceVersion = { ver -> viewModel.selectSalaryAdvanceEvidenceVersion(ver) },
+                        onMessageDraftChange = { viewModel.updateSalaryAdvanceMessageDraft(it) },
+                        onSendMessage = { viewModel.postSalaryAdvanceMessage() },
+                        onActionNoteDraftChange = { viewModel.updateSalaryAdvanceActionNoteDraft(it) },
+                        onSubmitTransitionAction = { act -> viewModel.submitSalaryAdvanceTransitionAction(act) },
+                        onEvidenceCaptionChange = { viewModel.updateSalaryAdvanceEvidenceCaptionDraft(it) },
+                        onUploadEvidenceUri = { uri -> viewModel.uploadSalaryAdvanceEvidenceUri(uri) }
+                    )
+                }
+
+                else -> {
+                    SalaryAdvanceCreateRequestDialog(
+                        context = context,
+                        selectedProjectId = selectedProjectId,
+                        workerSearch = workerSearch,
+                        workers = workers,
+                        workersLoading = workersLoading,
+                        workersLoadingMore = workersLoadingMore,
+                        workersError = workersError,
+                        workersHasMore = workersHasMore,
+                        selectedWorkerId = selectedWorkerId,
+                        paymentMethod = paymentMethod,
+                        amountRaw = amountRaw,
+                        initialContent = initialContent,
+                        submitting = createSubmitting,
+                        createError = createError,
+                        onSelectProject = { viewModel.selectSalaryAdvanceProject(it) },
+                        onWorkerSearchChange = { viewModel.updateSalaryAdvanceWorkerSearch(it) },
+                        onLoadMoreWorkers = { viewModel.loadMoreSalaryAdvanceWorkers() },
+                        onSelectWorker = { viewModel.selectSalaryAdvanceWorker(it) },
+                        onSelectPaymentMethod = { viewModel.updateSalaryAdvancePaymentMethod(it) },
+                        onAmountChange = { viewModel.updateSalaryAdvanceAmountRaw(it) },
+                        onInitialContentChange = { viewModel.updateSalaryAdvanceInitialContent(it) },
+                        onOpenWorkerHistory = { viewModel.openSalaryAdvanceWorkerHistory() },
+                        onSubmit = { viewModel.submitSalaryAdvanceRequest() },
+                        onDismiss = { viewModel.closeSalaryAdvanceDialog() },
+                        renderInDialog = false,
+                        workerEligibilityFilter = workerEligibilityFilter,
+                        onWorkerEligibilityFilterChange = { viewModel.updateSalaryAdvanceWorkerEligibilityFilter(it) },
+                        workerPickerExpanded = workerPickerExpanded,
+                        onSetWorkerPickerExpanded = { viewModel.setSalaryAdvanceWorkerPickerExpanded(it) }
+                    )
+                }
+            }
+        }
+    }
+
+    if (historyOpen) {
+        val selectedWorkerForHistory = workers.firstOrNull {
+            it.workerEntryId == selectedWorkerId
+        }
+        SalaryAdvanceWorkerHistoryDialog(
+            selectedWorker = selectedWorkerForHistory,
+            periodMode = historyPeriodMode,
+            monthInput = historyMonth,
+            fromDateInput = historyFromDate,
+            toDateInput = historyToDate,
+            loading = historyLoading,
+            loadingMore = historyLoadingMore,
+            error = historyError,
+            historyResponse = historyResponse,
+            historyItems = historyItems,
+            hasMore = historyHasMore,
+            onSelectPeriodMode = { viewModel.selectSalaryAdvanceHistoryPeriodMode(it) },
+            onUpdateMonth = { viewModel.updateSalaryAdvanceHistoryMonth(it) },
+            onUpdateDateRange = { from, to -> viewModel.updateSalaryAdvanceHistoryDateRange(from, to) },
+            onApplyCustomRange = { viewModel.applySalaryAdvanceHistoryCustomRange() },
+            onLoadMore = { viewModel.loadMoreSalaryAdvanceWorkerHistory() },
+            onDismiss = { viewModel.closeSalaryAdvanceWorkerHistory() }
+        )
+    }
+}
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -3924,17 +4202,36 @@ internal fun SalaryAdvanceCreateRequestDialog(
     onOpenWorkerHistory: () -> Unit,
     onSubmit: () -> Unit,
     onDismiss: () -> Unit,
-    renderInDialog: Boolean = true
+    renderInDialog: Boolean = true,
+    workerEligibilityFilter: String = "ALL",
+    onWorkerEligibilityFilterChange: (String) -> Unit = {},
+    workerPickerExpanded: Boolean = true,
+    onSetWorkerPickerExpanded: (Boolean) -> Unit = {}
 ) {
     val activeProjects = remember(context) { context.activeManagedProjects }
     val selectedProject = remember(activeProjects, selectedProjectId) {
         activeProjects.firstOrNull { it.projectId == selectedProjectId }
     }
-    val visibleWorkers = remember(workers) {
+    val selectableWorkers = remember(workers) {
         SalaryAdvanceContract.filterSelectableProjectWorkers(workers)
     }
-    val selectedWorker = remember(visibleWorkers, selectedWorkerId) {
-        visibleWorkers.firstOrNull { it.workerEntryId == selectedWorkerId }
+    val eligibleCount = remember(selectableWorkers) {
+        selectableWorkers.count { SalaryAdvanceContract.describeWorkerEligibility(it).isEligible }
+    }
+    val ineligibleCount = remember(selectableWorkers, eligibleCount) {
+        (selectableWorkers.size - eligibleCount).coerceAtLeast(0)
+    }
+    val filteredWorkers = remember(selectableWorkers, workerSearch, workerEligibilityFilter) {
+        selectableWorkers.filter { worker ->
+            SalaryAdvanceContract.matchesWorkerSearchQuery(
+                worker = worker,
+                query = workerSearch,
+                eligibilityFilter = workerEligibilityFilter
+            )
+        }
+    }
+    val selectedWorker = remember(selectableWorkers, selectedWorkerId) {
+        selectableWorkers.firstOrNull { it.workerEntryId == selectedWorkerId }
     }
     val workerEligibility = remember(selectedWorker) {
         selectedWorker?.let { SalaryAdvanceContract.describeWorkerEligibility(it) }
@@ -3951,51 +4248,67 @@ internal fun SalaryAdvanceCreateRequestDialog(
             (selectedWorker != null && workerEligibility != null && !workerEligibility.isEligible) ||
             (paymentMethod == "BANK_TRANSFER" && selectedWorker != null && bankStatus != null && !bankStatus.canUseBankTransfer)
 
+    val showExpandedWorkerList = workerPickerExpanded || selectedWorker == null || (workerEligibility != null && !workerEligibility.isEligible)
+
     val dialogBody: @Composable () -> Unit = {
         Surface(
             modifier = Modifier
-                .fillMaxWidth(if (renderInDialog) 0.95f else 1f)
+                .then(
+                    if (renderInDialog) {
+                        Modifier.fillMaxWidth(0.95f)
+                    } else {
+                        Modifier.fillMaxSize()
+                    }
+                )
                 .testTag("salary_advance_create_dialog"),
-            shape = RoundedCornerShape(24.dp),
+            shape = RoundedCornerShape(if (renderInDialog) 24.dp else 18.dp),
             color = MaterialTheme.colorScheme.surface,
-            tonalElevation = 6.dp
+            tonalElevation = if (renderInDialog) 6.dp else 2.dp
         ) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(18.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "Tạo yêu cầu ứng lương",
-                            style = MaterialTheme.typography.titleLarge,
-                            fontWeight = FontWeight.Bold
-                        )
-                        Text(
-                            text = "Dành cho Quản lý dự án (QLDA) đối với NLĐ thuộc dự án đang quản lý.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                    IconButton(
-                        onClick = { if (!submitting) onDismiss() },
-                        enabled = !submitting,
-                        modifier = Modifier.testTag("salary_advance_close_icon_button")
+                if (renderInDialog) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Icon(Icons.Default.Close, contentDescription = "Đóng")
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Tạo yêu cầu ứng lương",
+                                style = MaterialTheme.typography.titleLarge,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                text = "Dành cho Quản lý dự án (QLDA) đối với NLĐ thuộc dự án đang quản lý.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        IconButton(
+                            onClick = { if (!submitting) onDismiss() },
+                            enabled = !submitting,
+                            modifier = Modifier.testTag("salary_advance_close_icon_button")
+                        ) {
+                            Icon(Icons.Default.Close, contentDescription = "Đóng")
+                        }
                     }
                 }
 
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .heightIn(max = 520.dp)
+                        .then(
+                            if (renderInDialog) {
+                                Modifier.heightIn(max = 520.dp)
+                            } else {
+                                Modifier.weight(1f)
+                            }
+                        )
                         .verticalScroll(rememberScrollState())
                         .testTag("salary_advance_create_scroll"),
                     verticalArrangement = Arrangement.spacedBy(12.dp)
@@ -4032,36 +4345,19 @@ internal fun SalaryAdvanceCreateRequestDialog(
                                 modifier = Modifier.padding(12.dp)
                             )
                         }
+                    } else if (selectedProject != null && !selectedProject.accountantDisplayName.isNullOrBlank()) {
+                        Text(
+                            text = "Kế toán phụ trách dự án: ${SalaryAdvanceContract.resolveActorDisplayName(selectedProject.accountantDisplayName)}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     }
 
-                    // 2. Tìm kiếm và chọn NLĐ thuộc dự án (phân trang theo server)
-                    OutlinedTextField(
-                        value = workerSearch,
-                        onValueChange = { onWorkerSearchChange(sanitizeSingleLineInput(it, 120)) },
-                        leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
-                        trailingIcon = if (workerSearch.isNotEmpty()) {
-                            {
-                                IconButton(
-                                    onClick = { onWorkerSearchChange("") },
-                                    enabled = !submitting
-                                ) {
-                                    Icon(Icons.Default.Close, contentDescription = "Xóa tìm kiếm")
-                                }
-                            }
-                        } else null,
-                        label = { Text("Tìm NLĐ theo họ tên hoặc mã NLĐ…") },
-                        singleLine = true,
-                        enabled = !submitting && selectedProjectId.isNotBlank(),
-                        shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .testTag("salary_advance_worker_search_input")
-                    )
-
+                    // 2. Bộ chọn NLĐ tối ưu cho dự án đông nhân sự (lọc nhanh không dấu + chip điều kiện + thu gọn tự động)
                     Surface(
                         shape = RoundedCornerShape(14.dp),
-                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
-                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.3f)),
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.28f),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.28f)),
                         modifier = Modifier
                             .fillMaxWidth()
                             .testTag("salary_advance_worker_list")
@@ -4069,148 +4365,285 @@ internal fun SalaryAdvanceCreateRequestDialog(
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(10.dp),
+                                .padding(12.dp),
                             verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            Text(
-                                text = "Danh sách NLĐ thuộc dự án (${visibleWorkers.size})",
-                                style = MaterialTheme.typography.labelLarge,
-                                fontWeight = FontWeight.Bold
-                            )
-
-                            when {
-                                workersLoading -> {
-                                    Row(
-                                        modifier = Modifier.padding(vertical = 12.dp),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(10.dp)
-                                    ) {
-                                        CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
-                                        Text(
-                                            text = "Đang tải danh sách NLĐ từ máy chủ…",
-                                            style = MaterialTheme.typography.bodySmall
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Text(
+                                        text = "Người lao động thuộc dự án (${filteredWorkers.size}/${selectableWorkers.size})",
+                                        style = MaterialTheme.typography.labelLarge,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    if (workersLoading) {
+                                        CircularProgressIndicator(
+                                            modifier = Modifier.size(15.dp),
+                                            strokeWidth = 2.dp
                                         )
                                     }
                                 }
 
-                                workersError != null -> {
-                                    Text(
-                                        text = workersError,
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.error,
-                                        modifier = Modifier.testTag("salary_advance_workers_error")
-                                    )
+                                if (selectedWorker != null) {
+                                    TextButton(
+                                        onClick = { onSetWorkerPickerExpanded(!showExpandedWorkerList) },
+                                        enabled = !submitting,
+                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                                        modifier = Modifier.testTag("salary_advance_toggle_worker_picker_button")
+                                    ) {
+                                        Icon(
+                                            imageVector = if (showExpandedWorkerList) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text(
+                                            text = if (showExpandedWorkerList) "Thu gọn" else "Đổi NLĐ",
+                                            style = MaterialTheme.typography.labelMedium,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    }
                                 }
+                            }
 
-                                visibleWorkers.isEmpty() -> {
-                                    Text(
-                                        text = "Không có người lao động HRP đang làm việc hoặc chờ việc khớp điều kiện tìm kiếm.",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            if (!showExpandedWorkerList && selectedWorker != null && workerEligibility != null) {
+                                // Thanh tóm tắt gọn khi đã chọn NLĐ đủ điều kiện (giúp form bên dưới hiện ngay lập tức)
+                                Surface(
+                                    shape = RoundedCornerShape(10.dp),
+                                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f),
+                                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable(enabled = !submitting) { onSetWorkerPickerExpanded(true) }
+                                        .testTag("salary_advance_worker_collapsed_bar")
+                                ) {
+                                    Row(
                                         modifier = Modifier
-                                            .padding(vertical = 8.dp)
-                                            .testTag("salary_advance_workers_empty")
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(
+                                                text = "${selectedWorker.displayName} (${selectedWorker.employeeCode})",
+                                                style = MaterialTheme.typography.bodyMedium,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                            Text(
+                                                text = "Ngày đầu: ${SalaryAdvanceContract.formatWorkDateVi(selectedWorker.firstWorkDate)} · Tuyển: ${SalaryAdvanceContract.formatWorkerRecruiterLabel(selectedWorker)}",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                        Surface(
+                                            shape = RoundedCornerShape(8.dp),
+                                            color = SemanticColors.SuccessLight.copy(alpha = 0.16f)
+                                        ) {
+                                            Text(
+                                                text = "Đã chọn · Bấm để đổi",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = SemanticColors.SuccessLight,
+                                                fontWeight = FontWeight.SemiBold,
+                                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                            )
+                                        }
+                                    }
+                                }
+                            } else {
+                                OutlinedTextField(
+                                    value = workerSearch,
+                                    onValueChange = { onWorkerSearchChange(sanitizeSingleLineInput(it, 120)) },
+                                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+                                    trailingIcon = if (workerSearch.isNotEmpty()) {
+                                        {
+                                            IconButton(
+                                                onClick = { onWorkerSearchChange("") },
+                                                enabled = !submitting
+                                            ) {
+                                                Icon(Icons.Default.Close, contentDescription = "Xóa tìm kiếm")
+                                            }
+                                        }
+                                    } else null,
+                                    label = { Text("Tìm nhanh họ tên, mã NLĐ, người tuyển (có/không dấu)…") },
+                                    singleLine = true,
+                                    enabled = !submitting && selectedProjectId.isNotBlank(),
+                                    shape = RoundedCornerShape(12.dp),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .testTag("salary_advance_worker_search_input")
+                                )
+
+                                // Chip lọc nhanh theo điều kiện để dự án đông NLĐ lọc ngay người đủ điều kiện
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .horizontalScroll(rememberScrollState()),
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    val filterChipItems = listOf(
+                                        Triple("ALL", "Tất cả (${selectableWorkers.size})", selectableWorkers.size),
+                                        Triple("ELIGIBLE", "Đủ điều kiện ($eligibleCount)", eligibleCount),
+                                        Triple("INELIGIBLE", "Chưa đủ ĐK ($ineligibleCount)", ineligibleCount)
                                     )
+                                    filterChipItems.forEach { (filterKey, filterLabel, _) ->
+                                        FilterChip(
+                                            selected = workerEligibilityFilter == filterKey,
+                                            onClick = { onWorkerEligibilityFilterChange(filterKey) },
+                                            enabled = !submitting,
+                                            label = { Text(filterLabel, style = MaterialTheme.typography.labelSmall) },
+                                            modifier = Modifier.testTag("salary_advance_worker_filter_$filterKey")
+                                        )
+                                    }
                                 }
 
-                                else -> {
-                                    visibleWorkers.forEach { worker ->
-                                        val isSelected = worker.workerEntryId == selectedWorkerId
-                                        val itemEligibility = SalaryAdvanceContract.describeWorkerEligibility(worker)
-                                        val badgeColor = if (itemEligibility.isEligible) {
-                                            SemanticColors.SuccessLight
-                                        } else {
-                                            MaterialTheme.colorScheme.error
-                                        }
-
-                                        Surface(
-                                            shape = RoundedCornerShape(12.dp),
-                                            color = if (isSelected) {
-                                                MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f)
-                                            } else {
-                                                MaterialTheme.colorScheme.surface
-                                            },
-                                            border = BorderStroke(
-                                                width = if (isSelected) 1.5.dp else 1.dp,
-                                                color = if (isSelected) {
-                                                    MaterialTheme.colorScheme.primary
-                                                } else {
-                                                    MaterialTheme.colorScheme.outline.copy(alpha = 0.25f)
-                                                }
-                                            ),
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .clickable(enabled = !submitting) {
-                                                    onSelectWorker(worker.workerEntryId)
-                                                }
-                                                .testTag("salary_advance_worker_item_${worker.workerEntryId}")
+                                when {
+                                    workersLoading && selectableWorkers.isEmpty() -> {
+                                        Row(
+                                            modifier = Modifier.padding(vertical = 12.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(10.dp)
                                         ) {
-                                            Column(
-                                                modifier = Modifier
-                                                    .fillMaxWidth()
-                                                    .padding(10.dp),
-                                                verticalArrangement = Arrangement.spacedBy(4.dp)
-                                            ) {
-                                                Row(
-                                                    modifier = Modifier.fillMaxWidth(),
-                                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                                    verticalAlignment = Alignment.Top
-                                                ) {
-                                                    Column(modifier = Modifier.weight(1f)) {
-                                                        Text(
-                                                            text = worker.displayName,
-                                                            style = MaterialTheme.typography.bodyMedium,
-                                                            fontWeight = FontWeight.Bold
-                                                        )
-                                                        Text(
-                                                            text = "Mã NLĐ: ${worker.employeeCode} · ${DirectEntryContract.workStatusUiLabel(worker.employmentStatus)}",
-                                                            style = MaterialTheme.typography.labelSmall,
-                                                            fontFamily = JetBrainsMono,
-                                                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                                                        )
-                                                    }
-                                                    Surface(
-                                                        shape = RoundedCornerShape(8.dp),
-                                                        color = badgeColor.copy(alpha = 0.14f)
-                                                    ) {
-                                                        Text(
-                                                            text = itemEligibility.statusLabel,
-                                                            style = MaterialTheme.typography.labelSmall,
-                                                            color = badgeColor,
-                                                            fontWeight = FontWeight.SemiBold,
-                                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                                                        )
-                                                    }
-                                                }
-
-                                                Text(
-                                                    text = "Ngày đầu làm việc: ${SalaryAdvanceContract.formatWorkDateVi(worker.firstWorkDate)} · Người tuyển: ${SalaryAdvanceContract.formatWorkerRecruiterLabel(worker)} · ${itemEligibility.portraitStatusLabel}",
-                                                    style = MaterialTheme.typography.bodySmall,
-                                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                                )
-
-                                                if (!itemEligibility.isEligible) {
-                                                    Text(
-                                                        text = itemEligibility.blockingMessage ?: itemEligibility.reasonLabels.joinToString("; "),
-                                                        style = MaterialTheme.typography.bodySmall,
-                                                        color = MaterialTheme.colorScheme.error,
-                                                        modifier = Modifier.testTag("salary_advance_worker_ineligible_reason_${worker.workerEntryId}")
-                                                    )
-                                                }
-                                            }
+                                            CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                                            Text(
+                                                text = "Đang tải danh sách NLĐ từ máy chủ…",
+                                                style = MaterialTheme.typography.bodySmall
+                                            )
                                         }
                                     }
 
-                                    if (workersHasMore) {
-                                        OutlinedButton(
-                                            onClick = onLoadMoreWorkers,
-                                            enabled = !workersLoadingMore && !submitting,
-                                            shape = RoundedCornerShape(10.dp),
+                                    workersError != null && selectableWorkers.isEmpty() -> {
+                                        Text(
+                                            text = workersError,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.error,
+                                            modifier = Modifier.testTag("salary_advance_workers_error")
+                                        )
+                                    }
+
+                                    filteredWorkers.isEmpty() -> {
+                                        Text(
+                                            text = "Không có người lao động HRP đang làm việc hoặc chờ việc khớp điều kiện tìm kiếm.",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                                             modifier = Modifier
-                                                .fillMaxWidth()
-                                                .testTag("salary_advance_load_more_workers_button")
-                                        ) {
-                                            Text(if (workersLoadingMore) "Đang tải thêm NLĐ…" else "Tải thêm NLĐ")
+                                                .padding(vertical = 8.dp)
+                                                .testTag("salary_advance_workers_empty")
+                                        )
+                                    }
+
+                                    else -> {
+                                        if (workersError != null) {
+                                            Text(
+                                                text = workersError,
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.error,
+                                                modifier = Modifier.testTag("salary_advance_workers_error")
+                                            )
+                                        }
+                                        filteredWorkers.forEach { worker ->
+                                            val isSelected = worker.workerEntryId == selectedWorkerId
+                                            val itemEligibility = SalaryAdvanceContract.describeWorkerEligibility(worker)
+                                            val badgeColor = if (itemEligibility.isEligible) {
+                                                SemanticColors.SuccessLight
+                                            } else {
+                                                MaterialTheme.colorScheme.error
+                                            }
+
+                                            Surface(
+                                                shape = RoundedCornerShape(10.dp),
+                                                color = if (isSelected) {
+                                                    MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f)
+                                                } else {
+                                                    MaterialTheme.colorScheme.surface
+                                                },
+                                                border = BorderStroke(
+                                                    width = if (isSelected) 1.5.dp else 1.dp,
+                                                    color = if (isSelected) {
+                                                        MaterialTheme.colorScheme.primary
+                                                    } else {
+                                                        MaterialTheme.colorScheme.outline.copy(alpha = 0.22f)
+                                                    }
+                                                ),
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .clickable(enabled = !submitting) {
+                                                        onSelectWorker(worker.workerEntryId)
+                                                    }
+                                                    .testTag("salary_advance_worker_item_${worker.workerEntryId}")
+                                            ) {
+                                                Column(
+                                                    modifier = Modifier
+                                                        .fillMaxWidth()
+                                                        .padding(horizontal = 10.dp, vertical = 8.dp),
+                                                    verticalArrangement = Arrangement.spacedBy(3.dp)
+                                                ) {
+                                                    Row(
+                                                        modifier = Modifier.fillMaxWidth(),
+                                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                                        verticalAlignment = Alignment.CenterVertically
+                                                    ) {
+                                                        Text(
+                                                            text = "${worker.displayName} · ${worker.employeeCode}",
+                                                            style = MaterialTheme.typography.bodyMedium,
+                                                            fontWeight = FontWeight.Bold,
+                                                            maxLines = 1,
+                                                            overflow = TextOverflow.Ellipsis,
+                                                            modifier = Modifier.weight(1f)
+                                                        )
+                                                        Spacer(modifier = Modifier.width(6.dp))
+                                                        Surface(
+                                                            shape = RoundedCornerShape(6.dp),
+                                                            color = badgeColor.copy(alpha = 0.14f)
+                                                        ) {
+                                                            Text(
+                                                                text = itemEligibility.statusLabel,
+                                                                style = MaterialTheme.typography.labelSmall,
+                                                                color = badgeColor,
+                                                                fontWeight = FontWeight.SemiBold,
+                                                                modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
+                                                            )
+                                                        }
+                                                    }
+
+                                                    Text(
+                                                        text = "Ngày đầu: ${SalaryAdvanceContract.formatWorkDateVi(worker.firstWorkDate)} · Tuyển: ${SalaryAdvanceContract.formatWorkerRecruiterLabel(worker)} · ${itemEligibility.portraitStatusLabel}",
+                                                        style = MaterialTheme.typography.labelSmall,
+                                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                        maxLines = 1,
+                                                        overflow = TextOverflow.Ellipsis
+                                                    )
+
+                                                    if (!itemEligibility.isEligible) {
+                                                        Text(
+                                                            text = itemEligibility.blockingMessage ?: itemEligibility.reasonLabels.joinToString("; "),
+                                                            style = MaterialTheme.typography.labelSmall,
+                                                            color = MaterialTheme.colorScheme.error,
+                                                            modifier = Modifier.testTag("salary_advance_worker_ineligible_reason_${worker.workerEntryId}")
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        if (workersHasMore) {
+                                            OutlinedButton(
+                                                onClick = onLoadMoreWorkers,
+                                                enabled = !workersLoadingMore && !submitting,
+                                                shape = RoundedCornerShape(10.dp),
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .testTag("salary_advance_load_more_workers_button")
+                                            ) {
+                                                Text(if (workersLoadingMore) "Đang tải thêm NLĐ…" else "Tải thêm NLĐ từ máy chủ")
+                                            }
                                         }
                                     }
                                 }
@@ -4508,7 +4941,7 @@ internal fun SalaryAdvanceCreateRequestDialog(
                         enabled = !submitting,
                         modifier = Modifier.testTag("salary_advance_cancel_button")
                     ) {
-                        Text("Đóng")
+                        Text(if (renderInDialog) "Đóng" else "Quay lại Nhân sự")
                     }
                     Button(
                         onClick = onSubmit,
@@ -4542,6 +4975,1159 @@ internal fun SalaryAdvanceCreateRequestDialog(
         }
     } else {
         dialogBody()
+    }
+}
+
+@Composable
+private fun SalaryAdvanceRequestListTabContent(
+    context: SalaryAdvanceActorContext,
+    requests: List<SalaryAdvanceRequestSummary>,
+    loading: Boolean,
+    loadingMore: Boolean,
+    error: String?,
+    hasMore: Boolean,
+    projectFilter: String,
+    stateFilter: String,
+    evidenceFilter: String,
+    searchQuery: String,
+    onProjectFilterChange: (String) -> Unit,
+    onStateFilterChange: (String) -> Unit,
+    onEvidenceFilterChange: (String) -> Unit,
+    onSearchChange: (String) -> Unit,
+    onRefresh: () -> Unit,
+    onLoadMore: () -> Unit,
+    onOpenRequestDetail: (String) -> Unit,
+    onSwitchToCreate: () -> Unit
+) {
+    val activeProjects = remember(context) { context.activeManagedProjects }
+    val selectedProjectLabel = remember(activeProjects, projectFilter) {
+        if (projectFilter == "ALL") {
+            "Tất cả dự án quản lý"
+        } else {
+            activeProjects.firstOrNull { it.projectId == projectFilter }?.displayName ?: "Tất cả dự án quản lý"
+        }
+    }
+
+    LazyColumn(
+        modifier = Modifier
+            .fillMaxSize()
+            .testTag("salary_advance_request_list_scroll"),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+        contentPadding = PaddingValues(bottom = 16.dp)
+    ) {
+        item {
+            Surface(
+                shape = RoundedCornerShape(16.dp),
+                color = MaterialTheme.colorScheme.surface,
+                tonalElevation = 2.dp,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.2f)),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "Bộ lọc yêu cầu ứng lương dự án",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold
+                        )
+                        OutlinedButton(
+                            onClick = onRefresh,
+                            enabled = !loading,
+                            shape = RoundedCornerShape(10.dp),
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                            modifier = Modifier.testTag("salary_advance_list_refresh_button")
+                        ) {
+                            Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(15.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Làm mới", style = MaterialTheme.typography.labelMedium)
+                        }
+                    }
+
+                    KeyedSelectDropdownField(
+                        label = "Dự án",
+                        selectedLabel = selectedProjectLabel,
+                        placeholder = "Tất cả dự án quản lý",
+                        options = buildList {
+                            add(DropdownOptionItem(id = "ALL", label = "Tất cả dự án quản lý"))
+                            activeProjects.forEach { proj ->
+                                add(DropdownOptionItem(id = proj.projectId, label = proj.displayName))
+                            }
+                        },
+                        enabled = !loading,
+                        onSelect = { onProjectFilterChange(it.id) },
+                        testTag = "salary_advance_list_project_filter"
+                    )
+
+                    OutlinedTextField(
+                        value = searchQuery,
+                        onValueChange = { onSearchChange(sanitizeSingleLineInput(it, 120)) },
+                        leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+                        trailingIcon = if (searchQuery.isNotEmpty()) {
+                            {
+                                IconButton(onClick = { onSearchChange("") }) {
+                                    Icon(Icons.Default.Close, contentDescription = "Xóa tìm kiếm")
+                                }
+                            }
+                        } else null,
+                        label = { Text("Tìm theo tên hoặc mã NLĐ…") },
+                        singleLine = true,
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("salary_advance_list_search_input")
+                    )
+
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        SalaryAdvanceContract.REQUEST_STATE_FILTER_OPTIONS.forEach { (key, label) ->
+                            FilterChip(
+                                selected = stateFilter == key,
+                                onClick = { onStateFilterChange(key) },
+                                label = { Text(label, style = MaterialTheme.typography.labelSmall) },
+                                modifier = Modifier.testTag("salary_advance_list_state_filter_$key")
+                            )
+                        }
+                    }
+
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        SalaryAdvanceContract.EVIDENCE_REVIEW_STATE_FILTER_OPTIONS.forEach { (key, label) ->
+                            FilterChip(
+                                selected = evidenceFilter == key,
+                                onClick = { onEvidenceFilterChange(key) },
+                                label = { Text(label, style = MaterialTheme.typography.labelSmall) },
+                                modifier = Modifier.testTag("salary_advance_list_evidence_filter_$key")
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        if (loading && requests.isEmpty()) {
+            item {
+                Surface(
+                    shape = RoundedCornerShape(14.dp),
+                    color = MaterialTheme.colorScheme.surface,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier.padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                        Text("Đang tải danh sách yêu cầu ứng lương…", style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            }
+        } else if (!error.isNullOrBlank() && requests.isEmpty()) {
+            item {
+                Surface(
+                    shape = RoundedCornerShape(14.dp),
+                    color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.55f),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("salary_advance_list_error")
+                ) {
+                    Text(
+                        text = error,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.padding(14.dp)
+                    )
+                }
+            }
+        } else if (requests.isEmpty()) {
+            item {
+                Surface(
+                    shape = RoundedCornerShape(16.dp),
+                    color = MaterialTheme.colorScheme.surface,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.2f)),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("salary_advance_list_empty")
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(20.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            text = "Chưa có yêu cầu ứng lương nào khớp bộ lọc.",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = "Bạn có thể chuyển sang tab «Tạo yêu cầu mới» để gửi đề nghị ứng lương cho NLĐ.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = TextAlign.Center
+                        )
+                        OutlinedButton(
+                            onClick = onSwitchToCreate,
+                            shape = RoundedCornerShape(10.dp)
+                        ) {
+                            Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Tạo yêu cầu ứng lương mới")
+                        }
+                    }
+                }
+            }
+        } else {
+            items(requests, key = { it.requestId }) { item ->
+                val attention = SalaryAdvanceContract.evaluateRequestAttention(item)
+                val reqStateColor = when (item.requestState.uppercase(Locale.ROOT)) {
+                    "APPROVED" -> SemanticColors.SuccessLight
+                    "REJECTED", "WITHDRAWN" -> MaterialTheme.colorScheme.error
+                    "NEEDS_INFO" -> SemanticColors.WarningLight
+                    else -> MaterialTheme.colorScheme.primary
+                }
+                val evStateColor = when (item.evidenceReviewState.uppercase(Locale.ROOT)) {
+                    "REVIEWED" -> SemanticColors.SuccessLight
+                    "RETAKE_REQUIRED" -> MaterialTheme.colorScheme.error
+                    "PENDING_REVIEW" -> SemanticColors.WarningLight
+                    else -> MaterialTheme.colorScheme.onSurfaceVariant
+                }
+
+                Card(
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    border = BorderStroke(
+                        width = if (attention.needsPmAttention) 1.5.dp else 1.dp,
+                        color = if (attention.needsPmAttention) {
+                            SemanticColors.WarningLight
+                        } else {
+                            MaterialTheme.colorScheme.outline.copy(alpha = 0.22f)
+                        }
+                    ),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onOpenRequestDetail(item.requestId) }
+                        .testTag("salary_advance_request_card_${item.requestId}")
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.Top
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = item.workerDisplayName,
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Text(
+                                    text = "Mã NLĐ: ${item.workerEmployeeCode} · #${item.requestId.take(8)}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontFamily = JetBrainsMono,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+
+                            Column(
+                                horizontalAlignment = Alignment.End,
+                                verticalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Surface(
+                                    shape = RoundedCornerShape(8.dp),
+                                    color = reqStateColor.copy(alpha = 0.14f)
+                                ) {
+                                    Text(
+                                        text = SalaryAdvanceContract.requestStateShortLabel(item.requestState),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontWeight = FontWeight.Bold,
+                                        color = reqStateColor,
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                                    )
+                                }
+                                Surface(
+                                    shape = RoundedCornerShape(8.dp),
+                                    color = evStateColor.copy(alpha = 0.14f)
+                                ) {
+                                    Text(
+                                        text = SalaryAdvanceContract.evidenceReviewStateShortLabel(item.evidenceReviewState),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = evStateColor,
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                                    )
+                                }
+                            }
+                        }
+
+                        Text(
+                            text = "Dự án: ${item.projectDisplayName}",
+                            style = MaterialTheme.typography.bodySmall,
+                            fontWeight = FontWeight.SemiBold
+                        )
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "Số tiền: ${SalaryAdvanceContract.formatVndAmount(item.requestedAmountVnd)}",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Bold,
+                                fontFamily = JetBrainsMono,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                            Text(
+                                text = SalaryAdvanceContract.paymentMethodLabel(item.paymentMethod),
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
+
+                        if (!attention.pmAttentionReason.isNullOrBlank()) {
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = SemanticColors.WarningLight.copy(alpha = 0.15f),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(
+                                    text = "⚡ ${attention.pmAttentionReason}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = SemanticColors.WarningLight,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp)
+                                )
+                            }
+                        }
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "Cập nhật: ${SalaryAdvanceContract.formatDateTimeVi(item.lastActivityAt.ifBlank { item.createdAt })}",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontFamily = JetBrainsMono,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Text(
+                                text = "Chi tiết & Trao đổi →",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                    }
+                }
+            }
+
+            if (hasMore) {
+                item {
+                    OutlinedButton(
+                        onClick = onLoadMore,
+                        enabled = !loadingMore,
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("salary_advance_list_load_more_button")
+                    ) {
+                        Text(if (loadingMore) "Đang tải thêm…" else "Tải thêm yêu cầu ứng lương")
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SalaryAdvanceRequestDetailTabContent(
+    serverUrl: String,
+    detail: SalaryAdvanceRequestDetail?,
+    loading: Boolean,
+    error: String?,
+    conflictBanner: String?,
+    selectedEvidenceVersion: Int?,
+    messageDraft: String,
+    messageSubmitting: Boolean,
+    actionNoteDraft: String,
+    actionSubmitting: Boolean,
+    evidenceCaptionDraft: String,
+    evidenceUploading: Boolean,
+    evidenceError: String?,
+    onBackToList: () -> Unit,
+    onRefresh: () -> Unit,
+    onOpenWorkerHistory: (String) -> Unit,
+    onSelectEvidenceVersion: (Int?) -> Unit,
+    onMessageDraftChange: (String) -> Unit,
+    onSendMessage: () -> Unit,
+    onActionNoteDraftChange: (String) -> Unit,
+    onSubmitTransitionAction: (String) -> Unit,
+    onEvidenceCaptionChange: (String) -> Unit,
+    onUploadEvidenceUri: (Uri) -> Unit
+) {
+    val context = LocalContext.current
+    var cameraTempUri by remember { mutableStateOf<Uri?>(null) }
+
+    val imagePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            onUploadEvidenceUri(uri)
+        }
+    }
+
+    val takePictureLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.TakePicture()
+    ) { success: Boolean ->
+        val uri = cameraTempUri
+        if (success && uri != null) {
+            onUploadEvidenceUri(uri)
+        }
+    }
+
+    val launchCameraCapture: () -> Unit = {
+        runCatching {
+            val captureDir = File(context.cacheDir, "camera_captures").apply { mkdirs() }
+            val photoFile = File(captureDir, "sa_evidence_${System.currentTimeMillis()}.jpg")
+            val uri = FileProvider.getUriForFile(
+                context,
+                "${context.packageName}.fileprovider",
+                photoFile
+            )
+            cameraTempUri = uri
+            takePictureLauncher.launch(uri)
+        }
+    }
+
+    val cameraPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted: Boolean ->
+        if (granted) {
+            launchCameraCapture()
+        }
+    }
+
+    val anyBusy = messageSubmitting || actionSubmitting || evidenceUploading
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .testTag("salary_advance_detail_scroll"),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        // Thanh điều hướng quay lại danh sách yêu cầu + Làm mới
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            OutlinedButton(
+                onClick = onBackToList,
+                enabled = !anyBusy,
+                shape = RoundedCornerShape(10.dp),
+                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                modifier = Modifier.testTag("salary_advance_detail_back_to_list_button")
+            ) {
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = null, modifier = Modifier.size(16.dp))
+                Spacer(modifier = Modifier.width(6.dp))
+                Text("Danh sách yêu cầu dự án")
+            }
+
+            OutlinedButton(
+                onClick = onRefresh,
+                enabled = !loading && !anyBusy,
+                shape = RoundedCornerShape(10.dp),
+                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                modifier = Modifier.testTag("salary_advance_detail_refresh_button")
+            ) {
+                Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
+                Spacer(modifier = Modifier.width(4.dp))
+                Text("Làm mới")
+            }
+        }
+
+        if (!conflictBanner.isNullOrBlank()) {
+            Surface(
+                shape = RoundedCornerShape(12.dp),
+                color = SemanticColors.WarningLight.copy(alpha = 0.16f),
+                border = BorderStroke(1.dp, SemanticColors.WarningLight),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("salary_advance_detail_conflict_banner")
+            ) {
+                Text(
+                    text = conflictBanner,
+                    style = MaterialTheme.typography.bodySmall,
+                    fontWeight = FontWeight.SemiBold,
+                    color = SemanticColors.WarningLight,
+                    modifier = Modifier.padding(12.dp)
+                )
+            }
+        }
+
+        if (!error.isNullOrBlank()) {
+            Surface(
+                shape = RoundedCornerShape(12.dp),
+                color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.55f),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("salary_advance_detail_error_banner")
+            ) {
+                Text(
+                    text = error,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.padding(12.dp)
+                )
+            }
+        }
+
+        if (loading && detail == null) {
+            Surface(
+                shape = RoundedCornerShape(14.dp),
+                color = MaterialTheme.colorScheme.surface,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    modifier = Modifier.padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                    Text("Đang tải chi tiết yêu cầu ứng lương…", style = MaterialTheme.typography.bodySmall)
+                }
+            }
+        } else if (detail != null) {
+            val req = detail.request
+            val summary30d = detail.workerAdvance30dSummary
+            val attention = SalaryAdvanceContract.evaluateRequestAttention(req)
+
+            // 1. Thẻ thông tin tổng quan yêu cầu & NLĐ
+            Surface(
+                shape = RoundedCornerShape(16.dp),
+                color = MaterialTheme.colorScheme.surface,
+                tonalElevation = 2.dp,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.22f)),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("salary_advance_detail_summary_card")
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "Yêu cầu #${req.requestId.take(8)} · v${req.version}",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.ExtraBold,
+                            fontFamily = JetBrainsMono
+                        )
+                        Text(
+                            text = "${SalaryAdvanceContract.requestStateShortLabel(req.requestState)} · ${SalaryAdvanceContract.evidenceReviewStateShortLabel(req.evidenceReviewState)}",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+
+                    if (!attention.pmAttentionReason.isNullOrBlank()) {
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = SemanticColors.WarningLight.copy(alpha = 0.15f),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                text = "⚡ ${attention.pmAttentionReason}",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = SemanticColors.WarningLight,
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                            )
+                        }
+                    }
+
+                    Text(
+                        text = "NLĐ: ${req.workerDisplayName} (${req.workerEmployeeCode})",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = "Dự án: ${req.projectDisplayName} · KT phụ trách: ${SalaryAdvanceContract.resolveActorDisplayName(req.currentProjectAccountant?.displayName, "Chưa gán KT")}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        text = "Ngày đầu làm việc: ${SalaryAdvanceContract.formatWorkDateVi(req.workerFirstWorkDate)} · Người tuyển: ${
+                            SalaryAdvanceContract.formatWorkerRecruiterLabel(
+                                recruiterDisplayName = req.workerRecruiterDisplayName,
+                                recruiterCode = req.workerRecruiterCode,
+                                providerType = req.workerProviderType
+                            )
+                        }",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text("Số tiền đề nghị:", style = MaterialTheme.typography.bodySmall)
+                        Text(
+                            text = "${SalaryAdvanceContract.formatVndAmount(req.requestedAmountVnd)} (${SalaryAdvanceContract.paymentMethodLabel(req.paymentMethod)})",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Bold,
+                            fontFamily = JetBrainsMono,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+
+                    req.paymentDestinationSnapshot?.let { snap ->
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(10.dp),
+                                verticalArrangement = Arrangement.spacedBy(2.dp)
+                            ) {
+                                Text(
+                                    text = "Tài khoản nhận chuyển khoản: ${snap.institutionName}",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Text(
+                                    text = "Chủ TK: ${snap.accountHolderName} · Số TK: ${snap.accountNumberMasked}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    fontFamily = JetBrainsMono
+                                )
+                            }
+                        }
+                    }
+
+                    Text(
+                        text = "Nội dung đề nghị ban đầu: ${req.initialContent}",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+
+                    if (!req.decisionNote.isNullOrBlank()) {
+                        Text(
+                            text = "Ghi chú quyết định của Kế toán: ${req.decisionNote}",
+                            style = MaterialTheme.typography.bodySmall,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                    if (!req.handledExternallyNote.isNullOrBlank()) {
+                        Text(
+                            text = "Ghi chú xử lý ngoài BI: ${req.handledExternallyNote}",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Ứng trong 30 ngày gần nhất: ${summary30d?.totalCount ?: 0} lần · ${SalaryAdvanceContract.formatVndAmount(summary30d?.totalAmountVnd ?: "0")}",
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                        OutlinedButton(
+                            onClick = { onOpenWorkerHistory(req.requestId) },
+                            shape = RoundedCornerShape(10.dp),
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                            modifier = Modifier.testTag("salary_advance_detail_open_history_button")
+                        ) {
+                            Icon(Icons.Default.Visibility, contentDescription = null, modifier = Modifier.size(15.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Lịch sử ứng", style = MaterialTheme.typography.labelSmall)
+                        }
+                    }
+                }
+            }
+
+            // 2. Thao tác phản hồi bổ sung thông tin (PROVIDE_INFO) hoặc Rút yêu cầu (WITHDRAW) của QLDA
+            if (req.allowedActions.canProvideInfo || req.allowedActions.canWithdraw) {
+                Surface(
+                    shape = RoundedCornerShape(16.dp),
+                    color = MaterialTheme.colorScheme.surface,
+                    tonalElevation = 2.dp,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.22f)),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("salary_advance_detail_actions_card")
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            text = "Thao tác xử lý yêu cầu (QLDA)",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold
+                        )
+
+                        OutlinedTextField(
+                            value = actionNoteDraft,
+                            onValueChange = { onActionNoteDraftChange(sanitizeMultiLineInput(it, 2000)) },
+                            label = {
+                                Text(
+                                    if (req.allowedActions.canProvideInfo) {
+                                        "Nội dung bổ sung thông tin cho Kế toán (hoặc lý do rút yêu cầu) *"
+                                    } else {
+                                        "Ghi chú lý do rút yêu cầu (tùy chọn)"
+                                    }
+                                )
+                            },
+                            enabled = !anyBusy,
+                            minLines = 2,
+                            maxLines = 4,
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("salary_advance_detail_action_note_input")
+                        )
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            if (req.allowedActions.canProvideInfo) {
+                                Button(
+                                    onClick = { onSubmitTransitionAction("PROVIDE_INFO") },
+                                    enabled = !anyBusy,
+                                    shape = RoundedCornerShape(10.dp),
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .testTag("salary_advance_action_provide_info_button")
+                                ) {
+                                    Text(if (actionSubmitting) "Đang gửi…" else "Gửi bổ sung thông tin")
+                                }
+                            }
+                            if (req.allowedActions.canWithdraw) {
+                                OutlinedButton(
+                                    onClick = { onSubmitTransitionAction("WITHDRAW") },
+                                    enabled = !anyBusy,
+                                    shape = RoundedCornerShape(10.dp),
+                                    colors = ButtonDefaults.outlinedButtonColors(
+                                        contentColor = MaterialTheme.colorScheme.error
+                                    ),
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .testTag("salary_advance_action_withdraw_button")
+                                ) {
+                                    Text("Rút yêu cầu")
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 3. Khung đối chiếu ảnh chân dung & Tải lên ảnh chứng từ nhận tiền
+            Surface(
+                shape = RoundedCornerShape(16.dp),
+                color = MaterialTheme.colorScheme.surface,
+                tonalElevation = 2.dp,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.22f)),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("salary_advance_detail_evidence_card")
+            ) {
+                val sortedVersions = detail.evidenceVersions
+                val activeEvidenceItem = remember(sortedVersions, selectedEvidenceVersion, req.currentEvidence) {
+                    sortedVersions.firstOrNull { it.evidenceVersion == selectedEvidenceVersion }
+                        ?: sortedVersions.firstOrNull()
+                        ?: req.currentEvidence?.let { cur ->
+                            SalaryAdvanceEvidenceVersionItem(
+                                evidenceVersion = cur.evidenceVersion,
+                                evidenceKind = cur.evidenceKind,
+                                eventId = "ev-${cur.evidenceVersion}",
+                                mimeType = cur.mimeType,
+                                sizeBytes = cur.sizeBytes,
+                                checksumSha256 = cur.checksumSha256,
+                                captionNote = null,
+                                uploadedByUserId = cur.uploadedByUserId,
+                                uploadedByDisplayName = cur.uploadedByDisplayName,
+                                uploadedAt = cur.uploadedAt
+                            )
+                        }
+                }
+
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "Chứng từ nhận tiền & Đối chiếu",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = SalaryAdvanceContract.evidenceReviewStateShortLabel(req.evidenceReviewState),
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+
+                    if (!req.currentEvidence?.reviewNote.isNullOrBlank()) {
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                text = "Nhận xét đối chiếu của Kế toán: ${req.currentEvidence?.reviewNote}",
+                                style = MaterialTheme.typography.bodySmall,
+                                fontWeight = FontWeight.SemiBold,
+                                modifier = Modifier.padding(10.dp)
+                            )
+                        }
+                    }
+
+                    // Ảnh chân dung hồ sơ NLĐ chuẩn (đối với ứng tiền mặt)
+                    if (!req.paymentMethod.equals("BANK_TRANSFER", ignoreCase = true)) {
+                        val portrait = req.workerPortrait
+                        if (portrait != null) {
+                            val portraitUrl = "${serverUrl.trimEnd('/')}${
+                                SalaryAdvanceContract.buildWorkerPortraitPreviewPath(
+                                    requestId = req.requestId,
+                                    expectedDocumentId = portrait.documentId
+                                )
+                            }"
+                            Text(
+                                text = "Ảnh chân dung hồ sơ NLĐ trong hệ thống (v${portrait.version}):",
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            AsyncImage(
+                                model = portraitUrl,
+                                contentDescription = "Ảnh chân dung hồ sơ NLĐ",
+                                contentScale = ContentScale.Fit,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(170.dp)
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f))
+                                    .testTag("salary_advance_worker_portrait_preview")
+                            )
+                        } else {
+                            Text(
+                                text = "NLĐ hiện chưa có ảnh chân dung chuẩn trong hồ sơ hệ thống.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = SemanticColors.WarningLight
+                            )
+                        }
+                    }
+
+                    // Chọn phiên bản chứng từ đã tải lên
+                    if (sortedVersions.size > 1) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            sortedVersions.forEach { verItem ->
+                                FilterChip(
+                                    selected = activeEvidenceItem?.evidenceVersion == verItem.evidenceVersion,
+                                    onClick = { onSelectEvidenceVersion(verItem.evidenceVersion) },
+                                    label = { Text("Ảnh v${verItem.evidenceVersion}") },
+                                    modifier = Modifier.testTag("salary_advance_evidence_version_${verItem.evidenceVersion}")
+                                )
+                            }
+                        }
+                    }
+
+                    if (activeEvidenceItem != null) {
+                        val evidenceUrl = "${serverUrl.trimEnd('/')}${
+                            SalaryAdvanceContract.buildEvidencePhotoPreviewPath(
+                                requestId = req.requestId,
+                                evidenceVersion = activeEvidenceItem.evidenceVersion
+                            )
+                        }"
+                        Text(
+                            text = "Ảnh chứng từ đã tải lên (v${activeEvidenceItem.evidenceVersion} · ${SalaryAdvanceContract.formatFileSizeBytes(activeEvidenceItem.sizeBytes)}):",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        AsyncImage(
+                            model = evidenceUrl,
+                            contentDescription = "Ảnh chứng từ nhận tiền",
+                            contentScale = ContentScale.Fit,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(200.dp)
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f))
+                                .testTag("salary_advance_evidence_photo_preview")
+                        )
+                        Text(
+                            text = "Người tải: ${SalaryAdvanceContract.resolveActorDisplayName(activeEvidenceItem.uploadedByDisplayName)} · Lúc: ${SalaryAdvanceContract.formatDateTimeVi(activeEvidenceItem.uploadedAt)}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        if (!activeEvidenceItem.captionNote.isNullOrBlank()) {
+                            Text(
+                                text = "Ghi chú ảnh: ${activeEvidenceItem.captionNote}",
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                        }
+                    } else {
+                        Text(
+                            text = "Chưa có ảnh chứng từ nhận tiền nào được tải lên.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.testTag("salary_advance_no_evidence_text")
+                        )
+                    }
+
+                    // Khung tải lên ảnh chứng từ nhận tiền (dành cho QLDA khi được phép)
+                    if (req.allowedActions.canUploadEvidence) {
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
+                        Text(
+                            text = "Tải lên ảnh NLĐ nhận tiền mặt (JPEG/PNG ≤ 10MB)",
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.Bold
+                        )
+                        OutlinedTextField(
+                            value = evidenceCaptionDraft,
+                            onValueChange = { onEvidenceCaptionChange(sanitizeMultiLineInput(it, 1000)) },
+                            label = { Text("Ghi chú kèm ảnh chứng từ (tùy chọn)") },
+                            enabled = !anyBusy,
+                            singleLine = true,
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("salary_advance_evidence_caption_input")
+                        )
+
+                        if (!evidenceError.isNullOrBlank()) {
+                            Text(
+                                text = evidenceError,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error,
+                                modifier = Modifier.testTag("salary_advance_evidence_error")
+                            )
+                        }
+
+                        if (evidenceUploading) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                modifier = Modifier.testTag("salary_advance_evidence_uploading_indicator")
+                            ) {
+                                CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                                Text("Đang tải ảnh chứng từ lên máy chủ…", style = MaterialTheme.typography.bodySmall)
+                            }
+                        }
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            OutlinedButton(
+                                onClick = {
+                                    val granted = ContextCompat.checkSelfPermission(
+                                        context,
+                                        Manifest.permission.CAMERA
+                                    ) == PackageManager.PERMISSION_GRANTED
+                                    if (granted) {
+                                        launchCameraCapture()
+                                    } else {
+                                        cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+                                    }
+                                },
+                                enabled = !anyBusy,
+                                shape = RoundedCornerShape(10.dp),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .testTag("salary_advance_evidence_camera_button")
+                            ) {
+                                Icon(Icons.Default.CameraAlt, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Chụp ảnh")
+                            }
+
+                            Button(
+                                onClick = { imagePickerLauncher.launch("image/*") },
+                                enabled = !anyBusy,
+                                shape = RoundedCornerShape(10.dp),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .testTag("salary_advance_evidence_picker_button")
+                            ) {
+                                Icon(Icons.Default.PhotoLibrary, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Chọn ảnh")
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 4. Luồng trao đổi với Kế toán & Nhật ký sự kiện
+            Surface(
+                shape = RoundedCornerShape(16.dp),
+                color = MaterialTheme.colorScheme.surface,
+                tonalElevation = 2.dp,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.22f)),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("salary_advance_detail_timeline_card")
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Text(
+                        text = "Trao đổi với Kế toán & Nhật ký xử lý (${detail.events.size})",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold
+                    )
+
+                    if (req.allowedActions.canPostMessage) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            OutlinedTextField(
+                                value = messageDraft,
+                                onValueChange = { onMessageDraftChange(sanitizeMultiLineInput(it, 2000)) },
+                                label = { Text("Nhập nội dung trao đổi với Kế toán…") },
+                                enabled = !anyBusy,
+                                minLines = 1,
+                                maxLines = 3,
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .testTag("salary_advance_message_input")
+                            )
+                            Button(
+                                onClick = onSendMessage,
+                                enabled = !anyBusy && messageDraft.trim().isNotEmpty(),
+                                shape = RoundedCornerShape(12.dp),
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 12.dp),
+                                modifier = Modifier.testTag("salary_advance_send_message_button")
+                            ) {
+                                Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Gửi tin nhắn", modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text(if (messageSubmitting) "…" else "Gửi")
+                            }
+                        }
+                    }
+
+                    detail.events.forEach { ev: SalaryAdvanceEventItem ->
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.32f),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.2f)),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("salary_advance_event_item_${ev.eventSeq}")
+                        ) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(10.dp),
+                                verticalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = "#${ev.eventSeq} · ${SalaryAdvanceContract.eventTypeLabel(ev.eventType)}",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    Text(
+                                        text = SalaryAdvanceContract.formatDateTimeVi(ev.createdAt),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontFamily = JetBrainsMono,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                Text(
+                                    text = "${SalaryAdvanceContract.resolveActorDisplayName(ev.actorDisplayName)} · ${SalaryAdvanceContract.actorRoleLabel(ev.actorRole)}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                if (!ev.messageText.isNullOrBlank()) {
+                                    Text(
+                                        text = ev.messageText,
+                                        style = MaterialTheme.typography.bodySmall
+                                    )
+                                }
+                                if (ev.evidenceVersion != null) {
+                                    Text(
+                                        text = "Phiên bản chứng từ: Ảnh v${ev.evidenceVersion}",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontFamily = JetBrainsMono,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 

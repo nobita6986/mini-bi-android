@@ -1750,5 +1750,120 @@ class DirectEntryAndWorkerContractTest {
                 toDate = "2026-10-15"
             )
         )
+
+        // 3. Verify Vietnamese accent-insensitive worker search & eligibility filter
+        assertTrue(
+            com.example.data.SalaryAdvanceContract.matchesWorkerSearchQuery(
+                worker = eligibleWorker,
+                query = "nguyen van ung luong",
+                eligibilityFilter = "ELIGIBLE"
+            )
+        )
+        assertTrue(
+            com.example.data.SalaryAdvanceContract.matchesWorkerSearchQuery(
+                worker = eligibleWorker,
+                query = "000010",
+                eligibilityFilter = "ALL"
+            )
+        )
+        assertFalse(
+            com.example.data.SalaryAdvanceContract.matchesWorkerSearchQuery(
+                worker = eligibleWorker,
+                query = "nguyen van",
+                eligibilityFilter = "INELIGIBLE"
+            )
+        )
+
+        // 4. Verify PM request list, detail, attention banner, and R2 evidence reserve parsing
+        assertEquals(
+            "/api/salary-advance/requests?queue=PM&page_size=25&project_id=PRJ_ACTIVE&request_state=NEEDS_INFO&include_badge=1",
+            com.example.data.SalaryAdvanceContract.buildRequestListPath(
+                queue = "PM",
+                projectFilter = "PRJ_ACTIVE",
+                requestStateFilter = "NEEDS_INFO",
+                evidenceStateFilter = "ALL",
+                includeBadge = true
+            )
+        )
+        val detailJson = JSONObject(
+            """
+            {
+              "request": {
+                "request_id": "req-detail-01",
+                "request_state": "APPROVED",
+                "evidence_review_state": "RETAKE_REQUIRED",
+                "version": 3,
+                "project_id": "PRJ_ACTIVE",
+                "project_display_name": "Dự án A",
+                "worker_entry_id": "$workerId",
+                "worker_employee_code": "hrp-1026-000010",
+                "worker_display_name": "Nguyễn Văn Ứng Lương",
+                "worker_first_work_date": "2026-10-01",
+                "worker_recruiter_display_name": "Tuyển dụng A",
+                "requested_amount_vnd": "1500000",
+                "payment_method": "CASH",
+                "initial_content": "Ứng tiền mặt",
+                "worker_portrait": {
+                  "has_portrait": true,
+                  "document_id": "doc-portrait-01",
+                  "original_filename": "portrait.jpg",
+                  "content_type": "image/jpeg"
+                },
+                "current_evidence": {
+                  "has_evidence": true,
+                  "evidence_id": "ev-01",
+                  "version": 1,
+                  "review_state": "RETAKE_REQUIRED",
+                  "reject_reason": "Ảnh bị mờ, cần chụp rõ mặt NLĐ cầm tiền",
+                  "original_filename": "ev1.jpg",
+                  "content_type": "image/jpeg",
+                  "file_size_bytes": 102400
+                },
+                "allowed_actions": {
+                  "can_post_message": true,
+                  "can_provide_info": false,
+                  "can_withdraw": false,
+                  "can_upload_evidence": true
+                }
+              },
+              "events": [
+                {
+                  "event_id": "ev-msg-1",
+                  "event_type": "EVIDENCE_RETAKE_REQUESTED",
+                  "actor_role": "ACCOUNTANT",
+                  "actor_display_name": "Kế toán A",
+                  "message_text": "Ảnh bị mờ, cần chụp rõ mặt NLĐ cầm tiền",
+                  "created_at": "2026-10-30T08:00:00.000Z"
+                }
+              ],
+              "evidence_versions": [
+                {
+                  "evidence_id": "ev-01",
+                  "version": 1,
+                  "review_state": "RETAKE_REQUIRED",
+                  "reject_reason": "Ảnh bị mờ, cần chụp rõ mặt NLĐ cầm tiền",
+                  "original_filename": "ev1.jpg",
+                  "content_type": "image/jpeg",
+                  "file_size_bytes": 102400
+                }
+              ]
+            }
+            """.trimIndent()
+        )
+        val detail = com.example.data.SalaryAdvanceContract.parseRequestDetail(detailJson)
+        assertEquals("req-detail-01", detail.request.requestId)
+        assertTrue(detail.request.allowedActions.canUploadEvidence)
+        val attention = com.example.data.SalaryAdvanceContract.evaluateRequestAttention(detail.request)
+        assertTrue(attention.needsPmEvidenceUpload)
+        assertTrue(attention.needsPmAttention)
+        assertEquals("Cần chụp/tải lại ảnh NLĐ nhận tiền mặt", attention.pmAttentionReason)
+        assertEquals(
+            "/api/salary-advance/requests/req-detail-01/worker-portrait?expected_document_id=doc-portrait-01",
+            com.example.data.SalaryAdvanceContract.buildWorkerPortraitPreviewPath("req-detail-01", "doc-portrait-01")
+        )
+        assertEquals(
+            "/api/salary-advance/requests/req-detail-01/evidence/1/preview",
+            com.example.data.SalaryAdvanceContract.buildEvidencePhotoPreviewPath("req-detail-01", 1)
+        )
     }
 }

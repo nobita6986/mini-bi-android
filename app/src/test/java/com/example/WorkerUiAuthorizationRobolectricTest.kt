@@ -3625,6 +3625,106 @@ class WorkerUiAuthorizationRobolectricTest {
                             """.trimIndent()
                         )
                     }
+                    path.startsWith("/api/salary-advance/requests?") -> MockResponse().setResponseCode(200).setBody(
+                        """
+                        {
+                          "ok": true,
+                          "data": {
+                            "queue": "PM",
+                            "next_cursor": null,
+                            "has_more": false,
+                            "badge": {
+                              "pm_actionable_count": 1,
+                              "pm_needs_info_count": 1,
+                              "pm_retake_required_count": 0
+                            },
+                            "requests": [
+                              {
+                                "request_id": "req-created-1",
+                                "request_state": "NEEDS_INFO",
+                                "evidence_review_state": "NOT_UPLOADED",
+                                "version": 2,
+                                "project_id": "PRJ_01",
+                                "project_display_name": "Dự án Điện Tử Bắc Ninh",
+                                "worker_entry_id": "w-eligible",
+                                "worker_employee_code": "hrp-1026-000001",
+                                "worker_display_name": "Nguyễn Văn Hợp Lệ",
+                                "requested_amount_vnd": "2000000",
+                                "payment_method": "BANK_TRANSFER",
+                                "initial_content": "Ứng lương đợt 1",
+                                "created_by_display_name": "QLDA Kiểm Thử",
+                                "effective_date": "2026-10-30",
+                                "created_at": "2026-10-30T08:00:00.000Z",
+                                "updated_at": "2026-10-30T08:05:00.000Z"
+                              }
+                            ]
+                          }
+                        }
+                        """.trimIndent()
+                    )
+                    path == "/api/salary-advance/requests/req-created-1" && request.method == "GET" -> MockResponse().setResponseCode(200).setBody(
+                        """
+                        {
+                          "ok": true,
+                          "data": {
+                            "request": {
+                              "request_id": "req-created-1",
+                              "request_state": "NEEDS_INFO",
+                              "evidence_review_state": "NOT_UPLOADED",
+                              "version": 2,
+                              "project_id": "PRJ_01",
+                              "project_display_name": "Dự án Điện Tử Bắc Ninh",
+                              "worker_entry_id": "w-eligible",
+                              "worker_employee_code": "hrp-1026-000001",
+                              "worker_display_name": "Nguyễn Văn Hợp Lệ",
+                              "worker_first_work_date": "2026-10-01",
+                              "worker_recruiter_display_name": "Tuyển dụng HRP 1",
+                              "requested_amount_vnd": "2000000",
+                              "payment_method": "BANK_TRANSFER",
+                              "initial_content": "Ứng lương đợt 1",
+                              "created_by_display_name": "QLDA Kiểm Thử",
+                              "effective_date": "2026-10-30",
+                              "created_at": "2026-10-30T08:00:00.000Z",
+                              "updated_at": "2026-10-30T08:05:00.000Z",
+                              "project_accountant": {
+                                "user_id": "acc-01",
+                                "display_name": "Kế toán Bắc Ninh"
+                              },
+                              "advance_30d_summary": {
+                                "window_days": 30,
+                                "window_from_date": "2026-10-01",
+                                "window_to_date": "2026-10-30",
+                                "total_count": 2,
+                                "total_amount_vnd": "1500000"
+                              },
+                              "allowed_actions": {
+                                "can_post_message": true,
+                                "can_provide_info": true,
+                                "can_withdraw": true,
+                                "can_upload_evidence": true
+                              }
+                            },
+                            "events": [
+                              {
+                                "event_id": "ev-1",
+                                "event_type": "NEEDS_INFO_REQUESTED",
+                                "actor_role": "ACCOUNTANT",
+                                "actor_display_name": "Kế toán Bắc Ninh",
+                                "message_text": "Vui lòng xác nhận số ngày công tuần này",
+                                "created_at": "2026-10-30T08:05:00.000Z"
+                              }
+                            ],
+                            "evidence_versions": []
+                          }
+                        }
+                        """.trimIndent()
+                    )
+                    path == "/api/salary-advance/requests/req-created-1/messages" && request.method == "POST" -> MockResponse().setResponseCode(200).setBody(
+                        """{"ok":true,"data":{"replayed":false}}"""
+                    )
+                    path == "/api/salary-advance/requests/req-created-1/actions" && request.method == "POST" -> MockResponse().setResponseCode(200).setBody(
+                        """{"ok":true,"data":{"replayed":false}}"""
+                    )
                     path == "/api/salary-advance/requests" && request.method == "POST" -> {
                         val headerKey = request.getHeader("Idempotency-Key").orEmpty()
                         val bodyJson = JSONObject(request.body.readUtf8())
@@ -3714,13 +3814,15 @@ class WorkerUiAuthorizationRobolectricTest {
         }
         composeTestRule.waitForIdle()
 
-        // 1. Open Salary Advance dialog
+        // 1. Open standalone Salary Advance workspace (replaces workers_lazy_column instead of popup dialog)
         composeTestRule.onNodeWithTag("salary_advance_open_button").assertIsDisplayed().performClick()
         composeTestRule.waitUntil(timeoutMillis = 5_000) {
             org.robolectric.shadows.ShadowLooper.idleMainLooper()
             !vm.salaryAdvanceWorkersLoading.value && vm.salaryAdvanceWorkers.value.isNotEmpty()
         }
         composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("salary_advance_workspace_screen").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("workers_lazy_column").assertDoesNotExist()
 
         // OFF and vendor workers must be hidden; HRP ineligible & eligible workers must be shown
         composeTestRule.onNodeWithTag("salary_advance_worker_item_w-off").assertDoesNotExist()
@@ -3733,9 +3835,10 @@ class WorkerUiAuthorizationRobolectricTest {
         composeTestRule.waitForIdle()
         composeTestRule.onNodeWithTag("salary_advance_submit_button").assertIsNotEnabled()
 
-        // 3. Select eligible worker -> shows first work date, recruiter, 30d summary, and enables submit
+        // 3. Select eligible worker -> auto-collapses worker list into compact bar, shows first work date, recruiter, 30d summary, and enables submit
         composeTestRule.onNodeWithTag("salary_advance_worker_item_w-eligible").performClick()
         composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("salary_advance_worker_collapsed_bar").assertIsDisplayed()
         composeTestRule.onNodeWithTag("salary_advance_worker_first_work_date").assertTextContains("01/10/2026")
         composeTestRule.onNodeWithTag("salary_advance_worker_recruiter").assertTextContains("Tuyển dụng HRP 1")
         composeTestRule.onNodeWithTag("salary_advance_worker_30d_count").assertTextContains("2 lần")
@@ -3773,7 +3876,7 @@ class WorkerUiAuthorizationRobolectricTest {
         composeTestRule.onNodeWithTag("salary_advance_content_input").performTextReplacement("Ứng lương đợt 1")
         composeTestRule.waitForIdle()
 
-        // Attempt 1: 503 error -> keeps dialog open and shows error
+        // Attempt 1: 503 error -> keeps workspace open and shows error
         nextCreateResponseMode = "SERVER_ERROR"
         composeTestRule.onNodeWithTag("salary_advance_submit_button").assertIsEnabled().performClick()
         composeTestRule.waitUntil(timeoutMillis = 5_000) {
@@ -3799,17 +3902,23 @@ class WorkerUiAuthorizationRobolectricTest {
         val keyAttempt2 = capturedCreateRequests[1].first
         assertEquals("Retry sau lỗi mạng/timeout phải dùng lại idempotency_key", keyAttempt1, keyAttempt2)
 
-        // Attempt 3 (after 409 conflict): MUST rotate to a new idempotency_key and succeed
+        // Attempt 3 (after 409 conflict): MUST rotate to a new idempotency_key, succeed, and transition to DETAIL tab in standalone workspace
         nextCreateResponseMode = "SUCCESS"
         composeTestRule.onNodeWithTag("salary_advance_submit_button").performClick()
         composeTestRule.waitUntil(timeoutMillis = 5_000) {
             org.robolectric.shadows.ShadowLooper.idleMainLooper()
-            !vm.salaryAdvanceCreateSubmitting.value && capturedCreateRequests.size == 3
+            !vm.salaryAdvanceCreateSubmitting.value &&
+                capturedCreateRequests.size == 3 &&
+                vm.salaryAdvanceWorkspaceTab.value == "DETAIL" &&
+                !vm.salaryAdvanceDetailLoading.value
         }
         composeTestRule.waitForIdle()
         val keyAttempt3 = capturedCreateRequests[2].first
         assertFalse("Sau lỗi 409 conflict phải xoay idempotency_key mới", keyAttempt3 == keyAttempt2)
-        assertFalse("Dialog phải đóng sau khi tạo thành công", vm.salaryAdvanceDialogOpen.value)
+        assertTrue("Workspace vẫn mở ở tab DETAIL sau khi tạo thành công", vm.salaryAdvanceDialogOpen.value)
+        assertEquals("DETAIL", vm.salaryAdvanceWorkspaceTab.value)
+        assertEquals("req-created-1", vm.salaryAdvanceSelectedRequestId.value)
+        composeTestRule.onNodeWithTag("salary_advance_detail_scroll").assertIsDisplayed()
         val submittedBody = capturedCreateRequests[2].second
         assertEquals("PRJ_01", submittedBody.getString("project_id"))
         assertEquals("w-eligible", submittedBody.getString("worker_entry_id"))
@@ -3817,5 +3926,11 @@ class WorkerUiAuthorizationRobolectricTest {
         assertEquals("BANK_TRANSFER", submittedBody.getString("payment_method"))
         assertEquals("Ứng lương đợt 1", submittedBody.getString("initial_content"))
         assertEquals(keyAttempt3, submittedBody.getString("idempotency_key"))
+
+        // 6. Back button returns to Nhân sự list
+        composeTestRule.onNodeWithTag("salary_advance_back_to_workers_button").performClick()
+        composeTestRule.waitForIdle()
+        assertFalse(vm.salaryAdvanceDialogOpen.value)
+        composeTestRule.onNodeWithTag("workers_lazy_column").assertIsDisplayed()
     }
 }

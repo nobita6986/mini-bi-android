@@ -41,6 +41,8 @@ import com.example.data.PendingEntryAttachmentTask
 import com.example.data.CreateSalaryAdvanceValidationResult
 import com.example.data.SalaryAdvanceActorContext
 import com.example.data.SalaryAdvanceContract
+import com.example.data.SalaryAdvanceRequestDetail
+import com.example.data.SalaryAdvanceRequestSummary
 import com.example.data.SalaryAdvanceWorkerHistoryItem
 import com.example.data.SalaryAdvanceWorkerHistoryResponse
 import com.example.data.SalaryAdvanceWorkerOption
@@ -412,6 +414,89 @@ class MiniBiViewModel internal constructor(
     private val _salaryAdvanceDialogOpen = MutableStateFlow(false)
     val salaryAdvanceDialogOpen: StateFlow<Boolean> = _salaryAdvanceDialogOpen.asStateFlow()
 
+    private val _salaryAdvanceWorkspaceTab = MutableStateFlow("CREATE")
+    val salaryAdvanceWorkspaceTab: StateFlow<String> = _salaryAdvanceWorkspaceTab.asStateFlow()
+
+    private val _salaryAdvanceWorkerEligibilityFilter = MutableStateFlow("ALL")
+    val salaryAdvanceWorkerEligibilityFilter: StateFlow<String> = _salaryAdvanceWorkerEligibilityFilter.asStateFlow()
+
+    private val _salaryAdvanceWorkerPickerExpanded = MutableStateFlow(true)
+    val salaryAdvanceWorkerPickerExpanded: StateFlow<Boolean> = _salaryAdvanceWorkerPickerExpanded.asStateFlow()
+
+    private val _salaryAdvanceRequests = MutableStateFlow<List<SalaryAdvanceRequestSummary>>(emptyList())
+    val salaryAdvanceRequests: StateFlow<List<SalaryAdvanceRequestSummary>> = _salaryAdvanceRequests.asStateFlow()
+
+    private val _salaryAdvanceRequestsLoading = MutableStateFlow(false)
+    val salaryAdvanceRequestsLoading: StateFlow<Boolean> = _salaryAdvanceRequestsLoading.asStateFlow()
+
+    private val _salaryAdvanceRequestsLoadingMore = MutableStateFlow(false)
+    val salaryAdvanceRequestsLoadingMore: StateFlow<Boolean> = _salaryAdvanceRequestsLoadingMore.asStateFlow()
+
+    private val _salaryAdvanceRequestsError = MutableStateFlow<String?>(null)
+    val salaryAdvanceRequestsError: StateFlow<String?> = _salaryAdvanceRequestsError.asStateFlow()
+
+    private val _salaryAdvanceRequestsHasMore = MutableStateFlow(false)
+    val salaryAdvanceRequestsHasMore: StateFlow<Boolean> = _salaryAdvanceRequestsHasMore.asStateFlow()
+
+    private val _salaryAdvanceRequestsNextCursor = MutableStateFlow<String?>(null)
+
+    private val _salaryAdvancePmBadgeCount = MutableStateFlow<Int?>(null)
+    val salaryAdvancePmBadgeCount: StateFlow<Int?> = _salaryAdvancePmBadgeCount.asStateFlow()
+
+    private val _salaryAdvanceListProjectFilter = MutableStateFlow("ALL")
+    val salaryAdvanceListProjectFilter: StateFlow<String> = _salaryAdvanceListProjectFilter.asStateFlow()
+
+    private val _salaryAdvanceListStateFilter = MutableStateFlow("ALL")
+    val salaryAdvanceListStateFilter: StateFlow<String> = _salaryAdvanceListStateFilter.asStateFlow()
+
+    private val _salaryAdvanceListEvidenceFilter = MutableStateFlow("ALL")
+    val salaryAdvanceListEvidenceFilter: StateFlow<String> = _salaryAdvanceListEvidenceFilter.asStateFlow()
+
+    private val _salaryAdvanceListSearch = MutableStateFlow("")
+    val salaryAdvanceListSearch: StateFlow<String> = _salaryAdvanceListSearch.asStateFlow()
+
+    private val _salaryAdvanceSelectedRequestId = MutableStateFlow<String?>(null)
+    val salaryAdvanceSelectedRequestId: StateFlow<String?> = _salaryAdvanceSelectedRequestId.asStateFlow()
+
+    private val _salaryAdvanceActiveDetail = MutableStateFlow<SalaryAdvanceRequestDetail?>(null)
+    val salaryAdvanceActiveDetail: StateFlow<SalaryAdvanceRequestDetail?> = _salaryAdvanceActiveDetail.asStateFlow()
+
+    private val _salaryAdvanceDetailLoading = MutableStateFlow(false)
+    val salaryAdvanceDetailLoading: StateFlow<Boolean> = _salaryAdvanceDetailLoading.asStateFlow()
+
+    private val _salaryAdvanceDetailError = MutableStateFlow<String?>(null)
+    val salaryAdvanceDetailError: StateFlow<String?> = _salaryAdvanceDetailError.asStateFlow()
+
+    private val _salaryAdvanceConflictBanner = MutableStateFlow<String?>(null)
+    val salaryAdvanceConflictBanner: StateFlow<String?> = _salaryAdvanceConflictBanner.asStateFlow()
+
+    private val _salaryAdvanceSelectedEvidenceVersion = MutableStateFlow<Int?>(null)
+    val salaryAdvanceSelectedEvidenceVersion: StateFlow<Int?> = _salaryAdvanceSelectedEvidenceVersion.asStateFlow()
+
+    private val _salaryAdvanceMessageDraft = MutableStateFlow("")
+    val salaryAdvanceMessageDraft: StateFlow<String> = _salaryAdvanceMessageDraft.asStateFlow()
+
+    private val _salaryAdvanceMessageSubmitting = MutableStateFlow(false)
+    val salaryAdvanceMessageSubmitting: StateFlow<Boolean> = _salaryAdvanceMessageSubmitting.asStateFlow()
+
+    private val _salaryAdvanceActionNoteDraft = MutableStateFlow("")
+    val salaryAdvanceActionNoteDraft: StateFlow<String> = _salaryAdvanceActionNoteDraft.asStateFlow()
+
+    private val _salaryAdvanceActionSubmitting = MutableStateFlow(false)
+    val salaryAdvanceActionSubmitting: StateFlow<Boolean> = _salaryAdvanceActionSubmitting.asStateFlow()
+
+    private val _salaryAdvanceEvidenceCaptionDraft = MutableStateFlow("")
+    val salaryAdvanceEvidenceCaptionDraft: StateFlow<String> = _salaryAdvanceEvidenceCaptionDraft.asStateFlow()
+
+    private val _salaryAdvanceEvidenceUploading = MutableStateFlow(false)
+    val salaryAdvanceEvidenceUploading: StateFlow<Boolean> = _salaryAdvanceEvidenceUploading.asStateFlow()
+
+    private val _salaryAdvanceEvidenceError = MutableStateFlow<String?>(null)
+    val salaryAdvanceEvidenceError: StateFlow<String?> = _salaryAdvanceEvidenceError.asStateFlow()
+
+    private val _salaryAdvanceHistoryTargetRequestId = MutableStateFlow<String?>(null)
+    val salaryAdvanceHistoryTargetRequestId: StateFlow<String?> = _salaryAdvanceHistoryTargetRequestId.asStateFlow()
+
     private val _salaryAdvanceSelectedProjectId = MutableStateFlow("")
     val salaryAdvanceSelectedProjectId: StateFlow<String> = _salaryAdvanceSelectedProjectId.asStateFlow()
 
@@ -490,10 +575,18 @@ class MiniBiViewModel internal constructor(
 
     private var salaryAdvanceWorkersFetchJob: Job? = null
     private var salaryAdvanceWorkersFetchToken: Long = 0L
+    private var salaryAdvanceRequestsFetchJob: Job? = null
+    private var salaryAdvanceRequestsFetchToken: Long = 0L
+    private var salaryAdvanceDetailFetchJob: Job? = null
+    private var salaryAdvanceDetailFetchToken: Long = 0L
     private var salaryAdvanceHistoryFetchJob: Job? = null
     private var salaryAdvanceHistoryFetchToken: Long = 0L
     private var salaryAdvanceCreateIdempotencyKey: String = SalaryAdvanceContract.newIdempotencyKey("sa-create")
     private var salaryAdvanceLastSubmittedFingerprint: String? = null
+    private var salaryAdvanceMessageIdempotencyKey: String = SalaryAdvanceContract.newIdempotencyKey("sa-msg")
+    private var salaryAdvanceActionIdempotencyKey: String = SalaryAdvanceContract.newIdempotencyKey("sa-act")
+    private var salaryAdvanceEvidenceReserveKey: String = SalaryAdvanceContract.newIdempotencyKey("sa-ev-res")
+    private var salaryAdvanceEvidenceFinalizeKey: String = SalaryAdvanceContract.newIdempotencyKey("sa-ev-fin")
 
     init {
         bootstrapSession()
@@ -505,6 +598,10 @@ class MiniBiViewModel internal constructor(
         workerFetchJob = null
         salaryAdvanceWorkersFetchJob?.cancel()
         salaryAdvanceWorkersFetchJob = null
+        salaryAdvanceRequestsFetchJob?.cancel()
+        salaryAdvanceRequestsFetchJob = null
+        salaryAdvanceDetailFetchJob?.cancel()
+        salaryAdvanceDetailFetchJob = null
         salaryAdvanceHistoryFetchJob?.cancel()
         salaryAdvanceHistoryFetchJob = null
         viewModelScope.cancel()
@@ -530,6 +627,9 @@ class MiniBiViewModel internal constructor(
     }
 
     fun navigateTo(destination: MainDestination) {
+        if (_salaryAdvanceDialogOpen.value) {
+            closeSalaryAdvanceDialog()
+        }
         _currentDestination.value = destination
         val actor = currentActor.value ?: return
         when (destination) {
@@ -3690,12 +3790,21 @@ class MiniBiViewModel internal constructor(
         ++salaryAdvanceWorkersFetchToken
         salaryAdvanceWorkersFetchJob?.cancel()
         salaryAdvanceWorkersFetchJob = null
+        ++salaryAdvanceRequestsFetchToken
+        salaryAdvanceRequestsFetchJob?.cancel()
+        salaryAdvanceRequestsFetchJob = null
+        ++salaryAdvanceDetailFetchToken
+        salaryAdvanceDetailFetchJob?.cancel()
+        salaryAdvanceDetailFetchJob = null
         ++salaryAdvanceHistoryFetchToken
         salaryAdvanceHistoryFetchJob?.cancel()
         salaryAdvanceHistoryFetchJob = null
         _salaryAdvanceContext.value = null
         _salaryAdvanceContextLoading.value = false
         _salaryAdvanceDialogOpen.value = false
+        _salaryAdvanceWorkspaceTab.value = "CREATE"
+        _salaryAdvanceWorkerEligibilityFilter.value = "ALL"
+        _salaryAdvanceWorkerPickerExpanded.value = true
         _salaryAdvanceSelectedProjectId.value = ""
         _salaryAdvanceWorkerSearch.value = ""
         _salaryAdvanceWorkers.value = emptyList()
@@ -3710,9 +3819,37 @@ class MiniBiViewModel internal constructor(
         _salaryAdvanceInitialContent.value = ""
         _salaryAdvanceCreateSubmitting.value = false
         _salaryAdvanceCreateError.value = null
+        _salaryAdvanceRequests.value = emptyList()
+        _salaryAdvanceRequestsLoading.value = false
+        _salaryAdvanceRequestsLoadingMore.value = false
+        _salaryAdvanceRequestsError.value = null
+        _salaryAdvanceRequestsHasMore.value = false
+        _salaryAdvanceRequestsNextCursor.value = null
+        _salaryAdvancePmBadgeCount.value = null
+        _salaryAdvanceListProjectFilter.value = "ALL"
+        _salaryAdvanceListStateFilter.value = "ALL"
+        _salaryAdvanceListEvidenceFilter.value = "ALL"
+        _salaryAdvanceListSearch.value = ""
+        _salaryAdvanceSelectedRequestId.value = null
+        _salaryAdvanceActiveDetail.value = null
+        _salaryAdvanceDetailLoading.value = false
+        _salaryAdvanceDetailError.value = null
+        _salaryAdvanceConflictBanner.value = null
+        _salaryAdvanceSelectedEvidenceVersion.value = null
+        _salaryAdvanceMessageDraft.value = ""
+        _salaryAdvanceMessageSubmitting.value = false
+        _salaryAdvanceActionNoteDraft.value = ""
+        _salaryAdvanceActionSubmitting.value = false
+        _salaryAdvanceEvidenceCaptionDraft.value = ""
+        _salaryAdvanceEvidenceUploading.value = false
+        _salaryAdvanceEvidenceError.value = null
         resetSalaryAdvanceHistoryState()
         salaryAdvanceCreateIdempotencyKey = SalaryAdvanceContract.newIdempotencyKey("sa-create")
         salaryAdvanceLastSubmittedFingerprint = null
+        salaryAdvanceMessageIdempotencyKey = SalaryAdvanceContract.newIdempotencyKey("sa-msg")
+        salaryAdvanceActionIdempotencyKey = SalaryAdvanceContract.newIdempotencyKey("sa-act")
+        salaryAdvanceEvidenceReserveKey = SalaryAdvanceContract.newIdempotencyKey("sa-ev-res")
+        salaryAdvanceEvidenceFinalizeKey = SalaryAdvanceContract.newIdempotencyKey("sa-ev-fin")
     }
 
     private fun resetSalaryAdvanceHistoryState() {
@@ -3720,6 +3857,7 @@ class MiniBiViewModel internal constructor(
         salaryAdvanceHistoryFetchJob?.cancel()
         salaryAdvanceHistoryFetchJob = null
         _salaryAdvanceHistoryOpen.value = false
+        _salaryAdvanceHistoryTargetRequestId.value = null
         _salaryAdvanceHistoryPeriodMode.value = "THIS_MONTH"
         _salaryAdvanceHistoryMonth.value = ""
         _salaryAdvanceHistoryFromDate.value = ""
@@ -3757,7 +3895,7 @@ class MiniBiViewModel internal constructor(
         }
     }
 
-    fun openSalaryAdvanceDialog() {
+    fun openSalaryAdvanceDialog(initialTab: String = "CREATE") {
         val ctx = _salaryAdvanceContext.value
         if (!SalaryAdvanceContract.canShowPmSalaryAdvanceEntry(ctx)) return
         val activeProjects = ctx!!.activeManagedProjects
@@ -3765,6 +3903,9 @@ class MiniBiViewModel internal constructor(
             ?: activeProjects.firstOrNull()
         val initialProjectId = defaultProject?.projectId.orEmpty()
 
+        _salaryAdvanceWorkspaceTab.value = if (initialTab == "LIST") "LIST" else "CREATE"
+        _salaryAdvanceWorkerEligibilityFilter.value = "ALL"
+        _salaryAdvanceWorkerPickerExpanded.value = true
         _salaryAdvanceSelectedProjectId.value = initialProjectId
         _salaryAdvanceWorkerSearch.value = ""
         _salaryAdvanceSelectedWorkerId.value = ""
@@ -3776,6 +3917,15 @@ class MiniBiViewModel internal constructor(
         _salaryAdvanceWorkers.value = emptyList()
         _salaryAdvanceWorkersHasMore.value = false
         _salaryAdvanceWorkersNextCursor.value = null
+        _salaryAdvanceListProjectFilter.value = if (activeProjects.size == 1) initialProjectId else "ALL"
+        _salaryAdvanceListStateFilter.value = "ALL"
+        _salaryAdvanceListEvidenceFilter.value = "ALL"
+        _salaryAdvanceListSearch.value = ""
+        _salaryAdvanceSelectedRequestId.value = null
+        _salaryAdvanceActiveDetail.value = null
+        _salaryAdvanceDetailError.value = null
+        _salaryAdvanceConflictBanner.value = null
+        _salaryAdvanceEvidenceError.value = null
         resetSalaryAdvanceHistoryState()
         salaryAdvanceCreateIdempotencyKey = SalaryAdvanceContract.newIdempotencyKey("sa-create")
         salaryAdvanceLastSubmittedFingerprint = null
@@ -3789,16 +3939,50 @@ class MiniBiViewModel internal constructor(
                 append = false
             )
         }
+        loadSalaryAdvanceRequests(append = false)
     }
 
     fun closeSalaryAdvanceDialog() {
-        if (_salaryAdvanceCreateSubmitting.value) return
+        if (
+            _salaryAdvanceCreateSubmitting.value ||
+            _salaryAdvanceMessageSubmitting.value ||
+            _salaryAdvanceActionSubmitting.value ||
+            _salaryAdvanceEvidenceUploading.value
+        ) {
+            return
+        }
         ++salaryAdvanceWorkersFetchToken
         salaryAdvanceWorkersFetchJob?.cancel()
         salaryAdvanceWorkersFetchJob = null
+        ++salaryAdvanceRequestsFetchToken
+        salaryAdvanceRequestsFetchJob?.cancel()
+        salaryAdvanceRequestsFetchJob = null
+        ++salaryAdvanceDetailFetchToken
+        salaryAdvanceDetailFetchJob?.cancel()
+        salaryAdvanceDetailFetchJob = null
         resetSalaryAdvanceHistoryState()
         _salaryAdvanceDialogOpen.value = false
         _salaryAdvanceCreateError.value = null
+    }
+
+    fun switchSalaryAdvanceWorkspaceTab(tab: String) {
+        val clean = tab.trim().uppercase(Locale.ROOT)
+        if (clean !in setOf("CREATE", "LIST", "DETAIL")) return
+        _salaryAdvanceWorkspaceTab.value = clean
+        if (clean == "LIST" && _salaryAdvanceRequests.value.isEmpty() && !_salaryAdvanceRequestsLoading.value) {
+            loadSalaryAdvanceRequests(append = false)
+        }
+    }
+
+    fun updateSalaryAdvanceWorkerEligibilityFilter(filter: String) {
+        val clean = filter.trim().uppercase(Locale.ROOT)
+        if (SalaryAdvanceContract.WORKER_PICKER_ELIGIBILITY_FILTER_OPTIONS.none { it.first == clean }) return
+        _salaryAdvanceWorkerEligibilityFilter.value = clean
+        _salaryAdvanceWorkerPickerExpanded.value = true
+    }
+
+    fun setSalaryAdvanceWorkerPickerExpanded(expanded: Boolean) {
+        _salaryAdvanceWorkerPickerExpanded.value = expanded
     }
 
     fun selectSalaryAdvanceProject(projectId: String) {
@@ -3812,6 +3996,7 @@ class MiniBiViewModel internal constructor(
         resetSalaryAdvanceHistoryState()
         _salaryAdvanceSelectedProjectId.value = projectId
         _salaryAdvanceSelectedWorkerId.value = ""
+        _salaryAdvanceWorkerPickerExpanded.value = true
         _salaryAdvanceCreateError.value = null
         _salaryAdvanceWorkers.value = emptyList()
         _salaryAdvanceWorkersHasMore.value = false
@@ -3828,6 +4013,7 @@ class MiniBiViewModel internal constructor(
         if (_salaryAdvanceCreateSubmitting.value) return
         val clean = search.replace("\n", " ").replace("\r", " ").take(120)
         _salaryAdvanceWorkerSearch.value = clean
+        _salaryAdvanceWorkerPickerExpanded.value = true
         val projectId = _salaryAdvanceSelectedProjectId.value
         if (projectId.isNotBlank()) {
             loadSalaryAdvanceProjectWorkers(
@@ -3889,12 +4075,17 @@ class MiniBiViewModel internal constructor(
                     val existingIds = _salaryAdvanceWorkers.value.map { it.workerEntryId }.toHashSet()
                     _salaryAdvanceWorkers.value + filtered.filterNot { it.workerEntryId in existingIds }
                 } else {
-                    filtered
+                    // Preserve currently selected worker in the list if searching narrowed server results
+                    val selectedId = _salaryAdvanceSelectedWorkerId.value
+                    val preservedSelected = if (selectedId.isNotBlank() && filtered.none { it.workerEntryId == selectedId }) {
+                        _salaryAdvanceWorkers.value.firstOrNull { it.workerEntryId == selectedId }
+                    } else null
+                    if (preservedSelected != null) listOf(preservedSelected) + filtered else filtered
                 }
                 _salaryAdvanceWorkers.value = combined
                 _salaryAdvanceWorkersHasMore.value = res.hasMore
                 _salaryAdvanceWorkersNextCursor.value = res.nextCursor
-                if (!isAppend) {
+                if (!isAppend && search.trim().isEmpty()) {
                     val curSelected = _salaryAdvanceSelectedWorkerId.value
                     if (curSelected.isNotBlank() && combined.none { it.workerEntryId == curSelected }) {
                         _salaryAdvanceSelectedWorkerId.value = ""
@@ -3924,6 +4115,10 @@ class MiniBiViewModel internal constructor(
         }
         _salaryAdvanceSelectedWorkerId.value = workerEntryId
         _salaryAdvanceCreateError.value = null
+        val picked = _salaryAdvanceWorkers.value.firstOrNull { it.workerEntryId == workerEntryId }
+        if (picked != null && SalaryAdvanceContract.describeWorkerEligibility(picked).isEligible) {
+            _salaryAdvanceWorkerPickerExpanded.value = false
+        }
     }
 
     fun updateSalaryAdvancePaymentMethod(method: String) {
@@ -3989,10 +4184,16 @@ class MiniBiViewModel internal constructor(
                 salaryAdvanceCreateIdempotencyKey = SalaryAdvanceContract.newIdempotencyKey("sa-create")
                 salaryAdvanceLastSubmittedFingerprint = null
                 resetSalaryAdvanceHistoryState()
-                _salaryAdvanceDialogOpen.value = false
+                _salaryAdvanceSelectedWorkerId.value = ""
+                _salaryAdvancePaymentMethod.value = ""
+                _salaryAdvanceAmountRaw.value = ""
+                _salaryAdvanceInitialContent.value = ""
+                _salaryAdvanceWorkerPickerExpanded.value = true
                 showBanner(
                     "Đã tạo yêu cầu ứng lương cho ${created.workerDisplayName} (${SalaryAdvanceContract.formatVndAmount(created.requestedAmountVnd)})."
                 )
+                loadSalaryAdvanceRequests(append = false)
+                openSalaryAdvanceRequestDetail(created.requestId)
                 onCreatedSuccess?.invoke()
             } catch (e: BackendApiException) {
                 if (SalaryAdvanceContract.isConflictError(e.statusCode, e.backendCode)) {
@@ -4010,6 +4211,449 @@ class MiniBiViewModel internal constructor(
         }
     }
 
+    // -------------------------------------------------------------------------
+    // Project Request List & Filtering (PM Queue)
+    // -------------------------------------------------------------------------
+
+    fun refreshSalaryAdvanceRequests() {
+        loadSalaryAdvanceRequests(append = false)
+    }
+
+    fun updateSalaryAdvanceListProjectFilter(projectFilter: String) {
+        val clean = projectFilter.trim().ifEmpty { "ALL" }
+        if (_salaryAdvanceListProjectFilter.value == clean) return
+        _salaryAdvanceListProjectFilter.value = clean
+        loadSalaryAdvanceRequests(append = false)
+    }
+
+    fun updateSalaryAdvanceListStateFilter(stateFilter: String) {
+        val clean = stateFilter.trim().uppercase(Locale.ROOT).ifEmpty { "ALL" }
+        if (_salaryAdvanceListStateFilter.value == clean) return
+        _salaryAdvanceListStateFilter.value = clean
+        loadSalaryAdvanceRequests(append = false)
+    }
+
+    fun updateSalaryAdvanceListEvidenceFilter(evidenceFilter: String) {
+        val clean = evidenceFilter.trim().uppercase(Locale.ROOT).ifEmpty { "ALL" }
+        if (_salaryAdvanceListEvidenceFilter.value == clean) return
+        _salaryAdvanceListEvidenceFilter.value = clean
+        loadSalaryAdvanceRequests(append = false)
+    }
+
+    fun updateSalaryAdvanceListSearch(search: String) {
+        val clean = search.replace("\n", " ").replace("\r", " ").take(120)
+        _salaryAdvanceListSearch.value = clean
+        loadSalaryAdvanceRequests(append = false)
+    }
+
+    fun loadMoreSalaryAdvanceRequests() {
+        val cursor = _salaryAdvanceRequestsNextCursor.value
+        if (
+            cursor.isNullOrBlank() ||
+            !_salaryAdvanceRequestsHasMore.value ||
+            _salaryAdvanceRequestsLoading.value ||
+            _salaryAdvanceRequestsLoadingMore.value
+        ) {
+            return
+        }
+        loadSalaryAdvanceRequests(append = true, cursor = cursor)
+    }
+
+    private fun loadSalaryAdvanceRequests(
+        append: Boolean,
+        cursor: String? = null
+    ) {
+        val token = ++salaryAdvanceRequestsFetchToken
+        salaryAdvanceRequestsFetchJob?.cancel()
+        val isAppend = append && !cursor.isNullOrBlank()
+        if (isAppend) {
+            _salaryAdvanceRequestsLoadingMore.value = true
+        } else {
+            _salaryAdvanceRequestsLoading.value = true
+            _salaryAdvanceRequestsError.value = null
+        }
+
+        val projectFilter = _salaryAdvanceListProjectFilter.value
+        val stateFilter = _salaryAdvanceListStateFilter.value
+        val evidenceFilter = _salaryAdvanceListEvidenceFilter.value
+        val search = _salaryAdvanceListSearch.value
+
+        salaryAdvanceRequestsFetchJob = viewModelScope.launch {
+            try {
+                val res = repository.salaryAdvanceService.listRequests(
+                    queue = "PM",
+                    projectFilter = projectFilter,
+                    requestStateFilter = stateFilter,
+                    evidenceStateFilter = evidenceFilter,
+                    search = search.trim().ifEmpty { null },
+                    cursor = if (isAppend) cursor else null,
+                    pageSize = 25,
+                    includeBadge = true
+                )
+                if (token != salaryAdvanceRequestsFetchToken) return@launch
+                val combined = if (isAppend) {
+                    val existingIds = _salaryAdvanceRequests.value.map { it.requestId }.toHashSet()
+                    _salaryAdvanceRequests.value + res.requests.filterNot { it.requestId in existingIds }
+                } else {
+                    res.requests
+                }
+                _salaryAdvanceRequests.value = combined
+                _salaryAdvanceRequestsHasMore.value = res.hasMore
+                _salaryAdvanceRequestsNextCursor.value = res.nextCursor
+                if (res.badgeCount != null) {
+                    _salaryAdvancePmBadgeCount.value = res.badgeCount
+                }
+            } catch (e: BackendApiException) {
+                if (token != salaryAdvanceRequestsFetchToken) return@launch
+                _salaryAdvanceRequestsError.value = e.message
+            } catch (e: Exception) {
+                e.rethrowIfCancelled()
+                if (token != salaryAdvanceRequestsFetchToken) return@launch
+                _salaryAdvanceRequestsError.value =
+                    SalaryAdvanceContract.errorMessageForCode("SALARY_ADVANCE_UNAVAILABLE")
+            } finally {
+                if (token == salaryAdvanceRequestsFetchToken) {
+                    _salaryAdvanceRequestsLoading.value = false
+                    _salaryAdvanceRequestsLoadingMore.value = false
+                }
+            }
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Request Detail, Message Exchange, Transition Actions & Evidence Upload
+    // -------------------------------------------------------------------------
+
+    fun openSalaryAdvanceRequestDetail(requestId: String) {
+        val cleanId = requestId.trim()
+        if (cleanId.isEmpty()) return
+        _salaryAdvanceSelectedRequestId.value = cleanId
+        _salaryAdvanceWorkspaceTab.value = "DETAIL"
+        _salaryAdvanceDetailError.value = null
+        _salaryAdvanceConflictBanner.value = null
+        _salaryAdvanceEvidenceError.value = null
+        _salaryAdvanceMessageDraft.value = ""
+        _salaryAdvanceActionNoteDraft.value = ""
+        _salaryAdvanceEvidenceCaptionDraft.value = ""
+        _salaryAdvanceSelectedEvidenceVersion.value = null
+        salaryAdvanceMessageIdempotencyKey = SalaryAdvanceContract.newIdempotencyKey("sa-msg")
+        salaryAdvanceActionIdempotencyKey = SalaryAdvanceContract.newIdempotencyKey("sa-act")
+        salaryAdvanceEvidenceReserveKey = SalaryAdvanceContract.newIdempotencyKey("sa-ev-res")
+        salaryAdvanceEvidenceFinalizeKey = SalaryAdvanceContract.newIdempotencyKey("sa-ev-fin")
+        loadSalaryAdvanceRequestDetail(cleanId)
+    }
+
+    fun backFromSalaryAdvanceDetailToList() {
+        _salaryAdvanceWorkspaceTab.value = "LIST"
+        _salaryAdvanceConflictBanner.value = null
+        _salaryAdvanceDetailError.value = null
+        _salaryAdvanceEvidenceError.value = null
+    }
+
+    fun refreshSalaryAdvanceActiveDetail() {
+        val reqId = _salaryAdvanceSelectedRequestId.value ?: return
+        loadSalaryAdvanceRequestDetail(reqId)
+    }
+
+    private fun loadSalaryAdvanceRequestDetail(requestId: String) {
+        val token = ++salaryAdvanceDetailFetchToken
+        salaryAdvanceDetailFetchJob?.cancel()
+        _salaryAdvanceDetailLoading.value = true
+        _salaryAdvanceDetailError.value = null
+
+        salaryAdvanceDetailFetchJob = viewModelScope.launch {
+            try {
+                val detail = repository.salaryAdvanceService.getRequestDetail(requestId)
+                if (token != salaryAdvanceDetailFetchToken) return@launch
+                applyUpdatedSalaryAdvanceDetail(detail)
+            } catch (e: BackendApiException) {
+                if (token != salaryAdvanceDetailFetchToken) return@launch
+                _salaryAdvanceDetailError.value = e.message
+            } catch (e: Exception) {
+                e.rethrowIfCancelled()
+                if (token != salaryAdvanceDetailFetchToken) return@launch
+                _salaryAdvanceDetailError.value =
+                    SalaryAdvanceContract.errorMessageForCode("SALARY_ADVANCE_UNAVAILABLE")
+            } finally {
+                if (token == salaryAdvanceDetailFetchToken) {
+                    _salaryAdvanceDetailLoading.value = false
+                }
+            }
+        }
+    }
+
+    private fun applyUpdatedSalaryAdvanceDetail(detail: SalaryAdvanceRequestDetail) {
+        _salaryAdvanceActiveDetail.value = detail
+        val currentEvVersion = detail.request.currentEvidence?.evidenceVersion
+            ?: detail.evidenceVersions.firstOrNull()?.evidenceVersion
+        _salaryAdvanceSelectedEvidenceVersion.value = currentEvVersion
+        val currentList = _salaryAdvanceRequests.value
+        val existingIdx = currentList.indexOfFirst { it.requestId == detail.request.requestId }
+        if (existingIdx >= 0) {
+            val mutable = currentList.toMutableList()
+            mutable[existingIdx] = detail.request
+            _salaryAdvanceRequests.value = mutable
+        } else {
+            _salaryAdvanceRequests.value = listOf(detail.request) + currentList
+        }
+    }
+
+    fun selectSalaryAdvanceEvidenceVersion(version: Int?) {
+        _salaryAdvanceSelectedEvidenceVersion.value = version
+    }
+
+    fun updateSalaryAdvanceMessageDraft(text: String) {
+        if (_salaryAdvanceMessageSubmitting.value) return
+        _salaryAdvanceMessageDraft.value = text.take(2000)
+        _salaryAdvanceDetailError.value = null
+    }
+
+    fun postSalaryAdvanceMessage() {
+        if (_salaryAdvanceMessageSubmitting.value) return
+        val detail = _salaryAdvanceActiveDetail.value ?: return
+        if (!detail.request.allowedActions.canPostMessage) return
+        val cleanText = _salaryAdvanceMessageDraft.value.trim()
+        if (cleanText.isEmpty()) {
+            _salaryAdvanceDetailError.value = "Vui lòng nhập nội dung trao đổi."
+            return
+        }
+        val reqId = detail.request.requestId
+        val expectedVersion = detail.request.version
+        val key = salaryAdvanceMessageIdempotencyKey
+
+        _salaryAdvanceDetailError.value = null
+        _salaryAdvanceConflictBanner.value = null
+        _salaryAdvanceMessageSubmitting.value = true
+
+        viewModelScope.launch {
+            try {
+                val updated = repository.salaryAdvanceService.postMessage(
+                    requestId = reqId,
+                    expectedVersion = expectedVersion,
+                    messageText = cleanText,
+                    idempotencyKey = key
+                )
+                salaryAdvanceMessageIdempotencyKey = SalaryAdvanceContract.newIdempotencyKey("sa-msg")
+                _salaryAdvanceMessageDraft.value = ""
+                applyUpdatedSalaryAdvanceDetail(updated)
+                showBanner("Đã gửi tin nhắn trao đổi.")
+            } catch (e: BackendApiException) {
+                if (SalaryAdvanceContract.isConflictError(e.statusCode, e.backendCode)) {
+                    salaryAdvanceMessageIdempotencyKey = SalaryAdvanceContract.newIdempotencyKey("sa-msg")
+                    _salaryAdvanceConflictBanner.value = e.message
+                    loadSalaryAdvanceRequestDetail(reqId)
+                    loadSalaryAdvanceRequests(append = false)
+                } else {
+                    _salaryAdvanceDetailError.value = e.message
+                }
+            } catch (e: Exception) {
+                e.rethrowIfCancelled()
+                _salaryAdvanceDetailError.value =
+                    SalaryAdvanceContract.errorMessageForCode("SALARY_ADVANCE_UNAVAILABLE")
+            } finally {
+                _salaryAdvanceMessageSubmitting.value = false
+            }
+        }
+    }
+
+    fun updateSalaryAdvanceActionNoteDraft(text: String) {
+        if (_salaryAdvanceActionSubmitting.value) return
+        _salaryAdvanceActionNoteDraft.value = text.take(2000)
+        _salaryAdvanceDetailError.value = null
+    }
+
+    fun submitSalaryAdvanceTransitionAction(action: String, noteOverride: String? = null) {
+        if (_salaryAdvanceActionSubmitting.value) return
+        val detail = _salaryAdvanceActiveDetail.value ?: return
+        val cleanAction = action.trim().uppercase(Locale.ROOT)
+        val note = (noteOverride ?: _salaryAdvanceActionNoteDraft.value).trim()
+
+        when (cleanAction) {
+            "PROVIDE_INFO" -> {
+                if (!detail.request.allowedActions.canProvideInfo) return
+                if (note.isEmpty()) {
+                    _salaryAdvanceDetailError.value =
+                        "Vui lòng nhập nội dung phản hồi bổ sung thông tin cho Kế toán."
+                    return
+                }
+            }
+            "WITHDRAW" -> {
+                if (!detail.request.allowedActions.canWithdraw) return
+            }
+            else -> return
+        }
+
+        val reqId = detail.request.requestId
+        val expectedVersion = detail.request.version
+        val key = salaryAdvanceActionIdempotencyKey
+
+        _salaryAdvanceDetailError.value = null
+        _salaryAdvanceConflictBanner.value = null
+        _salaryAdvanceActionSubmitting.value = true
+
+        viewModelScope.launch {
+            try {
+                val updated = repository.salaryAdvanceService.submitTransitionAction(
+                    requestId = reqId,
+                    action = cleanAction,
+                    expectedVersion = expectedVersion,
+                    messageText = note.ifEmpty { null },
+                    idempotencyKey = key
+                )
+                salaryAdvanceActionIdempotencyKey = SalaryAdvanceContract.newIdempotencyKey("sa-act")
+                _salaryAdvanceActionNoteDraft.value = ""
+                applyUpdatedSalaryAdvanceDetail(updated)
+                loadSalaryAdvanceRequests(append = false)
+                showBanner(
+                    if (cleanAction == "WITHDRAW") {
+                        "Đã rút yêu cầu ứng lương."
+                    } else {
+                        "Đã gửi bổ sung thông tin cho Kế toán."
+                    }
+                )
+            } catch (e: BackendApiException) {
+                if (SalaryAdvanceContract.isConflictError(e.statusCode, e.backendCode)) {
+                    salaryAdvanceActionIdempotencyKey = SalaryAdvanceContract.newIdempotencyKey("sa-act")
+                    _salaryAdvanceConflictBanner.value = e.message
+                    loadSalaryAdvanceRequestDetail(reqId)
+                    loadSalaryAdvanceRequests(append = false)
+                } else {
+                    _salaryAdvanceDetailError.value = e.message
+                }
+            } catch (e: Exception) {
+                e.rethrowIfCancelled()
+                _salaryAdvanceDetailError.value =
+                    SalaryAdvanceContract.errorMessageForCode("SALARY_ADVANCE_UNAVAILABLE")
+            } finally {
+                _salaryAdvanceActionSubmitting.value = false
+            }
+        }
+    }
+
+    fun updateSalaryAdvanceEvidenceCaptionDraft(caption: String) {
+        if (_salaryAdvanceEvidenceUploading.value) return
+        _salaryAdvanceEvidenceCaptionDraft.value = caption.take(1000)
+        _salaryAdvanceEvidenceError.value = null
+    }
+
+    fun uploadSalaryAdvanceEvidenceUri(uri: Uri) {
+        if (_salaryAdvanceEvidenceUploading.value) return
+        val detail = _salaryAdvanceActiveDetail.value ?: return
+        if (!detail.request.allowedActions.canUploadEvidence) return
+
+        _salaryAdvanceEvidenceError.value = null
+        _salaryAdvanceConflictBanner.value = null
+        _salaryAdvanceEvidenceUploading.value = true
+
+        viewModelScope.launch {
+            var stagedRef: StagedDocumentRef? = null
+            try {
+                val prepared = repository.directEntryService.prepareLocalAttachmentUri(
+                    documentType = "WORKER_PORTRAIT",
+                    uri = uri
+                )
+                stagedRef = prepared
+                val localPath = prepared.localFilePath ?: throw BackendApiException(
+                    kind = BackendFailureKind.INVALID_REQUEST,
+                    statusCode = 400,
+                    backendCode = "FILE_READ_FAILED",
+                    message = "Không thể đọc tệp ảnh chứng từ đã chọn."
+                )
+                val bytes = withContext(Dispatchers.IO) {
+                    File(localPath).readBytes()
+                }
+                performSalaryAdvanceEvidenceUpload(
+                    requestId = detail.request.requestId,
+                    expectedVersion = detail.request.version,
+                    imageBytes = bytes,
+                    mimeType = prepared.mimeType,
+                    captionNote = _salaryAdvanceEvidenceCaptionDraft.value
+                )
+            } catch (e: BackendApiException) {
+                _salaryAdvanceEvidenceError.value = e.message
+            } catch (e: Exception) {
+                e.rethrowIfCancelled()
+                _salaryAdvanceEvidenceError.value =
+                    e.message ?: SalaryAdvanceContract.errorMessageForCode("SALARY_ADVANCE_UNAVAILABLE")
+            } finally {
+                if (stagedRef != null) {
+                    runCatching { repository.directEntryService.deleteLocalAttachmentRef(stagedRef) }
+                }
+                _salaryAdvanceEvidenceUploading.value = false
+            }
+        }
+    }
+
+    fun uploadSalaryAdvanceEvidenceBytes(
+        imageBytes: ByteArray,
+        mimeType: String = "image/jpeg",
+        captionNote: String? = _salaryAdvanceEvidenceCaptionDraft.value
+    ) {
+        if (_salaryAdvanceEvidenceUploading.value) return
+        val detail = _salaryAdvanceActiveDetail.value ?: return
+        if (!detail.request.allowedActions.canUploadEvidence) return
+
+        _salaryAdvanceEvidenceError.value = null
+        _salaryAdvanceConflictBanner.value = null
+        _salaryAdvanceEvidenceUploading.value = true
+
+        viewModelScope.launch {
+            try {
+                performSalaryAdvanceEvidenceUpload(
+                    requestId = detail.request.requestId,
+                    expectedVersion = detail.request.version,
+                    imageBytes = imageBytes,
+                    mimeType = mimeType,
+                    captionNote = captionNote
+                )
+            } finally {
+                _salaryAdvanceEvidenceUploading.value = false
+            }
+        }
+    }
+
+    private suspend fun performSalaryAdvanceEvidenceUpload(
+        requestId: String,
+        expectedVersion: Int,
+        imageBytes: ByteArray,
+        mimeType: String,
+        captionNote: String?
+    ) {
+        try {
+            val updated = repository.salaryAdvanceService.uploadEvidenceBytes(
+                requestId = requestId,
+                expectedVersion = expectedVersion,
+                imageBytes = imageBytes,
+                mimeType = mimeType,
+                captionNote = captionNote,
+                reserveIdempotencyKey = salaryAdvanceEvidenceReserveKey,
+                finalizeIdempotencyKey = salaryAdvanceEvidenceFinalizeKey
+            )
+            salaryAdvanceEvidenceReserveKey = SalaryAdvanceContract.newIdempotencyKey("sa-ev-res")
+            salaryAdvanceEvidenceFinalizeKey = SalaryAdvanceContract.newIdempotencyKey("sa-ev-fin")
+            _salaryAdvanceEvidenceCaptionDraft.value = ""
+            applyUpdatedSalaryAdvanceDetail(updated)
+            loadSalaryAdvanceRequests(append = false)
+            showBanner("Đã tải lên ảnh chứng từ nhận tiền thành công.")
+        } catch (e: BackendApiException) {
+            salaryAdvanceEvidenceReserveKey = SalaryAdvanceContract.newIdempotencyKey("sa-ev-res")
+            salaryAdvanceEvidenceFinalizeKey = SalaryAdvanceContract.newIdempotencyKey("sa-ev-fin")
+            if (SalaryAdvanceContract.isConflictError(e.statusCode, e.backendCode)) {
+                _salaryAdvanceConflictBanner.value = e.message
+                loadSalaryAdvanceRequestDetail(requestId)
+                loadSalaryAdvanceRequests(append = false)
+            } else {
+                _salaryAdvanceEvidenceError.value = e.message
+            }
+        } catch (e: Exception) {
+            e.rethrowIfCancelled()
+            salaryAdvanceEvidenceReserveKey = SalaryAdvanceContract.newIdempotencyKey("sa-ev-res")
+            salaryAdvanceEvidenceFinalizeKey = SalaryAdvanceContract.newIdempotencyKey("sa-ev-fin")
+            _salaryAdvanceEvidenceError.value =
+                SalaryAdvanceContract.errorMessageForCode("SALARY_ADVANCE_UNAVAILABLE")
+        }
+    }
+
     fun openSalaryAdvanceWorkerHistory() {
         val projectId = _salaryAdvanceSelectedProjectId.value
         val workerId = _salaryAdvanceSelectedWorkerId.value
@@ -4023,6 +4667,7 @@ class MiniBiViewModel internal constructor(
         val defaultTo = selectedWorker.advance30dSummary?.windowToDate
             ?: authDate.ifBlank { "$defaultMonth-30" }
 
+        _salaryAdvanceHistoryTargetRequestId.value = null
         _salaryAdvanceHistoryPeriodMode.value = "THIS_MONTH"
         _salaryAdvanceHistoryMonth.value = defaultMonth
         _salaryAdvanceHistoryFromDate.value = defaultFrom
@@ -4035,8 +4680,45 @@ class MiniBiViewModel internal constructor(
         _salaryAdvanceHistoryOpen.value = true
 
         loadSalaryAdvanceWorkerHistoryPage(
+            requestId = null,
             projectId = projectId,
             workerEntryId = selectedWorker.workerEntryId,
+            periodMode = "THIS_MONTH",
+            month = null,
+            fromDate = null,
+            toDate = null,
+            cursor = null,
+            append = false
+        )
+    }
+
+    fun openSalaryAdvanceRequestWorkerHistory(requestId: String) {
+        val cleanId = requestId.trim()
+        if (cleanId.isEmpty()) return
+        val detail = _salaryAdvanceActiveDetail.value
+        val authDate = _salaryAdvanceContext.value?.authorizationDate.orEmpty()
+        val defaultMonth = if (authDate.length >= 7) authDate.substring(0, 7) else "2026-10"
+        val defaultFrom = detail?.workerAdvance30dSummary?.windowFromDate
+            ?: "$defaultMonth-01"
+        val defaultTo = detail?.workerAdvance30dSummary?.windowToDate
+            ?: authDate.ifBlank { "$defaultMonth-30" }
+
+        _salaryAdvanceHistoryTargetRequestId.value = cleanId
+        _salaryAdvanceHistoryPeriodMode.value = "THIS_MONTH"
+        _salaryAdvanceHistoryMonth.value = defaultMonth
+        _salaryAdvanceHistoryFromDate.value = defaultFrom
+        _salaryAdvanceHistoryToDate.value = defaultTo
+        _salaryAdvanceHistoryError.value = null
+        _salaryAdvanceHistoryResponse.value = null
+        _salaryAdvanceHistoryItems.value = emptyList()
+        _salaryAdvanceHistoryHasMore.value = false
+        _salaryAdvanceHistoryNextCursor.value = null
+        _salaryAdvanceHistoryOpen.value = true
+
+        loadSalaryAdvanceWorkerHistoryPage(
+            requestId = cleanId,
+            projectId = "",
+            workerEntryId = "",
             periodMode = "THIS_MONTH",
             month = null,
             fromDate = null,
@@ -4051,6 +4733,7 @@ class MiniBiViewModel internal constructor(
         salaryAdvanceHistoryFetchJob?.cancel()
         salaryAdvanceHistoryFetchJob = null
         _salaryAdvanceHistoryOpen.value = false
+        _salaryAdvanceHistoryTargetRequestId.value = null
         _salaryAdvanceHistoryLoading.value = false
         _salaryAdvanceHistoryLoadingMore.value = false
     }
@@ -4061,13 +4744,15 @@ class MiniBiViewModel internal constructor(
         _salaryAdvanceHistoryPeriodMode.value = cleanMode
         _salaryAdvanceHistoryError.value = null
 
+        val targetRequestId = _salaryAdvanceHistoryTargetRequestId.value
         val projectId = _salaryAdvanceSelectedProjectId.value
         val workerId = _salaryAdvanceSelectedWorkerId.value
-        if (projectId.isBlank() || workerId.isBlank()) return
+        if (targetRequestId.isNullOrBlank() && (projectId.isBlank() || workerId.isBlank())) return
 
         when (cleanMode) {
             "THIS_MONTH", "LAST_30_DAYS", "ALL" -> {
                 loadSalaryAdvanceWorkerHistoryPage(
+                    requestId = targetRequestId,
                     projectId = projectId,
                     workerEntryId = workerId,
                     periodMode = cleanMode,
@@ -4082,6 +4767,7 @@ class MiniBiViewModel internal constructor(
                 val normalizedMonth = SalaryAdvanceContract.normalizeIsoMonthInput(_salaryAdvanceHistoryMonth.value)
                 if (normalizedMonth != null) {
                     loadSalaryAdvanceWorkerHistoryPage(
+                        requestId = targetRequestId,
                         projectId = projectId,
                         workerEntryId = workerId,
                         periodMode = "MONTH",
@@ -4098,6 +4784,7 @@ class MiniBiViewModel internal constructor(
                 val normalizedTo = SalaryAdvanceContract.normalizeIsoDateInput(_salaryAdvanceHistoryToDate.value)
                 if (normalizedFrom != null && normalizedTo != null && normalizedFrom <= normalizedTo) {
                     loadSalaryAdvanceWorkerHistoryPage(
+                        requestId = targetRequestId,
                         projectId = projectId,
                         workerEntryId = workerId,
                         periodMode = "CUSTOM_RANGE",
@@ -4122,10 +4809,12 @@ class MiniBiViewModel internal constructor(
             _salaryAdvanceHistoryError.value = "Vui lòng chọn tháng hợp lệ (YYYY-MM)."
             return
         }
+        val targetRequestId = _salaryAdvanceHistoryTargetRequestId.value
         val projectId = _salaryAdvanceSelectedProjectId.value
         val workerId = _salaryAdvanceSelectedWorkerId.value
-        if (projectId.isBlank() || workerId.isBlank()) return
+        if (targetRequestId.isNullOrBlank() && (projectId.isBlank() || workerId.isBlank())) return
         loadSalaryAdvanceWorkerHistoryPage(
+            requestId = targetRequestId,
             projectId = projectId,
             workerEntryId = workerId,
             periodMode = "MONTH",
@@ -4155,10 +4844,12 @@ class MiniBiViewModel internal constructor(
             return
         }
         _salaryAdvanceHistoryError.value = null
+        val targetRequestId = _salaryAdvanceHistoryTargetRequestId.value
         val projectId = _salaryAdvanceSelectedProjectId.value
         val workerId = _salaryAdvanceSelectedWorkerId.value
-        if (projectId.isBlank() || workerId.isBlank()) return
+        if (targetRequestId.isNullOrBlank() && (projectId.isBlank() || workerId.isBlank())) return
         loadSalaryAdvanceWorkerHistoryPage(
+            requestId = targetRequestId,
             projectId = projectId,
             workerEntryId = workerId,
             periodMode = "CUSTOM_RANGE",
@@ -4171,13 +4862,13 @@ class MiniBiViewModel internal constructor(
     }
 
     fun loadMoreSalaryAdvanceWorkerHistory() {
+        val targetRequestId = _salaryAdvanceHistoryTargetRequestId.value
         val projectId = _salaryAdvanceSelectedProjectId.value
         val workerId = _salaryAdvanceSelectedWorkerId.value
         val cursor = _salaryAdvanceHistoryNextCursor.value
         val mode = _salaryAdvanceHistoryPeriodMode.value
         if (
-            projectId.isBlank() ||
-            workerId.isBlank() ||
+            (targetRequestId.isNullOrBlank() && (projectId.isBlank() || workerId.isBlank())) ||
             cursor.isNullOrBlank() ||
             !_salaryAdvanceHistoryHasMore.value ||
             _salaryAdvanceHistoryLoading.value ||
@@ -4196,6 +4887,7 @@ class MiniBiViewModel internal constructor(
         } else null
 
         loadSalaryAdvanceWorkerHistoryPage(
+            requestId = targetRequestId,
             projectId = projectId,
             workerEntryId = workerId,
             periodMode = mode,
@@ -4208,6 +4900,7 @@ class MiniBiViewModel internal constructor(
     }
 
     private fun loadSalaryAdvanceWorkerHistoryPage(
+        requestId: String?,
         projectId: String,
         workerEntryId: String,
         periodMode: String,
@@ -4229,16 +4922,28 @@ class MiniBiViewModel internal constructor(
 
         salaryAdvanceHistoryFetchJob = viewModelScope.launch {
             try {
-                val res = repository.salaryAdvanceService.listProjectWorkerHistory(
-                    projectId = projectId,
-                    workerEntryId = workerEntryId,
-                    periodMode = periodMode,
-                    month = month,
-                    fromDate = fromDate,
-                    toDate = toDate,
-                    cursor = if (isAppend) cursor else null,
-                    pageSize = 20
-                )
+                val res = if (!requestId.isNullOrBlank()) {
+                    repository.salaryAdvanceService.listRequestWorkerHistory(
+                        requestId = requestId,
+                        periodMode = periodMode,
+                        month = month,
+                        fromDate = fromDate,
+                        toDate = toDate,
+                        cursor = if (isAppend) cursor else null,
+                        pageSize = 20
+                    )
+                } else {
+                    repository.salaryAdvanceService.listProjectWorkerHistory(
+                        projectId = projectId,
+                        workerEntryId = workerEntryId,
+                        periodMode = periodMode,
+                        month = month,
+                        fromDate = fromDate,
+                        toDate = toDate,
+                        cursor = if (isAppend) cursor else null,
+                        pageSize = 20
+                    )
+                }
                 if (token != salaryAdvanceHistoryFetchToken) return@launch
                 _salaryAdvanceHistoryResponse.value = res
                 _salaryAdvanceHistoryItems.value = if (isAppend) {
