@@ -3308,4 +3308,150 @@ class WorkerUiAuthorizationRobolectricTest {
         assertEquals("Nhóm đang cao điểm tuyển dụng", decisionPayload.getString("reason"))
         assertTrue(decisionPayload.getString("idempotency_key").startsWith("leave-decision-"))
     }
+
+    @Test
+    @Config(qualifiers = "w480dp-h2400dp")
+    fun `direct edit dialog supports all 4 groups, per-file error retry without re-submitting profile, and document_upload permission gating`() {
+        val baseWorker = sampleWorker(
+            entryId = "aaaaaaaa-1111-4222-8333-444444444444",
+            canView = true,
+            canProposeChange = false,
+            canDirectEdit = true
+        )
+        val detail = WorkerEntryDetail(
+            entryId = baseWorker.entryId,
+            submissionId = "bbbbbbbb-1111-4222-8333-444444444444",
+            version = 4,
+            projectId = "PRJ_01",
+            firstWorkDate = "2026-10-01",
+            employeeCode = "hrp-1026-000101",
+            recruiterId = "cccccccc-1111-4222-8333-444444444444",
+            teamId = "TEAM_01",
+            providerType = "hrp",
+            laborType = "TEMPORARY",
+            laborTypeDisplay = "Thời vụ",
+            displayName = "Phạm Văn Gốc",
+            gender = "MALE",
+            dateOfBirth = "1998-05-12",
+            nationalId = "001098012345",
+            nationalIdIssuedAt = "2022-01-15",
+            nationalIdIssuedPlace = "Cục CS QLHC",
+            address = "Hà Nội",
+            phone = "0912345678",
+            generalNote = null,
+            paymentState = "provided",
+            bankId = "VCB",
+            bankName = "Vietcombank",
+            rawBankName = "Vietcombank",
+            accountNumber = "0011001234567",
+            accountHolderName = "PHAM VAN GOC",
+            employmentStatus = "ON",
+            employmentEffectiveDate = "2026-10-01",
+            employmentStatusVersion = 1,
+            employmentLeaveReason = null,
+            portraitPreviewPath = null,
+            portraitDownloadPath = null,
+            documents = emptyList(),
+            workerDetailsStates = mapOf(
+                "gender" to "provided",
+                "date_of_birth" to "provided",
+                "national_id" to "provided",
+                "national_id_issued_at" to "provided",
+                "national_id_issued_place" to "provided",
+                "address" to "provided",
+                "phone" to "provided"
+            ),
+            fileVersions = mapOf("WORKER_PORTRAIT" to 1)
+        )
+
+        var capturedVersion = -1
+        var capturedPatch: JSONObject? = null
+        var retriedDocType: String? = null
+        val canUploadState = androidx.compose.runtime.mutableStateOf(true)
+        val profileSavedBannerState = androidx.compose.runtime.mutableStateOf<String?>(
+            "Thông tin hồ sơ (cá nhân, công việc, ngân hàng): Đã lưu thành công."
+        )
+        val fileStatusesState = androidx.compose.runtime.mutableStateOf(
+            mapOf(
+                "WORKER_PORTRAIT" to com.example.data.DirectEditFileStatus(
+                    documentType = "WORKER_PORTRAIT",
+                    state = com.example.data.DirectEditFileState.SAVED,
+                    message = "Ảnh chân dung NLĐ: Đã tải lên và lưu thành công (v2).",
+                    documentVersion = 2
+                ),
+                "CCCD_BACK" to com.example.data.DirectEditFileStatus(
+                    documentType = "CCCD_BACK",
+                    state = com.example.data.DirectEditFileState.ERROR,
+                    message = "CCCD mặt sau: Kho lưu trữ tạm thời gián đoạn. Vui lòng bấm Thử lại tệp này.",
+                    stagedRef = com.example.data.StagedDocumentRef(
+                        stageId = "",
+                        documentType = "CCCD_BACK",
+                        fileName = "back.jpg",
+                        mimeType = "image/jpeg",
+                        sizeBytes = 2048L,
+                        localFilePath = "/tmp/mock_back.jpg"
+                    )
+                )
+            )
+        )
+
+        composeTestRule.setContent {
+            MyApplicationTheme {
+                WorkerPrivilegedEditDialog(
+                    worker = baseWorker,
+                    baselineDetail = detail,
+                    catalog = null,
+                    busy = false,
+                    error = null,
+                    onDismiss = {},
+                    onSubmit = { ver, patch, _ ->
+                        capturedVersion = ver
+                        capturedPatch = patch
+                    },
+                    renderInDialog = false,
+                    canUploadDocuments = canUploadState.value,
+                    profileSaveMessage = profileSavedBannerState.value,
+                    fileStatuses = fileStatusesState.value,
+                    onRetryDocument = { docType, _ ->
+                        retriedDocType = docType
+                    }
+                )
+            }
+        }
+
+        // All 4 sections and profile save status banner are displayed
+        composeTestRule.onNodeWithTag("direct_edit_profile_save_status").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("direct_edit_section_work").performScrollTo().assertIsDisplayed()
+        composeTestRule.onNodeWithTag("direct_edit_section_personal").performScrollTo().assertIsDisplayed()
+        composeTestRule.onNodeWithTag("direct_edit_section_payment").performScrollTo().assertIsDisplayed()
+        composeTestRule.onNodeWithTag("direct_edit_section_documents").performScrollTo().assertIsDisplayed()
+
+        // Individual file retry button is shown ONLY for failed CCCD_BACK and does not trigger onSubmit (/privileged-edit)
+        composeTestRule.onNodeWithTag("direct_edit_doc_retry_CCCD_BACK").performScrollTo().assertIsDisplayed().performClick()
+        assertEquals("CCCD_BACK", retriedDocType)
+        assertEquals(-1, capturedVersion)
+
+        // Edit personal, work, and payment fields and submit
+        composeTestRule.onNodeWithTag("direct_edit_employee_code_input").performScrollTo().performTextReplacement("hrp-1026-000202")
+        composeTestRule.onNodeWithTag("direct_edit_display_name_input").performScrollTo().performTextReplacement("Phạm Văn Đã Sửa")
+        composeTestRule.onNodeWithTag("direct_edit_account_number_input").performScrollTo().performTextReplacement("9988776655")
+        composeTestRule.onNodeWithTag("direct_edit_bank_query_input").performScrollTo().performTextReplacement("Ngân hàng Tham Chiếu Mới")
+        composeTestRule.onNodeWithTag("direct_edit_save_button").performClick()
+
+        assertEquals(4, capturedVersion)
+        assertTrue(capturedPatch != null)
+        assertEquals("hrp-1026-000202", capturedPatch!!.getString("employee_code"))
+        assertEquals("Phạm Văn Đã Sửa", capturedPatch!!.getJSONObject("worker_details").getString("display_name"))
+        val paymentObj = capturedPatch!!.getJSONObject("payment")
+        assertEquals("provided", paymentObj.getString("state"))
+        assertEquals("9988776655", paymentObj.getString("account_number"))
+        assertTrue(paymentObj.isNull("bank_id"))
+        assertEquals("Ngân hàng Tham Chiếu Mới", paymentObj.getString("bank_name"))
+
+        // When actor lacks document_upload capability, file upload controls are hidden and denial notice is shown
+        composeTestRule.runOnIdle { canUploadState.value = false }
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("direct_edit_doc_upload_denied_notice").performScrollTo().assertIsDisplayed()
+        composeTestRule.onNodeWithTag("direct_edit_doc_retry_CCCD_BACK").assertDoesNotExist()
+    }
 }

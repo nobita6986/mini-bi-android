@@ -23,14 +23,14 @@ android {
     ?: System.getenv("MINI_BI_SERVER_URL")?.trim()?.takeIf { it.isNotEmpty() }
     ?: envProps.getProperty("MINI_BI_SERVER_URL")?.trim()?.takeIf { it.isNotEmpty() }
   val releaseServerUrl = explicitServerUrl ?: "https://bi.hrpartner.vn"
-  val debugServerUrl = explicitServerUrl ?: "https://bi2.hrpartner.vn"
+  val debugServerUrl = explicitServerUrl ?: "https://bi.hrpvietnam.com"
 
   defaultConfig {
     applicationId = "vn.hrpartner.bi"
     minSdk = 24
     targetSdk = 36
-    versionCode = 7
-    versionName = "1.0.3.27102026"
+    versionCode = 9
+    versionName = "1.0.2.30102026"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
