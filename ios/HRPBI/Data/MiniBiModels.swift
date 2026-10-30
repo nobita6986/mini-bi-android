@@ -40,8 +40,8 @@ public struct AppEnvironmentConfig: Equatable, Sendable {
 
     public static func forVariant(
         _ variant: AppEnvironmentVariant,
-        marketingVersion: String = "1.0.4.29102026",
-        buildNumber: String = "8"
+        marketingVersion: String = "1.0.5.30102026",
+        buildNumber: String = "38"
     ) -> AppEnvironmentConfig {
         switch variant {
         case .release:
@@ -60,7 +60,7 @@ public struct AppEnvironmentConfig: Equatable, Sendable {
                 variant: .staging,
                 appBrandTitle: "HRP BI 2",
                 appBrandBadgeText: "BI2",
-                defaultBaseUrl: "https://bi2.hrpartner.vn",
+                defaultBaseUrl: "https://bi.hrpvietnam.com",
                 bundleIdentifier: "com.aistudio.minibi.hrpbia.bi2",
                 enforceHttps: false,
                 marketingVersion: marketingVersion,
@@ -80,8 +80,8 @@ public struct AppEnvironmentConfig: Equatable, Sendable {
         let build = (info["CFBundleVersion"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
         let resolvedMarketing = (displayVer?.isEmpty == false)
             ? displayVer!
-            : ((marketing?.isEmpty == false) ? marketing! : "1.0.4.29102026")
-        let resolvedBuild = (build?.isEmpty == false) ? build! : "8"
+            : ((marketing?.isEmpty == false) ? marketing! : "1.0.5.30102026")
+        let resolvedBuild = (build?.isEmpty == false) ? build! : "38"
 
         let bundleId = (bundle.bundleIdentifier ?? (info["CFBundleIdentifier"] as? String) ?? "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -100,6 +100,7 @@ public struct AppEnvironmentConfig: Equatable, Sendable {
             || bundleId.hasSuffix(".bi2")
             || badge.uppercased() == "BI2"
             || host.lowercased().hasPrefix("bi2.")
+            || host.lowercased() == "bi.hrpvietnam.com"
 
         return forVariant(
             isStaging ? .staging : .release,
@@ -1022,6 +1023,15 @@ public struct WorkerItem: Identifiable, Equatable, Sendable {
     public var cccdFrontUrl: String?
     public var cccdBackUrl: String?
     public let uploaderCode: String
+    public let canView: Bool
+    public let canProposeChange: Bool
+    public let canDirectEdit: Bool
+    public let isProjectManager: Bool
+    public let projectId: String
+    public let recruiterId: String
+    public let laborTypeKey: String
+    public let employmentStatusCode: String
+    public let employmentEffectiveDate: String
 
     public static func isUuidLike(_ value: String) -> Bool {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1071,7 +1081,16 @@ public struct WorkerItem: Identifiable, Equatable, Sendable {
         contractFileUrl: String? = nil,
         cccdFrontUrl: String? = nil,
         cccdBackUrl: String? = nil,
-        uploaderCode: String = ""
+        uploaderCode: String = "",
+        canView: Bool = true,
+        canProposeChange: Bool = false,
+        canDirectEdit: Bool = false,
+        isProjectManager: Bool = false,
+        projectId: String = "",
+        recruiterId: String = "",
+        laborTypeKey: String = "",
+        employmentStatusCode: String = "ON",
+        employmentEffectiveDate: String = ""
     ) {
         self.maNld = maNld
         self.employeeCode = employeeCode
@@ -1101,6 +1120,404 @@ public struct WorkerItem: Identifiable, Equatable, Sendable {
         self.cccdFrontUrl = cccdFrontUrl
         self.cccdBackUrl = cccdBackUrl
         self.uploaderCode = uploaderCode
+        self.canView = canView
+        self.canProposeChange = canProposeChange
+        self.canDirectEdit = canDirectEdit
+        self.isProjectManager = isProjectManager
+        self.projectId = projectId
+        self.recruiterId = recruiterId
+        self.laborTypeKey = laborTypeKey
+        self.employmentStatusCode = employmentStatusCode
+        self.employmentEffectiveDate = employmentEffectiveDate
+    }
+}
+
+// MARK: - Direct Edit Worker Profile Models & VietQR 60-Bank Catalog
+
+public struct WorkerDocumentSummary: Identifiable, Equatable, Sendable {
+    public var id: String { documentType }
+    public let documentType: String
+    public let uploadStatus: String
+    public let fileVersion: Int
+    public let downloadPath: String?
+    public let previewPath: String?
+
+    public init(
+        documentType: String,
+        uploadStatus: String = "READY",
+        fileVersion: Int = 1,
+        downloadPath: String? = nil,
+        previewPath: String? = nil
+    ) {
+        self.documentType = documentType
+        self.uploadStatus = uploadStatus
+        self.fileVersion = fileVersion
+        self.downloadPath = downloadPath
+        self.previewPath = previewPath
+    }
+}
+
+public struct WorkerEntryDetail: Equatable, Sendable {
+    public let entryId: String
+    public let submissionId: String
+    public let version: Int
+    public let projectId: String
+    public let projectDisplay: String
+    public let firstWorkDate: String
+    public let employeeCode: String
+    public let recruiterId: String
+    public let recruiterDisplay: String
+    public let teamId: String?
+    public let providerType: String
+    public let laborType: String
+    public let laborTypeDisplay: String
+    public let displayName: String
+    public let gender: String?
+    public let dateOfBirth: String?
+    public let nationalId: String?
+    public let nationalIdIssuedAt: String?
+    public let nationalIdIssuedPlace: String?
+    public let address: String?
+    public let phone: String?
+    public let generalNote: String?
+    public let paymentState: String
+    public let bankId: String?
+    public let bankName: String?
+    public let rawBankName: String?
+    public let accountNumber: String?
+    public let accountHolderName: String?
+    public let employmentStatus: String
+    public let employmentEffectiveDate: String
+    public let employmentStatusVersion: Int
+    public let employmentLeaveReason: String?
+    public let portraitPreviewPath: String?
+    public let portraitDownloadPath: String?
+    public let documents: [WorkerDocumentSummary]
+    public let workerDetailsStates: [String: String]
+    public let fileVersions: [String: Int]
+
+    public init(
+        entryId: String,
+        submissionId: String = "",
+        version: Int = 1,
+        projectId: String = "",
+        projectDisplay: String = "",
+        firstWorkDate: String = "",
+        employeeCode: String = "",
+        recruiterId: String = "",
+        recruiterDisplay: String = "",
+        teamId: String? = nil,
+        providerType: String = "hrp",
+        laborType: String = "TEMPORARY",
+        laborTypeDisplay: String = "Thời vụ",
+        displayName: String = "",
+        gender: String? = nil,
+        dateOfBirth: String? = nil,
+        nationalId: String? = nil,
+        nationalIdIssuedAt: String? = nil,
+        nationalIdIssuedPlace: String? = nil,
+        address: String? = nil,
+        phone: String? = nil,
+        generalNote: String? = nil,
+        paymentState: String = "empty",
+        bankId: String? = nil,
+        bankName: String? = nil,
+        rawBankName: String? = nil,
+        accountNumber: String? = nil,
+        accountHolderName: String? = nil,
+        employmentStatus: String = "ON",
+        employmentEffectiveDate: String = "",
+        employmentStatusVersion: Int = 1,
+        employmentLeaveReason: String? = nil,
+        portraitPreviewPath: String? = nil,
+        portraitDownloadPath: String? = nil,
+        documents: [WorkerDocumentSummary] = [],
+        workerDetailsStates: [String: String] = [:],
+        fileVersions: [String: Int] = [:]
+    ) {
+        self.entryId = entryId
+        self.submissionId = submissionId
+        self.version = version
+        self.projectId = projectId
+        self.projectDisplay = projectDisplay
+        self.firstWorkDate = firstWorkDate
+        self.employeeCode = employeeCode
+        self.recruiterId = recruiterId
+        self.recruiterDisplay = recruiterDisplay
+        self.teamId = teamId
+        self.providerType = providerType
+        self.laborType = laborType
+        self.laborTypeDisplay = laborTypeDisplay
+        self.displayName = displayName
+        self.gender = gender
+        self.dateOfBirth = dateOfBirth
+        self.nationalId = nationalId
+        self.nationalIdIssuedAt = nationalIdIssuedAt
+        self.nationalIdIssuedPlace = nationalIdIssuedPlace
+        self.address = address
+        self.phone = phone
+        self.generalNote = generalNote
+        self.paymentState = paymentState
+        self.bankId = bankId
+        self.bankName = bankName
+        self.rawBankName = rawBankName
+        self.accountNumber = accountNumber
+        self.accountHolderName = accountHolderName
+        self.employmentStatus = employmentStatus
+        self.employmentEffectiveDate = employmentEffectiveDate
+        self.employmentStatusVersion = employmentStatusVersion
+        self.employmentLeaveReason = employmentLeaveReason
+        self.portraitPreviewPath = portraitPreviewPath
+        self.portraitDownloadPath = portraitDownloadPath
+        self.documents = documents
+        self.workerDetailsStates = workerDetailsStates
+        self.fileVersions = fileVersions
+    }
+}
+
+public struct DirectEditFormInput: Equatable, Sendable {
+    // Work section
+    public var employeeCode: String
+    public var projectId: String
+    public var firstWorkDateUi: String
+    public var recruiterId: String
+    public var laborTypeKey: String
+    public var statusCode: String
+    public var statusEffectiveDateUi: String
+    public var leaveReason: String
+
+    // Personal section
+    public var displayName: String
+    public var gender: String // "MALE" | "FEMALE" | ""
+    public var dateOfBirthUi: String
+    public var nationalId: String
+    public var nationalIdIssuedAtUi: String
+    public var nationalIdIssuedPlace: String
+    public var address: String
+    public var phone: String
+
+    // Bank section
+    public var accountHolderName: String
+    public var accountNumber: String
+    public var bankId: String?
+    public var bankName: String
+
+    public init(
+        employeeCode: String = "",
+        projectId: String = "",
+        firstWorkDateUi: String = "",
+        recruiterId: String = "",
+        laborTypeKey: String = "",
+        statusCode: String = "ON",
+        statusEffectiveDateUi: String = "",
+        leaveReason: String = "",
+        displayName: String = "",
+        gender: String = "",
+        dateOfBirthUi: String = "",
+        nationalId: String = "",
+        nationalIdIssuedAtUi: String = "",
+        nationalIdIssuedPlace: String = "",
+        address: String = "",
+        phone: String = "",
+        accountHolderName: String = "",
+        accountNumber: String = "",
+        bankId: String? = nil,
+        bankName: String = ""
+    ) {
+        self.employeeCode = employeeCode
+        self.projectId = projectId
+        self.firstWorkDateUi = firstWorkDateUi
+        self.recruiterId = recruiterId
+        self.laborTypeKey = laborTypeKey
+        self.statusCode = statusCode
+        self.statusEffectiveDateUi = statusEffectiveDateUi
+        self.leaveReason = leaveReason
+        self.displayName = displayName
+        self.gender = gender
+        self.dateOfBirthUi = dateOfBirthUi
+        self.nationalId = nationalId
+        self.nationalIdIssuedAtUi = nationalIdIssuedAtUi
+        self.nationalIdIssuedPlace = nationalIdIssuedPlace
+        self.address = address
+        self.phone = phone
+        self.accountHolderName = accountHolderName
+        self.accountNumber = accountNumber
+        self.bankId = bankId
+        self.bankName = bankName
+    }
+}
+
+public enum DirectEditFileState: String, Equatable, Sendable {
+    case pending = "PENDING"
+    case uploading = "UPLOADING"
+    case saved = "SAVED"
+    case error = "ERROR"
+}
+
+public struct DirectEditFileStatus: Identifiable, Equatable, Sendable {
+    public var id: String { documentType }
+    public let documentType: String
+    public var state: DirectEditFileState
+    public var message: String
+    public var attachment: LocalAttachmentItem?
+    public var documentVersion: Int?
+
+    public init(
+        documentType: String,
+        state: DirectEditFileState,
+        message: String,
+        attachment: LocalAttachmentItem? = nil,
+        documentVersion: Int? = nil
+    ) {
+        self.documentType = documentType
+        self.state = state
+        self.message = message
+        self.attachment = attachment
+        self.documentVersion = documentVersion
+    }
+}
+
+public struct VietQrBankOption: Identifiable, Equatable, Sendable {
+    public var id: String { code }
+    public let code: String
+    public let shortName: String
+    public let fullName: String
+    public let bin: String
+
+    public var displayLabel: String {
+        "\(shortName) (\(code)) — \(fullName)"
+    }
+
+    public init(code: String, shortName: String, fullName: String, bin: String = "") {
+        self.code = code
+        self.shortName = shortName
+        self.fullName = fullName
+        self.bin = bin
+    }
+}
+
+public enum VietQrBankCatalog {
+    public static let allBanks: [VietQrBankOption] = [
+        VietQrBankOption(code: "ICB", shortName: "VietinBank", fullName: "Ngân hàng TMCP Công thương Việt Nam", bin: "970415"),
+        VietQrBankOption(code: "VCB", shortName: "Vietcombank", fullName: "Ngân hàng TMCP Ngoại Thương Việt Nam", bin: "970436"),
+        VietQrBankOption(code: "BIDV", shortName: "BIDV", fullName: "Ngân hàng TMCP Đầu tư và Phát triển Việt Nam", bin: "970418"),
+        VietQrBankOption(code: "VBA", shortName: "Agribank", fullName: "Ngân hàng Nông nghiệp và Phát triển Nông thôn Việt Nam", bin: "970405"),
+        VietQrBankOption(code: "OCB", shortName: "OCB", fullName: "Ngân hàng TMCP Phương Đông", bin: "970448"),
+        VietQrBankOption(code: "MB", shortName: "MBBank", fullName: "Ngân hàng TMCP Quân đội", bin: "970422"),
+        VietQrBankOption(code: "TCB", shortName: "Techcombank", fullName: "Ngân hàng TMCP Kỹ thương Việt Nam", bin: "970407"),
+        VietQrBankOption(code: "ACB", shortName: "ACB", fullName: "Ngân hàng TMCP Á Châu", bin: "970416"),
+        VietQrBankOption(code: "VPB", shortName: "VPBank", fullName: "Ngân hàng TMCP Việt Nam Thịnh Vượng", bin: "970432"),
+        VietQrBankOption(code: "TPB", shortName: "TPBank", fullName: "Ngân hàng TMCP Tiên Phong", bin: "970423"),
+        VietQrBankOption(code: "STB", shortName: "Sacombank", fullName: "Ngân hàng TMCP Sài Gòn Thương Tín", bin: "970403"),
+        VietQrBankOption(code: "HDB", shortName: "HDBank", fullName: "Ngân hàng TMCP Phát triển Thành phố Hồ Chí Minh", bin: "970437"),
+        VietQrBankOption(code: "VCCB", shortName: "VietCapitalBank", fullName: "Ngân hàng TMCP Bản Việt", bin: "970454"),
+        VietQrBankOption(code: "SCB", shortName: "SCB", fullName: "Ngân hàng TMCP Sài Gòn", bin: "970429"),
+        VietQrBankOption(code: "VIB", shortName: "VIB", fullName: "Ngân hàng TMCP Quốc tế Việt Nam", bin: "970441"),
+        VietQrBankOption(code: "SHB", shortName: "SHB", fullName: "Ngân hàng TMCP Sài Gòn - Hà Nội", bin: "970443"),
+        VietQrBankOption(code: "EIB", shortName: "Eximbank", fullName: "Ngân hàng TMCP Xuất Nhập khẩu Việt Nam", bin: "970431"),
+        VietQrBankOption(code: "MSB", shortName: "MSB", fullName: "Ngân hàng TMCP Hàng Hải Việt Nam", bin: "970426"),
+        VietQrBankOption(code: "CAKE", shortName: "CAKE", fullName: "TMCP Việt Nam Thịnh Vượng - Ngân hàng số CAKE by VPBank", bin: "546034"),
+        VietQrBankOption(code: "Ubank", shortName: "Ubank", fullName: "TMCP Việt Nam Thịnh Vượng - Ngân hàng số Ubank by VPBank", bin: "546035"),
+        VietQrBankOption(code: "TIMO", shortName: "Timo", fullName: "Ngân hàng số Timo by Ban Viet Bank", bin: "963388"),
+        VietQrBankOption(code: "VTLMONEY", shortName: "ViettelMoney", fullName: "Tổng Công ty Dịch vụ Số Viettel", bin: "971005"),
+        VietQrBankOption(code: "VNPTMONEY", shortName: "VNPTMoney", fullName: "VNPT Money", bin: "971011"),
+        VietQrBankOption(code: "SGICB", shortName: "SaigonBank", fullName: "Ngân hàng TMCP Sài Gòn Công Thương", bin: "970400"),
+        VietQrBankOption(code: "BAB", shortName: "BacABank", fullName: "Ngân hàng TMCP Bắc Á", bin: "970409"),
+        VietQrBankOption(code: "PVCB", shortName: "PVcomBank", fullName: "Ngân hàng TMCP Đại Chúng Việt Nam", bin: "970412"),
+        VietQrBankOption(code: "MBV", shortName: "MBV", fullName: "Ngân hàng TNHH MTV Việt Nam Hiện Đại", bin: "970414"),
+        VietQrBankOption(code: "NCB", shortName: "NCB", fullName: "Ngân hàng TMCP Quốc Dân", bin: "970419"),
+        VietQrBankOption(code: "SHBVN", shortName: "ShinhanBank", fullName: "Ngân hàng TNHH MTV Shinhan Việt Nam", bin: "970424"),
+        VietQrBankOption(code: "ABB", shortName: "ABBANK", fullName: "Ngân hàng TMCP An Bình", bin: "970425"),
+        VietQrBankOption(code: "VAB", shortName: "VietABank", fullName: "Ngân hàng TMCP Việt Á", bin: "970427"),
+        VietQrBankOption(code: "NAB", shortName: "NamABank", fullName: "Ngân hàng TMCP Nam Á", bin: "970428"),
+        VietQrBankOption(code: "PGB", shortName: "PGBank", fullName: "Ngân hàng TMCP Thịnh vượng và Phát triển", bin: "970430"),
+        VietQrBankOption(code: "VIETBANK", shortName: "VietBank", fullName: "Ngân hàng TMCP Việt Nam Thương Tín", bin: "970433"),
+        VietQrBankOption(code: "BVB", shortName: "BaoVietBank", fullName: "Ngân hàng TMCP Bảo Việt", bin: "970438"),
+        VietQrBankOption(code: "SEAB", shortName: "SeABank", fullName: "Ngân hàng TMCP Đông Nam Á", bin: "970440"),
+        VietQrBankOption(code: "COOPBANK", shortName: "COOPBANK", fullName: "Ngân hàng Hợp tác xã Việt Nam", bin: "970446"),
+        VietQrBankOption(code: "LPB", shortName: "LPBank", fullName: "Ngân hàng TMCP Lộc Phát Việt Nam", bin: "970449"),
+        VietQrBankOption(code: "KLB", shortName: "KienLongBank", fullName: "Ngân hàng TMCP Kiên Long", bin: "970452"),
+        VietQrBankOption(code: "KBank", shortName: "KBank", fullName: "Ngân hàng Đại chúng TNHH Kasikornbank", bin: "668888"),
+        VietQrBankOption(code: "KBHN", shortName: "KookminHN", fullName: "Ngân hàng Kookmin - Chi nhánh Hà Nội", bin: "970462"),
+        VietQrBankOption(code: "KEBHANAHCM", shortName: "KEBHanaHCM", fullName: "Ngân hàng KEB Hana – Chi nhánh TP.HCM", bin: "970466"),
+        VietQrBankOption(code: "KEBHANAHN", shortName: "KEBHanaHN", fullName: "Ngân hàng KEB Hana – Chi nhánh Hà Nội", bin: "970467"),
+        VietQrBankOption(code: "MAFC", shortName: "MAFC", fullName: "Công ty Tài chính TNHH MTV Mirae Asset (Việt Nam)", bin: "977777"),
+        VietQrBankOption(code: "CITIBANK", shortName: "Citibank", fullName: "Ngân hàng Citibank, N.A. - Chi nhánh Hà Nội", bin: "533948"),
+        VietQrBankOption(code: "KBHCM", shortName: "KookminHCM", fullName: "Ngân hàng Kookmin - Chi nhánh TP.HCM", bin: "970463"),
+        VietQrBankOption(code: "VBSP", shortName: "VBSP", fullName: "Ngân hàng Chính sách Xã hội", bin: "999888"),
+        VietQrBankOption(code: "WVN", shortName: "Woori", fullName: "Ngân hàng TNHH MTV Woori Việt Nam", bin: "970457"),
+        VietQrBankOption(code: "VRB", shortName: "VRB", fullName: "Ngân hàng Liên doanh Việt - Nga", bin: "970421"),
+        VietQrBankOption(code: "UOB", shortName: "UnitedOverseas", fullName: "Ngân hàng United Overseas - Chi nhánh TP.HCM", bin: "970458"),
+        VietQrBankOption(code: "SCVN", shortName: "StandardChartered", fullName: "Ngân hàng TNHH MTV Standard Chartered Bank Việt Nam", bin: "970410"),
+        VietQrBankOption(code: "PBVN", shortName: "PublicBank", fullName: "Ngân hàng TNHH MTV Public Việt Nam", bin: "970439"),
+        VietQrBankOption(code: "NHB HN", shortName: "Nonghyup", fullName: "Ngân hàng Nonghyup - Chi nhánh Hà Nội", bin: "801011"),
+        VietQrBankOption(code: "IVB", shortName: "IndovinaBank", fullName: "Ngân hàng TNHH Indovina", bin: "970434"),
+        VietQrBankOption(code: "IBK - HCM", shortName: "IBKHCM", fullName: "Ngân hàng Công nghiệp Hàn Quốc - Chi nhánh TP. Hồ Chí Minh", bin: "970456"),
+        VietQrBankOption(code: "IBK - HN", shortName: "IBKHN", fullName: "Ngân hàng Công nghiệp Hàn Quốc - Chi nhánh Hà Nội", bin: "970455"),
+        VietQrBankOption(code: "HSBC", shortName: "HSBC", fullName: "Ngân hàng TNHH MTV HSBC (Việt Nam)", bin: "458761"),
+        VietQrBankOption(code: "HLBVN", shortName: "HongLeong", fullName: "Ngân hàng TNHH MTV Hong Leong Việt Nam", bin: "970442"),
+        VietQrBankOption(code: "GPB", shortName: "GPBank", fullName: "Ngân hàng Thương mại TNHH MTV Dầu Khí Toàn Cầu", bin: "970408"),
+        VietQrBankOption(code: "Vikki", shortName: "Vikki", fullName: "Ngân hàng TNHH MTV Số Vikki", bin: "970406"),
+        VietQrBankOption(code: "DBS", shortName: "DBSBank", fullName: "DBS Bank Ltd - Chi nhánh Thành phố Hồ Chí Minh", bin: "796500"),
+        VietQrBankOption(code: "CIMB", shortName: "CIMB", fullName: "Ngân hàng TNHH MTV CIMB Việt Nam", bin: "422589"),
+        VietQrBankOption(code: "CBB", shortName: "CBBank", fullName: "Ngân hàng Thương mại TNHH MTV Xây dựng Việt Nam", bin: "970444")
+    ]
+
+    public static func normalizeSearchToken(_ text: String) -> String {
+        let folded = text
+            .folding(options: [.diacriticInsensitive, .caseInsensitive], locale: Locale(identifier: "vi_VN"))
+            .replacingOccurrences(of: "đ", with: "d")
+            .replacingOccurrences(of: "Đ", with: "d")
+            .lowercased()
+        return folded.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    public static func search(_ query: String, catalogBanks: [DirectEntryCatalogBank] = []) -> [VietQrBankOption] {
+        var merged: [VietQrBankOption] = allBanks
+        for cb in catalogBanks {
+            let cleanId = cb.bankId.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !cleanId.isEmpty else { continue }
+            if !merged.contains(where: { $0.code.caseInsensitiveCompare(cleanId) == .orderedSame }) {
+                merged.append(
+                    VietQrBankOption(
+                        code: cleanId,
+                        shortName: cb.displayName.isEmpty ? cleanId : cb.displayName,
+                        fullName: cb.displayName.isEmpty ? cleanId : cb.displayName
+                    )
+                )
+            }
+        }
+        let token = normalizeSearchToken(query)
+        guard !token.isEmpty else { return merged }
+        return merged.filter { option in
+            normalizeSearchToken(option.code).contains(token) ||
+            normalizeSearchToken(option.shortName).contains(token) ||
+            normalizeSearchToken(option.fullName).contains(token) ||
+            option.bin.contains(token)
+        }
+    }
+
+    public static func resolveForInitialValue(bankId: String?, bankName: String?) -> (bankId: String?, bankName: String) {
+        let cleanId = bankId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let cleanName = bankName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !cleanId.isEmpty {
+            if let match = allBanks.first(where: { $0.code.caseInsensitiveCompare(cleanId) == .orderedSame }) {
+                return (match.code, cleanName.isEmpty ? match.shortName : cleanName)
+            }
+            return (cleanId, cleanName.isEmpty ? cleanId : cleanName)
+        }
+        if !cleanName.isEmpty {
+            let norm = normalizeSearchToken(cleanName)
+            if let match = allBanks.first(where: {
+                normalizeSearchToken($0.code) == norm ||
+                normalizeSearchToken($0.shortName) == norm ||
+                normalizeSearchToken($0.fullName) == norm
+            }) {
+                return (match.code, match.shortName)
+            }
+            return (nil, cleanName)
+        }
+        return (nil, "")
     }
 }
 

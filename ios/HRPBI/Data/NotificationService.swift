@@ -740,7 +740,16 @@ public final class MiniBiRepository {
             }
         }
 
-        let offDate = empStatusDict?.optString("effective_date") ?? ""
+        let offDate = empStatusDict?.optString("effective_date") ?? obj.optString("employment_effective_date")
+        let allowedActionsObj = obj["allowed_actions"] as? [String: Any]
+        let canView = allowedActionsObj?.optBool("view", defaultValue: true) ?? true
+        let canProposeChange = allowedActionsObj?.optBool("propose_change", defaultValue: false) ?? false
+        let canDirectEdit = allowedActionsObj?.optBool("direct_edit", defaultValue: false) ?? false
+        let isProjectManager = obj.optBool("is_project_manager", defaultValue: false)
+        let projectId = projectObj?.optString("project_id", "id") ?? obj.optString("project_id")
+        let recruiterId = recruiterObj?.optString("recruiter_id", "id") ?? obj.optString("recruiter_id")
+        let laborTypeKey = obj.optString("labor_type", "labor_type_key")
+        let cleanStatusCode = ["ON", "OFF", "UNCONFIRMED"].contains(employmentStatusRaw) ? employmentStatusRaw : "ON"
 
         return WorkerItem(
             maNld: entryId,
@@ -770,7 +779,16 @@ public final class MiniBiRepository {
             contractFileUrl: contractUrl,
             cccdFrontUrl: frontUrl,
             cccdBackUrl: backUrl,
-            uploaderCode: cleanEmployeeCode.ifEmpty(obj.optString("uploader_code", "created_by"))
+            uploaderCode: cleanEmployeeCode.ifEmpty(obj.optString("uploader_code", "created_by")),
+            canView: canView,
+            canProposeChange: canProposeChange,
+            canDirectEdit: canDirectEdit,
+            isProjectManager: isProjectManager,
+            projectId: projectId,
+            recruiterId: recruiterId,
+            laborTypeKey: laborTypeKey,
+            employmentStatusCode: cleanStatusCode,
+            employmentEffectiveDate: offDate
         )
     }
 }

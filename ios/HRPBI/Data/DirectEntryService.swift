@@ -950,6 +950,585 @@ public final class DirectEntryService: @unchecked Sendable {
         return (.success(fileUrl, statusCode: response.statusCode), expectedEntryVersion)
     }
 
+    // MARK: - Direct Edit Worker Profile (GET Detail, Patch Builder, Field Validation, Privileged Edit)
+
+    private static let employeeCodeRegex = try! NSRegularExpression(pattern: #"^hrp-\d{4}-\d{6}$"#, options: [.caseInsensitive])
+    private static let safeCatalogIdRegex = try! NSRegularExpression(pattern: #"^[A-Za-z0-9_.\-]{1,128}$"#)
+    private static let laborTypeKeyRegex = try! NSRegularExpression(pattern: #"^[A-Za-z0-9_\-]{1,64}$"#)
+    private static let paymentAccountDigitsRegex = try! NSRegularExpression(pattern: #"^\d{1,64}$"#)
+
+    private static func matchesRegex(_ regex: NSRegularExpression, _ text: String) -> Bool {
+        let range = NSRange(location: 0, length: text.utf16.count)
+        return regex.firstMatch(in: text, options: [], range: range) != nil
+    }
+
+    private static func isValidCccd9Or12(_ value: String) -> Bool {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.allSatisfy(\.isNumber) && (trimmed.count == 9 || trimmed.count == 12) else {
+            return false
+        }
+        return trimmed != "000000000" && trimmed != "000000000000"
+    }
+
+    private static func isValidCccd12(_ value: String) -> Bool {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.allSatisfy(\.isNumber) && trimmed.count == 12 && trimmed != "000000000000"
+    }
+
+    public static func parseWorkerEntryDetail(_ root: [String: Any]) -> WorkerEntryDetail {
+        let entryObj = (root["entry"] as? [String: Any])
+            ?? (root["data"] as? [String: Any])
+            ?? root
+
+        let entryId = entryObj.optString("entry_id", "id")
+        let submissionId = entryObj.optString("submission_id")
+        let version = max(1, entryObj.optInt("version", "entry_version", defaultValue: 1))
+        let projectObj = entryObj["project"] as? [String: Any]
+        let projectId = projectObj?.optString("project_id", "id") ?? entryObj.optString("project_id")
+        let projectDisplay = projectObj?.optString("display_name", "display", "name")
+            ?? entryObj.optString("project_display", "project_name", "du_an")
+        let firstWorkDate = entryObj.optString("first_work_date", "ngay_vao_lam")
+        let employeeCode = entryObj.optString("employee_code", "ma_nld")
+        let recruiterObj = entryObj["recruiter"] as? [String: Any]
+        let recruiterId = recruiterObj?.optString("recruiter_id", "id") ?? entryObj.optString("recruiter_id")
+        let recruiterDisplay = recruiterObj?.optString("display_name", "display", "name")
+            ?? entryObj.optString("recruiter_display", "recruiter_name", "nguoi_tuyen")
+        let teamId = entryObj.optNullableString("team_id")
+        let providerType = entryObj.optString("provider_type", defaultValue: "hrp")
+        let laborType = entryObj.optString("labor_type", defaultValue: "TEMPORARY")
+        let laborTypeDisplay = entryObj.optString("labor_type_display", defaultValue: laborType)
+
+        let wdObj = (entryObj["worker_details"] as? [String: Any])
+            ?? (entryObj["worker"] as? [String: Any])
+            ?? [:]
+        let displayName = wdObj.optString("display_name")
+            .ifEmpty(entryObj.optString("display_name", "ho_ten", "full_name"))
+
+        func extractTriState(_ dict: [String: Any], _ key: String) -> (state: String, value: String?) {
+            guard let raw = dict[key], !(raw is NSNull) else {
+                return ("omitted", nil)
+            }
+            if let sub = raw as? [String: Any] {
+                let st = sub.optString("state", defaultValue: "omitted")
+                let val = sub.optNullableString("value")
+                return (st, st == "provided" ? val : nil)
+            }
+            if let s = raw as? String {
+                let trimmed = s.trimmingCharacters(in: .whitespacesAndNewlines)
+                return trimmed.isEmpty ? ("omitted", nil) : ("provided", trimmed)
+            }
+            return ("omitted", nil)
+        }
+
+        var wdStates: [String: String] = [:]
+        let genderPair = extractTriState(wdObj, "gender")
+        wdStates["gender"] = genderPair.state
+        let dobPair = extractTriState(wdObj, "date_of_birth")
+        wdStates["date_of_birth"] = dobPair.state
+        let nidPair = extractTriState(wdObj, "national_id")
+        wdStates["national_id"] = nidPair.state
+        let issuedAtPair = extractTriState(wdObj, "national_id_issued_at")
+        wdStates["national_id_issued_at"] = issuedAtPair.state
+        let issuedPlacePair = extractTriState(wdObj, "national_id_issued_place")
+        wdStates["national_id_issued_place"] = issuedPlacePair.state
+        let addressPair = extractTriState(wdObj, "address")
+        wdStates["address"] = addressPair.state
+        let phonePair = extractTriState(wdObj, "phone")
+        wdStates["phone"] = phonePair.state
+
+        let notePair = extractTriState(entryObj, "general_note")
+        let generalNote = notePair.value ?? entryObj.optNullableString("general_note", "note")
+
+        let paymentObj = (entryObj["payment"] as? [String: Any])
+            ?? (wdObj["payment"] as? [String: Any])
+        let paymentState = paymentObj?.optString("state", defaultValue: "empty") ?? "empty"
+        let bankId = paymentObj?.optNullableString("bank_id")
+        let rawBankName = paymentObj?.optNullableString("bank_name")
+        let bankDisplay = paymentObj?.optNullableString("bank_display", "bank_name", "bank_id")
+        let accountNumber = paymentObj?.optNullableString("account_number")
+        let accountHolderName = paymentObj?.optNullableString("account_holder_name")
+
+        let empObj = entryObj["employment_status"] as? [String: Any]
+        let employmentStatus = (empObj?.optString("status") ?? entryObj.optString("employment_status", defaultValue: "ON")).uppercased()
+        let employmentEffectiveDate = empObj?.optString("effective_date")
+            ?? entryObj.optString("employment_effective_date", defaultValue: firstWorkDate)
+        let employmentStatusVersion = max(1, empObj?.optInt("version", defaultValue: 1) ?? 1)
+        let employmentLeaveReason = empObj?.optNullableString("leave_reason")
+            ?? entryObj.optNullableString("employment_leave_reason", "leave_reason")
+
+        var docs: [WorkerDocumentSummary] = []
+        var fileVers: [String: Int] = [:]
+        for d in entryObj.optObjectArray("documents") {
+            let dType = d.optString("document_type", "doc_type", "type").uppercased()
+            guard !dType.isEmpty else { continue }
+            let fVer = max(1, d.optInt("file_version", "version", defaultValue: 1))
+            fileVers[dType] = fVer
+            docs.append(
+                WorkerDocumentSummary(
+                    documentType: dType,
+                    uploadStatus: d.optString("upload_status", "status", defaultValue: "READY").uppercased(),
+                    fileVersion: fVer,
+                    downloadPath: d.optNullableString("download_path", "download_url", "file_url"),
+                    previewPath: d.optNullableString("preview_path", "preview_url")
+                )
+            )
+        }
+
+        let portraitPreviewPath = entryObj.optNullableString("portrait_preview_path")
+            ?? docs.first(where: { $0.documentType == "WORKER_PORTRAIT" })?.previewPath
+        let portraitDownloadPath = entryObj.optNullableString("portrait_download_path")
+            ?? docs.first(where: { $0.documentType == "WORKER_PORTRAIT" })?.downloadPath
+
+        return WorkerEntryDetail(
+            entryId: entryId,
+            submissionId: submissionId,
+            version: version,
+            projectId: projectId,
+            projectDisplay: projectDisplay,
+            firstWorkDate: firstWorkDate,
+            employeeCode: employeeCode,
+            recruiterId: recruiterId,
+            recruiterDisplay: recruiterDisplay,
+            teamId: teamId,
+            providerType: providerType,
+            laborType: laborType,
+            laborTypeDisplay: laborTypeDisplay,
+            displayName: displayName,
+            gender: genderPair.value ?? entryObj.optNullableString("gender"),
+            dateOfBirth: dobPair.value ?? entryObj.optNullableString("date_of_birth"),
+            nationalId: nidPair.value ?? entryObj.optNullableString("national_id"),
+            nationalIdIssuedAt: issuedAtPair.value ?? entryObj.optNullableString("national_id_issued_at"),
+            nationalIdIssuedPlace: issuedPlacePair.value ?? entryObj.optNullableString("national_id_issued_place"),
+            address: addressPair.value ?? entryObj.optNullableString("address"),
+            phone: phonePair.value ?? entryObj.optNullableString("phone"),
+            generalNote: generalNote,
+            paymentState: paymentState,
+            bankId: bankId,
+            bankName: bankDisplay,
+            rawBankName: rawBankName,
+            accountNumber: accountNumber,
+            accountHolderName: accountHolderName,
+            employmentStatus: employmentStatus,
+            employmentEffectiveDate: employmentEffectiveDate,
+            employmentStatusVersion: employmentStatusVersion,
+            employmentLeaveReason: employmentLeaveReason,
+            portraitPreviewPath: portraitPreviewPath,
+            portraitDownloadPath: portraitDownloadPath,
+            documents: docs,
+            workerDetailsStates: wdStates,
+            fileVersions: fileVers
+        )
+    }
+
+    public static func buildDirectEditFormInput(from detail: WorkerEntryDetail) -> DirectEditFormInput {
+        let resolvedBank = VietQrBankCatalog.resolveForInitialValue(
+            bankId: detail.bankId,
+            bankName: detail.rawBankName ?? detail.bankName
+        )
+        return DirectEditFormInput(
+            employeeCode: detail.employeeCode,
+            projectId: detail.projectId,
+            firstWorkDateUi: DirectEntryContract.isoDateToUiDate(detail.firstWorkDate),
+            recruiterId: detail.recruiterId,
+            laborTypeKey: detail.laborType,
+            statusCode: detail.employmentStatus,
+            statusEffectiveDateUi: DirectEntryContract.isoDateToUiDate(
+                detail.employmentEffectiveDate.isEmpty ? detail.firstWorkDate : detail.employmentEffectiveDate
+            ),
+            leaveReason: detail.employmentLeaveReason ?? "",
+            displayName: detail.displayName,
+            gender: detail.gender?.uppercased() ?? "",
+            dateOfBirthUi: DirectEntryContract.isoDateToUiDate(detail.dateOfBirth ?? ""),
+            nationalId: detail.nationalId ?? "",
+            nationalIdIssuedAtUi: DirectEntryContract.isoDateToUiDate(detail.nationalIdIssuedAt ?? ""),
+            nationalIdIssuedPlace: detail.nationalIdIssuedPlace ?? "",
+            address: detail.address ?? "",
+            phone: detail.phone ?? "",
+            accountHolderName: detail.accountHolderName ?? "",
+            accountNumber: detail.accountNumber ?? "",
+            bankId: resolvedBank.bankId,
+            bankName: resolvedBank.bankName
+        )
+    }
+
+    public static func validateDirectEditFormFields(
+        baseline: WorkerEntryDetail,
+        input: DirectEditFormInput
+    ) -> [String: String] {
+        var errors: [String: String] = [:]
+
+        let cleanEmployeeCode = input.employeeCode.trimmingCharacters(in: .whitespacesAndNewlines)
+        if cleanEmployeeCode != baseline.employeeCode.trimmingCharacters(in: .whitespacesAndNewlines) &&
+            !matchesRegex(employeeCodeRegex, cleanEmployeeCode) {
+            errors["employee_code"] = "Mã NLĐ sai định dạng. Hãy nhập theo mẫu hrp-XXXX-XXXXXX (ví dụ: hrp-2026-001456)."
+        }
+
+        let cleanProjectId = input.projectId.trimmingCharacters(in: .whitespacesAndNewlines)
+        if cleanProjectId != baseline.projectId.trimmingCharacters(in: .whitespacesAndNewlines) &&
+            !matchesRegex(safeCatalogIdRegex, cleanProjectId) {
+            errors["project_id"] = "Vui lòng chọn một Dự án hợp lệ từ danh sách."
+        }
+
+        let cleanLaborType = input.laborTypeKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        if cleanLaborType != baseline.laborType.trimmingCharacters(in: .whitespacesAndNewlines) &&
+            !matchesRegex(laborTypeKeyRegex, cleanLaborType) {
+            errors["labor_type"] = "Vui lòng chọn Loại hình lao động hợp lệ từ danh sách."
+        }
+
+        let cleanRecruiterId = input.recruiterId.trimmingCharacters(in: .whitespacesAndNewlines)
+        if cleanRecruiterId != baseline.recruiterId.trimmingCharacters(in: .whitespacesAndNewlines) &&
+            UUID(uuidString: cleanRecruiterId) == nil {
+            errors["recruiter_id"] = "Vui lòng chọn Người tuyển hợp lệ từ danh sách."
+        }
+
+        let isoFirstWork = DirectEntryContract.uiDateToIsoDate(input.firstWorkDateUi)
+        if isoFirstWork.isEmpty {
+            errors["first_work_date"] = "Ngày bắt đầu không hợp lệ. Hãy nhập đúng DD/MM/YYYY (ví dụ: 30/10/2026)."
+        }
+
+        let cleanStatus = input.statusCode.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        if !cleanStatus.isEmpty {
+            let isoEff = DirectEntryContract.uiDateToIsoDate(input.statusEffectiveDateUi)
+            if isoEff.isEmpty {
+                errors["employment_effective_date"] = "Ngày hiệu lực không hợp lệ. Hãy nhập đúng DD/MM/YYYY (ví dụ: 30/10/2026)."
+            } else {
+                let statusChanged = cleanStatus != baseline.employmentStatus.uppercased() ||
+                    isoEff != baseline.employmentEffectiveDate ||
+                    (cleanStatus == "OFF" && input.leaveReason.trimmingCharacters(in: .whitespacesAndNewlines) != (baseline.employmentLeaveReason ?? "").trimmingCharacters(in: .whitespacesAndNewlines))
+                if statusChanged && cleanStatus == "OFF" && input.leaveReason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    errors["employment_leave_reason"] = "Khi chọn trạng thái Đã nghỉ, bắt buộc phải nhập Lý do nghỉ việc."
+                }
+            }
+        }
+
+        let cleanDisplayName = input.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanNationalId = input.nationalId.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !cleanNationalId.isEmpty && !isValidCccd9Or12(cleanNationalId) {
+            errors["national_id"] = "Số CCCD/CMND phải gồm đúng 9 hoặc 12 chữ số hợp lệ (hiện đang nhập \(cleanNationalId.count) chữ số), hoặc xóa trống."
+        }
+
+        let hasValid12Cccd = isValidCccd12(cleanNationalId)
+        if cleanDisplayName.isEmpty && !hasValid12Cccd && cleanDisplayName != baseline.displayName.trimmingCharacters(in: .whitespacesAndNewlines) {
+            errors["display_name"] = "Họ và tên không được để trống (trừ khi đã nhập đủ 12 chữ số CCCD hợp lệ)."
+        } else if cleanDisplayName.count > 256 {
+            errors["display_name"] = "Họ và tên không hợp lệ (tối đa 256 ký tự)."
+        }
+
+        let cleanDob = input.dateOfBirthUi.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !cleanDob.isEmpty {
+            let baseDobUi = DirectEntryContract.isoDateToUiDate(baseline.dateOfBirth ?? "")
+            if cleanDob != baseDobUi && DirectEntryContract.uiDateToIsoDate(cleanDob).isEmpty {
+                errors["date_of_birth"] = "Ngày sinh không hợp lệ. Hãy nhập đúng DD/MM/YYYY (ví dụ: 15/05/1995) hoặc xóa trống."
+            }
+        }
+
+        let cleanIssuedAt = input.nationalIdIssuedAtUi.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !cleanIssuedAt.isEmpty {
+            let baseIssuedUi = DirectEntryContract.isoDateToUiDate(baseline.nationalIdIssuedAt ?? "")
+            if cleanIssuedAt != baseIssuedUi && DirectEntryContract.uiDateToIsoDate(cleanIssuedAt).isEmpty {
+                errors["national_id_issued_at"] = "Ngày cấp CCCD không hợp lệ. Hãy nhập đúng DD/MM/YYYY (ví dụ: 20/08/2021) hoặc xóa trống."
+            }
+        }
+
+        let cleanAccount = input.accountNumber.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !cleanAccount.isEmpty && !matchesRegex(paymentAccountDigitsRegex, cleanAccount) {
+            errors["account_number"] = "Số tài khoản chỉ được chứa chữ số (1–64 chữ số), không chứa dấu cách hay ký tự chữ."
+        }
+
+        let cleanBankName = input.bankName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if cleanBankName.count > 256 {
+            errors["bank_query_text"] = "Tên ngân hàng không hợp lệ (tối đa 256 ký tự)."
+        }
+
+        let cleanHolder = input.accountHolderName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if cleanHolder.count > 256 {
+            errors["account_holder_name"] = "Tên chủ tài khoản không hợp lệ (tối đa 256 ký tự)."
+        }
+
+        return errors
+    }
+
+    public static func buildDirectEditPatch(
+        baseline: WorkerEntryDetail,
+        input: DirectEditFormInput,
+        canEditEmploymentStatus: Bool = true
+    ) throws -> [String: Any] {
+        let fieldErrors = validateDirectEditFormFields(baseline: baseline, input: input)
+        if let firstErr = fieldErrors.values.first {
+            throw NSError(domain: "DirectEditValidation", code: 400, userInfo: [NSLocalizedDescriptionKey: firstErr])
+        }
+
+        var patch: [String: Any] = [:]
+
+        let cleanProjectId = input.projectId.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !cleanProjectId.isEmpty && cleanProjectId != baseline.projectId.trimmingCharacters(in: .whitespacesAndNewlines) {
+            patch["project_id"] = cleanProjectId
+        }
+
+        let isoFirstWork = DirectEntryContract.uiDateToIsoDate(input.firstWorkDateUi)
+        if !isoFirstWork.isEmpty && isoFirstWork != baseline.firstWorkDate.trimmingCharacters(in: .whitespacesAndNewlines) {
+            patch["first_work_date"] = isoFirstWork
+        }
+
+        let cleanEmployeeCode = input.employeeCode.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !cleanEmployeeCode.isEmpty && cleanEmployeeCode != baseline.employeeCode.trimmingCharacters(in: .whitespacesAndNewlines) {
+            patch["employee_code"] = cleanEmployeeCode.lowercased()
+        }
+
+        let cleanRecruiterId = input.recruiterId.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !cleanRecruiterId.isEmpty && cleanRecruiterId != baseline.recruiterId.trimmingCharacters(in: .whitespacesAndNewlines) {
+            patch["recruiter_id"] = cleanRecruiterId
+        }
+
+        let cleanLaborType = input.laborTypeKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !cleanLaborType.isEmpty && cleanLaborType != baseline.laborType.trimmingCharacters(in: .whitespacesAndNewlines) {
+            patch["labor_type"] = cleanLaborType
+        }
+
+        // Personal section (`worker_details`)
+        func resolveOptionalField(
+            fieldKey: String,
+            baselineValue: String?,
+            rawInput: String,
+            isDate: Bool
+        ) -> (dict: [String: Any]?, changed: Bool) {
+            let baseState = baseline.workerDetailsStates[fieldKey] ?? ((baselineValue?.isEmpty == false) ? "provided" : "omitted")
+            let baseVal = baselineValue?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let trimmed = rawInput.trimmingCharacters(in: .whitespacesAndNewlines)
+            let normalizedVal: String = {
+                if trimmed.isEmpty { return "" }
+                if isDate {
+                    let iso = DirectEntryContract.uiDateToIsoDate(trimmed)
+                    return iso.isEmpty ? trimmed : iso
+                }
+                return trimmed
+            }()
+
+            if normalizedVal.isEmpty {
+                if baseState == "provided" {
+                    return (["state": "intentionally_blank"], true)
+                }
+                return (["state": baseState], false)
+            }
+            if baseState == "provided" && normalizedVal == baseVal {
+                return (["state": "provided", "value": normalizedVal], false)
+            }
+            return (["state": "provided", "value": normalizedVal], true)
+        }
+
+        let normalizedGender: String = {
+            let g = input.gender.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+            if g == "NAM" || g == "MALE" { return "MALE" }
+            if g == "NỮ" || g == "NU" || g == "FEMALE" { return "FEMALE" }
+            return ""
+        }()
+
+        let genderRes = resolveOptionalField(fieldKey: "gender", baselineValue: baseline.gender, rawInput: normalizedGender, isDate: false)
+        let dobRes = resolveOptionalField(fieldKey: "date_of_birth", baselineValue: baseline.dateOfBirth, rawInput: input.dateOfBirthUi, isDate: true)
+        let nidRes = resolveOptionalField(fieldKey: "national_id", baselineValue: baseline.nationalId, rawInput: input.nationalId, isDate: false)
+        let issuedAtRes = resolveOptionalField(fieldKey: "national_id_issued_at", baselineValue: baseline.nationalIdIssuedAt, rawInput: input.nationalIdIssuedAtUi, isDate: true)
+        let issuedPlaceRes = resolveOptionalField(fieldKey: "national_id_issued_place", baselineValue: baseline.nationalIdIssuedPlace, rawInput: input.nationalIdIssuedPlace, isDate: false)
+        let addressRes = resolveOptionalField(fieldKey: "address", baselineValue: baseline.address, rawInput: input.address, isDate: false)
+        let phoneRes = resolveOptionalField(fieldKey: "phone", baselineValue: baseline.phone, rawInput: input.phone, isDate: false)
+
+        let cleanDisplayName = input.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let personalChanged = cleanDisplayName != baseline.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+            || genderRes.changed || dobRes.changed || nidRes.changed
+            || issuedAtRes.changed || issuedPlaceRes.changed || addressRes.changed || phoneRes.changed
+
+        if personalChanged {
+            var wd: [String: Any] = [
+                "display_name": cleanDisplayName,
+                "date_of_birth": dobRes.dict ?? ["state": "omitted"],
+                "national_id": nidRes.dict ?? ["state": "omitted"],
+                "address": addressRes.dict ?? ["state": "omitted"],
+                "phone": phoneRes.dict ?? ["state": "omitted"]
+            ]
+            if let gDict = genderRes.dict { wd["gender"] = gDict }
+            if let iaDict = issuedAtRes.dict { wd["national_id_issued_at"] = iaDict }
+            if let ipDict = issuedPlaceRes.dict { wd["national_id_issued_place"] = ipDict }
+            patch["worker_details"] = wd
+        }
+
+        // Payment section (`payment`)
+        let trimmedAccount = input.accountNumber.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedHolder = input.accountHolderName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedBankId = input.bankId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let trimmedBankName = input.bankName.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if trimmedAccount.isEmpty && trimmedHolder.isEmpty && trimmedBankId.isEmpty && trimmedBankName.isEmpty {
+            if baseline.paymentState == "provided" {
+                patch["payment"] = [
+                    "state": "intentionally_blank",
+                    "account_number": NSNull(),
+                    "bank_id": NSNull(),
+                    "bank_name": NSNull(),
+                    "account_holder_name": NSNull()
+                ]
+            }
+        } else {
+            let resolvedBank = VietQrBankCatalog.resolveForInitialValue(
+                bankId: trimmedBankId.isEmpty ? nil : trimmedBankId,
+                bankName: trimmedBankName.isEmpty ? nil : trimmedBankName
+            )
+            let nextBankId = resolvedBank.bankId
+            let nextBankName = resolvedBank.bankName.isEmpty ? nil : resolvedBank.bankName
+            let nextAcc: String? = trimmedAccount.isEmpty ? nil : trimmedAccount
+            let nextHolder: String? = trimmedHolder.isEmpty ? nil : trimmedHolder
+
+            let baseAcc = baseline.accountNumber?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let baseBankId = baseline.bankId?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let baseBankName = (baseline.rawBankName ?? baseline.bankName)?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let baseHolder = baseline.accountHolderName?.trimmingCharacters(in: .whitespacesAndNewlines)
+
+            let bankSame = (baseBankId ?? "") == (nextBankId ?? "") &&
+                (nextBankId != nil || (baseBankName ?? "") == (nextBankName ?? ""))
+            let paymentUnchanged = baseline.paymentState == "provided"
+                && (baseAcc ?? "") == (nextAcc ?? "")
+                && bankSame
+                && (baseHolder ?? "") == (nextHolder ?? "")
+
+            if !paymentUnchanged {
+                var payDict: [String: Any] = [
+                    "state": "provided",
+                    "account_number": nextAcc ?? NSNull(),
+                    "bank_id": nextBankId ?? NSNull(),
+                    "account_holder_name": nextHolder ?? NSNull()
+                ]
+                if nextBankName != nil || nextBankId == nil {
+                    payDict["bank_name"] = nextBankName ?? NSNull()
+                }
+                patch["payment"] = payDict
+            }
+        }
+
+        // Employment status (`employment_status`)
+        if canEditEmploymentStatus {
+            let cleanStatus = input.statusCode.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+            let isoEff = DirectEntryContract.uiDateToIsoDate(input.statusEffectiveDateUi)
+            let cleanLeaveReason = input.leaveReason.trimmingCharacters(in: .whitespacesAndNewlines)
+            let statusChanged = !cleanStatus.isEmpty && (
+                cleanStatus != baseline.employmentStatus.uppercased() ||
+                (!isoEff.isEmpty && isoEff != baseline.employmentEffectiveDate) ||
+                (cleanStatus == "OFF" && cleanLeaveReason != (baseline.employmentLeaveReason ?? "").trimmingCharacters(in: .whitespacesAndNewlines))
+            )
+            if statusChanged {
+                var empDict: [String: Any] = [
+                    "status": cleanStatus,
+                    "effective_date": isoEff
+                ]
+                if cleanStatus == "OFF" {
+                    empDict["leave_reason"] = cleanLeaveReason
+                } else {
+                    empDict["leave_reason"] = NSNull()
+                }
+                patch["employment_status"] = empDict
+            }
+        }
+
+        return patch
+    }
+
+    public static func describePrivilegedEditInvalidError(patch: [String: Any]) -> String {
+        let keys = Set(patch.keys)
+        if keys == ["payment"] {
+            return "Không lưu được Thông tin tài khoản ngân hàng: Máy chủ từ chối giá trị ngân hàng hoặc thiếu thông tin. Hãy kiểm tra Số tài khoản (chỉ gồm chữ số), chọn một Ngân hàng từ danh sách gợi ý VietQR (ví dụ: Vietcombank, BIDV, Techcombank...) và nhập Tên chủ tài khoản."
+        }
+        var hints: [String] = []
+        if keys.contains("employee_code") {
+            let codeVal = patch["employee_code"] as? String ?? ""
+            hints.append("• Mã NLĐ (\"\(codeVal)\"): Phải đúng định dạng hrp-XXXX-XXXXXX (ví dụ hrp-2026-001456).")
+        }
+        if keys.contains("first_work_date") || keys.contains("project_id") || keys.contains("recruiter_id") || keys.contains("labor_type") {
+            hints.append("• Thông tin công việc: Kiểm tra Ngày bắt đầu (DD/MM/YYYY), Dự án, Người tuyển và Loại hình lao động phải đang hoạt động hợp lệ.")
+        }
+        if keys.contains("employment_status") {
+            hints.append("• Trạng thái làm việc: Kiểm tra Ngày hiệu lực (DD/MM/YYYY) và nhập Lý do nghỉ nếu chọn Đã nghỉ.")
+        }
+        if keys.contains("worker_details") {
+            hints.append("• Thông tin cá nhân: Kiểm tra Họ và tên, Số CCCD (đúng 9 hoặc 12 chữ số), Ngày sinh và Ngày cấp CCCD (DD/MM/YYYY).")
+        }
+        if keys.contains("payment") {
+            hints.append("• Thông tin tài khoản ngân hàng: Kiểm tra Số tài khoản (chỉ gồm chữ số), chọn Ngân hàng từ danh sách gợi ý VietQR và nhập Tên chủ tài khoản.")
+        }
+        if hints.isEmpty {
+            return "Dữ liệu chỉnh sửa chưa hợp lệ. Vui lòng kiểm tra lại các trường vừa thay đổi."
+        }
+        return "Không lưu được do trường vừa sửa chưa hợp lệ:\n" + hints.joined(separator: "\n")
+    }
+
+    public func fetchWorkerEntryDetail(entryId: String) async -> MiniBiApiResult<WorkerEntryDetail> {
+        let cleanId = entryId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanId.isEmpty else {
+            return .failure(message: "Không tìm thấy mã định danh hồ sơ NLĐ.")
+        }
+        let encoded = cleanId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? cleanId
+        let response = await httpClient.request(
+            method: "GET",
+            path: "/api/direct-entry/entries/\(encoded)"
+        )
+        guard response.isSuccess, let root = response.jsonObject else {
+            return .failure(
+                message: response.errorMessage ?? "Không thể tải chi tiết hồ sơ NLĐ từ máy chủ.",
+                httpStatus: response.statusCode,
+                errorCode: response.errorCode
+            )
+        }
+        let detail = Self.parseWorkerEntryDetail(root)
+        return .success(detail, statusCode: response.statusCode)
+    }
+
+    public func submitPrivilegedEdit(
+        entryId: String,
+        expectedEntryVersion: Int,
+        patch: [String: Any],
+        reason: String? = nil
+    ) async -> MiniBiApiResult<WorkerEntryDetail> {
+        let cleanId = entryId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanId.isEmpty else {
+            return .failure(message: "Không tìm thấy mã định danh hồ sơ NLĐ.")
+        }
+        let encoded = cleanId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? cleanId
+        let idemKey = UUID().uuidString.lowercased()
+        var body: [String: Any] = [
+            "expected_entry_version": max(1, expectedEntryVersion),
+            "patch": patch
+        ]
+        if let r = reason?.trimmingCharacters(in: .whitespacesAndNewlines), !r.isEmpty {
+            body["reason"] = r
+        } else {
+            body["reason"] = NSNull()
+        }
+
+        let response = await httpClient.request(
+            method: "POST",
+            path: "/api/direct-entry/entries/\(encoded)/privileged-edit",
+            jsonBody: body,
+            additionalHeaders: ["Idempotency-Key": idemKey]
+        )
+        guard response.isSuccess else {
+            if response.errorCode == "PRIVILEGED_EDIT_INVALID" {
+                return .failure(
+                    message: Self.describePrivilegedEditInvalidError(patch: patch),
+                    httpStatus: response.statusCode,
+                    errorCode: response.errorCode
+                )
+            }
+            return .failure(
+                message: response.errorMessage ?? "Cập nhật trực tiếp hồ sơ thất bại.",
+                httpStatus: response.statusCode,
+                errorCode: response.errorCode
+            )
+        }
+        if let root = response.jsonObject {
+            let updated = Self.parseWorkerEntryDetail(root)
+            if !updated.entryId.isEmpty {
+                return .success(updated, statusCode: response.statusCode)
+            }
+        }
+        return await fetchWorkerEntryDetail(entryId: cleanId)
+    }
+
     // MARK: - Parser
 
     public static func parseCccdReviewItem(_ obj: [String: Any], fallbackIndex: Int) -> CccdReviewItem {

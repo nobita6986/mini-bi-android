@@ -14,6 +14,7 @@ public final class MiniBiViewModel: ObservableObject {
     public let timeAnchorManager: AttendanceTimeAnchorManager
     public let notificationService: NotificationService
     public let leaveService: LeaveService
+    public let salaryAdvanceService: SalaryAdvanceService
 
     // MARK: - Environment & Theme
     @Published public var environmentConfig: AppEnvironmentConfig = .current
@@ -83,6 +84,50 @@ public final class MiniBiViewModel: ObservableObject {
     @Published public var selectedWorkerDetail: WorkerItem?
     @Published public var isUploadingWorkerContract: Bool = false
 
+    // MARK: - Direct Edit ("Sửa trực tiếp") State
+    @Published public var directEditWorkerTarget: WorkerItem?
+    @Published public var directEditBaselineDetail: WorkerEntryDetail?
+    @Published public var directEditLoadingDetail: Bool = false
+    @Published public var directEditSavingProfile: Bool = false
+    @Published public var directEditErrorMessage: String?
+    @Published public var directEditFieldErrors: [String: String] = [:]
+    @Published public var directEditProfileSavedMessage: String?
+    @Published public var directEditFileStatuses: [String: DirectEditFileState] = [:]
+
+    // MARK: - Salary Advance ("Ứng lương" for QLDA) State
+    @Published public var salaryAdvanceContext: SalaryAdvanceContextResponse?
+    @Published public var salaryAdvanceSheetOpen: Bool = false
+    @Published public var salaryAdvanceSelectedProjectId: String?
+    @Published public var salaryAdvanceWorkerSearch: String = ""
+    @Published public var salaryAdvanceWorkers: [SalaryAdvanceWorkerItem] = []
+    @Published public var salaryAdvanceWorkersLoading: Bool = false
+    @Published public var salaryAdvanceWorkersLoadingMore: Bool = false
+    @Published public var salaryAdvanceWorkersError: String?
+    @Published public var salaryAdvanceWorkersNextCursor: String?
+    @Published public var salaryAdvanceWorkersHasMore: Bool = false
+    @Published public var salaryAdvanceSelectedWorkerId: String?
+    @Published public var salaryAdvancePaymentMethod: String = SalaryAdvanceContract.paymentMethodCash
+    @Published public var salaryAdvanceAmountRaw: String = ""
+    @Published public var salaryAdvanceInitialContent: String = ""
+    @Published public var salaryAdvanceCreateSubmitting: Bool = false
+    @Published public var salaryAdvanceCreateError: String?
+    @Published public var salaryAdvancePendingIdempotencyKey: String?
+    @Published public var salaryAdvancePendingSignature: String?
+
+    @Published public var salaryAdvanceHistoryOpen: Bool = false
+    @Published public var salaryAdvanceHistoryPeriodMode: String = SalaryAdvanceContract.periodModeLast30Days
+    @Published public var salaryAdvanceHistoryMonth: String = ""
+    @Published public var salaryAdvanceHistoryFromDate: String = ""
+    @Published public var salaryAdvanceHistoryToDate: String = ""
+    @Published public var salaryAdvanceHistoryLoading: Bool = false
+    @Published public var salaryAdvanceHistoryLoadingMore: Bool = false
+    @Published public var salaryAdvanceHistoryError: String?
+    @Published public var salaryAdvanceHistoryResponse: SalaryAdvanceWorkerHistoryResponse?
+    @Published public var salaryAdvanceHistoryItems: [SalaryAdvanceHistoryItem] = []
+    @Published public var salaryAdvanceHistoryNextCursor: String?
+    @Published public var salaryAdvanceHistoryHasMore: Bool = false
+    private var salaryAdvanceSearchTask: Task<Void, Never>?
+
     // MARK: - Attendance State
     @Published public var attendanceTimeEvaluation: AnchorEvaluationResult
     @Published public var attendanceOutboxItems: [AttendanceOutboxItem] = []
@@ -126,7 +171,8 @@ public final class MiniBiViewModel: ObservableObject {
         attendanceOutboxService: AttendanceOutboxService = .shared,
         timeAnchorManager: AttendanceTimeAnchorManager = AttendanceTimeAnchorManager(),
         notificationService: NotificationService = .shared,
-        leaveService: LeaveService = .shared
+        leaveService: LeaveService = .shared,
+        salaryAdvanceService: SalaryAdvanceService = .shared
     ) {
         self.repository = repository
         self.directEntryService = directEntryService
@@ -135,6 +181,7 @@ public final class MiniBiViewModel: ObservableObject {
         self.timeAnchorManager = timeAnchorManager
         self.notificationService = notificationService
         self.leaveService = leaveService
+        self.salaryAdvanceService = salaryAdvanceService
         self.attendanceTimeEvaluation = timeAnchorManager.evaluateAnchor()
 
         let bundleEnv = AppEnvironmentConfig.current
@@ -237,6 +284,10 @@ public final class MiniBiViewModel: ObservableObject {
             activeAttendanceTab = .checkIn
             if isAuthenticated {
                 Task { await refreshMyLeaveSummary(year: leaveYear) }
+            }
+        } else if destination == .workers {
+            if isAuthenticated {
+                Task { await loadSalaryAdvanceContext() }
             }
         }
     }
@@ -341,6 +392,7 @@ public final class MiniBiViewModel: ObservableObject {
             await refreshNotifications()
             await loadDashboardData()
             await loadDirectEntryAssigneeOptions()
+            await loadSalaryAdvanceContext()
             await loadWorkReportsData()
         }
     }
@@ -348,6 +400,7 @@ public final class MiniBiViewModel: ObservableObject {
     public func performLogout() async {
         notificationService.stopSseStream()
         attendanceOutboxService.stopNetworkAutoFlush()
+        salaryAdvanceSearchTask?.cancel()
         await repository.logout()
 
         isAuthenticated = false
@@ -357,6 +410,10 @@ public final class MiniBiViewModel: ObservableObject {
         newWorkerDraftRows = [NewWorkerEntryDraft()]
         selectedObligationEditor = nil
         editorFieldValues = [:]
+        selectedWorkerDetail = nil
+        closeDirectEdit()
+        salaryAdvanceContext = nil
+        closeSalaryAdvanceSheet()
         notifications = []
         unreadNotificationCount = 0
         announcedNotificationIds = []
@@ -853,6 +910,705 @@ public final class MiniBiViewModel: ObservableObject {
         case .failure(let message, _, _, _):
             showBanner(message, isError: true)
             return false
+        }
+    }
+
+    // MARK: - Direct Edit ("Sửa trực tiếp hồ sơ NLĐ") Actions
+
+    public func openDirectEdit(_ worker: WorkerItem) async {
+        guard worker.canDirectEdit else {
+            showBanner("Bạn không có quyền sửa trực tiếp hồ sơ này.", isError: true)
+            return
+        }
+        directEditWorkerTarget = worker
+        directEditBaselineDetail = nil
+        directEditLoadingDetail = true
+        directEditSavingProfile = false
+        directEditErrorMessage = nil
+        directEditFieldErrors = [:]
+        directEditProfileSavedMessage = nil
+        directEditFileStatuses = [:]
+
+        if directEntryOptions.projects.isEmpty && directEntryOptions.catalogLaborTypes.isEmpty {
+            await loadDirectEntryAssigneeOptions()
+        }
+
+        let targetEntryId = !worker.entryIdUuid.isEmpty ? worker.entryIdUuid : (worker.id != 0 ? String(worker.id) : worker.maNld)
+        let detailRes = await directEntryService.fetchWorkerEntryDetail(entryIdUuid: targetEntryId)
+        directEditLoadingDetail = false
+
+        switch detailRes {
+        case .success(let detail, _):
+            directEditBaselineDetail = detail
+            if !detail.canDirectEdit {
+                directEditErrorMessage = "Tài khoản hiện tại không có quyền sửa trực tiếp hồ sơ này."
+            }
+        case .failure(let message, _, _, _):
+            directEditErrorMessage = message
+        }
+    }
+
+    public func closeDirectEdit() {
+        directEditWorkerTarget = nil
+        directEditBaselineDetail = nil
+        directEditLoadingDetail = false
+        directEditSavingProfile = false
+        directEditErrorMessage = nil
+        directEditFieldErrors = [:]
+        directEditProfileSavedMessage = nil
+        directEditFileStatuses = [:]
+    }
+
+    public func submitDirectEditProfileAndDocuments(
+        form: DirectEditFormInput,
+        stagedFiles: [String: [LocalAttachmentItem]],
+        onAllComplete: (() -> Void)? = nil
+    ) async {
+        guard !directEditSavingProfile else { return }
+        guard let baseline = directEditBaselineDetail else { return }
+
+        directEditErrorMessage = nil
+        directEditFieldErrors = [:]
+
+        let validationErrors = DirectEntryService.validateDirectEditFormFields(baseline: baseline, form: form)
+        if !validationErrors.isEmpty {
+            directEditFieldErrors = validationErrors
+            let firstError = validationErrors.values.first ?? "Dữ liệu chỉnh sửa chưa hợp lệ."
+            directEditErrorMessage = validationErrors.count == 1
+                ? firstError
+                : "Có \(validationErrors.count) trường chưa hợp lệ: \(firstError)"
+            return
+        }
+
+        let patch = DirectEntryService.buildDirectEditPatch(baseline: baseline, form: form)
+        let nonEmptyStaged = stagedFiles.filter { !$0.value.isEmpty }
+
+        if patch.isEmpty && nonEmptyStaged.isEmpty {
+            directEditErrorMessage = "Chưa có thay đổi thông tin hoặc tệp đính kèm nào để lưu."
+            return
+        }
+
+        var currentVersion = baseline.entryVersion
+        let targetEntryId = !baseline.entryIdUuid.isEmpty
+            ? baseline.entryIdUuid
+            : (baseline.id != 0 ? String(baseline.id) : baseline.maNld)
+
+        // Step 1: Save profile fields via privileged-edit API first (if any field changed or if profile hasn't been saved yet)
+        if !patch.isEmpty {
+            directEditSavingProfile = true
+            let editRes = await directEntryService.submitPrivilegedEdit(
+                entryIdUuid: targetEntryId,
+                expectedEntryVersion: currentVersion,
+                patch: patch
+            )
+            directEditSavingProfile = false
+
+            switch editRes {
+            case .success(let newVersion, _):
+                currentVersion = newVersion
+                directEditProfileSavedMessage = "Đã lưu thông tin hồ sơ (v\(newVersion))."
+                // Refresh baseline so subsequent retries don't re-submit already saved profile changes
+                if case .success(let refreshed, _) = await directEntryService.fetchWorkerEntryDetail(entryIdUuid: targetEntryId) {
+                    directEditBaselineDetail = refreshed
+                    currentVersion = refreshed.entryVersion
+                } else if var cur = directEditBaselineDetail {
+                    cur.entryVersion = newVersion
+                    directEditBaselineDetail = cur
+                }
+
+            case .failure(let message, let httpStatus, let errorCode, _):
+                directEditErrorMessage = message
+                let codeUpper = (errorCode ?? "").uppercased()
+                if httpStatus == 409 && codeUpper == "OCC_CONFLICT" {
+                    if case .success(let refreshed, _) = await directEntryService.fetchWorkerEntryDetail(entryIdUuid: targetEntryId) {
+                        directEditBaselineDetail = refreshed
+                    }
+                }
+                return
+            }
+        }
+
+        // Step 2: Upload staged documents sequentially via private R2 upload (reserve -> PUT -> finalize)
+        var anyFileFailed = false
+        if !nonEmptyStaged.isEmpty {
+            let orderedDocTypes = [
+                DirectEntryContract.docTypeWorkerPortrait,
+                DirectEntryContract.docTypeCccdFront,
+                DirectEntryContract.docTypeCccdBack,
+                DirectEntryContract.docTypeEmploymentContract,
+            ]
+            for docType in orderedDocTypes {
+                guard let files = nonEmptyStaged[docType], !files.isEmpty else { continue }
+                let displayName = files.count >= 2
+                    ? "\(files.count) tệp ảnh (ghép PDF)"
+                    : (files.first?.fileName ?? docType)
+                directEditFileStatuses[docType] = DirectEditFileState(
+                    docType: docType,
+                    fileName: displayName,
+                    status: .uploading,
+                    message: "Đang tải tệp..."
+                )
+                let upRes = await directEntryService.uploadEntryDocumentAttachmentsWithVersion(
+                    entryIdUuid: targetEntryId,
+                    docType: docType,
+                    attachments: files,
+                    initialEntryVersion: currentVersion
+                )
+                currentVersion = upRes.nextEntryVersion
+                if var cur = directEditBaselineDetail {
+                    cur.entryVersion = currentVersion
+                    directEditBaselineDetail = cur
+                }
+                switch upRes.result {
+                case .success:
+                    directEditFileStatuses[docType] = DirectEditFileState(
+                        docType: docType,
+                        fileName: displayName,
+                        status: .success,
+                        message: "Đã tải tệp thành công."
+                    )
+                case .failure(let errMsg, _, _, _):
+                    anyFileFailed = true
+                    directEditFileStatuses[docType] = DirectEditFileState(
+                        docType: docType,
+                        fileName: displayName,
+                        status: .error,
+                        message: errMsg
+                    )
+                }
+            }
+
+            if case .success(let refreshed, _) = await directEntryService.fetchWorkerEntryDetail(entryIdUuid: targetEntryId) {
+                directEditBaselineDetail = refreshed
+            }
+        }
+
+        await loadWorkers(resetPage: false)
+
+        if anyFileFailed {
+            directEditErrorMessage = "Một số tệp đính kèm tải lên chưa thành công. Thông tin hồ sơ đã được bảo toàn, bạn có thể bấm Thử lại trên từng tệp lỗi."
+        } else {
+            showBanner("Đã lưu hồ sơ NLĐ thành công.")
+            onAllComplete?()
+            closeDirectEdit()
+        }
+    }
+
+    public func retryDirectEditDocument(
+        docType: String,
+        attachments: [LocalAttachmentItem],
+        onComplete: (() -> Void)? = nil
+    ) async {
+        guard let baseline = directEditBaselineDetail, !attachments.isEmpty else { return }
+        let targetEntryId = !baseline.entryIdUuid.isEmpty
+            ? baseline.entryIdUuid
+            : (baseline.id != 0 ? String(baseline.id) : baseline.maNld)
+        let displayName = attachments.count >= 2
+            ? "\(attachments.count) tệp ảnh (ghép PDF)"
+            : (attachments.first?.fileName ?? docType)
+
+        directEditFileStatuses[docType] = DirectEditFileState(
+            docType: docType,
+            fileName: displayName,
+            status: .uploading,
+            message: "Đang thử tải lại..."
+        )
+
+        let upRes = await directEntryService.uploadEntryDocumentAttachmentsWithVersion(
+            entryIdUuid: targetEntryId,
+            docType: docType,
+            attachments: attachments,
+            initialEntryVersion: baseline.entryVersion
+        )
+
+        if case .success(let refreshed, _) = await directEntryService.fetchWorkerEntryDetail(entryIdUuid: targetEntryId) {
+            directEditBaselineDetail = refreshed
+        } else if var cur = directEditBaselineDetail {
+            cur.entryVersion = upRes.nextEntryVersion
+            directEditBaselineDetail = cur
+        }
+
+        switch upRes.result {
+        case .success:
+            directEditFileStatuses[docType] = DirectEditFileState(
+                docType: docType,
+                fileName: displayName,
+                status: .success,
+                message: "Đã tải tệp thành công."
+            )
+            if !directEditFileStatuses.values.contains(where: { $0.status == .error }) {
+                directEditErrorMessage = nil
+            }
+            await loadWorkers(resetPage: false)
+            onComplete?()
+        case .failure(let errMsg, _, _, _):
+            directEditFileStatuses[docType] = DirectEditFileState(
+                docType: docType,
+                fileName: displayName,
+                status: .error,
+                message: errMsg
+            )
+        }
+    }
+
+    // MARK: - Salary Advance ("Ứng lương" for QLDA) Actions
+
+    public var canShowPmSalaryAdvanceButton: Bool {
+        SalaryAdvanceContract.canShowPmSalaryAdvanceEntry(salaryAdvanceContext)
+    }
+
+    public var selectedSalaryAdvanceWorker: SalaryAdvanceWorkerItem? {
+        guard let selectedId = salaryAdvanceSelectedWorkerId else { return nil }
+        return salaryAdvanceWorkers.first(where: { $0.workerEntryId == selectedId })
+    }
+
+    public func loadSalaryAdvanceContext() async {
+        let res = await salaryAdvanceService.fetchContext()
+        switch res {
+        case .success(let ctx, _):
+            let activeProjects = ctx.managedProjects.filter { $0.isActive }
+            salaryAdvanceContext = SalaryAdvanceContextResponse(
+                actor: ctx.actor,
+                managedProjects: activeProjects,
+                defaults: ctx.defaults
+            )
+            let currentProjectId = salaryAdvanceSelectedProjectId
+            let resolvedProjectId: String?
+            if let currentProjectId, activeProjects.contains(where: { $0.id == currentProjectId }) {
+                resolvedProjectId = currentProjectId
+            } else if let defId = ctx.defaults.projectId, activeProjects.contains(where: { $0.id == defId }) {
+                resolvedProjectId = defId
+            } else {
+                resolvedProjectId = activeProjects.first?.id
+            }
+            salaryAdvanceSelectedProjectId = resolvedProjectId
+        case .failure:
+            break
+        }
+    }
+
+    public func openSalaryAdvanceSheet() async {
+        if salaryAdvanceContext == nil {
+            await loadSalaryAdvanceContext()
+        }
+        guard SalaryAdvanceContract.canShowPmSalaryAdvanceEntry(salaryAdvanceContext) else {
+            showBanner("Tài khoản hiện tại không có dự án QLDA để tạo đề nghị ứng lương.", isError: true)
+            return
+        }
+        let projects = salaryAdvanceContext?.managedProjects ?? []
+        let resolvedProjectId: String?
+        if let cur = salaryAdvanceSelectedProjectId, projects.contains(where: { $0.id == cur }) {
+            resolvedProjectId = cur
+        } else if let def = salaryAdvanceContext?.defaults.projectId, projects.contains(where: { $0.id == def }) {
+            resolvedProjectId = def
+        } else {
+            resolvedProjectId = projects.first?.id
+        }
+
+        salaryAdvanceSheetOpen = true
+        salaryAdvanceSelectedProjectId = resolvedProjectId
+        salaryAdvanceWorkerSearch = ""
+        salaryAdvanceWorkers = []
+        salaryAdvanceWorkersError = nil
+        salaryAdvanceWorkersNextCursor = nil
+        salaryAdvanceWorkersHasMore = false
+        salaryAdvanceSelectedWorkerId = nil
+        salaryAdvancePaymentMethod = SalaryAdvanceContract.paymentMethodCash
+        salaryAdvanceAmountRaw = ""
+        salaryAdvanceInitialContent = ""
+        salaryAdvanceCreateSubmitting = false
+        salaryAdvanceCreateError = nil
+        salaryAdvancePendingIdempotencyKey = nil
+        salaryAdvancePendingSignature = nil
+        salaryAdvanceHistoryOpen = false
+
+        if let resolvedProjectId {
+            await loadSalaryAdvanceProjectWorkers(projectId: resolvedProjectId, search: "", cursor: nil, append: false)
+        }
+    }
+
+    public func closeSalaryAdvanceSheet() {
+        salaryAdvanceSearchTask?.cancel()
+        salaryAdvanceSheetOpen = false
+        salaryAdvanceCreateSubmitting = false
+        salaryAdvanceCreateError = nil
+        salaryAdvancePendingIdempotencyKey = nil
+        salaryAdvancePendingSignature = nil
+        salaryAdvanceHistoryOpen = false
+    }
+
+    public func selectSalaryAdvanceProject(_ projectId: String) async {
+        let trimmed = projectId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        salaryAdvanceSelectedProjectId = trimmed
+        salaryAdvanceSelectedWorkerId = nil
+        salaryAdvanceWorkers = []
+        salaryAdvanceWorkersError = nil
+        salaryAdvanceWorkersNextCursor = nil
+        salaryAdvanceWorkersHasMore = false
+        salaryAdvanceCreateError = nil
+        salaryAdvancePendingIdempotencyKey = nil
+        salaryAdvancePendingSignature = nil
+        await loadSalaryAdvanceProjectWorkers(
+            projectId: trimmed,
+            search: salaryAdvanceWorkerSearch,
+            cursor: nil,
+            append: false
+        )
+    }
+
+    public func updateSalaryAdvanceWorkerSearch(_ query: String) {
+        salaryAdvanceWorkerSearch = query
+        salaryAdvanceSearchTask?.cancel()
+        guard let projectId = salaryAdvanceSelectedProjectId, !projectId.isEmpty else { return }
+        salaryAdvanceSearchTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            guard !Task.isCancelled else { return }
+            await self?.loadSalaryAdvanceProjectWorkers(
+                projectId: projectId,
+                search: query,
+                cursor: nil,
+                append: false
+            )
+        }
+    }
+
+    public func loadMoreSalaryAdvanceWorkers() async {
+        guard !salaryAdvanceWorkersLoading,
+              !salaryAdvanceWorkersLoadingMore,
+              salaryAdvanceWorkersHasMore,
+              let cursor = salaryAdvanceWorkersNextCursor, !cursor.isEmpty,
+              let projectId = salaryAdvanceSelectedProjectId, !projectId.isEmpty else {
+            return
+        }
+        await loadSalaryAdvanceProjectWorkers(
+            projectId: projectId,
+            search: salaryAdvanceWorkerSearch,
+            cursor: cursor,
+            append: true
+        )
+    }
+
+    public func loadSalaryAdvanceProjectWorkers(
+        projectId: String,
+        search: String,
+        cursor: String?,
+        append: Bool
+    ) async {
+        if append {
+            salaryAdvanceWorkersLoadingMore = true
+        } else {
+            salaryAdvanceWorkersLoading = true
+            salaryAdvanceWorkersError = nil
+        }
+
+        let res = await salaryAdvanceService.listProjectWorkers(
+            projectId: projectId,
+            search: search,
+            cursor: cursor,
+            limit: 20
+        )
+
+        if append {
+            salaryAdvanceWorkersLoadingMore = false
+        } else {
+            salaryAdvanceWorkersLoading = false
+        }
+
+        guard salaryAdvanceSelectedProjectId == projectId else { return }
+
+        switch res {
+        case .success(let page, _):
+            let combined = append ? (salaryAdvanceWorkers + page.items) : page.items
+            let filtered = SalaryAdvanceContract.filterSelectableProjectWorkers(combined)
+            let resolvedSelectedId: String?
+            if let cur = salaryAdvanceSelectedWorkerId, filtered.contains(where: { $0.workerEntryId == cur }) {
+                resolvedSelectedId = cur
+            } else {
+                resolvedSelectedId = nil
+            }
+            salaryAdvanceWorkers = filtered
+            salaryAdvanceWorkersError = nil
+            salaryAdvanceWorkersNextCursor = page.nextCursor
+            salaryAdvanceWorkersHasMore = page.hasMore
+            salaryAdvanceSelectedWorkerId = resolvedSelectedId
+
+        case .failure(let message, _, _, _):
+            salaryAdvanceWorkersError = message
+        }
+    }
+
+    public func selectSalaryAdvanceWorker(_ workerEntryId: String) {
+        let trimmed = workerEntryId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        let matched = salaryAdvanceWorkers.first(where: { $0.workerEntryId == trimmed })
+        let currentMethod = salaryAdvancePaymentMethod
+        let nextMethod: String
+        if currentMethod == SalaryAdvanceContract.paymentMethodBankTransfer,
+           let matched,
+           !matched.eligibility.canRequestBankTransfer {
+            nextMethod = SalaryAdvanceContract.paymentMethodCash
+        } else {
+            nextMethod = currentMethod
+        }
+        salaryAdvanceSelectedWorkerId = trimmed
+        salaryAdvancePaymentMethod = nextMethod
+        salaryAdvanceCreateError = nil
+        salaryAdvancePendingIdempotencyKey = nil
+        salaryAdvancePendingSignature = nil
+    }
+
+    public func updateSalaryAdvancePaymentMethod(_ method: String) {
+        let normalized = method.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        guard normalized == SalaryAdvanceContract.paymentMethodCash ||
+              normalized == SalaryAdvanceContract.paymentMethodBankTransfer else { return }
+        salaryAdvancePaymentMethod = normalized
+        salaryAdvanceCreateError = nil
+        salaryAdvancePendingIdempotencyKey = nil
+        salaryAdvancePendingSignature = nil
+    }
+
+    public func updateSalaryAdvanceAmount(_ rawAmount: String) {
+        let digitsOnly = String(rawAmount.filter { $0.isNumber }.prefix(12))
+        salaryAdvanceAmountRaw = digitsOnly
+        salaryAdvanceCreateError = nil
+        salaryAdvancePendingIdempotencyKey = nil
+        salaryAdvancePendingSignature = nil
+    }
+
+    public func updateSalaryAdvanceInitialContent(_ content: String) {
+        salaryAdvanceInitialContent = content
+        salaryAdvanceCreateError = nil
+        salaryAdvancePendingIdempotencyKey = nil
+        salaryAdvancePendingSignature = nil
+    }
+
+    public func submitSalaryAdvanceRequest() async {
+        guard !salaryAdvanceCreateSubmitting else { return }
+        let projectId = (salaryAdvanceSelectedProjectId ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !projectId.isEmpty else {
+            salaryAdvanceCreateError = "Vui lòng chọn dự án."
+            return
+        }
+        guard let worker = selectedSalaryAdvanceWorker else {
+            salaryAdvanceCreateError = "Vui lòng chọn người lao động."
+            return
+        }
+        guard worker.eligibility.isEligibleForAdvance else {
+            salaryAdvanceCreateError = SalaryAdvanceContract.describeWorkerEligibility(worker.eligibility)
+                ?? "Người lao động chưa đủ điều kiện ứng lương."
+            return
+        }
+        if salaryAdvancePaymentMethod == SalaryAdvanceContract.paymentMethodBankTransfer &&
+            !worker.eligibility.canRequestBankTransfer {
+            salaryAdvanceCreateError = SalaryAdvanceContract.describeWorkerBankTransferEligibility(worker)
+                ?? "Người lao động chưa đủ điều kiện nhận chuyển khoản."
+            return
+        }
+        guard let amountVnd = SalaryAdvanceContract.parsePositiveVndAmount(salaryAdvanceAmountRaw) else {
+            salaryAdvanceCreateError = "Số tiền đề nghị phải là số nguyên dương (VNĐ)."
+            return
+        }
+        let trimmedContent = salaryAdvanceInitialContent.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedContent.isEmpty else {
+            salaryAdvanceCreateError = "Vui lòng nhập nội dung đề nghị ứng lương."
+            return
+        }
+
+        let signature = "\(projectId)|\(worker.workerEntryId)|\(amountVnd)|\(salaryAdvancePaymentMethod)|\(trimmedContent)"
+        let idempotencyKey: String
+        if salaryAdvancePendingSignature == signature,
+           let existingKey = salaryAdvancePendingIdempotencyKey, !existingKey.isEmpty {
+            idempotencyKey = existingKey
+        } else {
+            idempotencyKey = UUID().uuidString.lowercased()
+        }
+
+        salaryAdvanceCreateSubmitting = true
+        salaryAdvanceCreateError = nil
+        salaryAdvancePendingIdempotencyKey = idempotencyKey
+        salaryAdvancePendingSignature = signature
+
+        let res = await salaryAdvanceService.createRequest(
+            projectId: projectId,
+            workerEntryId: worker.workerEntryId,
+            requestedAmountVnd: amountVnd,
+            paymentMethod: salaryAdvancePaymentMethod,
+            initialContent: trimmedContent,
+            idempotencyKey: idempotencyKey
+        )
+
+        salaryAdvanceCreateSubmitting = false
+
+        switch res {
+        case .success(let outcome, _):
+            closeSalaryAdvanceSheet()
+            let codeSuffix = outcome.requestCode.isEmpty ? "" : " (\(outcome.requestCode))"
+            showBanner("Đã gửi đề nghị ứng lương thành công\(codeSuffix).")
+        case .failure(let message, _, _, _):
+            salaryAdvanceCreateError = message
+        }
+    }
+
+    // MARK: - Salary Advance Worker History (PM Modal)
+
+    private static func currentVnYearMonth() -> String {
+        let df = DateFormatter()
+        df.locale = Locale(identifier: "en_US_POSIX")
+        df.timeZone = TimeZone(identifier: "Asia/Ho_Chi_Minh") ?? .current
+        df.dateFormat = "yyyy-MM"
+        return df.string(from: Date())
+    }
+
+    public func openSalaryAdvanceWorkerHistory() async {
+        guard let worker = selectedSalaryAdvanceWorker else { return }
+        let defaultMonth = salaryAdvanceHistoryMonth.isEmpty ? Self.currentVnYearMonth() : salaryAdvanceHistoryMonth
+        salaryAdvanceHistoryOpen = true
+        salaryAdvanceHistoryPeriodMode = SalaryAdvanceContract.periodModeLast30Days
+        salaryAdvanceHistoryMonth = defaultMonth
+        salaryAdvanceHistoryLoading = true
+        salaryAdvanceHistoryLoadingMore = false
+        salaryAdvanceHistoryError = nil
+        salaryAdvanceHistoryResponse = nil
+        salaryAdvanceHistoryItems = []
+        salaryAdvanceHistoryNextCursor = nil
+        salaryAdvanceHistoryHasMore = false
+
+        await fetchSalaryAdvanceWorkerHistoryInternal(
+            workerEntryId: worker.workerEntryId,
+            projectId: salaryAdvanceSelectedProjectId,
+            periodMode: SalaryAdvanceContract.periodModeLast30Days,
+            month: defaultMonth,
+            fromDate: salaryAdvanceHistoryFromDate,
+            toDate: salaryAdvanceHistoryToDate,
+            cursor: nil,
+            append: false
+        )
+    }
+
+    public func closeSalaryAdvanceWorkerHistory() {
+        salaryAdvanceHistoryOpen = false
+        salaryAdvanceHistoryLoading = false
+        salaryAdvanceHistoryLoadingMore = false
+        salaryAdvanceHistoryError = nil
+    }
+
+    public func selectSalaryAdvanceHistoryPeriodMode(_ periodMode: String, month: String? = nil) async {
+        guard let worker = selectedSalaryAdvanceWorker else { return }
+        let normalizedMode = periodMode.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        let nextMonth = (month ?? salaryAdvanceHistoryMonth).trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedMonth = nextMonth.isEmpty ? Self.currentVnYearMonth() : nextMonth
+
+        salaryAdvanceHistoryPeriodMode = normalizedMode
+        salaryAdvanceHistoryMonth = resolvedMonth
+        salaryAdvanceHistoryError = nil
+
+        if normalizedMode == SalaryAdvanceContract.periodModeCustomRange &&
+            (salaryAdvanceHistoryFromDate.isEmpty || salaryAdvanceHistoryToDate.isEmpty) {
+            return
+        }
+
+        await fetchSalaryAdvanceWorkerHistoryInternal(
+            workerEntryId: worker.workerEntryId,
+            projectId: salaryAdvanceSelectedProjectId,
+            periodMode: normalizedMode,
+            month: resolvedMonth,
+            fromDate: salaryAdvanceHistoryFromDate,
+            toDate: salaryAdvanceHistoryToDate,
+            cursor: nil,
+            append: false
+        )
+    }
+
+    public func applySalaryAdvanceHistoryCustomRange(fromDate: String, toDate: String) async {
+        guard let worker = selectedSalaryAdvanceWorker else { return }
+        let f = fromDate.trimmingCharacters(in: .whitespacesAndNewlines)
+        let t = toDate.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !f.isEmpty && !t.isEmpty else {
+            salaryAdvanceHistoryError = "Vui lòng nhập đầy đủ từ ngày và đến ngày (YYYY-MM-DD)."
+            return
+        }
+        salaryAdvanceHistoryPeriodMode = SalaryAdvanceContract.periodModeCustomRange
+        salaryAdvanceHistoryFromDate = f
+        salaryAdvanceHistoryToDate = t
+        salaryAdvanceHistoryError = nil
+
+        await fetchSalaryAdvanceWorkerHistoryInternal(
+            workerEntryId: worker.workerEntryId,
+            projectId: salaryAdvanceSelectedProjectId,
+            periodMode: SalaryAdvanceContract.periodModeCustomRange,
+            month: salaryAdvanceHistoryMonth,
+            fromDate: f,
+            toDate: t,
+            cursor: nil,
+            append: false
+        )
+    }
+
+    public func loadMoreSalaryAdvanceWorkerHistory() async {
+        guard !salaryAdvanceHistoryLoading,
+              !salaryAdvanceHistoryLoadingMore,
+              salaryAdvanceHistoryHasMore,
+              let cursor = salaryAdvanceHistoryNextCursor, !cursor.isEmpty,
+              let worker = selectedSalaryAdvanceWorker else {
+            return
+        }
+        await fetchSalaryAdvanceWorkerHistoryInternal(
+            workerEntryId: worker.workerEntryId,
+            projectId: salaryAdvanceSelectedProjectId,
+            periodMode: salaryAdvanceHistoryPeriodMode,
+            month: salaryAdvanceHistoryMonth,
+            fromDate: salaryAdvanceHistoryFromDate,
+            toDate: salaryAdvanceHistoryToDate,
+            cursor: cursor,
+            append: true
+        )
+    }
+
+    private func fetchSalaryAdvanceWorkerHistoryInternal(
+        workerEntryId: String,
+        projectId: String?,
+        periodMode: String,
+        month: String,
+        fromDate: String,
+        toDate: String,
+        cursor: String?,
+        append: Bool
+    ) async {
+        if append {
+            salaryAdvanceHistoryLoadingMore = true
+        } else {
+            salaryAdvanceHistoryLoading = true
+            salaryAdvanceHistoryError = nil
+        }
+
+        let res = await salaryAdvanceService.fetchWorkerHistoryForPm(
+            workerEntryId: workerEntryId,
+            projectId: projectId,
+            periodMode: periodMode,
+            month: periodMode == SalaryAdvanceContract.periodModeMonth ? month : nil,
+            fromDate: periodMode == SalaryAdvanceContract.periodModeCustomRange ? fromDate : nil,
+            toDate: periodMode == SalaryAdvanceContract.periodModeCustomRange ? toDate : nil,
+            cursor: cursor,
+            limit: 10
+        )
+
+        if append {
+            salaryAdvanceHistoryLoadingMore = false
+        } else {
+            salaryAdvanceHistoryLoading = false
+        }
+
+        switch res {
+        case .success(let payload, _):
+            let combined = append ? (salaryAdvanceHistoryItems + payload.items) : payload.items
+            salaryAdvanceHistoryResponse = payload
+            salaryAdvanceHistoryItems = combined
+            salaryAdvanceHistoryNextCursor = payload.nextCursor
+            salaryAdvanceHistoryHasMore = payload.hasMore
+            salaryAdvanceHistoryError = nil
+        case .failure(let message, _, _, _):
+            salaryAdvanceHistoryError = message
         }
     }
 

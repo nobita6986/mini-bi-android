@@ -13,9 +13,12 @@ final class HRPBTests: XCTestCase {
             "https://bi.hrpartner.vn"
         )
         XCTAssertEqual(
-            BackendHttpClient.normalizeBaseUrl("https://bi2.hrpartner.vn/api", enforceHttps: false),
-            "https://bi2.hrpartner.vn"
+            BackendHttpClient.normalizeBaseUrl("https://bi.hrpvietnam.com/api", enforceHttps: false),
+            "https://bi.hrpvietnam.com"
         )
+        let stagingEnv = AppEnvironmentConfig.forVariant(.staging)
+        XCTAssertEqual(stagingEnv.defaultBaseUrl, "https://bi.hrpvietnam.com")
+        XCTAssertTrue(stagingEnv.isStaging)
         // Release enforces HTTPS
         XCTAssertNil(
             BackendHttpClient.normalizeBaseUrl("http://bi.hrpartner.vn", enforceHttps: true)
@@ -1010,6 +1013,234 @@ final class HRPBTests: XCTestCase {
         XCTAssertEqual(paymentDict["bank_name"] as? String, "MB Bank")
         XCTAssertEqual(paymentDict["account_number"] as? String, "123456789")
         XCTAssertEqual(paymentDict["account_holder_name"] as? String, "NGUYEN VAN A")
+    }
+
+    // MARK: - 8. Direct Edit Worker Profile ("Sửa trực tiếp hồ sơ NLĐ") Contract Tests
+
+    func testDirectEditValidationPatchAndLegacyEmployeeCodePreservation() throws {
+        let detailJson: [String: Any] = [
+            "entry": [
+                "entry_id": "entry-uuid-123",
+                "version": 3,
+                "employee_code": "hrp-2026-001456", // Legacy YYYY format on server
+                "display_name": "Nguyễn Văn An",
+                "project_id": "proj-uuid-1",
+                "project_display": "Công Ty TNHH Techl Vina",
+                "first_work_date": "2026-10-30",
+                "labor_type": "SEASONAL",
+                "labor_type_display": "Thời vụ",
+                "recruiter_id": "rec-uuid-1",
+                "recruiter_display": "Đỗ Tuấn Anh 1",
+                "employment_status": "ON",
+                "allowed_actions": [
+                    "view": true,
+                    "propose_change": true,
+                    "direct_edit": true
+                ],
+                "worker": [
+                    "gender": ["state": "provided", "value": "MALE"],
+                    "date_of_birth": ["state": "provided", "value": "1995-08-15"],
+                    "national_id": ["state": "provided", "value": "034095001234"],
+                    "national_id_issued_date": ["state": "omitted"],
+                    "national_id_issued_place": ["state": "omitted"],
+                    "address": ["state": "provided", "value": "Bắc Ninh"],
+                    "phone_number": ["state": "provided", "value": "0988776655"]
+                ],
+                "payment": [
+                    "state": "omitted"
+                ],
+                "documents": [
+                    ["doc_type": "WORKER_PORTRAIT", "has_file": true]
+                ]
+            ]
+        ]
+
+        let baseline = DirectEntryService.parseWorkerEntryDetail(detailJson)
+        XCTAssertEqual(baseline.entryIdUuid, "entry-uuid-123")
+        XCTAssertEqual(baseline.entryVersion, 3)
+        XCTAssertEqual(baseline.maNld, "hrp-2026-001456")
+        XCTAssertTrue(baseline.canDirectEdit)
+        XCTAssertEqual(baseline.ngaySinh, "15/08/1995")
+        XCTAssertEqual(baseline.ngayVaoLam, "30/10/2026")
+
+        // When user only adds bank info without touching legacy employee_code `hrp-2026-001456`:
+        // 1. Validation MUST pass (do not block unchanged legacy employee_code!)
+        // 2. Patch MUST NOT include `employee_code`, only `payment`
+        var form = DirectEntryService.buildDirectEditFormInput(from: baseline)
+        form.chuTaiKhoan = "NGUYEN VAN AN"
+        form.soTaiKhoan = "1903667788"
+        form.nganHang = "Techcombank"
+        form.isCustomBank = false
+
+        let validationErrors = DirectEntryService.validateDirectEditFormFields(baseline: baseline, form: form)
+        XCTAssertTrue(validationErrors.isEmpty, "Unexpected validation errors: \(validationErrors)")
+
+        let patch = DirectEntryService.buildDirectEditPatch(baseline: baseline, form: form)
+        XCTAssertNil(patch["employee_code"])
+        let paymentPatch = try XCTUnwrap(patch["payment"] as? [String: Any])
+        XCTAssertEqual(paymentPatch["state"] as? String, "provided")
+        XCTAssertEqual(paymentPatch["bank_name"] as? String, "Techcombank")
+        XCTAssertEqual(paymentPatch["account_number"] as? String, "1903667788")
+        XCTAssertEqual(paymentPatch["account_holder_name"] as? String, "NGUYEN VAN AN")
+
+        // When user modifies employee_code to an invalid format -> validation catches `ma_nld`
+        var badCodeForm = form
+        badCodeForm.maNld = "hrp-2026-999999"
+        let badCodeErrors = DirectEntryService.validateDirectEditFormFields(baseline: baseline, form: badCodeForm)
+        XCTAssertNotNil(badCodeErrors["ma_nld"])
+
+        // Valid new employee_code `hrp-1026-001456` passes validation and is included in patch
+        var validCodeForm = form
+        validCodeForm.maNld = "hrp-1026-001456"
+        XCTAssertTrue(DirectEntryService.validateDirectEditFormFields(baseline: baseline, form: validCodeForm).isEmpty)
+        let validCodePatch = DirectEntryService.buildDirectEditPatch(baseline: baseline, form: validCodeForm)
+        XCTAssertEqual(validCodePatch["employee_code"] as? String, "hrp-1026-001456")
+
+        // VietQR Bank Catalog search & initial resolution
+        XCTAssertGreaterThanOrEqual(VietQrBankCatalog.banks.count, 55)
+        let resolvedKnown = VietQrBankCatalog.resolveForInitialValue("Techcombank")
+        XCTAssertFalse(resolvedKnown.isCustom)
+        XCTAssertEqual(resolvedKnown.selectedShortName, "Techcombank")
+
+        let resolvedCustom = VietQrBankCatalog.resolveForInitialValue("Ngân hàng Nông Thôn X")
+        XCTAssertTrue(resolvedCustom.isCustom)
+        XCTAssertEqual(resolvedCustom.customBankName, "Ngân hàng Nông Thôn X")
+    }
+
+    // MARK: - 9. Salary Advance ("Ứng lương" for QLDA) Contract Tests
+
+    func testSalaryAdvanceContractAuthorityFilteringEligibilityAndPayload() throws {
+        // 1. QLDA Entry button visibility
+        let pmContext = SalaryAdvanceContract.parseContextResponse([
+            "data": [
+                "actor": ["app_user_id": "pm-1", "can_Use_Pm_Salary_Advance": true],
+                "managed_projects": [
+                    ["id": "proj-1", "code": "LUX", "name": "Luxshare Bắc Giang", "is_active": true]
+                ],
+                "defaults": ["project_id": "proj-1"]
+            ]
+        ])
+        XCTAssertTrue(SalaryAdvanceContract.canShowPmSalaryAdvanceEntry(pmContext))
+
+        let nonPmContext = SalaryAdvanceContract.parseContextResponse([
+            "data": [
+                "actor": ["app_user_id": "rec-1", "can_use_pm_salary_advance": false],
+                "managed_projects": []
+            ]
+        ])
+        XCTAssertFalse(SalaryAdvanceContract.canShowPmSalaryAdvanceEntry(nonPmContext))
+
+        // 2. Worker filtering & eligibility reasons
+        let workersPage = SalaryAdvanceContract.parseProjectWorkersResponse([
+            "data": [
+                "items": [
+                    [
+                        "worker_entry_id": "w-eligible",
+                        "worker_code": "hrp-1026-000001",
+                        "worker_name": "Nguyễn Hợp Lệ",
+                        "employment_status": "ON",
+                        "recruiter_source_type": "HRP",
+                        "recruiter_display": "Phạm Thị Sâm",
+                        "first_work_date": "2026-10-01",
+                        "recent_30d_summary": ["count": 1, "total_amount_vnd": 1500000],
+                        "eligibility": [
+                            "is_eligible_for_advance": true,
+                            "ineligible_reasons": [],
+                            "can_request_cash": true,
+                            "can_request_bank_transfer": true
+                        ]
+                    ],
+                    [
+                        "worker_entry_id": "w-ineligible-hrp",
+                        "worker_code": "hrp-1026-000002",
+                        "worker_name": "Trần Trùng CCCD",
+                        "employment_status": "ON",
+                        "recruiter_source_type": "HRP",
+                        "eligibility": [
+                            "is_eligible_for_advance": false,
+                            "ineligible_reasons": ["DUPLICATE_CCCD", "MISSING_WORKER_PORTRAIT"],
+                            "can_request_cash": false,
+                            "can_request_bank_transfer": false,
+                            "bank_transfer_ineligible_reason": "BANK_ACCOUNT_HOLDER_UNVERIFIED"
+                        ]
+                    ],
+                    [
+                        "worker_entry_id": "w-off",
+                        "worker_code": "hrp-1026-000003",
+                        "worker_name": "Lê Đã Nghỉ",
+                        "employment_status": "OFF",
+                        "recruiter_source_type": "HRP"
+                    ],
+                    [
+                        "worker_entry_id": "w-vendor",
+                        "worker_code": "hrp-1026-000004",
+                        "worker_name": "Phạm Vendor Tuyển",
+                        "employment_status": "ON",
+                        "recruiter_source_type": "VENDOR"
+                    ]
+                ],
+                "next_cursor": "cursor-2",
+                "has_more": true
+            ]
+        ])
+
+        let selectable = SalaryAdvanceContract.filterSelectableProjectWorkers(workersPage.items)
+        // OFF and VENDOR workers must be hidden; HRP workers (both eligible and ineligible) are retained
+        XCTAssertEqual(selectable.map(\.workerEntryId), ["w-eligible", "w-ineligible-hrp"])
+
+        let ineligibleReasonText = try XCTUnwrap(
+            SalaryAdvanceContract.describeWorkerEligibility(selectable[1].eligibility)
+        )
+        XCTAssertTrue(ineligibleReasonText.contains("trùng CCCD"))
+        XCTAssertTrue(ineligibleReasonText.contains("ảnh chân dung"))
+
+        let bankReasonText = try XCTUnwrap(
+            SalaryAdvanceContract.describeWorkerBankTransferEligibility(selectable[1])
+        )
+        XCTAssertTrue(bankReasonText.contains("chính chủ"))
+
+        // 3. Create request payload & History parsing
+        XCTAssertEqual(SalaryAdvanceContract.parsePositiveVndAmount("2.500.000"), 2_500_000)
+        XCTAssertNil(SalaryAdvanceContract.parsePositiveVndAmount("0"))
+
+        let reqPayload = SalaryAdvanceContract.buildCreateRequestPayload(
+            projectId: "proj-1",
+            workerEntryId: "w-eligible",
+            requestedAmountVnd: 2_000_000,
+            paymentMethod: "BANK_TRANSFER",
+            initialContent: "  Ứng lương tuần 1  ",
+            idempotencyKey: "idem-sa-1"
+        )
+        XCTAssertEqual(reqPayload["project_id"] as? String, "proj-1")
+        XCTAssertEqual(reqPayload["worker_entry_id"] as? String, "w-eligible")
+        XCTAssertEqual(reqPayload["requested_amount_vnd"] as? Int64, 2_000_000)
+        XCTAssertEqual(reqPayload["payment_method"] as? String, "BANK_TRANSFER")
+        XCTAssertEqual(reqPayload["initial_content"] as? String, "Ứng lương tuần 1")
+        XCTAssertEqual(reqPayload["idempotency_key"] as? String, "idem-sa-1")
+
+        let historyResp = SalaryAdvanceContract.parseWorkerHistoryResponse([
+            "data": [
+                "period_summary": ["total_count": 2, "total_amount_vnd": 3500000],
+                "items": [
+                    [
+                        "id": "sa-req-1",
+                        "request_code": "SA-202610-0001",
+                        "submitted_at": "2026-10-30T03:00:00Z",
+                        "requested_amount_vnd": 1500000,
+                        "payment_method": "CASH",
+                        "status": "SUBMITTED",
+                        "project_name": "Luxshare Bắc Giang",
+                        "initial_content": "Ứng tiền ăn ở"
+                    ]
+                ],
+                "next_cursor": "hist-cursor-2",
+                "has_more": true
+            ]
+        ])
+        XCTAssertEqual(historyResp.periodSummary.totalCount, 2)
+        XCTAssertEqual(historyResp.periodSummary.totalAmountVnd, 3_500_000)
+        XCTAssertEqual(historyResp.items.first?.requestCode, "SA-202610-0001")
+        XCTAssertTrue(historyResp.hasMore)
     }
 
     // MARK: - Helper
