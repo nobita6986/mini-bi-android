@@ -61,6 +61,7 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -71,6 +72,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -117,6 +119,7 @@ import java.io.File
 import java.util.Calendar
 import java.util.Locale
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AttendanceScreen(
     actor: AppActor,
@@ -135,6 +138,8 @@ fun AttendanceScreen(
     val allRecords by viewModel.attendanceRecords.collectAsStateWithLifecycle()
     val activeTab by viewModel.activeAttendanceTab.collectAsStateWithLifecycle()
     val myLeaveSummary by viewModel.myLeaveSummary.collectAsStateWithLifecycle()
+    val myLeaveLoading by viewModel.myLeaveLoading.collectAsStateWithLifecycle()
+    val leaveInboxLoading by viewModel.leaveInboxLoading.collectAsStateWithLifecycle()
     val myLeaveErrorCode by viewModel.myLeaveErrorCode.collectAsStateWithLifecycle()
 
     val visibleTabs = remember(myLeaveSummary?.authority, myLeaveErrorCode) {
@@ -281,6 +286,12 @@ fun AttendanceScreen(
         }
     }
 
+    val isAttendanceRefreshing = when (effectiveTab) {
+        AttendanceAreaTab.CHECK_IN -> timeAnchorState.syncing
+        AttendanceAreaTab.LEAVE_REQUEST -> myLeaveLoading
+        AttendanceAreaTab.LEAVE_APPROVAL -> leaveInboxLoading
+    }
+
     Column(modifier = Modifier.fillMaxSize()) {
         AttendanceAreaTopTabBar(
             tabs = visibleTabs,
@@ -288,6 +299,27 @@ fun AttendanceScreen(
             onSelectTab = { viewModel.selectAttendanceTab(it) }
         )
 
+        PullToRefreshBox(
+            isRefreshing = isAttendanceRefreshing,
+            onRefresh = {
+                when (effectiveTab) {
+                    AttendanceAreaTab.CHECK_IN -> {
+                        viewModel.syncAttendanceTimeAnchor(actor = actor, force = true)
+                        viewModel.syncAttendanceHistoryFromServer(actor = actor)
+                        viewModel.refreshMyLeaveSummary()
+                    }
+                    AttendanceAreaTab.LEAVE_REQUEST -> {
+                        viewModel.refreshMyLeaveSummary()
+                    }
+                    AttendanceAreaTab.LEAVE_APPROVAL -> {
+                        viewModel.refreshLeaveApprovalInbox()
+                    }
+                }
+            },
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f)
+        ) {
         when (effectiveTab) {
             AttendanceAreaTab.CHECK_IN -> {
                 LazyColumn(
@@ -871,6 +903,7 @@ fun AttendanceScreen(
                     viewModel = viewModel
                 )
             }
+        }
         }
     }
 }

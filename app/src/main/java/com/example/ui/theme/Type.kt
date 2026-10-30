@@ -32,15 +32,11 @@ val GeistSans = FontFamily(
     variableWeightFont(R.font.geist_sans, FontWeight.ExtraBold)
 )
 
-val GeistMono = FontFamily(
-    variableWeightFont(R.font.geist_mono, FontWeight.Normal),
-    variableWeightFont(R.font.geist_mono, FontWeight.Medium),
-    variableWeightFont(R.font.geist_mono, FontWeight.SemiBold),
-    variableWeightFont(R.font.geist_mono, FontWeight.Bold)
-)
+/** Unified font family across the entire app to ensure consistent Vietnamese typography. */
+val GeistMono = GeistSans
 
-/** Alias preserved for call-sites expecting monospace metrics/codes, synchronized to Geist Mono. */
-val JetBrainsMono = GeistMono
+/** Alias preserved for call-sites, unified to GeistSans for consistent typography. */
+val JetBrainsMono = GeistSans
 
 val Typography = Typography(
     displayLarge = TextStyle(

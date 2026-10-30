@@ -27,6 +27,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
@@ -156,6 +157,7 @@ fun MiniBiAppRoot(viewModel: MiniBiViewModel) {
     val loginError by viewModel.loginError.collectAsStateWithLifecycle()
     val savedAccounts by viewModel.savedAccounts.collectAsStateWithLifecycle()
     val currentDestination by viewModel.currentDestination.collectAsStateWithLifecycle()
+    val salaryAdvanceDialogOpen by viewModel.salaryAdvanceDialogOpen.collectAsStateWithLifecycle()
     val bannerMessage by viewModel.statusBannerMessage.collectAsStateWithLifecycle()
     val bannerIsError by viewModel.statusBannerIsError.collectAsStateWithLifecycle()
     val hasFailedBackgroundUploads by viewModel.hasFailedBackgroundUploads.collectAsStateWithLifecycle()
@@ -219,7 +221,12 @@ fun MiniBiAppRoot(viewModel: MiniBiViewModel) {
             containerColor = MaterialTheme.colorScheme.background,
             contentWindowInsets = WindowInsets.safeDrawing
         ) { innerPadding ->
-            Box(modifier = Modifier.padding(innerPadding).consumeWindowInsets(innerPadding)) {
+            Box(
+                modifier = Modifier
+                    .padding(innerPadding)
+                    .consumeWindowInsets(innerPadding)
+                    .imePadding()
+            ) {
                 LoginScreen(
                     busy = loginBusy,
                     error = loginError,
@@ -550,8 +557,15 @@ fun MiniBiAppRoot(viewModel: MiniBiViewModel) {
                                         )
                                     }
                                 }
+                                val topBarSubtitleLabel = if (
+                                    currentDestination == MainDestination.WORKERS && salaryAdvanceDialogOpen
+                                ) {
+                                    "Ứng lương"
+                                } else {
+                                    currentDestination.label
+                                }
                                 Text(
-                                    text = "${currentDestination.label} · ${authenticatedActor.displayName}",
+                                    text = "$topBarSubtitleLabel · ${authenticatedActor.displayName}",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     maxLines = 1,
@@ -689,6 +703,7 @@ fun MiniBiAppRoot(viewModel: MiniBiViewModel) {
                     .fillMaxSize()
                     .padding(innerPadding)
                     .consumeWindowInsets(innerPadding)
+                    .imePadding()
                     .pointerInput(Unit) {
                         detectTapGestures(onTap = {
                             focusManager.clearFocus()

@@ -31,6 +31,7 @@ import androidx.compose.material.icons.filled.WarningAmber
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -40,6 +41,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -76,6 +78,7 @@ import com.example.ui.theme.LocalMiniBiPalette
 import com.example.ui.theme.SemanticColors
 import java.util.Locale
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun DashboardScreen(
     actor: AppActor,
@@ -158,6 +161,26 @@ fun DashboardScreen(
         }
     }
 
+    val isDashboardRefreshing = when {
+        currentTabLabel.startsWith("Chuẩn hoá thông tin") -> cccdReviewLoading
+        currentTabLabel.startsWith("BC chuyên sâu") -> workforceLoading
+        currentTabLabel.startsWith("Báo cáo theo nhóm") -> teamReportLoading
+        currentTabLabel.startsWith("Báo cáo CCCD trùng") -> duplicateLoading
+        else -> generalOverviewLoading
+    }
+
+    PullToRefreshBox(
+        isRefreshing = isDashboardRefreshing,
+        onRefresh = {
+            focusManager.clearFocus()
+            if (currentTabLabel.startsWith("Chuẩn hoá thông tin")) {
+                viewModel.refreshCccdReviewQueue()
+            } else {
+                viewModel.refreshDashboardData(actor)
+            }
+        },
+        modifier = Modifier.fillMaxSize()
+    ) {
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
@@ -456,6 +479,7 @@ fun DashboardScreen(
                 }
             }
         }
+    }
     }
 
     selectedCccdReviewItem?.let { detailItem ->

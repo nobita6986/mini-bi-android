@@ -1430,6 +1430,444 @@ class DirectEntryAndWorkerContractTest {
     }
 
     @Test
+    fun `salary advance context and worker filtering - shows entry only for QLDA with active projects, hides OFF and vendor workers, keeps HRP ineligible workers with server reasons`() {
+        val pmContext = com.example.data.SalaryAdvanceContract.parseActorContext(
+            JSONObject(
+                """
+                {
+                  "app_user_id": "11111111-1111-4111-8111-111111111111",
+                  "display_name": "QLDA Nguyễn Văn A",
+                  "authorization_date": "2026-10-30",
+                  "is_full_admin": false,
+                  "is_bod": false,
+                  "is_project_manager": true,
+                  "is_project_accountant": false,
+                  "is_supervisory_viewer": false,
+                  "managed_projects": [
+                    {
+                      "project_id": "PRJ_ACTIVE",
+                      "display_name": "Dự án Đang Chạy",
+                      "active": true,
+                      "has_active_accountant": true,
+                      "accountant_user_id": "acc-1",
+                      "accountant_display_name": "KT 1"
+                    },
+                    {
+                      "project_id": "PRJ_INACTIVE",
+                      "display_name": "Dự án Đã Đóng",
+                      "active": false,
+                      "has_active_accountant": false
+                    }
+                  ]
+                }
+                """.trimIndent()
+            )
+        )
+        assertTrue(com.example.data.SalaryAdvanceContract.canShowPmSalaryAdvanceEntry(pmContext))
+        assertEquals(1, pmContext.activeManagedProjects.size)
+        assertEquals("PRJ_ACTIVE", pmContext.activeManagedProjects.single().projectId)
+
+        val accountantOnlyContext = pmContext.copy(
+            isProjectManager = false,
+            isProjectAccountant = true,
+            managedProjects = emptyList()
+        )
+        assertFalse(com.example.data.SalaryAdvanceContract.canShowPmSalaryAdvanceEntry(accountantOnlyContext))
+
+        val pmWithoutActiveProject = pmContext.copy(
+            managedProjects = pmContext.managedProjects.map { it.copy(active = false) }
+        )
+        assertFalse(com.example.data.SalaryAdvanceContract.canShowPmSalaryAdvanceEntry(pmWithoutActiveProject))
+
+        val workersRes = com.example.data.SalaryAdvanceContract.parseWorkerListResponse(
+            JSONObject(
+                """
+                {
+                  "project_id": "PRJ_ACTIVE",
+                  "next_cursor": "20",
+                  "has_more": true,
+                  "workers": [
+                    {
+                      "worker_entry_id": "w-eligible",
+                      "employee_code": "hrp-1026-000001",
+                      "display_name": "Trần Văn Hợp Lệ",
+                      "employment_status": "ON",
+                      "first_work_date": "2026-10-01",
+                      "provider_type": "hrp",
+                      "recruiter_display_name": "Tuyển dụng 1",
+                      "has_portrait": true,
+                      "is_eligible": true,
+                      "ineligible_reasons": [],
+                      "bank_transfer_eligible": true,
+                      "bank_ineligible_reason": null,
+                      "bank_account": {
+                        "has_bank_account": true,
+                        "bank_id": "BANK_VCB",
+                        "institution_name": "Vietcombank",
+                        "account_number": "0123456789",
+                        "account_holder_name": "TRAN VAN KHAC TEN TREN CLIENT",
+                        "is_self_owned": true
+                      },
+                      "advance_30d_summary": {
+                        "window_days": 30,
+                        "window_from_date": "2026-10-01",
+                        "window_to_date": "2026-10-30",
+                        "total_count": 2,
+                        "total_amount_vnd": "1500000"
+                      }
+                    },
+                    {
+                      "worker_entry_id": "w-off",
+                      "employee_code": "hrp-1026-000002",
+                      "display_name": "Lê Văn Đã Nghỉ",
+                      "employment_status": "OFF",
+                      "first_work_date": "2026-09-01",
+                      "provider_type": "hrp",
+                      "recruiter_display_name": "Tuyển dụng 1",
+                      "has_portrait": true,
+                      "is_eligible": false,
+                      "ineligible_reasons": ["WORKER_STATUS_OFF"],
+                      "bank_transfer_eligible": false
+                    },
+                    {
+                      "worker_entry_id": "w-vendor",
+                      "employee_code": "hrp-1026-000003",
+                      "display_name": "Phạm Văn Vendor",
+                      "employment_status": "ON",
+                      "first_work_date": "2026-10-02",
+                      "provider_type": "vendor",
+                      "recruiter_display_name": "NCC Á Châu",
+                      "has_portrait": true,
+                      "is_eligible": false,
+                      "ineligible_reasons": ["WORKER_VENDOR_RECRUITED"],
+                      "bank_transfer_eligible": false
+                    },
+                    {
+                      "worker_entry_id": "w-dup-cccd",
+                      "employee_code": "hrp-1026-000004",
+                      "display_name": "Hoàng Thị Trùng CCCD",
+                      "employment_status": "ON",
+                      "first_work_date": "2026-10-05",
+                      "provider_type": "hrp",
+                      "recruiter_display_name": "Tuyển dụng 2",
+                      "has_portrait": true,
+                      "is_eligible": false,
+                      "ineligible_reasons": ["WORKER_DUPLICATE_CCCD"],
+                      "bank_transfer_eligible": false,
+                      "bank_ineligible_reason": "BANK_ACCOUNT_NOT_SELF_OWNED"
+                    },
+                    {
+                      "worker_entry_id": "w-multi-on",
+                      "employee_code": "hrp-1026-000005",
+                      "display_name": "Đặng Văn Nhiều Dự Án",
+                      "employment_status": "ON",
+                      "first_work_date": "2026-10-06",
+                      "provider_type": "hrp",
+                      "recruiter_display_name": "Tuyển dụng 2",
+                      "has_portrait": false,
+                      "is_eligible": false,
+                      "ineligible_reasons": ["WORKER_MULTI_PROJECT_ON"],
+                      "bank_transfer_eligible": false,
+                      "bank_ineligible_reason": "BANK_ACCOUNT_MISSING"
+                    }
+                  ]
+                }
+                """.trimIndent()
+            )
+        )
+
+        val visibleWorkers = com.example.data.SalaryAdvanceContract.filterSelectableProjectWorkers(workersRes.workers)
+        assertEquals(
+            listOf("w-eligible", "w-dup-cccd", "w-multi-on"),
+            visibleWorkers.map { it.workerEntryId }
+        )
+
+        // Eligible worker + server-driven bank transfer eligibility (client does not re-verify holder name)
+        val eligibleWorker = visibleWorkers[0]
+        val eligibleDesc = com.example.data.SalaryAdvanceContract.describeWorkerEligibility(eligibleWorker)
+        assertTrue(eligibleDesc.isEligible)
+        assertEquals("01/10/2026", com.example.data.SalaryAdvanceContract.formatWorkDateVi(eligibleWorker.firstWorkDate))
+        val bankOk = com.example.data.SalaryAdvanceContract.describeWorkerBankTransferEligibility(eligibleWorker)
+        assertTrue(bankOk.canUseBankTransfer)
+
+        // Duplicate CCCD worker kept in list with explicit reason & locked submission
+        val dupWorker = visibleWorkers[1]
+        val dupDesc = com.example.data.SalaryAdvanceContract.describeWorkerEligibility(dupWorker)
+        assertFalse(dupDesc.isEligible)
+        assertEquals("Không đủ điều kiện", dupDesc.statusLabel)
+        assertTrue(dupDesc.blockingMessage!!.contains("trùng CCCD"))
+        val bankMismatch = com.example.data.SalaryAdvanceContract.describeWorkerBankTransferEligibility(dupWorker)
+        assertFalse(bankMismatch.canUseBankTransfer)
+        assertTrue(bankMismatch.blockingMessage!!.contains("không chính chủ"))
+
+        // Multi-project ON + missing portrait worker kept in list with reasons
+        val multiWorker = visibleWorkers[2]
+        val multiDesc = com.example.data.SalaryAdvanceContract.describeWorkerEligibility(multiWorker)
+        assertFalse(multiDesc.isEligible)
+        assertTrue(multiDesc.blockingMessage!!.contains("2 dự án"))
+        assertTrue(multiDesc.portraitStatusLabel.contains("Thiếu ảnh chân dung"))
+    }
+
+    @Test
+    fun `salary advance service - sends exact create request contract with idempotency key and queries QLDA worker history across all period modes`() = runBlocking {
+        val repo = createRepository()
+        val projectId = "PRJ_ACTIVE"
+        val workerId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+        val idempotencyKey = "sa-create-fixed-key-1234567890"
+
+        // 1. Validate draft & submit POST /api/salary-advance/requests
+        val eligibleWorker = com.example.data.SalaryAdvanceWorkerOption(
+            workerEntryId = workerId,
+            employeeCode = "hrp-1026-000010",
+            displayName = "Nguyễn Văn Ứng Lương",
+            firstWorkDate = "2026-10-01",
+            providerType = "hrp",
+            recruiterDisplayName = "Tuyển dụng A",
+            recruiterCode = "NV001",
+            hasPortrait = true,
+            employmentStatus = "ON",
+            activeOnProjectCount = 1,
+            hasDuplicateCccd = false,
+            isEligible = true,
+            ineligibleReasons = emptyList(),
+            bankTransferEligible = true,
+            bankIneligibleReason = null,
+            bankAccount = com.example.data.SalaryAdvanceWorkerBankAccountInfo(
+                hasBankAccount = true,
+                bankId = "VCB",
+                institutionName = "Vietcombank",
+                accountNumber = "999988887777",
+                accountNumberMasked = "***7777",
+                accountHolderName = "NGUYEN VAN UNG LUONG",
+                isSelfOwned = true
+            ),
+            advance30dSummary = null
+        )
+
+        val validation = com.example.data.SalaryAdvanceContract.validateCreateDraft(
+            projectId = projectId,
+            hasActiveAccountant = true,
+            workerEntryId = workerId,
+            selectedWorker = eligibleWorker,
+            paymentMethod = "BANK_TRANSFER",
+            requestedAmountRaw = "1.500.000",
+            initialContent = "  Ứng lương đợt 1 tháng 10  "
+        )
+        assertTrue(validation is com.example.data.CreateSalaryAdvanceValidationResult.Valid)
+        val payload = (validation as com.example.data.CreateSalaryAdvanceValidationResult.Valid).payload
+        assertEquals("1500000", payload.requestedAmountVnd)
+        assertEquals("BANK_TRANSFER", payload.paymentMethod)
+        assertEquals("Ứng lương đợt 1 tháng 10", payload.initialContent)
+
+        server.enqueue(
+            MockResponse().setResponseCode(201).setBody(
+                """
+                {
+                  "ok": true,
+                  "data": {
+                    "replayed": false,
+                    "request": {
+                      "request_id": "req-001",
+                      "request_state": "OPEN",
+                      "evidence_review_state": "NOT_UPLOADED",
+                      "version": 1,
+                      "project_id": "$projectId",
+                      "project_display_name": "Dự án A",
+                      "worker_entry_id": "$workerId",
+                      "worker_employee_code": "hrp-1026-000010",
+                      "worker_display_name": "Nguyễn Văn Ứng Lương",
+                      "requested_amount_vnd": "1500000",
+                      "payment_method": "BANK_TRANSFER",
+                      "initial_content": "Ứng lương đợt 1 tháng 10"
+                    }
+                  }
+                }
+                """.trimIndent()
+            )
+        )
+
+        val created = repo.salaryAdvanceService.createRequest(payload, idempotencyKey)
+        assertEquals("req-001", created.requestId)
+        assertEquals("1500000", created.requestedAmountVnd)
+
+        val createReq = server.takeRequest()
+        assertEquals("POST", createReq.method)
+        assertEquals("/api/salary-advance/requests", createReq.path)
+        assertEquals(idempotencyKey, createReq.getHeader("Idempotency-Key"))
+        val createBody = JSONObject(createReq.body.readUtf8())
+        assertEquals(projectId, createBody.getString("project_id"))
+        assertEquals(workerId, createBody.getString("worker_entry_id"))
+        assertEquals("1500000", createBody.getString("requested_amount_vnd"))
+        assertEquals("BANK_TRANSFER", createBody.getString("payment_method"))
+        assertEquals("Ứng lương đợt 1 tháng 10", createBody.getString("initial_content"))
+        assertEquals(idempotencyKey, createBody.getString("idempotency_key"))
+
+        // 2. Verify QLDA worker history URL construction for all 5 period modes
+        assertEquals(
+            "/api/salary-advance/projects/PRJ_ACTIVE/workers/$workerId/worker-history?period_mode=THIS_MONTH&page_size=20",
+            com.example.data.SalaryAdvanceContract.buildProjectWorkerHistoryPath(
+                projectId = projectId,
+                workerEntryId = workerId,
+                periodMode = "THIS_MONTH",
+                month = "2026-10", // must be ignored when period_mode != MONTH
+                fromDate = "2026-10-01",
+                toDate = "2026-10-30"
+            )
+        )
+        assertEquals(
+            "/api/salary-advance/projects/PRJ_ACTIVE/workers/$workerId/worker-history?period_mode=LAST_30_DAYS&page_size=20&cursor=20",
+            com.example.data.SalaryAdvanceContract.buildProjectWorkerHistoryPath(
+                projectId = projectId,
+                workerEntryId = workerId,
+                periodMode = "LAST_30_DAYS",
+                cursor = "20"
+            )
+        )
+        assertEquals(
+            "/api/salary-advance/projects/PRJ_ACTIVE/workers/$workerId/worker-history?period_mode=MONTH&page_size=20&month=2026-09",
+            com.example.data.SalaryAdvanceContract.buildProjectWorkerHistoryPath(
+                projectId = projectId,
+                workerEntryId = workerId,
+                periodMode = "MONTH",
+                month = "2026-09"
+            )
+        )
+        assertEquals(
+            "/api/salary-advance/projects/PRJ_ACTIVE/workers/$workerId/worker-history?period_mode=ALL&page_size=20",
+            com.example.data.SalaryAdvanceContract.buildProjectWorkerHistoryPath(
+                projectId = projectId,
+                workerEntryId = workerId,
+                periodMode = "ALL"
+            )
+        )
+        assertEquals(
+            "/api/salary-advance/projects/PRJ_ACTIVE/workers/$workerId/worker-history?period_mode=CUSTOM_RANGE&page_size=20&from_date=2026-10-01&to_date=2026-10-15",
+            com.example.data.SalaryAdvanceContract.buildProjectWorkerHistoryPath(
+                projectId = projectId,
+                workerEntryId = workerId,
+                periodMode = "CUSTOM_RANGE",
+                fromDate = "2026-10-01",
+                toDate = "2026-10-15"
+            )
+        )
+
+        // 3. Verify Vietnamese accent-insensitive worker search & eligibility filter
+        assertTrue(
+            com.example.data.SalaryAdvanceContract.matchesWorkerSearchQuery(
+                worker = eligibleWorker,
+                query = "nguyen van ung luong",
+                eligibilityFilter = "ELIGIBLE"
+            )
+        )
+        assertTrue(
+            com.example.data.SalaryAdvanceContract.matchesWorkerSearchQuery(
+                worker = eligibleWorker,
+                query = "000010",
+                eligibilityFilter = "ALL"
+            )
+        )
+        assertFalse(
+            com.example.data.SalaryAdvanceContract.matchesWorkerSearchQuery(
+                worker = eligibleWorker,
+                query = "nguyen van",
+                eligibilityFilter = "INELIGIBLE"
+            )
+        )
+
+        // 4. Verify PM request list, detail, attention banner, and R2 evidence reserve parsing
+        assertEquals(
+            "/api/salary-advance/requests?queue=PM&page_size=25&project_id=PRJ_ACTIVE&request_state=NEEDS_INFO&include_badge=1",
+            com.example.data.SalaryAdvanceContract.buildRequestListPath(
+                queue = "PM",
+                projectFilter = "PRJ_ACTIVE",
+                requestStateFilter = "NEEDS_INFO",
+                evidenceStateFilter = "ALL",
+                includeBadge = true
+            )
+        )
+        val detailJson = JSONObject(
+            """
+            {
+              "request": {
+                "request_id": "req-detail-01",
+                "request_state": "APPROVED",
+                "evidence_review_state": "RETAKE_REQUIRED",
+                "version": 3,
+                "project_id": "PRJ_ACTIVE",
+                "project_display_name": "Dự án A",
+                "worker_entry_id": "$workerId",
+                "worker_employee_code": "hrp-1026-000010",
+                "worker_display_name": "Nguyễn Văn Ứng Lương",
+                "worker_first_work_date": "2026-10-01",
+                "worker_recruiter_display_name": "Tuyển dụng A",
+                "requested_amount_vnd": "1500000",
+                "payment_method": "CASH",
+                "initial_content": "Ứng tiền mặt",
+                "worker_portrait": {
+                  "has_portrait": true,
+                  "document_id": "doc-portrait-01",
+                  "original_filename": "portrait.jpg",
+                  "content_type": "image/jpeg"
+                },
+                "current_evidence": {
+                  "has_evidence": true,
+                  "evidence_id": "ev-01",
+                  "version": 1,
+                  "review_state": "RETAKE_REQUIRED",
+                  "reject_reason": "Ảnh bị mờ, cần chụp rõ mặt NLĐ cầm tiền",
+                  "original_filename": "ev1.jpg",
+                  "content_type": "image/jpeg",
+                  "file_size_bytes": 102400
+                },
+                "allowed_actions": {
+                  "can_post_message": true,
+                  "can_provide_info": false,
+                  "can_withdraw": false,
+                  "can_upload_evidence": true
+                }
+              },
+              "events": [
+                {
+                  "event_id": "ev-msg-1",
+                  "event_type": "EVIDENCE_RETAKE_REQUESTED",
+                  "actor_role": "ACCOUNTANT",
+                  "actor_display_name": "Kế toán A",
+                  "message_text": "Ảnh bị mờ, cần chụp rõ mặt NLĐ cầm tiền",
+                  "created_at": "2026-10-30T08:00:00.000Z"
+                }
+              ],
+              "evidence_versions": [
+                {
+                  "evidence_id": "ev-01",
+                  "version": 1,
+                  "review_state": "RETAKE_REQUIRED",
+                  "reject_reason": "Ảnh bị mờ, cần chụp rõ mặt NLĐ cầm tiền",
+                  "original_filename": "ev1.jpg",
+                  "content_type": "image/jpeg",
+                  "file_size_bytes": 102400
+                }
+              ]
+            }
+            """.trimIndent()
+        )
+        val detail = com.example.data.SalaryAdvanceContract.parseRequestDetail(detailJson)
+        assertEquals("req-detail-01", detail.request.requestId)
+        assertTrue(detail.request.allowedActions.canUploadEvidence)
+        val attention = com.example.data.SalaryAdvanceContract.evaluateRequestAttention(detail.request)
+        assertTrue(attention.needsPmEvidenceUpload)
+        assertTrue(attention.needsPmAttention)
+        assertEquals("Cần chụp/tải lại ảnh NLĐ nhận tiền mặt", attention.pmAttentionReason)
+        assertEquals(
+            "/api/salary-advance/requests/req-detail-01/worker-portrait?expected_document_id=doc-portrait-01",
+            com.example.data.SalaryAdvanceContract.buildWorkerPortraitPreviewPath("req-detail-01", "doc-portrait-01")
+        )
+        assertEquals(
+            "/api/salary-advance/requests/req-detail-01/evidence/1/preview",
+            com.example.data.SalaryAdvanceContract.buildEvidencePhotoPreviewPath("req-detail-01", 1)
+        )
+    }
+
+    @Test
     fun `direct edit patch builder - edits personal, work, payment groups, preserves untouched empty states, and transitions cleared provided fields to intentionally_blank`() {
         val detailJson = JSONObject(
             """

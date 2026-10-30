@@ -319,6 +319,10 @@ class MiniBiRepository(
         httpClient = httpClient
     )
 
+    val salaryAdvanceService = SalaryAdvanceService(
+        httpClient = httpClient
+    )
+
     val attendanceTimeAnchorManager = AttendanceTimeAnchorManager(
         context = context,
         httpClient = httpClient,
