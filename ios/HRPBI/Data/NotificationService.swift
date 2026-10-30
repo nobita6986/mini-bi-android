@@ -702,8 +702,8 @@ public final class MiniBiRepository {
             ?? obj.optString("project_display", "du_an", "project_name", "project", "project_id")
         let projectName: String = {
             if (rawProjectName.isEmpty || rawProjectName == projectId),
-               let matchedProj = catalog?.projects.first(where: { $0.id.caseInsensitiveCompare(projectId) == .orderedSame }) {
-                return matchedProj.name
+               let matchedProj = catalog.catalogProjects.first(where: { $0.projectId.caseInsensitiveCompare(projectId) == .orderedSame }) {
+                return matchedProj.displayName
             }
             return rawProjectName
         }()
@@ -715,8 +715,8 @@ public final class MiniBiRepository {
                 return rawRecruiterName
             }
             if !recruiterId.isEmpty,
-               let matchedRec = catalog?.recruiters.first(where: { $0.id.caseInsensitiveCompare(recruiterId) == .orderedSame }) {
-                return matchedRec.name
+               let matchedRec = catalog.catalogRecruiters.first(where: { $0.recruiterId.caseInsensitiveCompare(recruiterId) == .orderedSame }) {
+                return matchedRec.displayName
             }
             return ""
         }()
