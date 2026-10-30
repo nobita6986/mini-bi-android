@@ -298,6 +298,28 @@ public final class BackendHttpClient: @unchecked Sendable {
         return await executeRequest(req, session: apiSession, saveCookies: true)
     }
 
+    private static let binaryPreviewCache = NSCache<NSString, NSData>()
+
+    public func fetchBinaryData(path: String, useCache: Bool = true) async -> BackendHttpResponse {
+        let cacheKey = "\(baseUrl)|\(path)" as NSString
+        if useCache, let cached = Self.binaryPreviewCache.object(forKey: cacheKey) {
+            return BackendHttpResponse(statusCode: 200, rawData: Data(referencing: cached))
+        }
+        let response = await request(
+            method: "GET",
+            path: path,
+            additionalHeaders: ["Accept": "image/*, application/pdf, application/octet-stream, */*"]
+        )
+        if response.isSuccess && !response.rawData.isEmpty {
+            Self.binaryPreviewCache.setObject(response.rawData as NSData, forKey: cacheKey)
+        }
+        return response
+    }
+
+    public func invalidateBinaryCache() {
+        Self.binaryPreviewCache.removeAllObjects()
+    }
+
     // MARK: - Multipart File Upload (`POST /api/workers/{ma_nld}/contract-file`, etc.)
 
     public func uploadMultipart(

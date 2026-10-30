@@ -14,13 +14,13 @@ on:
   workflow_dispatch:
     inputs:
       version_tag:
-        description: "Tag phiên bản phát hành (ví dụ: V1.0.4.29102026)"
+        description: "Tag phiên bản phát hành (ví dụ: V1.0.5.30102026)"
         required: false
-        default: "V1.0.4.29102026"
+        default: "V1.0.5.30102026"
       build_number:
         description: "Số thứ tự build tăng dần cho TestFlight (CURRENT_PROJECT_VERSION)"
         required: false
-        default: "1"
+        default: "39"
       scheme:
         description: "Scheme cần đóng gói IPA (HRP-BI hoặc HRP-BI2)"
         required: false
@@ -103,7 +103,7 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY=""
 
-      - name: Build HRP-BI2 (Debug/Staging - https://bi2.hrpartner.vn) Unsigned
+      - name: Build HRP-BI2 (Debug/Staging - https://bi.hrpvietnam.com) Unsigned
         working-directory: ios
         run: |
           xcodebuild build \
@@ -198,7 +198,7 @@ jobs:
             RAW_TAG="${GITHUB_REF#refs/tags/}"
           else
             TODAY=$(TZ=Asia/Ho_Chi_Minh date +"%d%m%Y")
-            RAW_TAG="V1.0.4.${TODAY}"
+            RAW_TAG="V1.0.5.${TODAY}"
           fi
 
           FULL_VER="${RAW_TAG#V}"
