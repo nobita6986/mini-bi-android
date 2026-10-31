@@ -222,18 +222,14 @@ public final class MiniBiViewModel: ObservableObject {
         self.attendanceTimeEvaluation = timeAnchorManager.evaluateAnchor()
 
         let bundleEnv = AppEnvironmentConfig.current
-        if let savedVariant = repository.getSelectedEnvironmentVariant() {
-            let resolvedEnv = AppEnvironmentConfig.forVariant(
-                savedVariant,
-                marketingVersion: bundleEnv.marketingVersion,
-                buildNumber: bundleEnv.buildNumber
-            )
-            self.environmentConfig = resolvedEnv
-            self.repository.httpClient.setBaseUrl(resolvedEnv.defaultBaseUrl)
-        } else {
-            self.environmentConfig = bundleEnv
-            self.repository.httpClient.setBaseUrl(bundleEnv.defaultBaseUrl)
-        }
+        let resolvedEnv = AppEnvironmentConfig.forVariant(
+            .release,
+            marketingVersion: bundleEnv.marketingVersion,
+            buildNumber: bundleEnv.buildNumber
+        )
+        self.environmentConfig = resolvedEnv
+        self.repository.setSelectedEnvironmentVariant(.release)
+        self.repository.httpClient.setBaseUrl(resolvedEnv.defaultBaseUrl)
 
         self.selectedTheme = MiniBiThemes.byId(repository.getSelectedThemeId())
         self.savedAccounts = repository.getSavedLoginAccounts()
