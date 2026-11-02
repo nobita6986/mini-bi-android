@@ -481,10 +481,24 @@ public final class DirectEntryService: @unchecked Sendable {
             return disp
         }()
 
+        let providerType: String = {
+            let raw = d.providerType.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            return raw == "vendor" ? "vendor" : "hrp"
+        }()
+
         let resolvedRecruiterId: String = {
             let explicit = d.recruiterId.trimmingCharacters(in: .whitespacesAndNewlines)
             if !explicit.isEmpty { return explicit }
             let disp = d.nguoiTuyen.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let matchedByProvider = catalog.catalogRecruiters.first(where: {
+                $0.providerType.lowercased() == providerType && (
+                    $0.label.caseInsensitiveCompare(disp) == .orderedSame ||
+                    $0.displayName.caseInsensitiveCompare(disp) == .orderedSame ||
+                    $0.recruiterId == disp
+                )
+            }) {
+                return matchedByProvider.recruiterId
+            }
             if let matched = catalog.catalogRecruiters.first(where: {
                 $0.label.caseInsensitiveCompare(disp) == .orderedSame ||
                 $0.displayName.caseInsensitiveCompare(disp) == .orderedSame ||
@@ -537,11 +551,6 @@ public final class DirectEntryService: @unchecked Sendable {
             return iso.isEmpty ? LeaveContract.todayVietnamIsoDate() : iso
         }()
 
-        let providerType: String = {
-            let raw = d.providerType.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            return raw == "vendor" ? "vendor" : "hrp"
-        }()
-
         let statusUpper: String = {
             let st = d.trangThai.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
             if st.contains("chờ") || st.contains("unconfirmed") || st.contains("phỏng vấn") {
@@ -572,10 +581,9 @@ public final class DirectEntryService: @unchecked Sendable {
         }()
 
         let cccdDigits = d.soCccd.filter(\.isNumber)
-        let cleanDisplayName: Any = {
-            let trimmed = d.hoTen.trimmingCharacters(in: .whitespacesAndNewlines)
-            return trimmed.isEmpty ? NSNull() : String(trimmed.prefix(256))
-        }()
+        let cleanDisplayName = String(
+            d.hoTen.trimmingCharacters(in: .whitespacesAndNewlines).prefix(256)
+        )
 
         let workerObj: [String: Any] = [
             "gender": genderField,
@@ -586,12 +594,12 @@ public final class DirectEntryService: @unchecked Sendable {
             ],
             "national_id_issued_at": optionalFreeDateField(d.ngayCap),
             "national_id_issued_place": ["state": "omitted"],
-            "address": optionalTextField(d.queQuan, maxLength: 500),
-            "phone": optionalTextField(d.sdt, maxLength: 50)
+            "address": optionalTextField(d.queQuan, maxLength: 1024),
+            "phone": optionalTextField(d.sdt, maxLength: 64)
         ]
 
         let bankName = d.nganHang.trimmingCharacters(in: .whitespacesAndNewlines)
-        let accNum = d.soTaiKhoan.trimmingCharacters(in: .whitespacesAndNewlines)
+        let accNum = d.soTaiKhoan.replacingOccurrences(of: " ", with: "").trimmingCharacters(in: .whitespacesAndNewlines)
         let holderName = d.bankAccountHolder.trimmingCharacters(in: .whitespacesAndNewlines)
 
         let paymentValue: Any = {
@@ -605,25 +613,20 @@ public final class DirectEntryService: @unchecked Sendable {
             return dict
         }()
 
-        var rowObj: [String: Any] = [
+        let rowObj: [String: Any] = [
             "project_id": resolvedProjectId,
             "first_work_date": firstWorkDateIso,
             "provider_type": providerType,
+            "recruiter_id": resolvedRecruiterId,
             "labor_type": resolvedLaborType,
             "display_name": cleanDisplayName,
             "worker": workerObj,
-            "general_note": optionalTextField(d.ghiChu, maxLength: 500),
+            "general_note": optionalTextField(d.ghiChu, maxLength: 4000),
             "payment": paymentValue,
             "employment": [
                 "initial_status": statusUpper
             ]
         ]
-
-        if providerType == "hrp" {
-            rowObj["recruiter_id"] = resolvedRecruiterId
-        } else {
-            rowObj["vendor_id"] = resolvedRecruiterId
-        }
 
         return rowObj
     }

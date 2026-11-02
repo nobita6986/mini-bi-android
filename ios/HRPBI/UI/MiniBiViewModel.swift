@@ -206,7 +206,7 @@ public final class MiniBiViewModel: ObservableObject {
         directEntryService: DirectEntryService = .shared,
         workReportsService: WorkReportsAndReportingService = .shared,
         attendanceOutboxService: AttendanceOutboxService = .shared,
-        timeAnchorManager: AttendanceTimeAnchorManager = AttendanceTimeAnchorManager(),
+        timeAnchorManager: AttendanceTimeAnchorManager = .shared,
         notificationService: NotificationService = .shared,
         leaveService: LeaveService = .shared,
         salaryAdvanceService: SalaryAdvanceService = .shared
@@ -320,7 +320,10 @@ public final class MiniBiViewModel: ObservableObject {
         if destination == .attendance {
             activeAttendanceTab = .checkIn
             if isAuthenticated {
-                Task { await refreshMyLeaveSummary(year: leaveYear) }
+                Task {
+                    await syncAttendanceTimeAnchor()
+                    await refreshMyLeaveSummary(year: leaveYear)
+                }
             }
         } else if destination == .workers {
             if salaryAdvanceSheetOpen {
@@ -442,6 +445,8 @@ public final class MiniBiViewModel: ObservableObject {
         attendanceOutboxService.stopNetworkAutoFlush()
         salaryAdvanceSearchTask?.cancel()
         await repository.logout()
+        timeAnchorManager.clearAnchor()
+        attendanceTimeEvaluation = timeAnchorManager.evaluateAnchor()
 
         isAuthenticated = false
         currentUser = nil
@@ -2177,6 +2182,10 @@ public final class MiniBiViewModel: ObservableObject {
 
     // MARK: - Attendance Actions
 
+    public func refreshAttendanceTimeEvaluation() {
+        attendanceTimeEvaluation = timeAnchorManager.evaluateAnchor()
+    }
+
     public func syncAttendanceTimeAnchor() async {
         _ = await timeAnchorManager.syncTimeAnchor()
         attendanceTimeEvaluation = timeAnchorManager.evaluateAnchor()
@@ -2277,7 +2286,9 @@ public final class MiniBiViewModel: ObservableObject {
 
         switch safeTab {
         case .checkIn:
-            break
+            if isAuthenticated {
+                Task { await syncAttendanceTimeAnchor() }
+            }
         case .leaveRequest:
             ensureInitialLeaveDraftDay()
             if myLeaveSummary == nil && !isLoadingMyLeave {

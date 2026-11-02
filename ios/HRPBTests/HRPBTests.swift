@@ -327,6 +327,50 @@ final class HRPBTests: XCTestCase {
         mockClock.bootId = "boot-test-2"
         XCTAssertEqual(manager.evaluateAnchor().status, .rebootDetected)
         XCTAssertEqual(manager.resolveCaptureTime().timeSource, AttendanceTimeContract.sourceDeviceClockUnverified)
+
+        // Verify canonical `/api/attendance/time` payload with `server_time` key is parsed without HTTP Date header
+        mockClock.bootId = "boot-test-3"
+        let canonicalParsed = try XCTUnwrap(
+            manager.parseServerTimeResponse(
+                root: [
+                    "ok": true,
+                    "server_time": "2026-11-02T14:40:00.000+07:00",
+                    "expires_at": "2026-11-03T02:40:00.000+07:00",
+                    "time_token": "tok-canonical-time"
+                ],
+                rawBody: "",
+                headers: [:],
+                syncedElapsedMs: 200_000,
+                deviceNowMs: 1_760_000_000_000
+            )
+        )
+        XCTAssertEqual(canonicalParsed.serverNowIso, "2026-11-02T14:40:00.000+07:00")
+        XCTAssertEqual(canonicalParsed.timeToken, "tok-canonical-time")
+        XCTAssertTrue(AttendanceTimeAnchorManager.formatEpochMillisInHcmIso(canonicalParsed.serverEpochMsAtSync).hasSuffix("+07:00"))
+    }
+
+    func testBuildFullProfilePayloadVendorAndEmptyDisplayNameContract() throws {
+        var draft = NewWorkerEntryDraft()
+        draft.projectId = "proj-minh-duc"
+        draft.duAn = "Công Ty Tnhh In Điện Tử Minh Đức"
+        draft.providerType = "vendor"
+        draft.recruiterId = "11111111-2222-4333-8444-555555555555"
+        draft.nguoiTuyen = "VD Trí Star"
+        draft.laborTypeKey = "TEMPORARY"
+        draft.nganhNghe = "Thời vụ"
+        draft.ngayVaoLam = "02/11/2026"
+        draft.trangThai = "Đang làm"
+        draft.soCccd = "010207004199"
+        draft.hoTen = "" // left blank intentionally when 12-digit CCCD is provided
+
+        let payload = DirectEntryService.shared.buildFullProfileEntryPayload(draft)
+        XCTAssertEqual(payload["project_id"] as? String, "proj-minh-duc")
+        XCTAssertEqual(payload["provider_type"] as? String, "vendor")
+        XCTAssertEqual(payload["recruiter_id"] as? String, "11111111-2222-4333-8444-555555555555")
+        XCTAssertNil(payload["vendor_id"])
+        XCTAssertEqual(payload["display_name"] as? String, "")
+        XCTAssertFalse(payload["display_name"] is NSNull)
+        XCTAssertEqual(payload["first_work_date"] as? String, "2026-11-02")
     }
 
     // MARK: - 7. Leave Request ("Xin nghỉ") & Leave Approval ("Duyệt nghỉ") Contract Tests

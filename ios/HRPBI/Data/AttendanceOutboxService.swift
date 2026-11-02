@@ -89,7 +89,7 @@ public final class AttendanceOutboxService {
 
     public init(
         httpClient: BackendHttpClient = .shared,
-        timeAnchorManager: AttendanceTimeAnchorManager = AttendanceTimeAnchorManager(),
+        timeAnchorManager: AttendanceTimeAnchorManager = .shared,
         customStorageDirectory: URL? = nil
     ) {
         self.httpClient = httpClient

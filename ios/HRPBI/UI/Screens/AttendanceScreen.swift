@@ -82,6 +82,7 @@ private struct PendingLeaveDecisionSheetItem: Identifiable {
 public struct AttendanceScreen: View {
     @ObservedObject var viewModel: MiniBiViewModel
     @StateObject private var locationManager = AttendanceLocationManager()
+    @Environment(\.scenePhase) private var scenePhase
 
     @State private var capturedPhotoData: Data?
     @State private var frozenCaptureTimestamp: CapturedAttendanceTimestamp?
@@ -89,6 +90,10 @@ public struct AttendanceScreen: View {
     @State private var isShowingCamera: Bool = false
     @State private var selectedPhotoItem: PhotosPickerItem?
     @State private var exportedReportUrl: URL?
+    @State private var liveClockTick: Int64 = 0
+    @State private var lastAutoTimeSyncAttemptSec: TimeInterval = 0
+
+    private let liveClockTimer = Timer.publish(every: 1.0, on: .main, in: .common).autoconnect()
 
     // Leave Request & Approval Sheet States
     @State private var withdrawTargetRequest: LeaveRequestProjection?
@@ -138,15 +143,52 @@ public struct AttendanceScreen: View {
         .dismissKeyboardOnTapOutside()
         .onAppear {
             locationManager.requestLocationUpdate()
+            lastAutoTimeSyncAttemptSec = Date().timeIntervalSince1970
             Task {
                 await viewModel.syncAttendanceTimeAnchor()
                 await viewModel.refreshMyLeaveSummary(year: viewModel.leaveYear)
+            }
+        }
+        .onChange(of: scenePhase) { newPhase in
+            guard newPhase == .active else { return }
+            locationManager.requestLocationUpdate()
+            lastAutoTimeSyncAttemptSec = Date().timeIntervalSince1970
+            Task {
+                await viewModel.syncAttendanceTimeAnchor()
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.willEnterForegroundNotification)) { _ in
+            locationManager.requestLocationUpdate()
+            lastAutoTimeSyncAttemptSec = Date().timeIntervalSince1970
+            Task {
+                await viewModel.syncAttendanceTimeAnchor()
+            }
+        }
+        .onReceive(liveClockTimer) { now in
+            liveClockTick &+= 1
+            viewModel.refreshAttendanceTimeEvaluation()
+            let eval = viewModel.attendanceTimeEvaluation
+            let nowSec = now.timeIntervalSince1970
+            let needsSync = !eval.isTrusted || (eval.remainingValidMs ?? 0) <= AttendanceTimeContract.refreshBeforeExpiryMs
+            if needsSync && (nowSec - lastAutoTimeSyncAttemptSec >= 15.0) {
+                lastAutoTimeSyncAttemptSec = nowSec
+                Task {
+                    await viewModel.syncAttendanceTimeAnchor()
+                }
             }
         }
         .sheet(isPresented: $isShowingCamera) {
             CameraPhotoCaptureSheet { data in
                 capturedPhotoData = data
                 frozenCaptureTimestamp = viewModel.timeAnchorManager.resolveCaptureTime()
+                if !viewModel.timeAnchorManager.evaluateAnchor().isTrusted {
+                    Task {
+                        await viewModel.syncAttendanceTimeAnchor()
+                        if viewModel.timeAnchorManager.evaluateAnchor().isTrusted {
+                            frozenCaptureTimestamp = viewModel.timeAnchorManager.resolveCaptureTime()
+                        }
+                    }
+                }
             }
         }
         .sheet(isPresented: Binding(
@@ -250,6 +292,7 @@ public struct AttendanceScreen: View {
 
                     HStack {
                         VStack(alignment: .leading, spacing: 2) {
+                            let _ = liveClockTick
                             Text("Giờ chuẩn hiện tại")
                                 .font(.caption2)
                                 .foregroundColor(SemanticColors.textMuted)
@@ -324,6 +367,7 @@ public struct AttendanceScreen: View {
                     // Photo Capture Row (Live Camera Only — matches Android 100%, freezes timestamp immediately upon capture)
                     Button {
                         locationManager.requestLocationUpdate()
+                        Task { await viewModel.syncAttendanceTimeAnchor() }
                         isShowingCamera = true
                     } label: {
                         HStack(spacing: 6) {

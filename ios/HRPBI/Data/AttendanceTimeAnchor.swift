@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 // MARK: - Attendance Time Contract & Server Time Anchor
 // Mirrors Android's `data/AttendanceTimeAnchor.kt` 100%
@@ -81,16 +82,24 @@ public protocol MonotonicClockProviding {
 
 public struct SystemMonotonicClockProvider: MonotonicClockProviding {
     private static let cachedBootSessionId: String = {
+        var mib: [Int32] = [CTL_KERN, KERN_BOOTTIME]
+        var boottime = timeval()
+        var size = MemoryLayout<timeval>.stride
+        if sysctl(&mib, 2, &boottime, &size, nil, 0) == 0 && boottime.tv_sec > 0 {
+            return "boot-\(boottime.tv_sec)"
+        }
         let nowMs = Int64(Date().timeIntervalSince1970 * 1000.0)
-        let uptimeMs = Int64(ProcessInfo.processInfo.systemUptime * 1000.0)
-        let estimatedBootEpochSec = (nowMs - uptimeMs) / 10_000 // 10-second bucket for stability
+        let monoMs = Int64(clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW) / 1_000_000)
+        let estimatedBootEpochSec = (nowMs - monoMs) / 10_000
         return "boot-\(estimatedBootEpochSec)"
     }()
 
     public init() {}
 
+    /// Uses `CLOCK_MONOTONIC_RAW`, which continues advancing while the iOS device is asleep/locked
+    /// (unlike `ProcessInfo.processInfo.systemUptime` which pauses during sleep), matching Android's `SystemClock.elapsedRealtime()`.
     public func elapsedRealtimeMs() -> Int64 {
-        Int64(ProcessInfo.processInfo.systemUptime * 1000.0)
+        Int64(clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW) / 1_000_000)
     }
 
     public func currentEpochMs() -> Int64 {
@@ -103,6 +112,8 @@ public struct SystemMonotonicClockProvider: MonotonicClockProviding {
 }
 
 public final class AttendanceTimeAnchorManager {
+    public static let shared = AttendanceTimeAnchorManager()
+
     private let httpClient: BackendHttpClient
     private let keychain: KeychainStore
     private let clock: MonotonicClockProviding
@@ -160,6 +171,9 @@ public final class AttendanceTimeAnchorManager {
 
     public func evaluateAnchor() -> AnchorEvaluationResult {
         lock.lock()
+        if cachedAnchor == nil {
+            cachedAnchor = Self.loadFromStorage(keychain: keychain)
+        }
         let anchor = cachedAnchor
         lock.unlock()
 
@@ -235,7 +249,7 @@ public final class AttendanceTimeAnchorManager {
             let elapsedMs = max(0, eval.elapsedSinceSyncMs ?? 0)
             let skewMs = deviceNowMs - serverEpochMs
             return CapturedAttendanceTimestamp(
-                capturedAtIso: Self.formatEpochMsAsIso8601Utc(serverEpochMs),
+                capturedAtIso: Self.formatEpochMillisInHcmIso(serverEpochMs),
                 capturedEpochMs: serverEpochMs,
                 timeSource: AttendanceTimeContract.sourceServerAnchored,
                 timeToken: anchor.timeToken,
@@ -248,7 +262,7 @@ public final class AttendanceTimeAnchorManager {
         }
 
         return CapturedAttendanceTimestamp(
-            capturedAtIso: Self.formatEpochMsAsIso8601Utc(deviceNowMs),
+            capturedAtIso: Self.formatEpochMillisInHcmIso(deviceNowMs),
             capturedEpochMs: deviceNowMs,
             timeSource: AttendanceTimeContract.sourceDeviceClockUnverified,
             timeToken: nil,
@@ -281,7 +295,7 @@ public final class AttendanceTimeAnchorManager {
 
     // MARK: - Internal Helpers
 
-    private func parseServerTimeResponse(
+    public func parseServerTimeResponse(
         root: [String: Any]?,
         rawBody: String,
         headers: [AnyHashable: Any],
@@ -304,7 +318,7 @@ public final class AttendanceTimeAnchorManager {
                 serverEpochMs = epochSec > 10_000_000_000 ? epochSec : epochSec * 1000
             }
 
-            serverNowIso = payload.optString("server_now", "server_time_iso", "now_iso", "iso", "timestamp_iso", "now")
+            serverNowIso = payload.optString("server_time", "server_now", "server_time_iso", "now_iso", "iso", "timestamp_iso", "now")
             if serverEpochMs == nil && !serverNowIso.isEmpty {
                 serverEpochMs = Self.parseIso8601ToEpochMs(serverNowIso)
             }
@@ -333,7 +347,7 @@ public final class AttendanceTimeAnchorManager {
             return nil
         }
 
-        let resolvedIso = serverNowIso.isEmpty ? Self.formatEpochMsAsIso8601Utc(resolvedEpochMs) : serverNowIso
+        let resolvedIso = serverNowIso.isEmpty ? Self.formatEpochMillisInHcmIso(resolvedEpochMs) : serverNowIso
         let resolvedExpiry = expiresAtMs ?? (resolvedEpochMs + AttendanceTimeContract.maxAnchorAgeMs)
 
         return ServerTimeAnchor(
@@ -371,6 +385,18 @@ public final class AttendanceTimeAnchorManager {
         return formatter.string(from: date)
     }
 
+    /// Formats epoch milliseconds in Vietnam timezone (`Asia/Ho_Chi_Minh`, `+07:00`) with Gregorian calendar,
+    /// matching Android's `AttendanceTimeContract.formatEpochMillisInHcmIso`.
+    public static func formatEpochMillisInHcmIso(_ epochMs: Int64) -> String {
+        let date = Date(timeIntervalSince1970: Double(epochMs) / 1000.0)
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "Asia/Ho_Chi_Minh") ?? TimeZone(secondsFromGMT: 7 * 3600)
+        formatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ss.SSSXXX"
+        return formatter.string(from: date)
+    }
+
     public static func formatDisplayDateTimeVi(isoString: String, fallbackEpochMs: Int64? = nil) -> String {
         let epochMs = parseIso8601ToEpochMs(isoString) ?? fallbackEpochMs
         guard let epochMs else {
@@ -378,8 +404,9 @@ public final class AttendanceTimeAnchorManager {
         }
         let date = Date(timeIntervalSince1970: Double(epochMs) / 1000.0)
         let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "vi_VN")
-        formatter.timeZone = TimeZone(identifier: "Asia/Ho_Chi_Minh") ?? .current
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "Asia/Ho_Chi_Minh") ?? TimeZone(secondsFromGMT: 7 * 3600)
         formatter.dateFormat = "HH:mm:ss - dd/MM/yyyy"
         return formatter.string(from: date)
     }
@@ -401,9 +428,16 @@ public final class AttendanceTimeAnchorManager {
         }
 
         let df = DateFormatter()
+        df.calendar = Calendar(identifier: .gregorian)
         df.locale = Locale(identifier: "en_US_POSIX")
         df.timeZone = TimeZone(secondsFromGMT: 0)
-        for pattern in ["yyyy-MM-dd'T'HH:mm:ss.SSSZ", "yyyy-MM-dd'T'HH:mm:ssZ", "yyyy-MM-dd HH:mm:ss"] {
+        for pattern in [
+            "yyyy-MM-dd'T'HH:mm:ss.SSSXXX",
+            "yyyy-MM-dd'T'HH:mm:ssXXX",
+            "yyyy-MM-dd'T'HH:mm:ss.SSSZ",
+            "yyyy-MM-dd'T'HH:mm:ssZ",
+            "yyyy-MM-dd HH:mm:ss"
+        ] {
             df.dateFormat = pattern
             if let date = df.date(from: trimmed) {
                 return Int64(date.timeIntervalSince1970 * 1000.0)
@@ -416,6 +450,7 @@ public final class AttendanceTimeAnchorManager {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
         let df = DateFormatter()
+        df.calendar = Calendar(identifier: .gregorian)
         df.locale = Locale(identifier: "en_US_POSIX")
         df.timeZone = TimeZone(secondsFromGMT: 0)
         df.dateFormat = "EEE, dd MMM yyyy HH:mm:ss zzz"
