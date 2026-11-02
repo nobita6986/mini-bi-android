@@ -373,6 +373,46 @@ final class HRPBTests: XCTestCase {
         XCTAssertEqual(payload["first_work_date"] as? String, "2026-11-02")
     }
 
+    func testAttendanceOutboxPreservesLocalPhotoAndResolvesServerPhotoUrl() throws {
+        let localItem = AttendanceOutboxItem(
+            localId: "local-uuid-1",
+            userKey: "nv001",
+            idempotencyKey: "local-uuid-1",
+            clientCapturedAt: "2026-11-02T14:40:00.000+07:00",
+            timeSource: AttendanceTimeContract.sourceServerAnchored,
+            lat: 21.0285,
+            lng: 105.8542,
+            photoLocalPath: "/tmp/local-uuid-1.jpg",
+            photoSha256: "abc123",
+            photoSizeBytes: 1024,
+            status: AttendanceContract.statusSynced,
+            createdAtEpochMs: 1_762_069_200_000
+        )
+        let serverHistoryItem = AttendanceOutboxItem(
+            localId: "srv-checkin-uuid-99",
+            userKey: "nv001",
+            idempotencyKey: "local-uuid-1",
+            clientCapturedAt: "2026-11-02T14:40:00.000+07:00",
+            timeSource: AttendanceTimeContract.sourceServerAnchored,
+            lat: 21.0285,
+            lng: 105.8542,
+            photoSha256: "abc123",
+            photoSizeBytes: 1024,
+            status: AttendanceContract.statusSynced,
+            serverCheckinId: "checkin-uuid-99",
+            createdAtEpochMs: 1_762_069_200_000
+        )
+
+        let deduped = AttendanceOutboxService.deduplicateItems([serverHistoryItem, localItem])
+        XCTAssertEqual(deduped.count, 1)
+        XCTAssertEqual(deduped[0].photoLocalPath, "/tmp/local-uuid-1.jpg")
+        XCTAssertEqual(deduped[0].serverCheckinId, "checkin-uuid-99")
+        XCTAssertEqual(
+            AttendanceOutboxService.resolveRemotePhotoPath(for: deduped[0]),
+            "/api/attendance/checkins/checkin-uuid-99/photo"
+        )
+    }
+
     // MARK: - 7. Leave Request ("Xin nghỉ") & Leave Approval ("Duyệt nghỉ") Contract Tests
 
     @MainActor

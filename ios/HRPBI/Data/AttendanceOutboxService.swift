@@ -345,11 +345,8 @@ public final class AttendanceOutboxService {
             item.lastErrorCode = nil
             item.lastErrorMessage = nil
 
-            // Clean up local photo after successful sync to save storage
-            if let path = item.photoLocalPath {
-                try? FileManager.default.removeItem(atPath: path)
-                item.photoLocalPath = nil
-            }
+            // Keep local photo file on disk so the user immediately sees the check-in photo in the attendance list,
+            // matching Android's `AttendanceOutboxService.kt` (`persistedFile`).
             upsertItem(item)
             return .success(item, statusCode: response.statusCode)
         } else {
@@ -560,6 +557,61 @@ public final class AttendanceOutboxService {
         onOutboxChanged?()
     }
 
+    // MARK: - Attendance Photo Loading (Local Outbox File + Server `/api/attendance/checkins/{checkinId}/photo`)
+
+    public func loadLocalPhotoData(for item: AttendanceOutboxItem) -> Data? {
+        if let rawPath = item.photoLocalPath?.trimmingCharacters(in: .whitespacesAndNewlines), !rawPath.isEmpty {
+            if let data = try? Data(contentsOf: URL(fileURLWithPath: rawPath)), !data.isEmpty {
+                return data
+            }
+            // Fallback to current container's photosDirectory in case the iOS sandbox UUID changed after an app update
+            let fileName = URL(fileURLWithPath: rawPath).lastPathComponent
+            if !fileName.isEmpty {
+                let rebasedUrl = photosDirectory.appendingPathComponent(fileName)
+                if let data = try? Data(contentsOf: rebasedUrl), !data.isEmpty {
+                    return data
+                }
+            }
+        }
+        let byLocalIdUrl = photosDirectory.appendingPathComponent("\(item.localId).jpg")
+        if let data = try? Data(contentsOf: byLocalIdUrl), !data.isEmpty {
+            return data
+        }
+        return nil
+    }
+
+    public static func resolveRemotePhotoPath(for item: AttendanceOutboxItem) -> String? {
+        if let cid = item.serverCheckinId?.trimmingCharacters(in: .whitespacesAndNewlines), !cid.isEmpty {
+            let encoded = cid.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? cid
+            return "/api/attendance/checkins/\(encoded)/photo"
+        }
+        if item.localId.hasPrefix("srv-") {
+            let cid = String(item.localId.dropFirst(4)).trimmingCharacters(in: .whitespacesAndNewlines)
+            if !cid.isEmpty {
+                let encoded = cid.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? cid
+                return "/api/attendance/checkins/\(encoded)/photo"
+            }
+        }
+        return nil
+    }
+
+    public func loadPhotoData(for item: AttendanceOutboxItem) async -> Data? {
+        if let localData = loadLocalPhotoData(for: item) {
+            return localData
+        }
+        guard let remotePath = Self.resolveRemotePhotoPath(for: item) else {
+            return nil
+        }
+        let resp = await httpClient.fetchBinaryData(path: remotePath, useCache: true)
+        guard resp.isSuccess && !resp.rawData.isEmpty else {
+            return nil
+        }
+        // Cache downloaded photo locally for instant future display
+        let cachedUrl = photosDirectory.appendingPathComponent("\(item.localId).jpg")
+        try? resp.rawData.write(to: cachedUrl, options: .atomic)
+        return resp.rawData
+    }
+
     // MARK: - Internal Upload & Storage Helpers
 
     private func uploadAttendancePhoto(item: AttendanceOutboxItem, photoData: Data) async -> MiniBiApiResult<String> {
@@ -704,6 +756,7 @@ public final class AttendanceOutboxService {
                     if merged.status == AttendanceContract.statusSynced {
                         preferred.status = AttendanceContract.statusSynced
                     }
+                    preferred.photoLocalPath = item.photoLocalPath ?? merged.photoLocalPath
                     preferred.serverRecordId = item.serverRecordId ?? merged.serverRecordId
                     preferred.serverCheckinId = item.serverCheckinId ?? merged.serverCheckinId
                     preferred.serverReceivedAt = item.serverReceivedAt ?? merged.serverReceivedAt
@@ -712,6 +765,7 @@ public final class AttendanceOutboxService {
                     if item.status == AttendanceContract.statusSynced {
                         merged.status = AttendanceContract.statusSynced
                     }
+                    merged.photoLocalPath = merged.photoLocalPath ?? item.photoLocalPath
                     merged.serverRecordId = merged.serverRecordId ?? item.serverRecordId
                     merged.serverCheckinId = merged.serverCheckinId ?? item.serverCheckinId
                     merged.serverReceivedAt = merged.serverReceivedAt ?? item.serverReceivedAt
