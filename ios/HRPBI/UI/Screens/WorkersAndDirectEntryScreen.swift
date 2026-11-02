@@ -877,7 +877,7 @@ struct NewWorkerDraftRowCard: View {
                 items: options.catalogProjects.isEmpty
                     ? options.projects.map { (id: $0, label: $0) }
                     : options.catalogProjects.map { (id: $0.projectId, label: $0.displayName) },
-                allowCustomInput: true,
+                allowCustomInput: options.catalogProjects.isEmpty,
                 onSelect: { id, label in
                     viewModel.updateNewWorkerDraftRow(rowId: draft.rowId) { row in
                         row.projectId = id
@@ -893,7 +893,7 @@ struct NewWorkerDraftRowCard: View {
                 items: filteredRecruiters.isEmpty
                     ? options.catalogRecruiters.map { (id: $0.recruiterId, label: $0.label) }
                     : filteredRecruiters.map { (id: $0.recruiterId, label: $0.label) },
-                allowCustomInput: true,
+                allowCustomInput: options.catalogRecruiters.isEmpty,
                 onSelect: { id, label in
                     viewModel.updateNewWorkerDraftRow(rowId: draft.rowId) { row in
                         row.recruiterId = id
