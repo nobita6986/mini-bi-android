@@ -90,6 +90,7 @@ public struct AttendanceScreen: View {
     @State private var isShowingCamera: Bool = false
     @State private var selectedPhotoItem: PhotosPickerItem?
     @State private var exportedReportUrl: URL?
+    @State private var selectedPreviewOutboxItem: AttendanceOutboxItem?
     @State private var liveClockTick: Int64 = 0
     @State private var lastAutoTimeSyncAttemptSec: TimeInterval = 0
 
@@ -210,6 +211,13 @@ public struct AttendanceScreen: View {
         }
         .sheet(isPresented: $isShowingRangePickerSheet) {
             leaveDateRangePickerSheet(theme: theme)
+        }
+        .sheet(item: $selectedPreviewOutboxItem) { previewItem in
+            AttendancePhotoPreviewSheet(
+                item: previewItem,
+                outboxService: viewModel.attendanceOutboxService,
+                theme: theme
+            )
         }
     }
 
@@ -538,50 +546,66 @@ public struct AttendanceScreen: View {
                             .padding(.vertical, 12)
                     } else {
                         ForEach(viewModel.attendanceOutboxItems) { item in
-                            VStack(alignment: .leading, spacing: 5) {
-                                HStack {
-                                    Text(AttendanceTimeAnchorManager.formatDisplayDateTimeVi(isoString: item.clientCapturedAt, fallbackEpochMs: item.createdAtEpochMs))
-                                        .font(.caption.weight(.bold))
-                                        .foregroundColor(SemanticColors.textPrimary)
-                                    Spacer()
-                                    Text(AttendanceContract.statusDisplayLabel(item.status))
-                                        .font(.caption2.weight(.bold))
-                                        .padding(.horizontal, 8)
-                                        .padding(.vertical, 3)
-                                        .background(outboxBgColor(item.status))
-                                        .foregroundColor(outboxTextColor(item.status))
-                                        .clipShape(Capsule())
+                            HStack(alignment: .top, spacing: 12) {
+                                Button {
+                                    selectedPreviewOutboxItem = item
+                                } label: {
+                                    AttendanceOutboxPhotoThumbnailView(
+                                        item: item,
+                                        outboxService: viewModel.attendanceOutboxService
+                                    )
                                 }
+                                .buttonStyle(.plain)
 
-                                Text(String(format: "GPS: %.5f, %.5f · Nguồn giờ: %@", item.lat, item.lng, item.timeSource))
-                                    .font(.caption2)
-                                    .foregroundColor(SemanticColors.textSecondary)
-
-                                if !item.note.isEmpty {
-                                    Text("Ghi chú: \(item.note)")
-                                        .font(.caption2)
-                                        .foregroundColor(SemanticColors.textMuted)
-                                }
-
-                                if let err = item.lastErrorMessage, !err.isEmpty {
+                                VStack(alignment: .leading, spacing: 5) {
                                     HStack {
-                                        Text(err)
-                                            .font(.caption2)
-                                            .foregroundColor(SemanticColors.dangerText)
+                                        Text(AttendanceTimeAnchorManager.formatDisplayDateTimeVi(isoString: item.clientCapturedAt, fallbackEpochMs: item.createdAtEpochMs))
+                                            .font(.caption.weight(.bold))
+                                            .foregroundColor(SemanticColors.textPrimary)
                                         Spacer()
-                                        if item.status == AttendanceContract.statusFailedPermanent {
-                                            Button("Xoá") {
-                                                viewModel.attendanceOutboxService.removeRejectedItem(localId: item.localId)
-                                            }
+                                        Text(AttendanceContract.statusDisplayLabel(item.status))
                                             .font(.caption2.weight(.bold))
-                                            .foregroundColor(SemanticColors.dangerText)
+                                            .padding(.horizontal, 8)
+                                            .padding(.vertical, 3)
+                                            .background(outboxBgColor(item.status))
+                                            .foregroundColor(outboxTextColor(item.status))
+                                            .clipShape(Capsule())
+                                    }
+
+                                    Text(String(format: "GPS: %.5f, %.5f · Nguồn giờ: %@", item.lat, item.lng, item.timeSource))
+                                        .font(.caption2)
+                                        .foregroundColor(SemanticColors.textSecondary)
+
+                                    if !item.note.isEmpty {
+                                        Text("Ghi chú: \(item.note)")
+                                            .font(.caption2)
+                                            .foregroundColor(SemanticColors.textMuted)
+                                    }
+
+                                    if let err = item.lastErrorMessage, !err.isEmpty {
+                                        HStack {
+                                            Text(err)
+                                                .font(.caption2)
+                                                .foregroundColor(SemanticColors.dangerText)
+                                            Spacer()
+                                            if item.status == AttendanceContract.statusFailedPermanent {
+                                                Button("Xoá") {
+                                                    viewModel.attendanceOutboxService.removeRejectedItem(localId: item.localId)
+                                                }
+                                                .font(.caption2.weight(.bold))
+                                                .foregroundColor(SemanticColors.dangerText)
+                                            }
                                         }
                                     }
                                 }
                             }
                             .padding(10)
                             .background(Color(hex: 0xF8FAFC))
-                            .cornerRadius(10)
+                            .cornerRadius(12)
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                selectedPreviewOutboxItem = item
+                            }
                         }
                     }
                 }
@@ -2275,6 +2299,203 @@ public struct AttendanceScreen: View {
             return SemanticColors.dangerText
         default:
             return SemanticColors.warningText
+        }
+    }
+}
+
+// MARK: - Attendance Outbox Photo Thumbnail & Full-Screen Preview Sheet (Mirrors Android `AttendanceHistoryCard`)
+
+private struct AttendanceOutboxPhotoThumbnailView: View {
+    let item: AttendanceOutboxItem
+    let outboxService: AttendanceOutboxService
+
+    @State private var loadedImage: UIImage?
+    @State private var isLoadingRemote: Bool = false
+
+    var body: some View {
+        ZStack {
+            if let uiImage = resolvedImmediateImage {
+                Image(uiImage: uiImage)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: 68, height: 68)
+                    .clipped()
+            } else if isLoadingRemote {
+                ProgressView()
+                    .scaleEffect(0.75)
+                    .frame(width: 68, height: 68)
+            } else {
+                VStack(spacing: 3) {
+                    Image(systemName: "camera.fill")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundColor(SemanticColors.textMuted)
+                    Text("Ảnh CC")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundColor(SemanticColors.textMuted)
+                }
+                .frame(width: 68, height: 68)
+            }
+        }
+        .frame(width: 68, height: 68)
+        .background(Color(hex: 0xE2E8F0))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(SemanticColors.borderSubtle, lineWidth: 1)
+        )
+        .task(id: "\(item.localId)-\(item.serverCheckinId ?? "")-\(item.photoLocalPath ?? "")") {
+            if loadedImage != nil { return }
+            if let localData = outboxService.loadLocalPhotoData(for: item),
+               let img = UIImage(data: localData) {
+                loadedImage = img
+                return
+            }
+            guard AttendanceOutboxService.resolveRemotePhotoPath(for: item) != nil else { return }
+            isLoadingRemote = true
+            let remoteData = await outboxService.loadPhotoData(for: item)
+            isLoadingRemote = false
+            if let remoteData, let img = UIImage(data: remoteData) {
+                loadedImage = img
+            }
+        }
+    }
+
+    private var resolvedImmediateImage: UIImage? {
+        if let loadedImage {
+            return loadedImage
+        }
+        if let localData = outboxService.loadLocalPhotoData(for: item),
+           let img = UIImage(data: localData) {
+            return img
+        }
+        return nil
+    }
+}
+
+private struct AttendancePhotoPreviewSheet: View {
+    let item: AttendanceOutboxItem
+    let outboxService: AttendanceOutboxService
+    let theme: MiniBiThemePalette
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var loadedImage: UIImage?
+    @State private var isLoading: Bool = false
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    ZStack {
+                        if let uiImage = loadedImage ?? outboxService.loadLocalPhotoData(for: item).flatMap(UIImage.init(data:)) {
+                            Image(uiImage: uiImage)
+                                .resizable()
+                                .scaledToFit()
+                                .frame(maxWidth: .infinity)
+                                .clipShape(RoundedRectangle(cornerRadius: 14))
+                        } else if isLoading {
+                            VStack(spacing: 10) {
+                                ProgressView()
+                                Text("Đang tải ảnh chấm công...")
+                                    .font(.caption)
+                                    .foregroundColor(SemanticColors.textSecondary)
+                            }
+                            .frame(maxWidth: .infinity, minHeight: 240)
+                        } else {
+                            VStack(spacing: 8) {
+                                Image(systemName: "photo.badge.exclamationmark")
+                                    .font(.system(size: 32))
+                                    .foregroundColor(SemanticColors.textMuted)
+                                Text("Không tải được ảnh chấm công cho bản ghi này.")
+                                    .font(.caption)
+                                    .foregroundColor(SemanticColors.textSecondary)
+                            }
+                            .frame(maxWidth: .infinity, minHeight: 200)
+                        }
+                    }
+                    .background(Color.white)
+                    .cornerRadius(14)
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Text("Thời gian chấm công")
+                                .font(.caption)
+                                .foregroundColor(SemanticColors.textSecondary)
+                            Spacer()
+                            Text(AttendanceTimeAnchorManager.formatDisplayDateTimeVi(isoString: item.clientCapturedAt, fallbackEpochMs: item.createdAtEpochMs))
+                                .font(.caption.weight(.bold))
+                                .foregroundColor(SemanticColors.textPrimary)
+                        }
+                        Divider()
+                        HStack {
+                            Text("Trạng thái")
+                                .font(.caption)
+                                .foregroundColor(SemanticColors.textSecondary)
+                            Spacer()
+                            Text(AttendanceContract.statusDisplayLabel(item.status))
+                                .font(.caption.weight(.bold))
+                                .foregroundColor(theme.primary)
+                        }
+                        Divider()
+                        HStack {
+                            Text("Tọa độ GPS")
+                                .font(.caption)
+                                .foregroundColor(SemanticColors.textSecondary)
+                            Spacer()
+                            Text(String(format: "%.6f, %.6f", item.lat, item.lng))
+                                .font(.caption.weight(.semibold))
+                                .foregroundColor(SemanticColors.textPrimary)
+                        }
+                        Divider()
+                        HStack {
+                            Text("Nguồn thời gian")
+                                .font(.caption)
+                                .foregroundColor(SemanticColors.textSecondary)
+                            Spacer()
+                            Text(item.timeSource == AttendanceTimeContract.sourceServerAnchored ? "Giờ đối chiếu máy chủ" : "Giờ thiết bị")
+                                .font(.caption.weight(.semibold))
+                                .foregroundColor(SemanticColors.textPrimary)
+                        }
+                        if !item.note.isEmpty {
+                            Divider()
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Ghi chú")
+                                    .font(.caption)
+                                    .foregroundColor(SemanticColors.textSecondary)
+                                Text(item.note)
+                                    .font(.caption)
+                                    .foregroundColor(SemanticColors.textPrimary)
+                            }
+                        }
+                    }
+                    .padding(14)
+                    .background(Color.white)
+                    .cornerRadius(14)
+                }
+                .padding(14)
+            }
+            .background(theme.background)
+            .navigationTitle("Chi tiết lượt chấm công")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Đóng") {
+                        dismiss()
+                    }
+                }
+            }
+            .task {
+                if let localData = outboxService.loadLocalPhotoData(for: item),
+                   let img = UIImage(data: localData) {
+                    loadedImage = img
+                    return
+                }
+                isLoading = true
+                let data = await outboxService.loadPhotoData(for: item)
+                isLoading = false
+                if let data, let img = UIImage(data: data) {
+                    loadedImage = img
+                }
+            }
         }
     }
 }
