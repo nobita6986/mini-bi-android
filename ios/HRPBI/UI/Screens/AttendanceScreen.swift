@@ -261,28 +261,31 @@ public struct AttendanceScreen: View {
         selectedTab: AttendanceAreaTab,
         theme: MiniBiThemePalette
     ) -> some View {
-        let isManyTabs = tabs.count >= 4
-        Group {
-            if isManyTabs {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 6) {
-                        ForEach(tabs) { tab in
-                            attendanceTopTabButton(
-                                tab: tab,
-                                isSelected: tab == selectedTab,
-                                isScrollable: true,
-                                theme: theme
-                            )
-                        }
-                    }
-                }
+        let approvalTabs = tabs.filter {
+            $0 == .explanationApproval || $0 == .leaveApproval
+        }
+        let personalTabs = tabs.filter {
+            $0 != .explanationApproval && $0 != .leaveApproval
+        }
+        let tabRows: [[AttendanceAreaTab]] = {
+            if !personalTabs.isEmpty && !approvalTabs.isEmpty {
+                return [personalTabs, approvalTabs]
+            } else if tabs.count > 3 {
+                return [Array(tabs.prefix(3)), Array(tabs.dropFirst(3))]
             } else {
-                HStack(spacing: 6) {
-                    ForEach(tabs) { tab in
+                return [tabs]
+            }
+        }()
+
+        VStack(spacing: 4) {
+            ForEach(Array(tabRows.enumerated()), id: \.offset) { _, rowTabs in
+                let isThreeColumnRow = rowTabs.count >= 3
+                HStack(spacing: 4) {
+                    ForEach(rowTabs) { tab in
                         attendanceTopTabButton(
                             tab: tab,
                             isSelected: tab == selectedTab,
-                            isScrollable: false,
+                            isCompactRow: isThreeColumnRow,
                             theme: theme
                         )
                     }
@@ -292,7 +295,7 @@ public struct AttendanceScreen: View {
         .padding(4)
         .background(Color.white)
         .cornerRadius(14)
-        .padding(.horizontal, 14)
+        .padding(.horizontal, 12)
         .padding(.top, 10)
         .padding(.bottom, 4)
     }
@@ -300,24 +303,24 @@ public struct AttendanceScreen: View {
     private func attendanceTopTabButton(
         tab: AttendanceAreaTab,
         isSelected: Bool,
-        isScrollable: Bool,
+        isCompactRow: Bool,
         theme: MiniBiThemePalette
     ) -> some View {
         Button {
             KeyboardDismissal.dismiss()
             viewModel.selectAttendanceTab(tab)
         } label: {
-            HStack(spacing: 5) {
+            HStack(spacing: isCompactRow ? 3 : 5) {
                 Image(systemName: tab.systemIconName)
-                    .font(.caption2.weight(.bold))
+                    .font(.system(size: isCompactRow ? 10 : 11, weight: .bold))
                 Text(tab.label)
-                    .font(.caption.weight(isSelected ? .bold : .semibold))
+                    .font(.system(size: isCompactRow ? 11.5 : 12.5, weight: isSelected ? .bold : .semibold))
                     .lineLimit(1)
-                    .minimumScaleFactor(0.8)
+                    .minimumScaleFactor(0.78)
             }
-            .frame(maxWidth: isScrollable ? nil : .infinity)
-            .padding(.vertical, 9)
-            .padding(.horizontal, isScrollable ? 11 : 6)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 8)
+            .padding(.horizontal, isCompactRow ? 4 : 8)
             .background(isSelected ? theme.primary : Color.clear)
             .foregroundColor(isSelected ? .white : SemanticColors.textSecondary)
             .cornerRadius(10)
@@ -2503,19 +2506,21 @@ public struct AttendanceScreen: View {
                     let dayEval = currentOverview.dayEvaluation
 
                     // Dynamic Day Slots Header
-                    HStack {
+                    VStack(alignment: .leading, spacing: 6) {
                         Text("Các mốc chấm công ngày \(dayEval.businessDate)")
                             .font(.subheadline.weight(.bold))
                             .foregroundColor(SemanticColors.textPrimary)
-                        Spacer()
                         Text("\(dayEval.slots.count) mốc • Chính sách v\(dayEval.policyVersionUsed)")
                             .font(.caption2.weight(.bold))
-                            .padding(.horizontal, 8)
+                            .lineLimit(1)
+                            .fixedSize(horizontal: true, vertical: false)
+                            .padding(.horizontal, 10)
                             .padding(.vertical, 4)
                             .background(theme.primaryLight)
                             .foregroundColor(theme.primary)
                             .cornerRadius(8)
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 2)
 
                     if dayEval.slots.isEmpty {
@@ -2588,6 +2593,8 @@ public struct AttendanceScreen: View {
                 Spacer()
                 Text(AttendanceExplanationContract.slotStatusLabel(slot.slotStatus))
                     .font(.caption2.weight(.bold))
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
                     .padding(.horizontal, 8)
                     .padding(.vertical, 4)
                     .background(explanationSlotStatusBgColor(slot.slotStatus))
@@ -2678,6 +2685,8 @@ public struct AttendanceScreen: View {
                 Spacer()
                 Text(AttendanceExplanationContract.explanationStatusLabel(item.status))
                     .font(.caption2.weight(.bold))
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
                     .padding(.horizontal, 8)
                     .padding(.vertical, 4)
                     .background(leaveStatusBgColor(item.status))
@@ -2784,6 +2793,8 @@ public struct AttendanceScreen: View {
                             Spacer()
                             Text("Chờ duyệt: \(pendingCount)")
                                 .font(.caption.weight(.bold))
+                                .lineLimit(1)
+                                .fixedSize(horizontal: true, vertical: false)
                                 .padding(.horizontal, 10)
                                 .padding(.vertical, 6)
                                 .background(SemanticColors.warningBg)

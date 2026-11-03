@@ -4,21 +4,27 @@ on:
   push:
     branches:
       - main
+    paths:
+      - "ios/**"
+      - ".github/workflows/ios-ci-release.yml"
     tags:
       - "V1.0.*"
   pull_request:
     branches:
       - main
+    paths:
+      - "ios/**"
+      - ".github/workflows/ios-ci-release.yml"
   workflow_dispatch:
     inputs:
       version_tag:
-        description: "Tag phiên bản phát hành (ví dụ: V1.0.5.01112026)"
+        description: "Tag phiên bản phát hành (ví dụ: V1.0.5.04112026)"
         required: false
-        default: "V1.0.5.01112026"
+        default: "V1.0.5.04112026"
       build_number:
         description: "Số thứ tự build tăng dần cho TestFlight (CURRENT_PROJECT_VERSION)"
         required: false
-        default: "81"
+        default: "98"
       scheme:
         description: "Scheme cần đóng gói IPA (HRP-BI)"
         required: false
@@ -33,12 +39,24 @@ concurrency:
 
 jobs:
   # ============================================================================
-  # CHẾ ĐỘ 1: Build & Test không cần tài khoản Apple Developer (Mọi PR / Push)
+  # CHẾ ĐỘ 1 & 2 TRÊN CÙNG 1 RUNNER MACOS:
+  # - Chế độ 1: Build & Unit Test (Mọi PR / Push)
+  # - Chế độ 2: Ký số .ipa & Đẩy thẳng lên TestFlight ngay trên cùng runner
+  #   (tránh phải xếp hàng xin cấp phát macOS runner lần thứ 2)
   # ============================================================================
   ios-build-and-test:
-    name: "Mode 1: Build & Unit Test (Unsigned Simulator & Generic iOS)"
+    name: "Mode 1 & 2: Build, Unit Test & Upload to TestFlight"
     runs-on: macos-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
+
+    env:
+      APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      APPLE_PROVISIONING_PROFILE_BASE64: ${{ secrets.APPLE_PROVISIONING_PROFILE_BASE64 }}
+      APPLE_PROVISIONING_PROFILE_BI2_BASE64: ${{ secrets.APPLE_PROVISIONING_PROFILE_BI2_BASE64 }}
+      APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+      APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+      APP_STORE_CONNECT_API_KEY_BASE64: ${{ secrets.APP_STORE_CONNECT_API_KEY_BASE64 }}
 
     steps:
       - name: Checkout repository
@@ -129,28 +147,12 @@ jobs:
             ios/build/artifacts/*.ipa
           if-no-files-found: error
 
-  # ============================================================================
-  # CHẾ ĐỘ 2: Ký số .ipa & Đẩy thẳng lên TestFlight (Khi có Apple Secrets)
-  # ============================================================================
-  ios-sign-and-testflight:
-    name: "Mode 2: Sign .ipa & Upload to TestFlight (Conditional on Apple Secrets)"
-    needs: ios-build-and-test
-    runs-on: macos-latest
-    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/V1.0.') || github.ref == 'refs/heads/main'
-    timeout-minutes: 40
-
-    env:
-      APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
-      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-      APPLE_PROVISIONING_PROFILE_BASE64: ${{ secrets.APPLE_PROVISIONING_PROFILE_BASE64 }}
-      APPLE_PROVISIONING_PROFILE_BI2_BASE64: ${{ secrets.APPLE_PROVISIONING_PROFILE_BI2_BASE64 }}
-      APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
-      APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
-      APP_STORE_CONNECT_API_KEY_BASE64: ${{ secrets.APP_STORE_CONNECT_API_KEY_BASE64 }}
-
-    steps:
-      - name: Check if Apple Developer Secrets are configured
+      # ========================================================================
+      # CHẾ ĐỘ 2: Ký số .ipa & Đẩy thẳng lên TestFlight ngay trên cùng runner
+      # ========================================================================
+      - name: Check if Apple Developer Secrets are configured (Release Mode)
         id: check_secrets
+        if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/V1.0.') || github.ref == 'refs/heads/main'
         run: |
           if [ -n "$APPLE_CERTIFICATE_BASE64" ] && \
              [ -n "$APPLE_CERTIFICATE_PASSWORD" ] && \
@@ -164,10 +166,6 @@ jobs:
             echo "configured=false" >> "$GITHUB_OUTPUT"
             echo "Notice: Apple Developer Secrets are not yet configured in Repository Secrets. Skipping Mode 2 signed IPA & TestFlight upload."
           fi
-
-      - name: Checkout repository
-        if: steps.check_secrets.outputs.configured == 'true'
-        uses: actions/checkout@v4
 
       - name: Resolve Release Version & Build Number
         if: steps.check_secrets.outputs.configured == 'true'
@@ -203,15 +201,6 @@ jobs:
           echo "scheme=$SCHEME_NAME" >> "$GITHUB_OUTPUT"
           echo "ipa_filename=$IPA_FILENAME" >> "$GITHUB_OUTPUT"
           echo "ipa_bi2_filename=$IPA_BI2_FILENAME" >> "$GITHUB_OUTPUT"
-
-      - name: Install XcodeGen & generate Xcode project
-        if: steps.check_secrets.outputs.configured == 'true'
-        working-directory: ios
-        run: |
-          if ! command -v xcodegen >/dev/null 2>&1; then
-            brew install xcodegen
-          fi
-          xcodegen generate
 
       - name: Import Apple Distribution Certificate & Provisioning Profile (HRP-BI) into temporary Keychain
         if: steps.check_secrets.outputs.configured == 'true'
