@@ -149,6 +149,7 @@ class BackendHttpClient(
             val knownBusinessMsg = backendCode?.let {
                 DIRECT_ENTRY_CODE_MESSAGES[it]
                     ?: LeaveContract.LEAVE_ERROR_MESSAGES[it]
+                    ?: AttendanceExplanationContract.ERROR_MESSAGES[it]
                     ?: SalaryAdvanceContract.ERROR_MESSAGES[it]
             }
             return when {

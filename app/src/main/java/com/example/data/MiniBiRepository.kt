@@ -319,6 +319,10 @@ class MiniBiRepository(
         httpClient = httpClient
     )
 
+    val attendanceExplanationService = AttendanceExplanationService(
+        httpClient = httpClient
+    )
+
     val salaryAdvanceService = SalaryAdvanceService(
         httpClient = httpClient
     )
