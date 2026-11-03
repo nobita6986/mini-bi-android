@@ -1555,7 +1555,10 @@ final class HRPBTests: XCTestCase {
             ]
         ]
 
-        let overview = try XCTUnwrap(AttendanceExplanationContract.parseMyExplanationsOverview(overviewJson))
+        guard case .success(let overview, _) = AttendanceExplanationContract.parseMyExplanationsOverview(overviewJson) else {
+            XCTFail("Expected parseMyExplanationsOverview to succeed")
+            return
+        }
         XCTAssertEqual(overview.dayEvaluation.slots.count, 6)
         XCTAssertEqual(overview.dayEvaluation.policyVersionUsed, 3)
         XCTAssertEqual(overview.routing.primaryApprover?.resolvedDisplayName(), "Trưởng nhóm Tuyển dụng")
@@ -1647,7 +1650,10 @@ final class HRPBTests: XCTestCase {
             ]
         ]
 
-        let inbox = try XCTUnwrap(AttendanceExplanationContract.parseApprovalInbox(inboxJson))
+        guard case .success(let inbox, _) = AttendanceExplanationContract.parseApprovalInbox(inboxJson) else {
+            XCTFail("Expected parseApprovalInbox to succeed")
+            return
+        }
         XCTAssertTrue(inbox.viewer.canApproveExplanations)
         XCTAssertEqual(inbox.pagination.pendingCount, 1)
         let inboxItem = try XCTUnwrap(inbox.items.first)

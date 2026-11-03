@@ -4,8 +4,6 @@ on:
   push:
     branches:
       - main
-      - "feat/**"
-      - "fix/**"
     tags:
       - "V1.0.*"
   pull_request:
@@ -28,6 +26,10 @@ on:
 
 permissions:
   contents: write
+
+concurrency:
+  group: ios-ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   # ============================================================================
