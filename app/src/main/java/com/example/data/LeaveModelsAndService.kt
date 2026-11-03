@@ -15,7 +15,9 @@ import java.util.UUID
 
 enum class AttendanceAreaTab(val key: String, val label: String) {
     CHECK_IN("CHECK_IN", "Chấm công"),
-    LEAVE_REQUEST("LEAVE_REQUEST", "Xin nghỉ"),
+    EXPLANATION("EXPLANATION", "Giải trình chấm công"),
+    LEAVE_REQUEST("LEAVE_REQUEST", "Xin nghỉ phép"),
+    EXPLANATION_APPROVAL("EXPLANATION_APPROVAL", "Xét duyệt giải trình"),
     LEAVE_APPROVAL("LEAVE_APPROVAL", "Duyệt nghỉ")
 }
 
@@ -630,23 +632,55 @@ object LeaveContract {
     }
 
     /**
-     * Resolves visible tabs inside the Attendance area strictly from server-returned authority.
-     * - CHECK_IN ("Chấm công") is always visible and default.
-     * - LEAVE_REQUEST ("Xin nghỉ") is visible unless backend explicitly marks the account as shared/ineligible.
-     * - LEAVE_APPROVAL ("Duyệt nghỉ") is visible ONLY when backend confirms `can_approve_requests = true`
-     *   and `!is_shared_non_employee`.
+     * Resolves visible tabs inside the Attendance area strictly from server-returned authority:
+     * 1. CHECK_IN ("Chấm công") is always visible and default.
+     * 2. EXPLANATION ("Giải trình chấm công") is placed immediately before LEAVE_REQUEST ("Xin nghỉ phép")
+     *    for eligible employee accounts (`!is_shared_non_employee` and `can_submit_explanation`).
+     * 3. LEAVE_REQUEST ("Xin nghỉ phép") is visible unless backend marks the account as shared/ineligible.
+     * 4. EXPLANATION_APPROVAL ("Xét duyệt giải trình") is visible ONLY when backend confirms
+     *    `can_approve_explanations = true` (or `authority.can_approve_requests = true` before explanation
+     *    overview finishes loading) and `!is_shared_non_employee`.
+     * 5. LEAVE_APPROVAL ("Duyệt nghỉ") is visible ONLY when backend confirms `can_approve_requests = true`
+     *    and `!is_shared_non_employee`.
      */
     fun resolveVisibleAttendanceTabs(
         authority: LeaveAuthorityProjection?,
-        errorCode: String? = null
+        errorCode: String? = null,
+        explanationViewer: AttendanceExplanationViewerProjection? = null,
+        explanationInboxViewer: AttendanceExplanationApprovalInboxViewerProjection? = null,
+        explanationErrorCode: String? = null,
+        explanationInboxErrorCode: String? = null
     ): List<AttendanceAreaTab> {
         val tabs = mutableListOf(AttendanceAreaTab.CHECK_IN)
-        val isSharedOrForbidden = errorCode == "LEAVE_SHARED_ACCOUNT_FORBIDDEN" ||
+        val isSharedAccount = errorCode == "LEAVE_SHARED_ACCOUNT_FORBIDDEN" ||
+            explanationErrorCode == "ATTENDANCE_EXPLANATION_ACCESS_DENIED" ||
             authority?.isSharedNonEmployee == true ||
-            authority?.canSubmitRequest == false
-        if (!isSharedOrForbidden) {
+            explanationViewer?.isSharedNonEmployee == true
+
+        val canSubmitExplanation = !isSharedAccount &&
+            explanationErrorCode != "ATTENDANCE_EXPLANATION_SUBMIT_DENIED" &&
+            (explanationViewer?.canSubmitExplanation ?: (authority?.canSubmitRequest != false))
+        if (canSubmitExplanation) {
+            tabs.add(AttendanceAreaTab.EXPLANATION)
+        }
+
+        val canSubmitLeave = !isSharedAccount && authority?.canSubmitRequest != false
+        if (canSubmitLeave) {
             tabs.add(AttendanceAreaTab.LEAVE_REQUEST)
         }
+
+        val canApproveExplanations = !isSharedAccount &&
+            explanationInboxErrorCode != "ATTENDANCE_EXPLANATION_APPROVAL_ACCESS_DENIED" &&
+            when {
+                explanationInboxViewer != null -> explanationInboxViewer.canApproveExplanations
+                explanationViewer != null -> explanationViewer.canApproveExplanations
+                authority != null -> !authority.isSharedNonEmployee && authority.canApproveRequests
+                else -> false
+            }
+        if (canApproveExplanations) {
+            tabs.add(AttendanceAreaTab.EXPLANATION_APPROVAL)
+        }
+
         if (authority != null && !authority.isSharedNonEmployee && authority.canApproveRequests) {
             tabs.add(AttendanceAreaTab.LEAVE_APPROVAL)
         }

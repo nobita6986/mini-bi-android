@@ -14,6 +14,10 @@ import com.example.BuildConfig
 import com.example.data.AppActor
 import com.example.data.AttendanceAreaTab
 import com.example.data.AttendanceEntity
+import com.example.data.AttendanceExplanationApprovalInboxProjection
+import com.example.data.AttendanceExplanationContract
+import com.example.data.AttendanceExplanationItemProjection
+import com.example.data.AttendanceMyExplanationsOverviewProjection
 import com.example.data.AttendanceTimeContract
 import com.example.data.BackendApiException
 import com.example.data.BackendFailureKind
@@ -412,6 +416,47 @@ class MiniBiViewModel internal constructor(
     private val _leaveInboxError = MutableStateFlow<String?>(null)
     val leaveInboxError: StateFlow<String?> = _leaveInboxError.asStateFlow()
 
+    // Attendance Explanation ("Giải trình chấm công") & Approval ("Xét duyệt giải trình") States
+    private val _explanationSelectedDate = MutableStateFlow(AttendanceExplanationContract.todayVietnamIsoDate())
+    val explanationSelectedDate: StateFlow<String> = _explanationSelectedDate.asStateFlow()
+
+    private val _myExplanationsOverview = MutableStateFlow<AttendanceMyExplanationsOverviewProjection?>(null)
+    val myExplanationsOverview: StateFlow<AttendanceMyExplanationsOverviewProjection?> = _myExplanationsOverview.asStateFlow()
+
+    private val _myExplanationsLoading = MutableStateFlow(false)
+    val myExplanationsLoading: StateFlow<Boolean> = _myExplanationsLoading.asStateFlow()
+
+    private val _myExplanationsError = MutableStateFlow<String?>(null)
+    val myExplanationsError: StateFlow<String?> = _myExplanationsError.asStateFlow()
+
+    private val _myExplanationsErrorCode = MutableStateFlow<String?>(null)
+    val myExplanationsErrorCode: StateFlow<String?> = _myExplanationsErrorCode.asStateFlow()
+
+    private val _explanationMutationBusy = MutableStateFlow(false)
+    val explanationMutationBusy: StateFlow<Boolean> = _explanationMutationBusy.asStateFlow()
+
+    private val _explanationMutationError = MutableStateFlow<String?>(null)
+    val explanationMutationError: StateFlow<String?> = _explanationMutationError.asStateFlow()
+
+    private val _explanationInboxStatusFilter = MutableStateFlow("PENDING")
+    val explanationInboxStatusFilter: StateFlow<String> = _explanationInboxStatusFilter.asStateFlow()
+
+    private val _explanationInboxPage = MutableStateFlow(1)
+    val explanationInboxPage: StateFlow<Int> = _explanationInboxPage.asStateFlow()
+
+    private val _explanationApprovalInbox = MutableStateFlow<AttendanceExplanationApprovalInboxProjection?>(null)
+    val explanationApprovalInbox: StateFlow<AttendanceExplanationApprovalInboxProjection?> =
+        _explanationApprovalInbox.asStateFlow()
+
+    private val _explanationInboxLoading = MutableStateFlow(false)
+    val explanationInboxLoading: StateFlow<Boolean> = _explanationInboxLoading.asStateFlow()
+
+    private val _explanationInboxError = MutableStateFlow<String?>(null)
+    val explanationInboxError: StateFlow<String?> = _explanationInboxError.asStateFlow()
+
+    private val _explanationInboxErrorCode = MutableStateFlow<String?>(null)
+    val explanationInboxErrorCode: StateFlow<String?> = _explanationInboxErrorCode.asStateFlow()
+
     // Salary Advance States (QLDA only on Android; backend authority only)
     private val _salaryAdvanceContext = MutableStateFlow<SalaryAdvanceActorContext?>(null)
     val salaryAdvanceContext: StateFlow<SalaryAdvanceActorContext?> = _salaryAdvanceContext.asStateFlow()
@@ -667,6 +712,7 @@ class MiniBiViewModel internal constructor(
                 syncAttendanceTimeAnchor(actor = actor, force = false)
                 syncAttendanceHistoryFromServer(actor = actor)
                 refreshMyLeaveSummary(year = _leaveYear.value)
+                refreshMyAttendanceExplanations(businessDate = _explanationSelectedDate.value)
             }
         }
     }
@@ -825,6 +871,19 @@ class MiniBiViewModel internal constructor(
             _leaveApprovalInbox.value = null
             _leaveInboxLoading.value = false
             _leaveInboxError.value = null
+            _explanationSelectedDate.value = AttendanceExplanationContract.todayVietnamIsoDate()
+            _myExplanationsOverview.value = null
+            _myExplanationsLoading.value = false
+            _myExplanationsError.value = null
+            _myExplanationsErrorCode.value = null
+            _explanationMutationBusy.value = false
+            _explanationMutationError.value = null
+            _explanationInboxStatusFilter.value = "PENDING"
+            _explanationInboxPage.value = 1
+            _explanationApprovalInbox.value = null
+            _explanationInboxLoading.value = false
+            _explanationInboxError.value = null
+            _explanationInboxErrorCode.value = null
             resetSalaryAdvanceAllState()
         }
     }
@@ -3601,7 +3660,11 @@ class MiniBiViewModel internal constructor(
     fun resolveVisibleAttendanceTabs(): List<AttendanceAreaTab> {
         return LeaveContract.resolveVisibleAttendanceTabs(
             authority = _myLeaveSummary.value?.authority,
-            errorCode = _myLeaveErrorCode.value
+            errorCode = _myLeaveErrorCode.value,
+            explanationViewer = _myExplanationsOverview.value?.viewer,
+            explanationInboxViewer = _explanationApprovalInbox.value?.viewer,
+            explanationErrorCode = _myExplanationsErrorCode.value,
+            explanationInboxErrorCode = _explanationInboxErrorCode.value
         )
     }
 
@@ -3610,13 +3673,23 @@ class MiniBiViewModel internal constructor(
         val safeTab = if (tab in visibleTabs) tab else AttendanceAreaTab.CHECK_IN
         _activeAttendanceTab.value = safeTab
         _leaveMutationError.value = null
+        _explanationMutationError.value = null
         when (safeTab) {
             AttendanceAreaTab.CHECK_IN -> Unit
+            AttendanceAreaTab.EXPLANATION -> {
+                refreshMyAttendanceExplanations(businessDate = _explanationSelectedDate.value)
+            }
             AttendanceAreaTab.LEAVE_REQUEST -> {
                 ensureInitialLeaveDraftDay()
                 if (_myLeaveSummary.value == null && !_myLeaveLoading.value) {
                     refreshMyLeaveSummary(year = _leaveYear.value)
                 }
+            }
+            AttendanceAreaTab.EXPLANATION_APPROVAL -> {
+                refreshExplanationApprovalInbox(
+                    statusFilter = _explanationInboxStatusFilter.value,
+                    page = _explanationInboxPage.value
+                )
             }
             AttendanceAreaTab.LEAVE_APPROVAL -> {
                 refreshLeaveApprovalInbox(
@@ -3810,7 +3883,7 @@ class MiniBiViewModel internal constructor(
                 _myLeaveErrorCode.value = null
                 ensureInitialLeaveDraftDay()
 
-                val visibleTabs = LeaveContract.resolveVisibleAttendanceTabs(summary.authority, null)
+                val visibleTabs = resolveVisibleAttendanceTabs()
                 if (_activeAttendanceTab.value !in visibleTabs) {
                     _activeAttendanceTab.value = AttendanceAreaTab.CHECK_IN
                 }
@@ -4052,6 +4125,280 @@ class MiniBiViewModel internal constructor(
                 showBanner(msg, isError = true)
             } finally {
                 _leaveMutationBusy.value = false
+            }
+        }
+    }
+
+    // =========================================================================
+    // Attendance Explanation ("Giải trình chấm công" & "Xét duyệt giải trình")
+    // Strictly authority-driven from backend `/api/attendance/explanations*`
+    // =========================================================================
+
+    fun clearExplanationMutationError() {
+        _explanationMutationError.value = null
+    }
+
+    fun setExplanationSelectedDate(businessDate: String) {
+        val cleanDate = businessDate.trim()
+        if (!AttendanceExplanationContract.isValidIsoDate(cleanDate)) {
+            val msg = AttendanceExplanationContract.ERROR_MESSAGES.getValue("ATTENDANCE_EXPLANATION_DATE_INVALID")
+            _explanationMutationError.value = msg
+            showBanner(msg, isError = true)
+            return
+        }
+        val todayLocal = _myExplanationsOverview.value?.todayLocal
+            ?.takeIf { AttendanceExplanationContract.isValidIsoDate(it) }
+            ?: AttendanceExplanationContract.todayVietnamIsoDate()
+        if (cleanDate > todayLocal) {
+            val msg = AttendanceExplanationContract.ERROR_MESSAGES.getValue("ATTENDANCE_EXPLANATION_DATE_FUTURE")
+            _explanationMutationError.value = msg
+            showBanner(msg, isError = true)
+            return
+        }
+        _explanationMutationError.value = null
+        _explanationSelectedDate.value = cleanDate
+        refreshMyAttendanceExplanations(businessDate = cleanDate)
+    }
+
+    fun refreshMyAttendanceExplanations(
+        businessDate: String? = _explanationSelectedDate.value
+    ) {
+        val cleanDate = businessDate?.trim()?.takeIf { AttendanceExplanationContract.isValidIsoDate(it) }
+        _myExplanationsLoading.value = true
+        _myExplanationsError.value = null
+        _myExplanationsErrorCode.value = null
+        viewModelScope.launch {
+            try {
+                val overview = repository.attendanceExplanationService.fetchMyExplanationsOverview(
+                    businessDate = cleanDate,
+                    limit = LEAVE_INBOX_PAGE_SIZE,
+                    offset = 0
+                )
+                _myExplanationsOverview.value = overview
+                _explanationSelectedDate.value = overview.selectedDate
+                _myExplanationsError.value = null
+                _myExplanationsErrorCode.value = null
+
+                val visibleTabs = resolveVisibleAttendanceTabs()
+                if (_activeAttendanceTab.value !in visibleTabs) {
+                    _activeAttendanceTab.value = AttendanceAreaTab.CHECK_IN
+                }
+                if (overview.viewer.canApproveExplanations &&
+                    !overview.viewer.isSharedNonEmployee &&
+                    (_activeAttendanceTab.value == AttendanceAreaTab.EXPLANATION_APPROVAL ||
+                        _explanationApprovalInbox.value != null)
+                ) {
+                    refreshExplanationApprovalInbox(
+                        statusFilter = _explanationInboxStatusFilter.value,
+                        page = _explanationInboxPage.value
+                    )
+                }
+            } catch (e: BackendApiException) {
+                _myExplanationsError.value = e.message
+                _myExplanationsErrorCode.value = e.backendCode
+                if (e.backendCode == "ATTENDANCE_EXPLANATION_ACCESS_DENIED" ||
+                    e.backendCode == "LEAVE_SHARED_ACCOUNT_FORBIDDEN"
+                ) {
+                    _myExplanationsOverview.value = null
+                    val visibleTabs = resolveVisibleAttendanceTabs()
+                    if (_activeAttendanceTab.value !in visibleTabs) {
+                        _activeAttendanceTab.value = AttendanceAreaTab.CHECK_IN
+                    }
+                }
+            } catch (e: Exception) {
+                e.rethrowIfCancelled()
+                _myExplanationsError.value = e.message ?: "Không thể tải dữ liệu giải trình chấm công."
+            } finally {
+                _myExplanationsLoading.value = false
+            }
+        }
+    }
+
+    fun submitAttendanceExplanation(
+        businessDate: String = _explanationSelectedDate.value,
+        slotCode: String,
+        reason: String,
+        onSuccess: (() -> Unit)? = null
+    ) {
+        if (_explanationMutationBusy.value) return
+        val cleanDate = businessDate.trim()
+        val cleanSlot = slotCode.trim().uppercase(Locale.ROOT)
+        val todayLocal = _myExplanationsOverview.value?.todayLocal
+        val validationError = AttendanceExplanationContract.validateSubmitInput(
+            businessDate = cleanDate,
+            slotCode = cleanSlot,
+            reason = reason,
+            todayLocal = todayLocal
+        )
+        if (validationError != null) {
+            _explanationMutationError.value = validationError
+            showBanner(validationError, isError = true)
+            return
+        }
+        _explanationMutationBusy.value = true
+        _explanationMutationError.value = null
+        viewModelScope.launch {
+            try {
+                repository.attendanceExplanationService.submitExplanation(
+                    businessDate = cleanDate,
+                    slotCode = cleanSlot,
+                    reason = reason
+                )
+                showBanner("Đã gửi giải trình chấm công thành công.")
+                refreshMyAttendanceExplanations(businessDate = cleanDate)
+                onSuccess?.invoke()
+            } catch (e: BackendApiException) {
+                _explanationMutationError.value = e.message
+                showBanner(e.message, isError = true)
+                if (AttendanceExplanationContract.isConflictError(e.statusCode, e.backendCode)) {
+                    refreshMyAttendanceExplanations(businessDate = cleanDate)
+                }
+            } catch (e: Exception) {
+                e.rethrowIfCancelled()
+                val msg = e.message ?: "Không thể gửi giải trình chấm công."
+                _explanationMutationError.value = msg
+                showBanner(msg, isError = true)
+            } finally {
+                _explanationMutationBusy.value = false
+            }
+        }
+    }
+
+    fun setExplanationInboxFilter(statusFilter: String) {
+        val clean = statusFilter.trim().uppercase(Locale.ROOT)
+        if (clean !in AttendanceExplanationContract.APPROVAL_STATUS_FILTERS) return
+        _explanationInboxStatusFilter.value = clean
+        _explanationInboxPage.value = 1
+        refreshExplanationApprovalInbox(statusFilter = clean, page = 1)
+    }
+
+    fun setExplanationInboxPage(page: Int) {
+        val safePage = page.coerceAtLeast(1)
+        _explanationInboxPage.value = safePage
+        refreshExplanationApprovalInbox(
+            statusFilter = _explanationInboxStatusFilter.value,
+            page = safePage
+        )
+    }
+
+    fun refreshExplanationApprovalInbox(
+        statusFilter: String = _explanationInboxStatusFilter.value,
+        page: Int = _explanationInboxPage.value
+    ) {
+        val overviewViewer = _myExplanationsOverview.value?.viewer
+        val authority = _myLeaveSummary.value?.authority
+        val explicitlyDenied = when {
+            overviewViewer != null -> !overviewViewer.canApproveExplanations || overviewViewer.isSharedNonEmployee
+            authority != null -> !authority.canApproveRequests || authority.isSharedNonEmployee
+            else -> false
+        }
+        if (explicitlyDenied) {
+            _explanationApprovalInbox.value = null
+            return
+        }
+        val safePage = page.coerceAtLeast(1)
+        val limit = LEAVE_INBOX_PAGE_SIZE
+        val offset = (safePage - 1) * limit
+        _explanationInboxLoading.value = true
+        _explanationInboxError.value = null
+        _explanationInboxErrorCode.value = null
+        viewModelScope.launch {
+            try {
+                val inbox = repository.attendanceExplanationService.fetchApprovalInbox(
+                    statusFilter = statusFilter,
+                    limit = limit,
+                    offset = offset
+                )
+                _explanationApprovalInbox.value = inbox
+                _explanationInboxError.value = null
+                _explanationInboxErrorCode.value = null
+                if (!inbox.viewer.canApproveExplanations &&
+                    _activeAttendanceTab.value == AttendanceAreaTab.EXPLANATION_APPROVAL
+                ) {
+                    _activeAttendanceTab.value = AttendanceAreaTab.CHECK_IN
+                }
+            } catch (e: BackendApiException) {
+                _explanationInboxError.value = e.message
+                _explanationInboxErrorCode.value = e.backendCode
+                if (e.kind == BackendFailureKind.FORBIDDEN ||
+                    e.backendCode == "ATTENDANCE_EXPLANATION_APPROVAL_ACCESS_DENIED"
+                ) {
+                    _explanationApprovalInbox.value = null
+                    if (_activeAttendanceTab.value == AttendanceAreaTab.EXPLANATION_APPROVAL) {
+                        _activeAttendanceTab.value = AttendanceAreaTab.CHECK_IN
+                    }
+                }
+            } catch (e: Exception) {
+                e.rethrowIfCancelled()
+                _explanationInboxError.value = e.message ?: "Không thể tải danh sách giải trình cần xét duyệt."
+            } finally {
+                _explanationInboxLoading.value = false
+            }
+        }
+    }
+
+    fun decideAttendanceExplanation(
+        item: AttendanceExplanationItemProjection,
+        decision: String,
+        decisionNote: String?,
+        onSuccess: (() -> Unit)? = null
+    ) {
+        if (_explanationMutationBusy.value) return
+        val actorId = currentActor.value?.appUserId
+            ?: _explanationApprovalInbox.value?.viewer?.appUserId
+            ?: _myExplanationsOverview.value?.viewer?.appUserId
+            ?: _myLeaveSummary.value?.authority?.appUserId
+        val validationError = AttendanceExplanationContract.validateDecisionInput(
+            actorAppUserId = actorId,
+            item = item,
+            decision = decision,
+            decisionNote = decisionNote
+        )
+        if (validationError != null) {
+            _explanationMutationError.value = validationError
+            showBanner(validationError, isError = true)
+            return
+        }
+        val cleanDecision = decision.trim().uppercase(Locale.ROOT)
+        _explanationMutationBusy.value = true
+        _explanationMutationError.value = null
+        viewModelScope.launch {
+            try {
+                repository.attendanceExplanationService.decideExplanation(
+                    explanationId = item.explanationId,
+                    decision = cleanDecision,
+                    expectedRowVersion = item.rowVersion,
+                    decisionNote = decisionNote
+                )
+                val successMsg = when (cleanDecision) {
+                    "APPROVE" -> "Đã duyệt giải trình chấm công."
+                    "REJECT" -> "Đã từ chối giải trình chấm công."
+                    else -> "Đã cập nhật quyết định xét duyệt giải trình."
+                }
+                showBanner(successMsg)
+                refreshExplanationApprovalInbox(
+                    statusFilter = _explanationInboxStatusFilter.value,
+                    page = _explanationInboxPage.value
+                )
+                refreshMyAttendanceExplanations(businessDate = _explanationSelectedDate.value)
+                onSuccess?.invoke()
+            } catch (e: BackendApiException) {
+                _explanationMutationError.value = e.message
+                showBanner(e.message, isError = true)
+                if (AttendanceExplanationContract.isConflictError(e.statusCode, e.backendCode)) {
+                    refreshExplanationApprovalInbox(
+                        statusFilter = _explanationInboxStatusFilter.value,
+                        page = _explanationInboxPage.value
+                    )
+                    refreshMyAttendanceExplanations(businessDate = _explanationSelectedDate.value)
+                }
+            } catch (e: Exception) {
+                e.rethrowIfCancelled()
+                val msg = e.message ?: "Không thể gửi quyết định xét duyệt giải trình."
+                _explanationMutationError.value = msg
+                showBanner(msg, isError = true)
+            } finally {
+                _explanationMutationBusy.value = false
             }
         }
     }

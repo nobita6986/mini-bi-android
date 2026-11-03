@@ -4100,4 +4100,394 @@ class WorkerUiAuthorizationRobolectricTest {
         composeTestRule.onNodeWithTag("direct_edit_doc_upload_denied_notice").performScrollTo().assertIsDisplayed()
         composeTestRule.onNodeWithTag("direct_edit_doc_retry_CCCD_BACK").assertDoesNotExist()
     }
+
+    @Test
+    @Config(qualifiers = "w411dp-h914dp-xxhdpi")
+    fun `attendance explanation UI places Giai trinh cham cong before Xin nghi phep, hides approval for regular employee, and supports dynamic slots submit and approver decision`() {
+        val employeeId = "11111111-2222-4333-8444-555555555555"
+        val approverId = "99999999-2222-4333-8444-555555555555"
+        val explanationId = "eeee1111-2222-4333-8444-555555555555"
+
+        var canApprove = false
+        var slotSubmitted = false
+        var decisionStatus = "PENDING"
+        var decisionRowVersion = 2
+        val capturedSubmitBodies = java.util.Collections.synchronizedList(mutableListOf<JSONObject>())
+        val capturedDecisionBodies = java.util.Collections.synchronizedList(mutableListOf<JSONObject>())
+
+        val server = MockWebServer()
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val path = request.path.orEmpty()
+                return when {
+                    path.startsWith("/api/leave/me") -> MockResponse().setResponseCode(200).setBody(
+                        """
+                        {
+                          "ok": true,
+                          "data": {
+                            "as_of_date": "2026-11-03",
+                            "leave_year": 2026,
+                            "account": {"app_user_id": "$employeeId", "display_name": "Nhân Viên A", "account_enabled": true},
+                            "authority": {
+                              "app_user_id": "$employeeId",
+                              "is_shared_non_employee": false,
+                              "is_full_admin": false,
+                              "is_bod": false,
+                              "is_hr_operator": false,
+                              "is_hr_report_viewer": false,
+                              "is_team_leader": $canApprove,
+                              "is_department_approver": false,
+                              "can_submit_request": true,
+                              "can_approve_requests": $canApprove,
+                              "can_view_monthly_report": false,
+                              "can_manage_config": false
+                            },
+                            "routing": {"route_kind": "TEAM_LEADER", "unit_kind": "RECRUITMENT", "profile_configured": true},
+                            "policy": {"annual_base_units": 24, "monthly_accrual_units": 2, "row_version": 1},
+                            "balance": {
+                              "leave_year": 2026,
+                              "as_of_date": "2026-11-03",
+                              "has_profile": true,
+                              "profile_configured": true,
+                              "employment_status": "OFFICIAL",
+                              "unit_kind": "RECRUITMENT",
+                              "available_units": 12,
+                              "total_granted_units": 16,
+                              "lots": []
+                            },
+                            "requests": [],
+                            "ledger_entries": []
+                          }
+                        }
+                        """.trimIndent()
+                    )
+                    path == "/api/attendance/explanations" && request.method == "POST" -> {
+                        val payload = JSONObject(request.body.readUtf8())
+                        capturedSubmitBodies.add(payload)
+                        slotSubmitted = true
+                        MockResponse().setResponseCode(201).setBody(
+                            """
+                            {
+                              "ok": true,
+                              "replayed": false,
+                              "explanation": {
+                                "explanation_id": "$explanationId",
+                                "app_user_id": "$employeeId",
+                                "requester": {"app_user_id": "$employeeId", "display_name": "Nhân Viên A", "account_enabled": true},
+                                "business_date": "2026-11-03",
+                                "slot_code": "SLOT_3",
+                                "slot_label": "Mốc chiều 3",
+                                "session_code": "PM",
+                                "target_time": "17:30",
+                                "grace_before_minutes": 15,
+                                "grace_after_minutes": 15,
+                                "original_slot_status": "MISSING",
+                                "status": "PENDING",
+                                "reason": "${payload.getString("reason")}",
+                                "route_kind": "TEAM_LEADER",
+                                "unit_kind_snapshot": "RECRUITMENT",
+                                "routed_team": {"team_id": "t-1", "team_code": "MB", "team_name": "Team Miền Bắc"},
+                                "submitted_at": "2026-11-03T10:00:00Z",
+                                "submitted_at_local": "03/11/2026 17:00",
+                                "decision_note": "",
+                                "row_version": 1,
+                                "can_decide": false,
+                                "actual_checkins": [],
+                                "events": []
+                              }
+                            }
+                            """.trimIndent()
+                        )
+                    }
+                    path == "/api/attendance/explanations/approvals/$explanationId/decision" && request.method == "POST" -> {
+                        val payload = JSONObject(request.body.readUtf8())
+                        capturedDecisionBodies.add(payload)
+                        decisionStatus = if (payload.getString("decision") == "APPROVE") "APPROVED" else "REJECTED"
+                        decisionRowVersion += 1
+                        MockResponse().setResponseCode(200).setBody(
+                            """
+                            {
+                              "ok": true,
+                              "replayed": false,
+                              "explanation": {
+                                "explanation_id": "$explanationId",
+                                "app_user_id": "22222222-3333-4444-8555-666666666666",
+                                "requester": {"app_user_id": "22222222-3333-4444-8555-666666666666", "display_name": "Lê Thành Viên", "account_enabled": true},
+                                "business_date": "2026-11-03",
+                                "slot_code": "SLOT_3",
+                                "slot_label": "Mốc chiều 3",
+                                "session_code": "PM",
+                                "target_time": "17:30",
+                                "grace_before_minutes": 15,
+                                "grace_after_minutes": 15,
+                                "original_slot_status": "MISSING",
+                                "status": "$decisionStatus",
+                                "reason": "Hỗ trợ ứng viên tại nhà máy",
+                                "route_kind": "TEAM_LEADER",
+                                "unit_kind_snapshot": "RECRUITMENT",
+                                "routed_team": {"team_id": "t-1", "team_code": "MB", "team_name": "Team Miền Bắc"},
+                                "submitted_at": "2026-11-03T10:00:00Z",
+                                "submitted_at_local": "03/11/2026 17:00",
+                                "decision_note": "${payload.optString("decision_note", "")}",
+                                "row_version": $decisionRowVersion,
+                                "can_decide": false,
+                                "actual_checkins": [],
+                                "events": []
+                              }
+                            }
+                            """.trimIndent()
+                        )
+                    }
+                    path.startsWith("/api/attendance/explanations/approvals") -> MockResponse().setResponseCode(200).setBody(
+                        """
+                        {
+                          "ok": true,
+                          "viewer": {
+                            "app_user_id": "$approverId",
+                            "can_approve_explanations": true,
+                            "is_full_admin": false,
+                            "is_bod": false
+                          },
+                          "pagination": {"limit": 50, "offset": 0, "total_rows": 1, "pending_count": 1},
+                          "items": [
+                            {
+                              "explanation_id": "$explanationId",
+                              "app_user_id": "22222222-3333-4444-8555-666666666666",
+                              "requester": {
+                                "app_user_id": "22222222-3333-4444-8555-666666666666",
+                                "display_name": "Lê Thành Viên",
+                                "personnel_code": "NV-309",
+                                "account_enabled": true
+                              },
+                              "business_date": "2026-11-03",
+                              "slot_code": "SLOT_3",
+                              "slot_label": "Mốc chiều 3",
+                              "session_code": "PM",
+                              "target_time": "17:30",
+                              "grace_before_minutes": 15,
+                              "grace_after_minutes": 15,
+                              "original_slot_status": "MISSING",
+                              "status": "$decisionStatus",
+                              "reason": "Hỗ trợ ứng viên tại nhà máy",
+                              "route_kind": "TEAM_LEADER",
+                              "unit_kind_snapshot": "RECRUITMENT",
+                              "routed_team": {"team_id": "t-1", "team_code": "MB", "team_name": "Team Miền Bắc"},
+                              "submitted_at": "2026-11-03T10:00:00Z",
+                              "submitted_at_local": "03/11/2026 17:00",
+                              "decision_note": "",
+                              "row_version": $decisionRowVersion,
+                              "can_decide": ${decisionStatus == "PENDING"},
+                              "actual_checkins": [],
+                              "events": []
+                            }
+                          ]
+                        }
+                        """.trimIndent()
+                    )
+                    path.startsWith("/api/attendance/explanations") -> MockResponse().setResponseCode(200).setBody(
+                        """
+                        {
+                          "ok": true,
+                          "viewer": {
+                            "app_user_id": "${if (canApprove) approverId else employeeId}",
+                            "can_submit_explanation": true,
+                            "can_approve_explanations": $canApprove,
+                            "is_shared_non_employee": false,
+                            "is_full_admin": false,
+                            "is_bod": false
+                          },
+                          "routing": {
+                            "route_kind": "TEAM_LEADER",
+                            "unit_kind": "RECRUITMENT",
+                            "primary_approver": {
+                              "app_user_id": "$approverId",
+                              "display_name": "Trưởng Nhóm Bắc",
+                              "account_enabled": true
+                            },
+                            "team_id": "t-1",
+                            "team_code": "MB",
+                            "team_name": "Team Miền Bắc",
+                            "fallback_reason": null,
+                            "profile_configured": true
+                          },
+                          "today_local": "2026-11-03",
+                          "selected_date": "2026-11-03",
+                          "day_evaluation": {
+                            "business_date": "2026-11-03",
+                            "policy_version_used": 2,
+                            "slots": [
+                              {
+                                "slot_code": "SLOT_1",
+                                "slot_index": 1,
+                                "slot_label": "Mốc sáng 1",
+                                "session_code": "AM",
+                                "target_time": "08:00",
+                                "grace_before_minutes": 15,
+                                "grace_after_minutes": 15,
+                                "is_leave_covered": false,
+                                "original_slot_status": "ON_TIME",
+                                "slot_status": "ON_TIME",
+                                "eligible_for_explanation": false,
+                                "checkins": [],
+                                "explanation": null
+                              },
+                              {
+                                "slot_code": "SLOT_2",
+                                "slot_index": 2,
+                                "slot_label": "Mốc trưa 2",
+                                "session_code": "PM",
+                                "target_time": "13:30",
+                                "grace_before_minutes": 15,
+                                "grace_after_minutes": 15,
+                                "is_leave_covered": false,
+                                "original_slot_status": "ON_TIME",
+                                "slot_status": "ON_TIME",
+                                "eligible_for_explanation": false,
+                                "checkins": [],
+                                "explanation": null
+                              },
+                              {
+                                "slot_code": "SLOT_3",
+                                "slot_index": 3,
+                                "slot_label": "Mốc chiều 3",
+                                "session_code": "PM",
+                                "target_time": "17:30",
+                                "grace_before_minutes": 15,
+                                "grace_after_minutes": 15,
+                                "is_leave_covered": false,
+                                "original_slot_status": "MISSING",
+                                "slot_status": "${if (slotSubmitted) "EXPLAINED_PENDING" else "MISSING"}",
+                                "eligible_for_explanation": ${!slotSubmitted},
+                                "checkins": [],
+                                "explanation": ${
+                                    if (slotSubmitted) {
+                                        """{"explanation_id":"$explanationId","status":"PENDING","original_slot_status":"MISSING","reason":"Kẹt xe tại cầu Thanh Trì","submitted_at":"2026-11-03T10:00:00Z","submitted_at_local":"03/11/2026 17:00","decision_note":"","row_version":1}"""
+                                    } else {
+                                        "null"
+                                    }
+                                }
+                              }
+                            ]
+                          },
+                          "pagination": {"limit": 50, "offset": 0, "total_rows": ${if (slotSubmitted) 1 else 0}},
+                          "items": []
+                        }
+                        """.trimIndent()
+                    )
+                    else -> MockResponse().setResponseCode(200).setBody("""{"ok":true,"data":{}}""")
+                }
+            }
+        }
+        server.start()
+
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val db = Room.inMemoryDatabaseBuilder(app, MiniBiDatabase::class.java)
+            .allowMainThreadQueries()
+            .build()
+        val cookieFile = File(app.cacheDir, "exp_ui_cookies_${System.nanoTime()}.enc")
+        val prefsFile = File(app.cacheDir, "exp_ui_prefs_${System.nanoTime()}.preferences_pb")
+        val repo = MiniBiRepository(
+            context = app,
+            database = db,
+            defaultServerUrl = server.url("/").toString().trimEnd('/'),
+            allowDebugUrlOverride = true,
+            cookieStorageFile = cookieFile,
+            preferencesStorageFile = prefsFile,
+            cookieCipher = JvmAes256GcmCookieCipher()
+        )
+        val vm = MiniBiViewModel(app, repo)
+        registerTestResourcesCleanup(vm, db, server, cookieFile, prefsFile)
+
+        val actor = AppActor(
+            appUserId = employeeId,
+            displayName = "Nhân Viên A",
+            capabilities = listOf("entry_read"),
+            scopes = listOf(ActorScope("own", "self", "2026-01-01", null)),
+            selfRecruiterSuggestion = null
+        )
+
+        composeTestRule.setContent {
+            MyApplicationTheme {
+                AttendanceScreen(
+                    actor = actor,
+                    viewModel = vm,
+                    onBackToDashboard = {}
+                )
+            }
+        }
+
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            !vm.myExplanationsLoading.value && vm.myExplanationsOverview.value != null
+        }
+        composeTestRule.waitForIdle()
+
+        // 1. Verify menu order: Chấm công -> Giải trình chấm công -> Xin nghỉ phép; Xét duyệt giải trình is hidden for unauthorized user
+        val checkinBounds = composeTestRule.onNodeWithTag("attendance_tab_checkin").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+        val explanationBounds = composeTestRule.onNodeWithTag("attendance_tab_explanation").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+        val leaveReqBounds = composeTestRule.onNodeWithTag("attendance_tab_leave_request").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+        assertTrue(checkinBounds.left < explanationBounds.left)
+        assertTrue(explanationBounds.left < leaveReqBounds.left)
+        composeTestRule.onNodeWithTag("attendance_tab_explanation_approval").assertDoesNotExist()
+
+        // 2. Open "Giải trình chấm công" tab, verify dynamic 3-slot configuration and submit explanation for SLOT_3
+        composeTestRule.onNodeWithTag("attendance_tab_explanation").performClick()
+        composeTestRule.waitForIdle()
+
+        composeTestRule.onNodeWithText("3 mốc • Chính sách v2").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("explanation_lazy_column")
+            .performScrollToNode(hasTestTag("explanation_open_submit_btn_SLOT_3"))
+        composeTestRule.onNodeWithTag("explanation_open_submit_btn_SLOT_3").performClick()
+        composeTestRule.waitForIdle()
+
+        composeTestRule.onNodeWithTag("explanation_submit_dialog").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("explanation_reason_input").performTextReplacement("Kẹt xe tại cầu Thanh Trì")
+        composeTestRule.onNodeWithTag("explanation_submit_confirm_button").performClick()
+
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            !vm.explanationMutationBusy.value && capturedSubmitBodies.size == 1
+        }
+        composeTestRule.waitForIdle()
+
+        val submittedPayload = capturedSubmitBodies.single()
+        assertEquals("2026-11-03", submittedPayload.getString("business_date"))
+        assertEquals("SLOT_3", submittedPayload.getString("slot_code"))
+        assertEquals("Kẹt xe tại cầu Thanh Trì", submittedPayload.getString("reason"))
+
+        // 3. Grant approval authority on server and refresh -> "Xét duyệt giải trình" tab appears and approver can decide
+        canApprove = true
+        vm.refreshMyAttendanceExplanations(businessDate = "2026-11-03")
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            !vm.myExplanationsLoading.value && vm.myExplanationsOverview.value?.viewer?.canApproveExplanations == true
+        }
+        composeTestRule.waitForIdle()
+
+        composeTestRule.onNodeWithTag("attendance_tab_explanation_approval").assertIsDisplayed().performClick()
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            !vm.explanationInboxLoading.value && vm.explanationApprovalInbox.value?.items?.size == 1
+        }
+        composeTestRule.waitForIdle()
+
+        composeTestRule.onNodeWithText("Lê Thành Viên").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("explanation_approve_btn_$explanationId").performClick()
+        composeTestRule.waitForIdle()
+
+        composeTestRule.onNodeWithTag("explanation_decision_dialog").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("explanation_decision_note_input").performTextReplacement("Đã xác nhận lịch công tác")
+        composeTestRule.onNodeWithTag("explanation_decision_confirm_button").performClick()
+
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            !vm.explanationMutationBusy.value && capturedDecisionBodies.size == 1
+        }
+        composeTestRule.waitForIdle()
+
+        val decisionJson = capturedDecisionBodies.single()
+        assertEquals("APPROVE", decisionJson.getString("decision"))
+        assertEquals(2, decisionJson.getInt("expected_row_version"))
+        assertEquals("Đã xác nhận lịch công tác", decisionJson.getString("decision_note"))
+    }
 }

@@ -102,7 +102,13 @@ import com.example.data.AppActor
 import com.example.data.AttendanceAreaTab
 import com.example.data.AttendanceContract
 import com.example.data.AttendanceEntity
+import com.example.data.AttendanceExplanationApprovalInboxProjection
+import com.example.data.AttendanceExplanationContract
+import com.example.data.AttendanceExplanationDaySlotEvaluationProjection
+import com.example.data.AttendanceExplanationItemProjection
+import com.example.data.AttendanceMyExplanationsOverviewProjection
 import com.example.data.AttendanceOutboxStatus
+import com.example.data.AttendanceSlotCheckinItemProjection
 import com.example.data.AttendanceTimeContract
 import com.example.data.AttendanceTimeSource
 import com.example.data.CapturedAttendanceTime
@@ -141,11 +147,28 @@ fun AttendanceScreen(
     val myLeaveLoading by viewModel.myLeaveLoading.collectAsStateWithLifecycle()
     val leaveInboxLoading by viewModel.leaveInboxLoading.collectAsStateWithLifecycle()
     val myLeaveErrorCode by viewModel.myLeaveErrorCode.collectAsStateWithLifecycle()
+    val myExplanationsOverview by viewModel.myExplanationsOverview.collectAsStateWithLifecycle()
+    val myExplanationsLoading by viewModel.myExplanationsLoading.collectAsStateWithLifecycle()
+    val myExplanationsErrorCode by viewModel.myExplanationsErrorCode.collectAsStateWithLifecycle()
+    val explanationApprovalInbox by viewModel.explanationApprovalInbox.collectAsStateWithLifecycle()
+    val explanationInboxLoading by viewModel.explanationInboxLoading.collectAsStateWithLifecycle()
+    val explanationInboxErrorCode by viewModel.explanationInboxErrorCode.collectAsStateWithLifecycle()
 
-    val visibleTabs = remember(myLeaveSummary?.authority, myLeaveErrorCode) {
+    val visibleTabs = remember(
+        myLeaveSummary?.authority,
+        myLeaveErrorCode,
+        myExplanationsOverview?.viewer,
+        explanationApprovalInbox?.viewer,
+        myExplanationsErrorCode,
+        explanationInboxErrorCode
+    ) {
         LeaveContract.resolveVisibleAttendanceTabs(
             authority = myLeaveSummary?.authority,
-            errorCode = myLeaveErrorCode
+            errorCode = myLeaveErrorCode,
+            explanationViewer = myExplanationsOverview?.viewer,
+            explanationInboxViewer = explanationApprovalInbox?.viewer,
+            explanationErrorCode = myExplanationsErrorCode,
+            explanationInboxErrorCode = explanationInboxErrorCode
         )
     }
     val effectiveTab = remember(activeTab, visibleTabs) {
@@ -219,11 +242,12 @@ fun AttendanceScreen(
         }
     }
 
-    // 1. Refresh server time anchor, server attendance history & leave authority/summary whenever Attendance screen is opened, and fetch GPS if granted
+    // 1. Refresh server time anchor, server attendance history & leave/explanation authority whenever Attendance screen is opened, and fetch GPS if granted
     LaunchedEffect(actor.appUserId) {
         viewModel.syncAttendanceTimeAnchor(actor = actor, force = true)
         viewModel.syncAttendanceHistoryFromServer(actor = actor)
         viewModel.refreshMyLeaveSummary()
+        viewModel.refreshMyAttendanceExplanations()
         val hasFine = ContextCompat.checkSelfPermission(
             context,
             Manifest.permission.ACCESS_FINE_LOCATION
@@ -288,7 +312,9 @@ fun AttendanceScreen(
 
     val isAttendanceRefreshing = when (effectiveTab) {
         AttendanceAreaTab.CHECK_IN -> timeAnchorState.syncing
+        AttendanceAreaTab.EXPLANATION -> myExplanationsLoading
         AttendanceAreaTab.LEAVE_REQUEST -> myLeaveLoading
+        AttendanceAreaTab.EXPLANATION_APPROVAL -> explanationInboxLoading
         AttendanceAreaTab.LEAVE_APPROVAL -> leaveInboxLoading
     }
 
@@ -307,9 +333,16 @@ fun AttendanceScreen(
                         viewModel.syncAttendanceTimeAnchor(actor = actor, force = true)
                         viewModel.syncAttendanceHistoryFromServer(actor = actor)
                         viewModel.refreshMyLeaveSummary()
+                        viewModel.refreshMyAttendanceExplanations()
+                    }
+                    AttendanceAreaTab.EXPLANATION -> {
+                        viewModel.refreshMyAttendanceExplanations()
                     }
                     AttendanceAreaTab.LEAVE_REQUEST -> {
                         viewModel.refreshMyLeaveSummary()
+                    }
+                    AttendanceAreaTab.EXPLANATION_APPROVAL -> {
+                        viewModel.refreshExplanationApprovalInbox()
                     }
                     AttendanceAreaTab.LEAVE_APPROVAL -> {
                         viewModel.refreshLeaveApprovalInbox()
@@ -891,8 +924,20 @@ fun AttendanceScreen(
         }
                 }
             }
+            AttendanceAreaTab.EXPLANATION -> {
+                AttendanceExplanationTabContent(
+                    actor = actor,
+                    viewModel = viewModel
+                )
+            }
             AttendanceAreaTab.LEAVE_REQUEST -> {
                 LeaveRequestTabContent(
+                    actor = actor,
+                    viewModel = viewModel
+                )
+            }
+            AttendanceAreaTab.EXPLANATION_APPROVAL -> {
+                AttendanceExplanationApprovalTabContent(
                     actor = actor,
                     viewModel = viewModel
                 )
@@ -1267,12 +1312,16 @@ private fun AttendanceAreaTopTabBar(
                 val isSelected = tab == selectedTab
                 val tag = when (tab) {
                     AttendanceAreaTab.CHECK_IN -> "attendance_tab_checkin"
+                    AttendanceAreaTab.EXPLANATION -> "attendance_tab_explanation"
                     AttendanceAreaTab.LEAVE_REQUEST -> "attendance_tab_leave_request"
+                    AttendanceAreaTab.EXPLANATION_APPROVAL -> "attendance_tab_explanation_approval"
                     AttendanceAreaTab.LEAVE_APPROVAL -> "attendance_tab_leave_approval"
                 }
                 val icon = when (tab) {
                     AttendanceAreaTab.CHECK_IN -> Icons.Default.PhotoCamera
+                    AttendanceAreaTab.EXPLANATION -> Icons.Default.AccessTime
                     AttendanceAreaTab.LEAVE_REQUEST -> Icons.AutoMirrored.Filled.EventNote
+                    AttendanceAreaTab.EXPLANATION_APPROVAL -> Icons.Default.Verified
                     AttendanceAreaTab.LEAVE_APPROVAL -> Icons.AutoMirrored.Filled.FactCheck
                 }
                 Surface(
@@ -3375,6 +3424,1333 @@ private fun leaveStatusColor(status: String): Color =
         "REJECTED", "CANCELLED" -> SemanticColors.ErrorLight
         else -> Color(0xFF64748B)
     }
+
+private fun explanationSlotStatusColor(slotStatus: String): Color =
+    when (slotStatus.trim().uppercase(Locale.ROOT)) {
+        "ON_TIME", "EXPLAINED_APPROVED" -> SemanticColors.SuccessLight
+        "OUT_OF_GRACE", "EXPLAINED_PENDING" -> SemanticColors.WarningLight
+        "MISSING", "EXPLAINED_REJECTED" -> SemanticColors.ErrorLight
+        else -> Color(0xFF64748B)
+    }
+
+@Composable
+private fun AttendanceExplanationTabContent(
+    actor: AppActor,
+    viewModel: MiniBiViewModel
+) {
+    val context = LocalContext.current
+    val selectedDate by viewModel.explanationSelectedDate.collectAsStateWithLifecycle()
+    val overview by viewModel.myExplanationsOverview.collectAsStateWithLifecycle()
+    val loading by viewModel.myExplanationsLoading.collectAsStateWithLifecycle()
+    val errorMsg by viewModel.myExplanationsError.collectAsStateWithLifecycle()
+    val mutationBusy by viewModel.explanationMutationBusy.collectAsStateWithLifecycle()
+    val mutationError by viewModel.explanationMutationError.collectAsStateWithLifecycle()
+
+    var dateInputText by remember(selectedDate) { mutableStateOf(selectedDate) }
+    var activeSubmitSlot by remember { mutableStateOf<AttendanceExplanationDaySlotEvaluationProjection?>(null) }
+    var submitReasonInput by remember { mutableStateOf("") }
+    var localSubmitError by remember { mutableStateOf<String?>(null) }
+    var expandedItemId by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(Unit) {
+        if (overview == null && !loading) {
+            viewModel.refreshMyAttendanceExplanations(businessDate = selectedDate)
+        }
+    }
+
+    LazyColumn(
+        modifier = Modifier
+            .fillMaxSize()
+            .testTag("explanation_lazy_column"),
+        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        if (errorMsg != null) {
+            item {
+                Surface(
+                    shape = RoundedCornerShape(14.dp),
+                    color = MaterialTheme.colorScheme.errorContainer,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("explanation_overview_error_banner")
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(14.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = errorMsg.orEmpty(),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onErrorContainer,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        OutlinedButton(
+                            onClick = { viewModel.refreshMyAttendanceExplanations(businessDate = selectedDate) },
+                            modifier = Modifier.testTag("explanation_overview_retry_button")
+                        ) {
+                            Text("Thử lại")
+                        }
+                    }
+                }
+            }
+        }
+
+        if (mutationError != null && activeSubmitSlot == null) {
+            item {
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.errorContainer,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("explanation_mutation_error_banner")
+                ) {
+                    Text(
+                        text = mutationError.orEmpty(),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onErrorContainer,
+                        modifier = Modifier.padding(12.dp)
+                    )
+                }
+            }
+        }
+
+        item {
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("explanation_header_card"),
+                shape = RoundedCornerShape(20.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "GIẢI TRÌNH CHẤM CÔNG CÁ NHÂN",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                            Text(
+                                text = "Giải trình chấm công",
+                                style = MaterialTheme.typography.titleLarge,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                        IconButton(
+                            onClick = { viewModel.refreshMyAttendanceExplanations(businessDate = selectedDate) },
+                            enabled = !loading && !mutationBusy,
+                            modifier = Modifier.testTag("explanation_refresh_button")
+                        ) {
+                            if (loading) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(18.dp),
+                                    strokeWidth = 2.dp
+                                )
+                            } else {
+                                Icon(
+                                    imageVector = Icons.Default.Refresh,
+                                    contentDescription = "Làm mới giải trình"
+                                )
+                            }
+                        }
+                    }
+
+                    Text(
+                        text = "Giải trình được duyệt chỉ xác nhận lượt chấm muộn/bị thiếu là hợp lệ trên bảng tổng hợp; ứng dụng không tự tạo lượt chấm công giả hoặc quyết định chế tài nhân sự.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        OutlinedTextField(
+                            value = dateInputText,
+                            onValueChange = { raw ->
+                                dateInputText = raw.trim()
+                                if (AttendanceExplanationContract.isValidIsoDate(dateInputText)) {
+                                    viewModel.setExplanationSelectedDate(dateInputText)
+                                }
+                            },
+                            label = { Text("Ngày nghiệp vụ (YYYY-MM-DD)") },
+                            singleLine = true,
+                            trailingIcon = {
+                                IconButton(
+                                    onClick = {
+                                        openIsoDatePicker(
+                                            context = context,
+                                            initialIsoDate = dateInputText,
+                                            onDatePicked = { picked ->
+                                                dateInputText = picked
+                                                viewModel.setExplanationSelectedDate(picked)
+                                            }
+                                        )
+                                    },
+                                    modifier = Modifier.testTag("explanation_date_picker_button")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.CalendarMonth,
+                                        contentDescription = "Chọn ngày nghiệp vụ"
+                                    )
+                                }
+                            },
+                            modifier = Modifier
+                                .weight(1f)
+                                .testTag("explanation_selected_date_input")
+                        )
+
+                        val todayIso = overview?.todayLocal ?: AttendanceExplanationContract.todayVietnamIsoDate()
+                        OutlinedButton(
+                            onClick = {
+                                dateInputText = todayIso
+                                viewModel.setExplanationSelectedDate(todayIso)
+                            },
+                            modifier = Modifier.testTag("explanation_today_button")
+                        ) {
+                            Text("Hôm nay")
+                        }
+                    }
+
+                    val currentOverview = overview
+                    if (currentOverview != null) {
+                        val routing = currentOverview.routing
+                        val approverName = routing.primaryApprover?.resolvedDisplayName() ?: "Hàng đợi Admin / BGĐ"
+                        val routeLabel = LeaveContract.leaveRouteKindLabel(
+                            routeKind = routing.routeKind,
+                            teamName = routing.teamName,
+                            unitKind = routing.unitKind
+                        )
+                        val fallbackLabel = LeaveContract.leaveFallbackReasonLabel(routing.fallbackReason)
+                        Surface(
+                            shape = RoundedCornerShape(14.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("explanation_routing_summary_card")
+                        ) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(12.dp),
+                                verticalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Text(
+                                    text = "Luồng xét duyệt: $routeLabel",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                Text(
+                                    text = "Người duyệt chính: $approverName",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                if (!fallbackLabel.isNullOrBlank()) {
+                                    Text(
+                                        text = "Lưu ý định tuyến: $fallbackLabel",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = SemanticColors.WarningLight
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        val currentOverview = overview
+        if (loading && currentOverview == null) {
+            item {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(18.dp)
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(24.dp),
+                        horizontalArrangement = Arrangement.Center,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.dp)
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Text("Đang tải đánh giá mốc chấm công và lịch sử giải trình...")
+                    }
+                }
+            }
+        }
+
+        if (currentOverview != null) {
+            val dayEval = currentOverview.dayEvaluation
+            item {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("explanation_day_slots_header"),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Các mốc chấm công ngày ${dayEval.businessDate}",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = MaterialTheme.colorScheme.primaryContainer
+                    ) {
+                        Text(
+                            text = "${dayEval.slots.size} mốc • Chính sách v${dayEval.policyVersionUsed}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer,
+                            modifier = Modifier
+                                .padding(horizontal = 8.dp, vertical = 4.dp)
+                                .testTag("explanation_dynamic_slot_count_badge")
+                        )
+                    }
+                }
+            }
+
+            itemsIndexed(
+                items = dayEval.slots,
+                key = { _, slot -> "${dayEval.businessDate}_${slot.slotCode}" }
+            ) { _, slot ->
+                AttendanceExplanationDaySlotCard(
+                    slot = slot,
+                    canSubmitExplanation = currentOverview.viewer.canSubmitExplanation,
+                    busy = mutationBusy,
+                    onOpenSubmitDialog = {
+                        viewModel.clearExplanationMutationError()
+                        localSubmitError = null
+                        submitReasonInput = ""
+                        activeSubmitSlot = slot
+                    }
+                )
+            }
+
+            item {
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = "Lịch sử giải trình chấm công của tôi (${currentOverview.pagination.totalRows})",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.testTag("explanation_history_header")
+                )
+            }
+
+            if (currentOverview.items.isEmpty()) {
+                item {
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("explanation_history_empty_card"),
+                        shape = RoundedCornerShape(16.dp),
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
+                        )
+                    ) {
+                        Text(
+                            text = "Bạn chưa gửi giải trình chấm công nào.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(18.dp)
+                        )
+                    }
+                }
+            } else {
+                itemsIndexed(
+                    items = currentOverview.items,
+                    key = { _, item -> item.explanationId }
+                ) { _, item ->
+                    AttendanceMyExplanationHistoryCard(
+                        item = item,
+                        expanded = expandedItemId == item.explanationId,
+                        onToggleExpand = {
+                            expandedItemId = if (expandedItemId == item.explanationId) null else item.explanationId
+                        }
+                    )
+                }
+            }
+        }
+    }
+
+    val targetSlot = activeSubmitSlot
+    val currentOverview = overview
+    if (targetSlot != null && currentOverview != null) {
+        val targetDate = currentOverview.dayEvaluation.businessDate
+        Dialog(
+            onDismissRequest = {
+                if (!mutationBusy) {
+                    activeSubmitSlot = null
+                    localSubmitError = null
+                }
+            },
+            properties = DialogProperties(usePlatformDefaultWidth = false)
+        ) {
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp)
+                    .testTag("explanation_submit_dialog"),
+                shape = RoundedCornerShape(22.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(20.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Text(
+                        text = "Gửi giải trình chấm công",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold
+                    )
+
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Text(
+                                text = "Ngày nghiệp vụ: $targetDate",
+                                style = MaterialTheme.typography.bodySmall,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Text(
+                                text = "Mốc: ${targetSlot.slotLabel} (${targetSlot.slotCode} • ${AttendanceExplanationContract.sessionLabel(targetSlot.sessionCode)})",
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                            Text(
+                                text = "Khung giờ chuẩn: ${
+                                    AttendanceExplanationContract.formatGraceWindow(
+                                        targetSlot.targetTime,
+                                        targetSlot.graceBeforeMinutes,
+                                        targetSlot.graceAfterMinutes
+                                    )
+                                }",
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                            Text(
+                                text = "Trạng thái gốc: ${AttendanceExplanationContract.originalSlotStatusLabel(targetSlot.originalSlotStatus)}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = explanationSlotStatusColor(targetSlot.originalSlotStatus),
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
+                    }
+
+                    OutlinedTextField(
+                        value = submitReasonInput,
+                        onValueChange = {
+                            submitReasonInput = it
+                            localSubmitError = null
+                        },
+                        label = { Text("Lý do giải trình (3 - 500 ký tự) *") },
+                        placeholder = { Text("Nhập lý do thực tế (ví dụ: kẹt xe, đi công tác tại dự án, lỗi mạng...)") },
+                        minLines = 3,
+                        maxLines = 5,
+                        enabled = !mutationBusy,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("explanation_reason_input")
+                    )
+
+                    Text(
+                        text = "${submitReasonInput.trim().length}/${AttendanceExplanationContract.REASON_MAX_LENGTH} ký tự",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    val effectiveErr = localSubmitError ?: mutationError
+                    if (!effectiveErr.isNullOrBlank()) {
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = MaterialTheme.colorScheme.errorContainer,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("explanation_submit_dialog_error")
+                        ) {
+                            Text(
+                                text = effectiveErr,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onErrorContainer,
+                                modifier = Modifier.padding(10.dp)
+                            )
+                        }
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End
+                    ) {
+                        TextButton(
+                            onClick = {
+                                activeSubmitSlot = null
+                                localSubmitError = null
+                            },
+                            enabled = !mutationBusy,
+                            modifier = Modifier.testTag("explanation_submit_cancel_button")
+                        ) {
+                            Text("Hủy")
+                        }
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Button(
+                            onClick = {
+                                val validationMsg = AttendanceExplanationContract.validateSubmitInput(
+                                    businessDate = targetDate,
+                                    slotCode = targetSlot.slotCode,
+                                    reason = submitReasonInput,
+                                    todayLocal = currentOverview.todayLocal
+                                )
+                                if (validationMsg != null) {
+                                    localSubmitError = validationMsg
+                                    return@Button
+                                }
+                                viewModel.submitAttendanceExplanation(
+                                    businessDate = targetDate,
+                                    slotCode = targetSlot.slotCode,
+                                    reason = submitReasonInput,
+                                    onSuccess = {
+                                        activeSubmitSlot = null
+                                        submitReasonInput = ""
+                                        localSubmitError = null
+                                    }
+                                )
+                            },
+                            enabled = !mutationBusy,
+                            modifier = Modifier.testTag("explanation_submit_confirm_button")
+                        ) {
+                            Text(if (mutationBusy) "Đang gửi..." else "Gửi giải trình")
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AttendanceExplanationDaySlotCard(
+    slot: AttendanceExplanationDaySlotEvaluationProjection,
+    canSubmitExplanation: Boolean,
+    busy: Boolean,
+    onOpenSubmitDialog: () -> Unit
+) {
+    val badgeColor = explanationSlotStatusColor(slot.slotStatus)
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("explanation_slot_card_${slot.slotCode}"),
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.5.dp)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "${slot.slotLabel} (${slot.slotCode})",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = "${AttendanceExplanationContract.sessionLabel(slot.sessionCode)} • Khung giờ: ${
+                            AttendanceExplanationContract.formatGraceWindow(
+                                slot.targetTime,
+                                slot.graceBeforeMinutes,
+                                slot.graceAfterMinutes
+                            )
+                        }",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = badgeColor.copy(alpha = 0.14f),
+                    modifier = Modifier.testTag("explanation_slot_status_${slot.slotCode}")
+                ) {
+                    Text(
+                        text = AttendanceExplanationContract.slotStatusLabel(slot.slotStatus),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = badgeColor,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                    )
+                }
+            }
+
+            if (slot.checkins.isEmpty()) {
+                Text(
+                    text = "Chưa có lượt chấm công gắn vào mốc này.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            } else {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    slot.checkins.forEach { checkin ->
+                        val deviationLabel = AttendanceExplanationContract.formatDeviationBadge(checkin)
+                        val distanceText = checkin.distanceMeters?.let { " • ${it}m" }.orEmpty()
+                        Text(
+                            text = "• Lần #${checkin.sequenceInDay} lúc ${checkin.timeLocal.ifBlank { checkin.capturedAtLocal }}" +
+                                (if (!deviationLabel.isNullOrBlank()) " ($deviationLabel)" else "") +
+                                distanceText,
+                            style = MaterialTheme.typography.bodySmall,
+                            fontFamily = JetBrainsMono
+                        )
+                    }
+                }
+            }
+
+            val existingExp = slot.explanation
+            if (existingExp != null) {
+                val expColor = leaveStatusColor(existingExp.status)
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = expColor.copy(alpha = 0.10f),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("explanation_slot_existing_${slot.slotCode}")
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(10.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Text(
+                            text = "Giải trình đã gửi: ${AttendanceExplanationContract.explanationStatusLabel(existingExp.status)} (v${existingExp.rowVersion})",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = expColor,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Text(
+                            text = "Lý do: ${existingExp.reason}",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                        if (!existingExp.decidedByDisplayName.isNullOrBlank() || !existingExp.decisionNote.isBlank()) {
+                            Text(
+                                text = "Người duyệt: ${existingExp.decidedByDisplayName ?: "--"}" +
+                                    (if (existingExp.decisionNote.isNotBlank()) " • Phản hồi: ${existingExp.decisionNote}" else ""),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+            } else if (slot.eligibleForExplanation && canSubmitExplanation) {
+                Button(
+                    onClick = onOpenSubmitDialog,
+                    enabled = !busy,
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier
+                        .align(Alignment.End)
+                        .testTag("explanation_open_submit_btn_${slot.slotCode}")
+                ) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.Send,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Gửi giải trình")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AttendanceMyExplanationHistoryCard(
+    item: AttendanceExplanationItemProjection,
+    expanded: Boolean,
+    onToggleExpand: () -> Unit
+) {
+    val statusColor = leaveStatusColor(item.status)
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onToggleExpand() }
+            .testTag("explanation_my_item_card_${item.explanationId}"),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.5.dp)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "${item.businessDate} • ${item.slotLabel} (${item.targetTime})",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold
+                )
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = statusColor.copy(alpha = 0.14f),
+                    modifier = Modifier.testTag("explanation_my_item_status_${item.explanationId}")
+                ) {
+                    Text(
+                        text = AttendanceExplanationContract.explanationStatusLabel(item.status),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = statusColor,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                    )
+                }
+            }
+
+            Text(
+                text = "Trạng thái mốc gốc: ${AttendanceExplanationContract.originalSlotStatusLabel(item.originalSlotStatus)}",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            Text(
+                text = "Lý do giải trình: ${item.reason}",
+                style = MaterialTheme.typography.bodySmall
+            )
+
+            if (item.decidedBy != null || item.decisionNote.isNotBlank() || !item.decidedAtLocal.isNullOrBlank()) {
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("explanation_my_item_feedback_${item.explanationId}")
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(10.dp),
+                        verticalArrangement = Arrangement.spacedBy(2.dp)
+                    ) {
+                        Text(
+                            text = "Người duyệt: ${item.decidedBy?.resolvedDisplayName() ?: "--"} (${item.decidedAtLocal ?: item.decidedAt ?: "--"})",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Text(
+                            text = "Nội dung phản hồi: ${item.decisionNote.ifBlank { "Không có ghi chú phản hồi" }}",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                }
+            }
+
+            AnimatedVisibility(visible = expanded) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 6.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    HorizontalDivider()
+                    Text(
+                        text = "Phiên bản bản ghi: v${item.rowVersion} • Gửi lúc: ${item.submittedAtLocal.ifBlank { item.submittedAt }}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    if (item.events.isNotEmpty()) {
+                        item.events.forEach { ev ->
+                            Text(
+                                text = "• ${AttendanceExplanationContract.auditEventTypeLabel(ev.eventType)} bởi ${ev.actorDisplayName ?: "Hệ thống"} (${ev.createdAtLocal.ifBlank { ev.createdAt }}): ${ev.note}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AttendanceExplanationApprovalTabContent(
+    actor: AppActor,
+    viewModel: MiniBiViewModel
+) {
+    val inbox by viewModel.explanationApprovalInbox.collectAsStateWithLifecycle()
+    val loading by viewModel.explanationInboxLoading.collectAsStateWithLifecycle()
+    val errorMsg by viewModel.explanationInboxError.collectAsStateWithLifecycle()
+    val statusFilter by viewModel.explanationInboxStatusFilter.collectAsStateWithLifecycle()
+    val mutationBusy by viewModel.explanationMutationBusy.collectAsStateWithLifecycle()
+    val mutationError by viewModel.explanationMutationError.collectAsStateWithLifecycle()
+
+    var expandedItemId by remember { mutableStateOf<String?>(null) }
+    var decisionDialogState by remember {
+        mutableStateOf<Pair<AttendanceExplanationItemProjection, String>?>(null)
+    }
+    var decisionNoteInput by remember { mutableStateOf("") }
+    var localDialogError by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(Unit) {
+        if (inbox == null && !loading) {
+            viewModel.refreshExplanationApprovalInbox(statusFilter = statusFilter, page = 1)
+        }
+    }
+
+    LazyColumn(
+        modifier = Modifier
+            .fillMaxSize()
+            .testTag("explanation_approval_lazy_column"),
+        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        item {
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("explanation_approval_header_card"),
+                shape = RoundedCornerShape(20.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "HỘP THƯ PHÊ DUYỆT GIẢI TRÌNH",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                            Text(
+                                text = "Xét duyệt giải trình",
+                                style = MaterialTheme.typography.titleLarge,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                        val pendingCount = inbox?.pagination?.pendingCount ?: 0
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = SemanticColors.WarningLight.copy(alpha = 0.14f),
+                            modifier = Modifier.testTag("explanation_inbox_pending_count")
+                        ) {
+                            Text(
+                                text = "Chờ duyệt: $pendingCount",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = SemanticColors.WarningLight,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                            )
+                        }
+                    }
+
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        AttendanceExplanationContract.APPROVAL_STATUS_FILTERS.forEach { filterCode ->
+                            FilterChip(
+                                selected = statusFilter == filterCode,
+                                onClick = { viewModel.setExplanationInboxFilter(filterCode) },
+                                label = { Text(AttendanceExplanationContract.statusFilterLabel(filterCode)) },
+                                modifier = Modifier.testTag("explanation_filter_chip_$filterCode")
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        if (errorMsg != null) {
+            item {
+                Surface(
+                    shape = RoundedCornerShape(14.dp),
+                    color = MaterialTheme.colorScheme.errorContainer,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("explanation_inbox_error_banner")
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(14.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = errorMsg.orEmpty(),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onErrorContainer,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        OutlinedButton(
+                            onClick = { viewModel.refreshExplanationApprovalInbox() },
+                            modifier = Modifier.testTag("explanation_inbox_retry_button")
+                        ) {
+                            Text("Thử lại")
+                        }
+                    }
+                }
+            }
+        }
+
+        if (mutationError != null && decisionDialogState == null) {
+            item {
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.errorContainer,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("explanation_approval_mutation_error_banner")
+                ) {
+                    Text(
+                        text = mutationError.orEmpty(),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onErrorContainer,
+                        modifier = Modifier.padding(12.dp)
+                    )
+                }
+            }
+        }
+
+        val currentInbox = inbox
+        if (loading && currentInbox == null) {
+            item {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(18.dp)
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(24.dp),
+                        horizontalArrangement = Arrangement.Center,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.dp)
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Text("Đang tải hộp thư xét duyệt giải trình...")
+                    }
+                }
+            }
+        } else if (currentInbox != null) {
+            if (currentInbox.items.isEmpty()) {
+                item {
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("explanation_inbox_empty_card"),
+                        shape = RoundedCornerShape(18.dp),
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
+                        )
+                    ) {
+                        Text(
+                            text = "Không có giải trình chấm công nào trong bộ lọc hiện tại.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(20.dp)
+                        )
+                    }
+                }
+            } else {
+                itemsIndexed(
+                    items = currentInbox.items,
+                    key = { _, item -> item.explanationId }
+                ) { _, item ->
+                    val isExpanded = expandedItemId == item.explanationId
+                    val isSelfRequest = item.appUserId.equals(actor.appUserId, ignoreCase = true)
+                    val canAct = item.canDecide &&
+                        item.status.equals("PENDING", ignoreCase = true) &&
+                        !isSelfRequest
+
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("explanation_approval_card_${item.explanationId}"),
+                        shape = RoundedCornerShape(18.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                        elevation = CardDefaults.cardElevation(defaultElevation = 1.5.dp)
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(14.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = item.requester.resolvedDisplayName(),
+                                        style = MaterialTheme.typography.titleMedium,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    val subMeta = listOfNotNull(
+                                        item.requester.personnelCode,
+                                        item.requester.loginId,
+                                        item.routedTeam.teamName
+                                    ).joinToString(" • ")
+                                    if (subMeta.isNotEmpty()) {
+                                        Text(
+                                            text = subMeta,
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+
+                                val statusColor = leaveStatusColor(item.status)
+                                Surface(
+                                    shape = RoundedCornerShape(8.dp),
+                                    color = statusColor.copy(alpha = 0.14f),
+                                    modifier = Modifier.testTag("explanation_approval_status_${item.explanationId}")
+                                ) {
+                                    Text(
+                                        text = AttendanceExplanationContract.explanationStatusLabel(item.status),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = statusColor,
+                                        fontWeight = FontWeight.SemiBold,
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                    )
+                                }
+                            }
+
+                            Text(
+                                text = "Ngày: ${item.businessDate} • ${item.slotLabel} (${item.slotCode}) • Khung giờ: ${
+                                    AttendanceExplanationContract.formatGraceWindow(
+                                        item.targetTime,
+                                        item.graceBeforeMinutes,
+                                        item.graceAfterMinutes
+                                    )
+                                }",
+                                style = MaterialTheme.typography.bodySmall,
+                                fontWeight = FontWeight.SemiBold
+                            )
+
+                            Text(
+                                text = "Trạng thái gốc: ${AttendanceExplanationContract.originalSlotStatusLabel(item.originalSlotStatus)}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = explanationSlotStatusColor(item.originalSlotStatus),
+                                fontWeight = FontWeight.SemiBold
+                            )
+
+                            if (item.actualCheckins.isNotEmpty()) {
+                                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                    item.actualCheckins.forEach { checkin ->
+                                        val dev = AttendanceExplanationContract.formatDeviationBadge(checkin)
+                                        Text(
+                                            text = "Chấm công thực tế: Lần #${checkin.sequenceInDay} lúc ${checkin.timeLocal.ifBlank { checkin.capturedAtLocal }}" +
+                                                (if (!dev.isNullOrBlank()) " ($dev)" else ""),
+                                            style = MaterialTheme.typography.bodySmall,
+                                            fontFamily = JetBrainsMono
+                                        )
+                                    }
+                                }
+                            } else {
+                                Text(
+                                    text = "Chấm công thực tế: Chưa có lượt chấm ở mốc này",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+
+                            Text(
+                                text = "Lý do nhân viên giải trình: ${item.reason}",
+                                style = MaterialTheme.typography.bodyMedium
+                            )
+
+                            if (item.decidedBy != null || item.decisionNote.isNotBlank()) {
+                                Text(
+                                    text = "Phản hồi xét duyệt (${item.decidedBy?.resolvedDisplayName() ?: "--"}): ${item.decisionNote.ifBlank { "Không có ghi chú" }}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                TextButton(
+                                    onClick = {
+                                        expandedItemId = if (isExpanded) null else item.explanationId
+                                    },
+                                    modifier = Modifier.testTag("explanation_approval_detail_btn_${item.explanationId}")
+                                ) {
+                                    Text(if (isExpanded) "Thu gọn chi tiết" else "Xem chi tiết")
+                                }
+
+                                if (canAct) {
+                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        OutlinedButton(
+                                            onClick = {
+                                                viewModel.clearExplanationMutationError()
+                                                localDialogError = null
+                                                decisionNoteInput = ""
+                                                decisionDialogState = item to "REJECT"
+                                            },
+                                            enabled = !mutationBusy,
+                                            colors = ButtonDefaults.outlinedButtonColors(
+                                                contentColor = SemanticColors.ErrorLight
+                                            ),
+                                            modifier = Modifier.testTag("explanation_reject_btn_${item.explanationId}")
+                                        ) {
+                                            Text("Từ chối")
+                                        }
+                                        Button(
+                                            onClick = {
+                                                viewModel.clearExplanationMutationError()
+                                                localDialogError = null
+                                                decisionNoteInput = ""
+                                                decisionDialogState = item to "APPROVE"
+                                            },
+                                            enabled = !mutationBusy,
+                                            modifier = Modifier.testTag("explanation_approve_btn_${item.explanationId}")
+                                        ) {
+                                            Text("Duyệt")
+                                        }
+                                    }
+                                }
+                            }
+
+                            AnimatedVisibility(visible = isExpanded) {
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(top = 6.dp)
+                                        .testTag("explanation_approval_detail_panel_${item.explanationId}"),
+                                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    HorizontalDivider()
+                                    Text(
+                                        text = "Luồng định tuyến: ${
+                                            LeaveContract.leaveRouteKindLabel(
+                                                routeKind = item.routeKind,
+                                                teamName = item.routedTeam.teamName,
+                                                unitKind = item.unitKindSnapshot
+                                            )
+                                        } • Phiên bản: v${item.rowVersion}",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                    val fallbackText = LeaveContract.leaveFallbackReasonLabel(item.fallbackReason)
+                                    if (!fallbackText.isNullOrBlank()) {
+                                        Text(
+                                            text = "Lý do dự phòng: $fallbackText",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = SemanticColors.WarningLight
+                                        )
+                                    }
+                                    if (item.events.isNotEmpty()) {
+                                        Text(
+                                            text = "Lịch sử xử lý:",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            fontWeight = FontWeight.SemiBold
+                                        )
+                                        item.events.forEach { ev ->
+                                            Text(
+                                                text = "• ${AttendanceExplanationContract.auditEventTypeLabel(ev.eventType)} — ${ev.actorDisplayName ?: "Hệ thống"} (${ev.createdAtLocal.ifBlank { ev.createdAt }}): ${ev.note}",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    val dialogTarget = decisionDialogState
+    if (dialogTarget != null) {
+        val (targetItem, decision) = dialogTarget
+        Dialog(
+            onDismissRequest = {
+                if (!mutationBusy) {
+                    decisionDialogState = null
+                    localDialogError = null
+                }
+            },
+            properties = DialogProperties(usePlatformDefaultWidth = false)
+        ) {
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp)
+                    .testTag("explanation_decision_dialog"),
+                shape = RoundedCornerShape(22.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(20.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Text(
+                        text = if (decision == "APPROVE") {
+                            "Duyệt giải trình chấm công"
+                        } else {
+                            "Từ chối giải trình chấm công"
+                        },
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold
+                    )
+
+                    Text(
+                        text = "Nhân sự: ${targetItem.requester.resolvedDisplayName()} • Ngày ${targetItem.businessDate} • ${targetItem.slotLabel} (v${targetItem.rowVersion})",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    Text(
+                        text = "Lý do nhân viên: ${targetItem.reason}",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+
+                    OutlinedTextField(
+                        value = decisionNoteInput,
+                        onValueChange = {
+                            decisionNoteInput = it
+                            localDialogError = null
+                        },
+                        label = { Text("Ghi chú phản hồi (tối đa 500 ký tự)") },
+                        placeholder = { Text("Nhập nội dung phản hồi cho nhân viên (nếu có)...") },
+                        minLines = 2,
+                        maxLines = 4,
+                        enabled = !mutationBusy,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("explanation_decision_note_input")
+                    )
+
+                    val effectiveError = localDialogError ?: mutationError
+                    if (!effectiveError.isNullOrBlank()) {
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = MaterialTheme.colorScheme.errorContainer,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("explanation_decision_dialog_error")
+                        ) {
+                            Text(
+                                text = effectiveError,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onErrorContainer,
+                                modifier = Modifier.padding(10.dp)
+                            )
+                        }
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End
+                    ) {
+                        TextButton(
+                            onClick = {
+                                decisionDialogState = null
+                                localDialogError = null
+                            },
+                            enabled = !mutationBusy,
+                            modifier = Modifier.testTag("explanation_decision_cancel_button")
+                        ) {
+                            Text("Đóng")
+                        }
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Button(
+                            onClick = {
+                                val validationMsg = AttendanceExplanationContract.validateDecisionInput(
+                                    actorAppUserId = actor.appUserId,
+                                    item = targetItem,
+                                    decision = decision,
+                                    decisionNote = decisionNoteInput
+                                )
+                                if (validationMsg != null) {
+                                    localDialogError = validationMsg
+                                    return@Button
+                                }
+                                viewModel.decideAttendanceExplanation(
+                                    item = targetItem,
+                                    decision = decision,
+                                    decisionNote = decisionNoteInput.trim().ifEmpty { null },
+                                    onSuccess = {
+                                        decisionDialogState = null
+                                        decisionNoteInput = ""
+                                        localDialogError = null
+                                    }
+                                )
+                            },
+                            enabled = !mutationBusy,
+                            modifier = Modifier.testTag("explanation_decision_confirm_button")
+                        ) {
+                            Text(
+                                when {
+                                    mutationBusy -> "Đang xử lý..."
+                                    decision == "APPROVE" -> "Xác nhận duyệt"
+                                    else -> "Xác nhận từ chối"
+                                }
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
 
 private fun openIsoDatePicker(
     context: Context,
