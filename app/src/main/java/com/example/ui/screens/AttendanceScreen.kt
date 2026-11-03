@@ -1293,85 +1293,131 @@ private fun AttendanceAreaTopTabBar(
     selectedTab: AttendanceAreaTab,
     onSelectTab: (AttendanceAreaTab) -> Unit
 ) {
-    val compact = tabs.size >= 4
+    val approvalTabs = remember(tabs) {
+        tabs.filter {
+            it == AttendanceAreaTab.EXPLANATION_APPROVAL ||
+                it == AttendanceAreaTab.LEAVE_APPROVAL
+        }
+    }
+    val personalTabs = remember(tabs) {
+        tabs.filterNot {
+            it == AttendanceAreaTab.EXPLANATION_APPROVAL ||
+                it == AttendanceAreaTab.LEAVE_APPROVAL
+        }
+    }
+    val tabRows = remember(personalTabs, approvalTabs, tabs) {
+        if (personalTabs.isNotEmpty() && approvalTabs.isNotEmpty()) {
+            listOf(personalTabs, approvalTabs)
+        } else if (tabs.size > 3) {
+            listOf(tabs.take(3), tabs.drop(3))
+        } else {
+            listOf(tabs)
+        }
+    }
+
     Surface(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 6.dp)
+            .padding(horizontal = 12.dp, vertical = 6.dp)
             .testTag("attendance_area_tab_row"),
         shape = RoundedCornerShape(14.dp),
         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
     ) {
-        Row(
+        Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(4.dp),
-            horizontalArrangement = Arrangement.spacedBy(if (compact) 4.dp else 6.dp),
-            verticalAlignment = Alignment.CenterVertically
+            verticalArrangement = Arrangement.spacedBy(4.dp)
         ) {
-            tabs.forEach { tab ->
-                val isSelected = tab == selectedTab
-                val tag = when (tab) {
-                    AttendanceAreaTab.CHECK_IN -> "attendance_tab_checkin"
-                    AttendanceAreaTab.EXPLANATION -> "attendance_tab_explanation"
-                    AttendanceAreaTab.LEAVE_REQUEST -> "attendance_tab_leave_request"
-                    AttendanceAreaTab.EXPLANATION_APPROVAL -> "attendance_tab_explanation_approval"
-                    AttendanceAreaTab.LEAVE_APPROVAL -> "attendance_tab_leave_approval"
-                }
-                val icon = when (tab) {
-                    AttendanceAreaTab.CHECK_IN -> Icons.Default.PhotoCamera
-                    AttendanceAreaTab.EXPLANATION -> Icons.Default.AccessTime
-                    AttendanceAreaTab.LEAVE_REQUEST -> Icons.AutoMirrored.Filled.EventNote
-                    AttendanceAreaTab.EXPLANATION_APPROVAL -> Icons.Default.Verified
-                    AttendanceAreaTab.LEAVE_APPROVAL -> Icons.AutoMirrored.Filled.FactCheck
-                }
-                Surface(
-                    shape = RoundedCornerShape(10.dp),
-                    color = if (isSelected) {
-                        MaterialTheme.colorScheme.primary
-                    } else {
-                        Color.Transparent
-                    },
-                    modifier = Modifier
-                        .weight(1f)
-                        .clip(RoundedCornerShape(10.dp))
-                        .clickable { onSelectTab(tab) }
-                        .testTag(tag)
+            tabRows.forEach { rowTabs ->
+                val isThreeColumnRow = rowTabs.size >= 3
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = if (compact) 4.dp else 8.dp, vertical = 8.dp),
-                        horizontalArrangement = Arrangement.Center,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(
-                            imageVector = icon,
-                            contentDescription = null,
-                            tint = if (isSelected) {
-                                MaterialTheme.colorScheme.onPrimary
-                            } else {
-                                MaterialTheme.colorScheme.onSurfaceVariant
-                            },
-                            modifier = Modifier.size(if (compact) 14.dp else 16.dp)
-                        )
-                        Spacer(modifier = Modifier.width(if (compact) 3.dp else 6.dp))
-                        Text(
-                            text = tab.label,
-                            style = if (compact) {
-                                MaterialTheme.typography.labelSmall
-                            } else {
-                                MaterialTheme.typography.labelLarge
-                            },
-                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                    rowTabs.forEach { tab ->
+                        val isSelected = tab == selectedTab
+                        val tag = when (tab) {
+                            AttendanceAreaTab.CHECK_IN -> "attendance_tab_checkin"
+                            AttendanceAreaTab.EXPLANATION -> "attendance_tab_explanation"
+                            AttendanceAreaTab.LEAVE_REQUEST -> "attendance_tab_leave_request"
+                            AttendanceAreaTab.EXPLANATION_APPROVAL -> "attendance_tab_explanation_approval"
+                            AttendanceAreaTab.LEAVE_APPROVAL -> "attendance_tab_leave_approval"
+                        }
+                        val icon = when (tab) {
+                            AttendanceAreaTab.CHECK_IN -> Icons.Default.PhotoCamera
+                            AttendanceAreaTab.EXPLANATION -> Icons.Default.AccessTime
+                            AttendanceAreaTab.LEAVE_REQUEST -> Icons.AutoMirrored.Filled.EventNote
+                            AttendanceAreaTab.EXPLANATION_APPROVAL -> Icons.Default.Verified
+                            AttendanceAreaTab.LEAVE_APPROVAL -> Icons.AutoMirrored.Filled.FactCheck
+                        }
+                        val tabWeight = when (tab) {
+                            AttendanceAreaTab.CHECK_IN -> 0.90f
+                            AttendanceAreaTab.EXPLANATION -> 1.65f
+                            AttendanceAreaTab.LEAVE_REQUEST -> 1.12f
+                            AttendanceAreaTab.EXPLANATION_APPROVAL -> 1.35f
+                            AttendanceAreaTab.LEAVE_APPROVAL -> 1.00f
+                        }
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
                             color = if (isSelected) {
-                                MaterialTheme.colorScheme.onPrimary
+                                MaterialTheme.colorScheme.primary
                             } else {
-                                MaterialTheme.colorScheme.onSurfaceVariant
+                                Color.Transparent
                             },
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
+                            modifier = Modifier
+                                .weight(tabWeight)
+                                .clip(RoundedCornerShape(10.dp))
+                                .clickable { onSelectTab(tab) }
+                                .testTag(tag)
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(
+                                        horizontal = if (isThreeColumnRow) 5.dp else 8.dp,
+                                        vertical = 8.dp
+                                    ),
+                                horizontalArrangement = Arrangement.Center,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = icon,
+                                    contentDescription = null,
+                                    tint = if (isSelected) {
+                                        MaterialTheme.colorScheme.onPrimary
+                                    } else {
+                                        MaterialTheme.colorScheme.onSurfaceVariant
+                                    },
+                                    modifier = Modifier.size(if (isThreeColumnRow) 13.dp else 15.dp)
+                                )
+                                Spacer(modifier = Modifier.width(if (isThreeColumnRow) 3.dp else 5.dp))
+                                Text(
+                                    text = tab.label,
+                                    style = if (isThreeColumnRow) {
+                                        MaterialTheme.typography.labelSmall.copy(
+                                            fontSize = 11.sp,
+                                            lineHeight = 13.sp
+                                        )
+                                    } else {
+                                        MaterialTheme.typography.labelMedium.copy(
+                                            fontSize = 12.sp,
+                                            lineHeight = 14.sp
+                                        )
+                                    },
+                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                    color = if (isSelected) {
+                                        MaterialTheme.colorScheme.onPrimary
+                                    } else {
+                                        MaterialTheme.colorScheme.onSurfaceVariant
+                                    },
+                                    maxLines = 1,
+                                    softWrap = false,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -3704,12 +3750,11 @@ private fun AttendanceExplanationTabContent(
         if (currentOverview != null) {
             val dayEval = currentOverview.dayEvaluation
             item {
-                Row(
+                Column(
                     modifier = Modifier
                         .fillMaxWidth()
                         .testTag("explanation_day_slots_header"),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     Text(
                         text = "Các mốc chấm công ngày ${dayEval.businessDate}",
@@ -3723,9 +3768,12 @@ private fun AttendanceExplanationTabContent(
                         Text(
                             text = "${dayEval.slots.size} mốc • Chính sách v${dayEval.policyVersionUsed}",
                             style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.SemiBold,
                             color = MaterialTheme.colorScheme.onPrimaryContainer,
+                            maxLines = 1,
+                            softWrap = false,
                             modifier = Modifier
-                                .padding(horizontal = 8.dp, vertical = 4.dp)
+                                .padding(horizontal = 10.dp, vertical = 4.dp)
                                 .testTag("explanation_dynamic_slot_count_badge")
                         )
                     }
@@ -4003,6 +4051,7 @@ private fun AttendanceExplanationDaySlotCard(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
+                Spacer(modifier = Modifier.width(8.dp))
                 Surface(
                     shape = RoundedCornerShape(8.dp),
                     color = badgeColor.copy(alpha = 0.14f),
@@ -4013,6 +4062,8 @@ private fun AttendanceExplanationDaySlotCard(
                         style = MaterialTheme.typography.labelSmall,
                         color = badgeColor,
                         fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        softWrap = false,
                         modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
                     )
                 }
@@ -4128,8 +4179,10 @@ private fun AttendanceMyExplanationHistoryCard(
                 Text(
                     text = "${item.businessDate} • ${item.slotLabel} (${item.targetTime})",
                     style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.Bold
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.weight(1f)
                 )
+                Spacer(modifier = Modifier.width(8.dp))
                 Surface(
                     shape = RoundedCornerShape(8.dp),
                     color = statusColor.copy(alpha = 0.14f),
@@ -4140,6 +4193,8 @@ private fun AttendanceMyExplanationHistoryCard(
                         style = MaterialTheme.typography.labelSmall,
                         color = statusColor,
                         fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        softWrap = false,
                         modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
                     )
                 }
@@ -4276,6 +4331,7 @@ private fun AttendanceExplanationApprovalTabContent(
                             )
                         }
                         val pendingCount = inbox?.pagination?.pendingCount ?: 0
+                        Spacer(modifier = Modifier.width(8.dp))
                         Surface(
                             shape = RoundedCornerShape(10.dp),
                             color = SemanticColors.WarningLight.copy(alpha = 0.14f),
@@ -4286,6 +4342,8 @@ private fun AttendanceExplanationApprovalTabContent(
                                 style = MaterialTheme.typography.labelMedium,
                                 color = SemanticColors.WarningLight,
                                 fontWeight = FontWeight.Bold,
+                                maxLines = 1,
+                                softWrap = false,
                                 modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
                             )
                         }
@@ -4454,6 +4512,7 @@ private fun AttendanceExplanationApprovalTabContent(
                                 }
 
                                 val statusColor = leaveStatusColor(item.status)
+                                Spacer(modifier = Modifier.width(8.dp))
                                 Surface(
                                     shape = RoundedCornerShape(8.dp),
                                     color = statusColor.copy(alpha = 0.14f),
@@ -4464,6 +4523,8 @@ private fun AttendanceExplanationApprovalTabContent(
                                         style = MaterialTheme.typography.labelSmall,
                                         color = statusColor,
                                         fontWeight = FontWeight.SemiBold,
+                                        maxLines = 1,
+                                        softWrap = false,
                                         modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
                                     )
                                 }

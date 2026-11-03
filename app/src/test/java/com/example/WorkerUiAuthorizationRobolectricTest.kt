@@ -4435,6 +4435,13 @@ class WorkerUiAuthorizationRobolectricTest {
         composeTestRule.waitForIdle()
 
         composeTestRule.onNodeWithText("3 mốc • Chính sách v2").assertIsDisplayed()
+        val slotBadgeBounds = composeTestRule.onNodeWithTag("explanation_dynamic_slot_count_badge")
+            .assertIsDisplayed()
+            .fetchSemanticsNode().boundsInRoot
+        assertTrue(
+            "Badge must be laid out horizontally without vertical squeezing",
+            (slotBadgeBounds.right - slotBadgeBounds.left) > (slotBadgeBounds.bottom - slotBadgeBounds.top) * 2.5f
+        )
         composeTestRule.onNodeWithTag("explanation_lazy_column")
             .performScrollToNode(hasTestTag("explanation_open_submit_btn_SLOT_3"))
         composeTestRule.onNodeWithTag("explanation_open_submit_btn_SLOT_3").performClick()
@@ -4460,9 +4467,10 @@ class WorkerUiAuthorizationRobolectricTest {
         assertEquals("SLOT_3", submittedPayload.getString("slot_code"))
         assertEquals("Kẹt xe tại cầu Thanh Trì", submittedPayload.getString("reason"))
 
-        // 3. Grant approval authority on server and refresh -> "Xét duyệt giải trình" tab appears and approver can decide
+        // 3. Grant approval authority on server and refresh -> "Xét duyệt giải trình" tab appears on row 2 and approver can decide
         composeTestRule.runOnIdle {
             canApprove = true
+            vm.refreshMyLeaveSummary()
             vm.refreshMyAttendanceExplanations(businessDate = "2026-11-03")
         }
         composeTestRule.waitUntil(timeoutMillis = 5_000) {
@@ -4473,6 +4481,13 @@ class WorkerUiAuthorizationRobolectricTest {
                     .fetchSemanticsNodes().isNotEmpty()
         }
         composeTestRule.waitForIdle()
+
+        val row1CheckinBounds = composeTestRule.onNodeWithTag("attendance_tab_checkin").fetchSemanticsNode().boundsInRoot
+        val row2ExpApprovalBounds = composeTestRule.onNodeWithTag("attendance_tab_explanation_approval").fetchSemanticsNode().boundsInRoot
+        assertTrue(
+            "Approval tabs must be placed on the second row below personal tabs",
+            row2ExpApprovalBounds.top >= row1CheckinBounds.bottom - 1f
+        )
 
         composeTestRule.onNodeWithTag("attendance_tab_explanation_approval").assertIsDisplayed().performClick()
         composeTestRule.waitUntil(timeoutMillis = 5_000) {
