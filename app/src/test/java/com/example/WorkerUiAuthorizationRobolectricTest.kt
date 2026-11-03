@@ -4446,7 +4446,12 @@ class WorkerUiAuthorizationRobolectricTest {
 
         composeTestRule.waitUntil(timeoutMillis = 5_000) {
             org.robolectric.shadows.ShadowLooper.idleMainLooper()
-            !vm.explanationMutationBusy.value && capturedSubmitBodies.size == 1
+            !vm.explanationMutationBusy.value &&
+                !vm.myExplanationsLoading.value &&
+                capturedSubmitBodies.size == 1 &&
+                vm.myExplanationsOverview.value?.dayEvaluation?.slots
+                    ?.find { it.slotCode == "SLOT_3" }
+                    ?.slotStatus == "EXPLAINED_PENDING"
         }
         composeTestRule.waitForIdle()
 
@@ -4456,11 +4461,16 @@ class WorkerUiAuthorizationRobolectricTest {
         assertEquals("Kẹt xe tại cầu Thanh Trì", submittedPayload.getString("reason"))
 
         // 3. Grant approval authority on server and refresh -> "Xét duyệt giải trình" tab appears and approver can decide
-        canApprove = true
-        vm.refreshMyAttendanceExplanations(businessDate = "2026-11-03")
+        composeTestRule.runOnIdle {
+            canApprove = true
+            vm.refreshMyAttendanceExplanations(businessDate = "2026-11-03")
+        }
         composeTestRule.waitUntil(timeoutMillis = 5_000) {
             org.robolectric.shadows.ShadowLooper.idleMainLooper()
-            !vm.myExplanationsLoading.value && vm.myExplanationsOverview.value?.viewer?.canApproveExplanations == true
+            !vm.myExplanationsLoading.value &&
+                vm.myExplanationsOverview.value?.viewer?.canApproveExplanations == true &&
+                composeTestRule.onAllNodes(hasTestTag("attendance_tab_explanation_approval"))
+                    .fetchSemanticsNodes().isNotEmpty()
         }
         composeTestRule.waitForIdle()
 
@@ -4472,6 +4482,8 @@ class WorkerUiAuthorizationRobolectricTest {
         composeTestRule.waitForIdle()
 
         composeTestRule.onNodeWithText("Lê Thành Viên").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("explanation_approval_lazy_column")
+            .performScrollToNode(hasTestTag("explanation_approve_btn_$explanationId"))
         composeTestRule.onNodeWithTag("explanation_approve_btn_$explanationId").performClick()
         composeTestRule.waitForIdle()
 
@@ -4481,7 +4493,9 @@ class WorkerUiAuthorizationRobolectricTest {
 
         composeTestRule.waitUntil(timeoutMillis = 5_000) {
             org.robolectric.shadows.ShadowLooper.idleMainLooper()
-            !vm.explanationMutationBusy.value && capturedDecisionBodies.size == 1
+            !vm.explanationMutationBusy.value &&
+                !vm.explanationInboxLoading.value &&
+                capturedDecisionBodies.size == 1
         }
         composeTestRule.waitForIdle()
 

@@ -1293,6 +1293,7 @@ private fun AttendanceAreaTopTabBar(
     selectedTab: AttendanceAreaTab,
     onSelectTab: (AttendanceAreaTab) -> Unit
 ) {
+    val compact = tabs.size >= 4
     Surface(
         modifier = Modifier
             .fillMaxWidth()
@@ -1305,7 +1306,7 @@ private fun AttendanceAreaTopTabBar(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(4.dp),
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            horizontalArrangement = Arrangement.spacedBy(if (compact) 4.dp else 6.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             tabs.forEach { tab ->
@@ -1340,7 +1341,7 @@ private fun AttendanceAreaTopTabBar(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 8.dp, vertical = 8.dp),
+                            .padding(horizontal = if (compact) 4.dp else 8.dp, vertical = 8.dp),
                         horizontalArrangement = Arrangement.Center,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
@@ -1352,12 +1353,16 @@ private fun AttendanceAreaTopTabBar(
                             } else {
                                 MaterialTheme.colorScheme.onSurfaceVariant
                             },
-                            modifier = Modifier.size(16.dp)
+                            modifier = Modifier.size(if (compact) 14.dp else 16.dp)
                         )
-                        Spacer(modifier = Modifier.width(6.dp))
+                        Spacer(modifier = Modifier.width(if (compact) 3.dp else 6.dp))
                         Text(
                             text = tab.label,
-                            style = MaterialTheme.typography.labelLarge,
+                            style = if (compact) {
+                                MaterialTheme.typography.labelSmall
+                            } else {
+                                MaterialTheme.typography.labelLarge
+                            },
                             fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
                             color = if (isSelected) {
                                 MaterialTheme.colorScheme.onPrimary

@@ -457,6 +457,9 @@ class MiniBiViewModel internal constructor(
     private val _explanationInboxErrorCode = MutableStateFlow<String?>(null)
     val explanationInboxErrorCode: StateFlow<String?> = _explanationInboxErrorCode.asStateFlow()
 
+    private var myExplanationsFetchJob: Job? = null
+    private var explanationInboxFetchJob: Job? = null
+
     // Salary Advance States (QLDA only on Android; backend authority only)
     private val _salaryAdvanceContext = MutableStateFlow<SalaryAdvanceActorContext?>(null)
     val salaryAdvanceContext: StateFlow<SalaryAdvanceActorContext?> = _salaryAdvanceContext.asStateFlow()
@@ -4164,10 +4167,12 @@ class MiniBiViewModel internal constructor(
         businessDate: String? = _explanationSelectedDate.value
     ) {
         val cleanDate = businessDate?.trim()?.takeIf { AttendanceExplanationContract.isValidIsoDate(it) }
+        myExplanationsFetchJob?.cancel()
         _myExplanationsLoading.value = true
         _myExplanationsError.value = null
         _myExplanationsErrorCode.value = null
-        viewModelScope.launch {
+        var launchedJob: Job? = null
+        launchedJob = viewModelScope.launch {
             try {
                 val overview = repository.attendanceExplanationService.fetchMyExplanationsOverview(
                     businessDate = cleanDate,
@@ -4209,9 +4214,12 @@ class MiniBiViewModel internal constructor(
                 e.rethrowIfCancelled()
                 _myExplanationsError.value = e.message ?: "Không thể tải dữ liệu giải trình chấm công."
             } finally {
-                _myExplanationsLoading.value = false
+                if (myExplanationsFetchJob === launchedJob) {
+                    _myExplanationsLoading.value = false
+                }
             }
         }
+        myExplanationsFetchJob = launchedJob
     }
 
     fun submitAttendanceExplanation(
@@ -4299,10 +4307,12 @@ class MiniBiViewModel internal constructor(
         val safePage = page.coerceAtLeast(1)
         val limit = LEAVE_INBOX_PAGE_SIZE
         val offset = (safePage - 1) * limit
+        explanationInboxFetchJob?.cancel()
         _explanationInboxLoading.value = true
         _explanationInboxError.value = null
         _explanationInboxErrorCode.value = null
-        viewModelScope.launch {
+        var launchedJob: Job? = null
+        launchedJob = viewModelScope.launch {
             try {
                 val inbox = repository.attendanceExplanationService.fetchApprovalInbox(
                     statusFilter = statusFilter,
@@ -4332,9 +4342,12 @@ class MiniBiViewModel internal constructor(
                 e.rethrowIfCancelled()
                 _explanationInboxError.value = e.message ?: "Không thể tải danh sách giải trình cần xét duyệt."
             } finally {
-                _explanationInboxLoading.value = false
+                if (explanationInboxFetchJob === launchedJob) {
+                    _explanationInboxLoading.value = false
+                }
             }
         }
+        explanationInboxFetchJob = launchedJob
     }
 
     fun decideAttendanceExplanation(
