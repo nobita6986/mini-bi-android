@@ -145,7 +145,29 @@ public final class BackendHttpClient: @unchecked Sendable {
         "LEAVE_REPORT_YEAR_MONTH_INVALID": "Kỳ báo cáo tháng không hợp lệ (định dạng YYYY-MM).",
         "LEAVE_REPORT_EXPORT_LIMIT_EXCEEDED": "Số lượng dòng báo cáo vượt quá giới hạn xuất một lần (5.000 nhân sự). Vui lòng lọc theo bộ phận hoặc từ khóa.",
         "LEAVE_REPORT_EXPORT_INCOMPLETE": "Dữ liệu báo cáo thay đổi trong lúc xuất. Vui lòng thử xuất lại.",
-        "LEAVE_UNAVAILABLE": "Hệ thống quản lý nghỉ phép tạm thời không khả dụng. Vui lòng thử lại sau."
+        "LEAVE_UNAVAILABLE": "Hệ thống quản lý nghỉ phép tạm thời không khả dụng. Vui lòng thử lại sau.",
+        "ATTENDANCE_EXPLANATION_ACCESS_DENIED": "Tài khoản không thuộc diện gửi hoặc tra cứu giải trình chấm công.",
+        "ATTENDANCE_EXPLANATION_SUBMIT_DENIED": "Tài khoản không có quyền gửi giải trình chấm công.",
+        "ATTENDANCE_EXPLANATION_APPROVAL_ACCESS_DENIED": "Bạn không có quyền truy cập hộp thư duyệt giải trình chấm công.",
+        "ATTENDANCE_EXPLANATION_DECIDE_DENIED": "Bạn không thuộc thẩm quyền duyệt giải trình này.",
+        "ATTENDANCE_EXPLANATION_DECISION_DENIED": "Bạn không có quyền xử lý giải trình chấm công này.",
+        "ATTENDANCE_EXPLANATION_SELF_APPROVAL_FORBIDDEN": "Không được tự duyệt giải trình chấm công của chính mình.",
+        "ATTENDANCE_EXPLANATION_NOT_FOUND": "Không tìm thấy giải trình chấm công tương ứng.",
+        "ATTENDANCE_EXPLANATION_ALREADY_SUBMITTED": "Mốc chấm công này đã có giải trình. Mỗi mốc chỉ được gửi giải trình một lần.",
+        "ATTENDANCE_EXPLANATION_ALREADY_EXISTS": "Mốc chấm công này đã có giải trình (mỗi mốc trong ngày chỉ được gửi 1 giải trình).",
+        "ATTENDANCE_EXPLANATION_SLOT_NOT_ELIGIBLE": "Mốc chấm công này không ở trạng thái thiếu chấm hoặc ngoài khung cho phép để gửi giải trình.",
+        "ATTENDANCE_EXPLANATION_SLOT_INVALID": "Mốc chấm công cần giải trình không hợp lệ.",
+        "ATTENDANCE_EXPLANATION_DATE_INVALID": "Ngày nghiệp vụ giải trình không hợp lệ.",
+        "ATTENDANCE_EXPLANATION_DATE_FUTURE": "Chưa thể gửi giải trình cho ngày làm việc trong tương lai.",
+        "ATTENDANCE_EXPLANATION_FUTURE_DATE_NOT_ALLOWED": "Không thể gửi giải trình cho ngày trong tương lai.",
+        "ATTENDANCE_EXPLANATION_APPROVER_UNCONFIGURED": "Chưa cấu hình người duyệt cho bộ phận/nhóm của bạn. Vui lòng liên hệ Nhân sự hoặc Admin.",
+        "ATTENDANCE_EXPLANATION_REASON_INVALID": "Lý do giải trình phải từ 3 đến 500 ký tự.",
+        "ATTENDANCE_EXPLANATION_NOTE_INVALID": "Ghi chú phản hồi không được vượt quá 500 ký tự.",
+        "ATTENDANCE_EXPLANATION_DECISION_INVALID": "Quyết định duyệt giải trình không hợp lệ.",
+        "ATTENDANCE_EXPLANATION_VERSION_CONFLICT": "Giải trình đã được cập nhật bởi phiên làm việc khác. Dữ liệu đã được tải lại.",
+        "ATTENDANCE_EXPLANATION_STATE_INVALID": "Giải trình đã được xử lý trước đó và không còn ở trạng thái chờ duyệt.",
+        "ATTENDANCE_EXPLANATION_ALREADY_DECIDED": "Giải trình đã được xử lý trước đó và không còn ở trạng thái chờ duyệt.",
+        "ATTENDANCE_REPORT_UNAVAILABLE": "Dịch vụ giải trình chấm công tạm thời gián đoạn. Vui lòng thử lại sau."
     ]
 
     public init(
