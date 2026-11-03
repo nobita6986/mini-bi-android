@@ -4434,13 +4434,15 @@ class WorkerUiAuthorizationRobolectricTest {
         composeTestRule.onNodeWithTag("attendance_tab_explanation").performClick()
         composeTestRule.waitForIdle()
 
-        composeTestRule.onNodeWithText("3 mốc • Chính sách v2").assertIsDisplayed()
+        val slotHeaderTitleBounds = composeTestRule.onNodeWithText("Các mốc chấm công ngày 2026-11-03")
+            .assertIsDisplayed()
+            .fetchSemanticsNode().boundsInRoot
         val slotBadgeBounds = composeTestRule.onNodeWithTag("explanation_dynamic_slot_count_badge")
             .assertIsDisplayed()
             .fetchSemanticsNode().boundsInRoot
         assertTrue(
-            "Badge must be laid out horizontally without vertical squeezing",
-            (slotBadgeBounds.right - slotBadgeBounds.left) > (slotBadgeBounds.bottom - slotBadgeBounds.top) * 2.5f
+            "Slot count badge must be placed on its own row below the header title instead of squeezed horizontally",
+            slotBadgeBounds.top >= slotHeaderTitleBounds.bottom - 1f
         )
         composeTestRule.onNodeWithTag("explanation_lazy_column")
             .performScrollToNode(hasTestTag("explanation_open_submit_btn_SLOT_3"))
