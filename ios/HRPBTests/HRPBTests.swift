@@ -1426,8 +1426,38 @@ final class HRPBTests: XCTestCase {
         // 2. Dynamic slots (3 slots and 6 slots — never hardcoded to 4 or 5) & overview parsing
         let empId = "11111111-2222-4333-8444-555555555555"
         let leaderId = "99999999-2222-4333-8444-555555555555"
-        let sixSlotsJson: [[String: Any]] = (1...6).map { idx in
+        let slot2Checkins: [[String: Any]] = [
             [
+                "checkin_id": "chk-2",
+                "sequence_in_day": 2,
+                "captured_at": "2026-11-03T04:25:00Z",
+                "captured_at_local": "2026-11-03 11:25:00",
+                "time_local": "11:25",
+                "time_verified": true,
+                "assigned_slot_code": "SLOT_2",
+                "delta_minutes": 25,
+                "over_grace_minutes": 10,
+                "deviation_status": "LATE",
+                "distance_target_kind": "PROJECT",
+                "distance_status": "IN_RANGE",
+                "distance_meters": 42
+            ]
+        ]
+        let slot6Explanation: [String: Any] = [
+            "explanation_id": "exp-slot-6",
+            "status": "PENDING",
+            "original_slot_status": "MISSING",
+            "reason": "Đi hỗ trợ ứng viên tại nhà máy",
+            "submitted_at": "2026-11-03T10:30:00Z",
+            "submitted_at_local": "03/11/2026 17:30",
+            "decision_note": "",
+            "row_version": 1
+        ]
+        var sixSlotsJson: [[String: Any]] = []
+        for idx in 1...6 {
+            let origStatus: String = idx == 2 ? "OUT_OF_GRACE" : (idx == 6 ? "MISSING" : "ON_TIME")
+            let effStatus: String = idx == 2 ? "OUT_OF_GRACE" : (idx == 6 ? "EXPLAINED_PENDING" : "ON_TIME")
+            var slotDict: [String: Any] = [
                 "slot_code": "SLOT_\(idx)",
                 "slot_index": idx,
                 "slot_label": "Mốc #\(idx)",
@@ -1436,123 +1466,101 @@ final class HRPBTests: XCTestCase {
                 "grace_before_minutes": 15,
                 "grace_after_minutes": 15,
                 "is_leave_covered": false,
-                "original_slot_status": idx == 2 ? "OUT_OF_GRACE" : (idx == 6 ? "MISSING" : "ON_TIME"),
-                "slot_status": idx == 2 ? "OUT_OF_GRACE" : (idx == 6 ? "EXPLAINED_PENDING" : "ON_TIME"),
+                "original_slot_status": origStatus,
+                "slot_status": effStatus,
                 "eligible_for_explanation": idx == 2,
-                "checkins": idx == 2 ? [
-                    [
-                        "checkin_id": "chk-2",
-                        "sequence_in_day": 2,
-                        "captured_at": "2026-11-03T04:25:00Z",
-                        "captured_at_local": "2026-11-03 11:25:00",
-                        "time_local": "11:25",
-                        "time_verified": true,
-                        "assigned_slot_code": "SLOT_2",
-                        "delta_minutes": 25,
-                        "over_grace_minutes": 10,
-                        "deviation_status": "LATE",
-                        "distance_target_kind": "PROJECT",
-                        "distance_status": "IN_RANGE",
-                        "distance_meters": 42
-                    ]
-                ] : [],
-                "explanation": idx == 6 ? [
-                    "explanation_id": "exp-slot-6",
-                    "status": "PENDING",
-                    "original_slot_status": "MISSING",
-                    "reason": "Đi hỗ trợ ứng viên tại nhà máy",
-                    "submitted_at": "2026-11-03T10:30:00Z",
-                    "submitted_at_local": "03/11/2026 17:30",
-                    "decision_note": "",
-                    "row_version": 1
-                ] : NSNull()
+                "checkins": idx == 2 ? slot2Checkins : []
             ]
+            if idx == 6 {
+                slotDict["explanation"] = slot6Explanation
+            }
+            sixSlotsJson.append(slotDict)
         }
 
-        let overviewJson: [String: Any] = [
-            "ok": true,
-            "data": [
-                "viewer": [
-                    "app_user_id": empId,
-                    "can_submit_explanation": true,
-                    "can_approve_explanations": false,
-                    "is_shared_non_employee": false,
-                    "is_full_admin": false,
-                    "is_bod": false
-                ],
-                "routing": [
-                    "route_kind": "TEAM_LEADER",
-                    "unit_kind": "RECRUITMENT",
-                    "primary_approver": [
-                        "app_user_id": leaderId,
-                        "display_name": "Trưởng nhóm Tuyển dụng",
-                        "login_id": "leader01",
-                        "personnel_code": "TL-01",
-                        "account_enabled": true
-                    ],
-                    "team_id": "team-1",
-                    "team_code": "TD_BAC",
-                    "team_name": "Tuyển dụng Miền Bắc",
-                    "profile_configured": true
-                ],
-                "today_local": "2026-11-03",
-                "selected_date": "2026-11-03",
-                "day_evaluation": [
-                    "business_date": "2026-11-03",
-                    "policy_version_used": 3,
-                    "slots": sixSlotsJson
-                ],
-                "pagination": [
-                    "limit": 50,
-                    "offset": 0,
-                    "total_rows": 1
-                ],
-                "items": [
-                    [
-                        "explanation_id": "exp-slot-6",
-                        "app_user_id": empId,
-                        "requester": [
-                            "app_user_id": empId,
-                            "display_name": "Nhân viên Thực Địa",
-                            "login_id": "nv01",
-                            "personnel_code": "NV-01"
-                        ],
-                        "business_date": "2026-11-03",
-                        "slot_code": "SLOT_6",
-                        "slot_label": "Mốc #6",
-                        "session_code": "PM",
-                        "target_time": "19:00",
-                        "grace_before_minutes": 15,
-                        "grace_after_minutes": 15,
-                        "original_slot_status": "MISSING",
-                        "status": "PENDING",
-                        "reason": "Đi hỗ trợ ứng viên tại nhà máy",
-                        "route_kind": "TEAM_LEADER",
-                        "unit_kind_snapshot": "RECRUITMENT",
-                        "routed_team": [
-                            "team_id": "team-1",
-                            "team_code": "TD_BAC",
-                            "team_name": "Tuyển dụng Miền Bắc"
-                        ],
-                        "submitted_at": "2026-11-03T10:30:00Z",
-                        "submitted_at_local": "03/11/2026 17:30",
-                        "row_version": 1,
-                        "can_decide": false,
-                        "actual_checkins": [],
-                        "events": [
-                            [
-                                "event_id": "ev-1",
-                                "event_type": "SUBMITTED",
-                                "actor_app_user_id": empId,
-                                "actor_display_name": "Nhân viên Thực Địa",
-                                "to_status": "PENDING",
-                                "note": "Đi hỗ trợ ứng viên tại nhà máy",
-                                "created_at_local": "03/11/2026 17:30"
-                            ]
-                        ]
-                    ]
+        let overviewItemJson: [String: Any] = [
+            "explanation_id": "exp-slot-6",
+            "app_user_id": empId,
+            "requester": [
+                "app_user_id": empId,
+                "display_name": "Nhân viên Thực Địa",
+                "login_id": "nv01",
+                "personnel_code": "NV-01"
+            ],
+            "business_date": "2026-11-03",
+            "slot_code": "SLOT_6",
+            "slot_label": "Mốc #6",
+            "session_code": "PM",
+            "target_time": "19:00",
+            "grace_before_minutes": 15,
+            "grace_after_minutes": 15,
+            "original_slot_status": "MISSING",
+            "status": "PENDING",
+            "reason": "Đi hỗ trợ ứng viên tại nhà máy",
+            "route_kind": "TEAM_LEADER",
+            "unit_kind_snapshot": "RECRUITMENT",
+            "routed_team": [
+                "team_id": "team-1",
+                "team_code": "TD_BAC",
+                "team_name": "Tuyển dụng Miền Bắc"
+            ],
+            "submitted_at": "2026-11-03T10:30:00Z",
+            "submitted_at_local": "03/11/2026 17:30",
+            "row_version": 1,
+            "can_decide": false,
+            "actual_checkins": [Any](),
+            "events": [
+                [
+                    "event_id": "ev-1",
+                    "event_type": "SUBMITTED",
+                    "actor_app_user_id": empId,
+                    "actor_display_name": "Nhân viên Thực Địa",
+                    "to_status": "PENDING",
+                    "note": "Đi hỗ trợ ứng viên tại nhà máy",
+                    "created_at_local": "03/11/2026 17:30"
                 ]
             ]
+        ]
+        let overviewDataJson: [String: Any] = [
+            "viewer": [
+                "app_user_id": empId,
+                "can_submit_explanation": true,
+                "can_approve_explanations": false,
+                "is_shared_non_employee": false,
+                "is_full_admin": false,
+                "is_bod": false
+            ],
+            "routing": [
+                "route_kind": "TEAM_LEADER",
+                "unit_kind": "RECRUITMENT",
+                "primary_approver": [
+                    "app_user_id": leaderId,
+                    "display_name": "Trưởng nhóm Tuyển dụng",
+                    "login_id": "leader01",
+                    "personnel_code": "TL-01",
+                    "account_enabled": true
+                ],
+                "team_id": "team-1",
+                "team_code": "TD_BAC",
+                "team_name": "Tuyển dụng Miền Bắc",
+                "profile_configured": true
+            ],
+            "today_local": "2026-11-03",
+            "selected_date": "2026-11-03",
+            "day_evaluation": [
+                "business_date": "2026-11-03",
+                "policy_version_used": 3,
+                "slots": sixSlotsJson
+            ],
+            "pagination": [
+                "limit": 50,
+                "offset": 0,
+                "total_rows": 1
+            ],
+            "items": [overviewItemJson]
+        ]
+        let overviewJson: [String: Any] = [
+            "ok": true,
+            "data": overviewDataJson
         ]
 
         guard case .success(let overview, _) = AttendanceExplanationContract.parseMyExplanationsOverview(overviewJson) else {
