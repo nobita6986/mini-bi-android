@@ -11,6 +11,18 @@ public enum AttendanceTimeContract {
     public static let maxAnchorAgeMs: Int64 = 12 * 60 * 60 * 1000 // 12 hours
     public static let refreshBeforeExpiryMs: Int64 = 15 * 60 * 1000 // 15 minutes
     public static let minElapsedToleranceMs: Int64 = -2_000
+
+    public static func timeSourceDisplayLabel(_ timeSource: String) -> String {
+        let trimmed = timeSource.trimmingCharacters(in: .whitespacesAndNewlines)
+        switch trimmed.uppercased() {
+        case sourceServerAnchored, "":
+            return "Máy chủ BI"
+        case sourceDeviceClockUnverified:
+            return "Giờ thiết bị"
+        default:
+            return trimmed
+        }
+    }
 }
 
 public struct ServerTimeAnchor: Codable, Equatable {

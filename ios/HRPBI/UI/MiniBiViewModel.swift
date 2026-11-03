@@ -14,6 +14,7 @@ public final class MiniBiViewModel: ObservableObject {
     public let timeAnchorManager: AttendanceTimeAnchorManager
     public let notificationService: NotificationService
     public let leaveService: LeaveService
+    public let attendanceExplanationService: AttendanceExplanationService
     public let salaryAdvanceService: SalaryAdvanceService
 
     // MARK: - Environment & Theme
@@ -189,6 +190,21 @@ public final class MiniBiViewModel: ObservableObject {
     @Published public var isLoadingLeaveInbox: Bool = false
     @Published public var leaveInboxError: String?
 
+    // MARK: - Attendance Explanation ("Giải trình chấm công") & Approval ("Xét duyệt giải trình") State
+    @Published public var explanationSelectedDate: String = AttendanceExplanationContract.todayVietnamIsoDate()
+    @Published public var myExplanationsOverview: AttendanceMyExplanationsOverviewProjection?
+    @Published public var isLoadingMyExplanations: Bool = false
+    @Published public var myExplanationsError: String?
+    @Published public var myExplanationsErrorCode: String?
+    @Published public var isMutatingExplanation: Bool = false
+    @Published public var explanationMutationError: String?
+    @Published public var explanationInboxStatusFilter: String = "PENDING"
+    @Published public var explanationInboxPage: Int = 1
+    @Published public var explanationApprovalInbox: AttendanceExplanationApprovalInboxProjection?
+    @Published public var isLoadingExplanationInbox: Bool = false
+    @Published public var explanationInboxError: String?
+    @Published public var explanationInboxErrorCode: String?
+
     // MARK: - Work Reports State
     @Published public var selectedWorkReportsSubTab: WorkReportsSubTab = .actionable
     @Published public var workReportObligations: [WorkReportObligationItem] = []
@@ -209,6 +225,7 @@ public final class MiniBiViewModel: ObservableObject {
         timeAnchorManager: AttendanceTimeAnchorManager = .shared,
         notificationService: NotificationService = .shared,
         leaveService: LeaveService = .shared,
+        attendanceExplanationService: AttendanceExplanationService = .shared,
         salaryAdvanceService: SalaryAdvanceService = .shared
     ) {
         self.repository = repository
@@ -218,6 +235,7 @@ public final class MiniBiViewModel: ObservableObject {
         self.timeAnchorManager = timeAnchorManager
         self.notificationService = notificationService
         self.leaveService = leaveService
+        self.attendanceExplanationService = attendanceExplanationService
         self.salaryAdvanceService = salaryAdvanceService
         self.attendanceTimeEvaluation = timeAnchorManager.evaluateAnchor()
 
@@ -323,6 +341,7 @@ public final class MiniBiViewModel: ObservableObject {
                 Task {
                     await syncAttendanceTimeAnchor()
                     await refreshMyLeaveSummary(year: leaveYear)
+                    await refreshMyAttendanceExplanations()
                 }
             }
         } else if destination == .workers {
@@ -477,6 +496,19 @@ public final class MiniBiViewModel: ObservableObject {
         leaveApprovalInbox = nil
         isLoadingLeaveInbox = false
         leaveInboxError = nil
+        explanationSelectedDate = AttendanceExplanationContract.todayVietnamIsoDate()
+        myExplanationsOverview = nil
+        isLoadingMyExplanations = false
+        myExplanationsError = nil
+        myExplanationsErrorCode = nil
+        isMutatingExplanation = false
+        explanationMutationError = nil
+        explanationInboxStatusFilter = "PENDING"
+        explanationInboxPage = 1
+        explanationApprovalInbox = nil
+        isLoadingExplanationInbox = false
+        explanationInboxError = nil
+        explanationInboxErrorCode = nil
         savedAccounts = repository.getSavedLoginAccounts()
     }
 
@@ -2274,7 +2306,11 @@ public final class MiniBiViewModel: ObservableObject {
     public func resolveVisibleAttendanceTabs() -> [AttendanceAreaTab] {
         LeaveContract.resolveVisibleAttendanceTabs(
             authority: myLeaveSummary?.authority,
-            errorCode: myLeaveErrorCode
+            errorCode: myLeaveErrorCode,
+            explanationViewer: myExplanationsOverview?.viewer,
+            explanationInboxViewer: explanationApprovalInbox?.viewer,
+            explanationErrorCode: myExplanationsErrorCode,
+            explanationInboxErrorCode: explanationInboxErrorCode
         )
     }
 
@@ -2283,16 +2319,28 @@ public final class MiniBiViewModel: ObservableObject {
         let safeTab = visibleTabs.contains(tab) ? tab : .checkIn
         activeAttendanceTab = safeTab
         leaveMutationError = nil
+        explanationMutationError = nil
 
         switch safeTab {
         case .checkIn:
             if isAuthenticated {
                 Task { await syncAttendanceTimeAnchor() }
             }
+        case .explanation:
+            if myExplanationsOverview == nil && !isLoadingMyExplanations {
+                Task { await refreshMyAttendanceExplanations() }
+            }
         case .leaveRequest:
             ensureInitialLeaveDraftDay()
             if myLeaveSummary == nil && !isLoadingMyLeave {
                 Task { await refreshMyLeaveSummary(year: leaveYear) }
+            }
+        case .explanationApproval:
+            Task {
+                await refreshExplanationApprovalInbox(
+                    statusFilter: explanationInboxStatusFilter,
+                    page: explanationInboxPage
+                )
             }
         case .leaveApproval:
             Task {
@@ -2461,10 +2509,7 @@ public final class MiniBiViewModel: ObservableObject {
             myLeaveErrorCode = nil
             ensureInitialLeaveDraftDay()
 
-            let visibleTabs = LeaveContract.resolveVisibleAttendanceTabs(
-                authority: summary.authority,
-                errorCode: nil
-            )
+            let visibleTabs = resolveVisibleAttendanceTabs()
             if !visibleTabs.contains(activeAttendanceTab) {
                 activeAttendanceTab = .checkIn
             }
@@ -2698,6 +2743,302 @@ public final class MiniBiViewModel: ObservableObject {
                     page: leaveInboxPage
                 )
                 await refreshMyLeaveSummary(year: leaveYear)
+            }
+        }
+    }
+
+    // MARK: - Attendance Explanation ("Giải trình chấm công") & Approval ("Xét duyệt giải trình") Actions
+
+    public var currentExplanationActorAppUserId: String? {
+        if let inboxViewerId = explanationApprovalInbox?.viewer.appUserId.trimmingCharacters(in: .whitespacesAndNewlines),
+           !inboxViewerId.isEmpty {
+            return inboxViewerId
+        }
+        if let viewerId = myExplanationsOverview?.viewer.appUserId.trimmingCharacters(in: .whitespacesAndNewlines),
+           !viewerId.isEmpty {
+            return viewerId
+        }
+        if let authId = myLeaveSummary?.authority.appUserId.trimmingCharacters(in: .whitespacesAndNewlines),
+           !authId.isEmpty {
+            return authId
+        }
+        if let userId = currentUser?.id.trimmingCharacters(in: .whitespacesAndNewlines),
+           !userId.isEmpty {
+            return userId
+        }
+        return nil
+    }
+
+    public func clearExplanationMutationError() {
+        explanationMutationError = nil
+    }
+
+    public func setExplanationSelectedDate(_ businessDate: String) {
+        let cleanDate = businessDate.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard AttendanceExplanationContract.isValidIsoDate(cleanDate) else {
+            explanationMutationError = "Ngày tra cứu phải đúng định dạng YYYY-MM-DD."
+            return
+        }
+        let todayLocal: String = {
+            if let tl = myExplanationsOverview?.todayLocal, AttendanceExplanationContract.isValidIsoDate(tl) {
+                return tl
+            }
+            return AttendanceExplanationContract.todayVietnamIsoDate()
+        }()
+        if cleanDate > todayLocal {
+            explanationMutationError = "Chưa thể tra cứu hoặc gửi giải trình cho ngày trong tương lai."
+            return
+        }
+        explanationMutationError = nil
+        explanationSelectedDate = cleanDate
+        Task {
+            await refreshMyAttendanceExplanations(businessDate: cleanDate)
+        }
+    }
+
+    public func shiftExplanationSelectedDate(days: Int) {
+        let current = explanationSelectedDate
+        let df = DateFormatter()
+        df.locale = Locale(identifier: "en_US_POSIX")
+        df.timeZone = TimeZone(secondsFromGMT: 0)
+        df.dateFormat = "yyyy-MM-dd"
+        guard let parsed = df.date(from: current) else { return }
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone(secondsFromGMT: 0)!
+        guard let nextDate = cal.date(byAdding: .day, value: days, to: parsed) else { return }
+        let nextStr = df.string(from: nextDate)
+        let todayLocal = myExplanationsOverview?.todayLocal ?? AttendanceExplanationContract.todayVietnamIsoDate()
+        if nextStr <= todayLocal {
+            setExplanationSelectedDate(nextStr)
+        }
+    }
+
+    public func refreshMyAttendanceExplanations(businessDate: String? = nil) async {
+        let targetDate: String? = {
+            let candidate = businessDate ?? explanationSelectedDate
+            let clean = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
+            return AttendanceExplanationContract.isValidIsoDate(clean) ? clean : nil
+        }()
+        isLoadingMyExplanations = true
+        myExplanationsError = nil
+        myExplanationsErrorCode = nil
+        let result = await attendanceExplanationService.fetchMyExplanationsOverview(
+            businessDate: targetDate,
+            limit: Self.leaveInboxPageSize,
+            offset: 0
+        )
+        isLoadingMyExplanations = false
+
+        switch result {
+        case .success(let overview, _):
+            myExplanationsOverview = overview
+            explanationSelectedDate = overview.selectedDate
+            myExplanationsError = nil
+            myExplanationsErrorCode = nil
+
+            let visibleTabs = resolveVisibleAttendanceTabs()
+            if !visibleTabs.contains(activeAttendanceTab) {
+                activeAttendanceTab = .checkIn
+            }
+            if overview.viewer.canApproveExplanations &&
+                !overview.viewer.isSharedNonEmployee &&
+                (activeAttendanceTab == .explanationApproval || explanationApprovalInbox != nil) {
+                await refreshExplanationApprovalInbox(
+                    statusFilter: explanationInboxStatusFilter,
+                    page: explanationInboxPage
+                )
+            }
+
+        case .failure(let message, _, let errorCode, _):
+            myExplanationsError = message
+            myExplanationsErrorCode = errorCode
+            let codeUpper = (errorCode ?? "").uppercased()
+            if codeUpper == "ATTENDANCE_EXPLANATION_ACCESS_DENIED" ||
+                codeUpper == "LEAVE_SHARED_ACCOUNT_FORBIDDEN" {
+                myExplanationsOverview = nil
+                let visibleTabs = resolveVisibleAttendanceTabs()
+                if !visibleTabs.contains(activeAttendanceTab) {
+                    activeAttendanceTab = .checkIn
+                }
+            }
+        }
+    }
+
+    public func submitAttendanceExplanation(
+        businessDate: String? = nil,
+        slotCode: String,
+        reason: String,
+        onSuccess: (() -> Void)? = nil
+    ) async {
+        guard !isMutatingExplanation else { return }
+        let cleanDate = (businessDate ?? explanationSelectedDate).trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanSlot = slotCode.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        let todayLocal = myExplanationsOverview?.todayLocal
+        if let validationError = AttendanceExplanationContract.validateSubmitInput(
+            businessDate: cleanDate,
+            slotCode: cleanSlot,
+            reason: reason,
+            todayLocal: todayLocal
+        ) {
+            explanationMutationError = validationError
+            showBanner(validationError, isError: true)
+            return
+        }
+
+        isMutatingExplanation = true
+        explanationMutationError = nil
+        let result = await attendanceExplanationService.submitExplanation(
+            businessDate: cleanDate,
+            slotCode: cleanSlot,
+            reason: reason
+        )
+        isMutatingExplanation = false
+
+        switch result {
+        case .success:
+            showBanner("Đã gửi giải trình chấm công thành công.")
+            await refreshMyAttendanceExplanations(businessDate: cleanDate)
+            onSuccess?()
+
+        case .failure(let message, let httpStatus, let errorCode, _):
+            explanationMutationError = message
+            showBanner(message, isError: true)
+            if AttendanceExplanationContract.isConflictError(httpStatus: httpStatus, errorCode: errorCode) {
+                await refreshMyAttendanceExplanations(businessDate: cleanDate)
+            }
+        }
+    }
+
+    public func setExplanationInboxFilter(_ statusFilter: String) {
+        let clean = statusFilter.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        guard AttendanceExplanationContract.approvalStatusFilters.contains(clean) else { return }
+        explanationInboxStatusFilter = clean
+        explanationInboxPage = 1
+        Task {
+            await refreshExplanationApprovalInbox(statusFilter: clean, page: 1)
+        }
+    }
+
+    public func setExplanationInboxPage(_ page: Int) {
+        let safePage = max(1, page)
+        explanationInboxPage = safePage
+        Task {
+            await refreshExplanationApprovalInbox(statusFilter: explanationInboxStatusFilter, page: safePage)
+        }
+    }
+
+    public func refreshExplanationApprovalInbox(
+        statusFilter: String? = nil,
+        page: Int? = nil
+    ) async {
+        let overviewViewer = myExplanationsOverview?.viewer
+        let authority = myLeaveSummary?.authority
+        let explicitlyDenied: Bool = {
+            if let ov = overviewViewer {
+                return !ov.canApproveExplanations || ov.isSharedNonEmployee
+            }
+            if let auth = authority {
+                return !auth.canApproveRequests || auth.isSharedNonEmployee
+            }
+            return false
+        }()
+        if explicitlyDenied {
+            explanationApprovalInbox = nil
+            return
+        }
+
+        let effectiveFilter = statusFilter ?? explanationInboxStatusFilter
+        let safePage = max(1, page ?? explanationInboxPage)
+        let limit = Self.leaveInboxPageSize
+        let offset = (safePage - 1) * limit
+
+        isLoadingExplanationInbox = true
+        explanationInboxError = nil
+        explanationInboxErrorCode = nil
+        let result = await attendanceExplanationService.fetchApprovalInbox(
+            statusFilter: effectiveFilter,
+            limit: limit,
+            offset: offset
+        )
+        isLoadingExplanationInbox = false
+
+        switch result {
+        case .success(let inbox, _):
+            explanationApprovalInbox = inbox
+            explanationInboxError = nil
+            explanationInboxErrorCode = nil
+            if !inbox.viewer.canApproveExplanations && activeAttendanceTab == .explanationApproval {
+                activeAttendanceTab = .checkIn
+            }
+
+        case .failure(let message, let httpStatus, let errorCode, _):
+            explanationInboxError = message
+            explanationInboxErrorCode = errorCode
+            let codeUpper = (errorCode ?? "").uppercased()
+            if httpStatus == 403 || codeUpper == "ATTENDANCE_EXPLANATION_APPROVAL_ACCESS_DENIED" {
+                explanationApprovalInbox = nil
+                if activeAttendanceTab == .explanationApproval {
+                    activeAttendanceTab = .checkIn
+                }
+            }
+        }
+    }
+
+    public func decideAttendanceExplanation(
+        item: AttendanceExplanationItemProjection,
+        decision: String,
+        decisionNote: String?,
+        onSuccess: (() -> Void)? = nil
+    ) async {
+        guard !isMutatingExplanation else { return }
+        let actorId = currentUser?.id
+            ?? explanationApprovalInbox?.viewer.appUserId
+            ?? myExplanationsOverview?.viewer.appUserId
+            ?? myLeaveSummary?.authority.appUserId
+        if let validationError = AttendanceExplanationContract.validateDecisionInput(
+            actorAppUserId: actorId,
+            item: item,
+            decision: decision,
+            decisionNote: decisionNote
+        ) {
+            explanationMutationError = validationError
+            showBanner(validationError, isError: true)
+            return
+        }
+
+        let cleanDecision = decision.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        isMutatingExplanation = true
+        explanationMutationError = nil
+        let result = await attendanceExplanationService.decideExplanation(
+            explanationId: item.explanationId,
+            decision: cleanDecision,
+            expectedRowVersion: item.rowVersion,
+            decisionNote: decisionNote
+        )
+        isMutatingExplanation = false
+
+        switch result {
+        case .success:
+            let msg = cleanDecision == "APPROVE"
+                ? "Đã duyệt giải trình chấm công."
+                : "Đã từ chối giải trình chấm công."
+            showBanner(msg)
+            await refreshExplanationApprovalInbox(
+                statusFilter: explanationInboxStatusFilter,
+                page: explanationInboxPage
+            )
+            await refreshMyAttendanceExplanations()
+            onSuccess?()
+
+        case .failure(let message, let httpStatus, let errorCode, _):
+            explanationMutationError = message
+            showBanner(message, isError: true)
+            if AttendanceExplanationContract.isConflictError(httpStatus: httpStatus, errorCode: errorCode) {
+                await refreshExplanationApprovalInbox(
+                    statusFilter: explanationInboxStatusFilter,
+                    page: explanationInboxPage
+                )
+                await refreshMyAttendanceExplanations()
             }
         }
     }

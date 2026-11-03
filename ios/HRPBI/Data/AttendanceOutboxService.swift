@@ -517,7 +517,7 @@ public final class AttendanceOutboxService {
             let cols = [
                 record.idempotencyKey,
                 AttendanceTimeAnchorManager.formatDisplayDateTimeVi(isoString: record.clientCapturedAt, fallbackEpochMs: record.createdAtEpochMs),
-                record.timeSource,
+                AttendanceTimeContract.timeSourceDisplayLabel(record.timeSource),
                 AttendanceContract.statusDisplayLabel(record.status),
                 String(format: "%.6f", record.lat),
                 String(format: "%.6f", record.lng),

@@ -417,19 +417,18 @@ final class HRPBTests: XCTestCase {
 
     @MainActor
     func testLeaveTabVisibilityByAuthority() throws {
-        // 1. Regular employee (non-approver) -> sees only Check-in and Leave Request, NEVER Leave Approval
+        // 1. Regular employee (non-approver) -> sees Check-in, Explanation, and Leave Request (with Explanation immediately before Leave Request), NEVER approval tabs
         let employeeAuth = LeaveAuthorityProjection(
             appUserId: "11111111-2222-4333-8444-555555555555",
             isSharedNonEmployee: false,
             canSubmitRequest: true,
             canApproveRequests: false
         )
-        XCTAssertEqual(
-            LeaveContract.resolveVisibleAttendanceTabs(authority: employeeAuth, errorCode: nil),
-            [.checkIn, .leaveRequest]
-        )
+        let empTabs = LeaveContract.resolveVisibleAttendanceTabs(authority: employeeAuth, errorCode: nil)
+        XCTAssertEqual(empTabs, [.checkIn, .explanation, .leaveRequest])
+        XCTAssertEqual(empTabs.map(\.label), ["Chấm công", "Giải trình chấm công", "Xin nghỉ phép"])
 
-        // 2. Approver (Team Leader / Department Head / Admin / BoD) -> sees all 3 tabs
+        // 2. Approver (Team Leader / Department Head / Admin / BoD) -> sees all 5 tabs in exact order
         let approverAuth = LeaveAuthorityProjection(
             appUserId: "99999999-2222-4333-8444-555555555555",
             isSharedNonEmployee: false,
@@ -437,9 +436,14 @@ final class HRPBTests: XCTestCase {
             canSubmitRequest: true,
             canApproveRequests: true
         )
+        let approverTabs = LeaveContract.resolveVisibleAttendanceTabs(authority: approverAuth, errorCode: nil)
         XCTAssertEqual(
-            LeaveContract.resolveVisibleAttendanceTabs(authority: approverAuth, errorCode: nil),
-            [.checkIn, .leaveRequest, .leaveApproval]
+            approverTabs,
+            [.checkIn, .explanation, .leaveRequest, .explanationApproval, .leaveApproval]
+        )
+        XCTAssertEqual(
+            approverTabs.map(\.label),
+            ["Chấm công", "Giải trình chấm công", "Xin nghỉ phép", "Xét duyệt giải trình", "Duyệt nghỉ"]
         )
 
         // 3. Shared non-employee account -> sees only Check-in
@@ -457,11 +461,21 @@ final class HRPBTests: XCTestCase {
             LeaveContract.resolveVisibleAttendanceTabs(authority: nil, errorCode: "LEAVE_SHARED_ACCOUNT_FORBIDDEN"),
             [.checkIn]
         )
+        XCTAssertEqual(
+            LeaveContract.resolveVisibleAttendanceTabs(
+                authority: nil,
+                errorCode: nil,
+                explanationErrorCode: "ATTENDANCE_EXPLANATION_ACCESS_DENIED"
+            ),
+            [.checkIn]
+        )
 
-        // 4. ViewModel defaults to `.checkIn` and prevents selecting `.leaveApproval` when not authorized
+        // 4. ViewModel defaults to `.checkIn` and prevents selecting `.leaveApproval` or `.explanationApproval` when not authorized
         let vm = MiniBiViewModel()
         XCTAssertEqual(vm.activeAttendanceTab, .checkIn)
         vm.selectAttendanceTab(.leaveApproval)
+        XCTAssertEqual(vm.activeAttendanceTab, .checkIn)
+        vm.selectAttendanceTab(.explanationApproval)
         XCTAssertEqual(vm.activeAttendanceTab, .checkIn)
     }
 
@@ -1397,6 +1411,298 @@ final class HRPBTests: XCTestCase {
                 query: "nguyen hop le",
                 eligibilityFilter: "INELIGIBLE"
             )
+        )
+    }
+
+    // MARK: - 9. Attendance Explanation ("Giải trình chấm công") & Time Source Display Label Contract Tests
+
+    func testAttendanceExplanationAndTimeSourceContract() throws {
+        // 1. Time source display label in Vietnamese ("Máy chủ BI" instead of raw "SERVER_ANCHORED")
+        XCTAssertEqual(AttendanceTimeContract.timeSourceDisplayLabel("SERVER_ANCHORED"), "Máy chủ BI")
+        XCTAssertEqual(AttendanceTimeContract.timeSourceDisplayLabel("server_anchored"), "Máy chủ BI")
+        XCTAssertEqual(AttendanceTimeContract.timeSourceDisplayLabel(""), "Máy chủ BI")
+        XCTAssertEqual(AttendanceTimeContract.timeSourceDisplayLabel("DEVICE_CLOCK_UNVERIFIED"), "Giờ thiết bị")
+
+        // 2. Dynamic slots (3 slots and 6 slots — never hardcoded to 4 or 5) & overview parsing
+        let empId = "11111111-2222-4333-8444-555555555555"
+        let leaderId = "99999999-2222-4333-8444-555555555555"
+        let slot2Checkins: [[String: Any]] = [
+            [
+                "checkin_id": "chk-2",
+                "sequence_in_day": 2,
+                "captured_at": "2026-11-03T04:25:00Z",
+                "captured_at_local": "2026-11-03 11:25:00",
+                "time_local": "11:25",
+                "time_verified": true,
+                "assigned_slot_code": "SLOT_2",
+                "delta_minutes": 25,
+                "over_grace_minutes": 10,
+                "deviation_status": "LATE",
+                "distance_target_kind": "PROJECT",
+                "distance_status": "IN_RANGE",
+                "distance_meters": 42
+            ]
+        ]
+        let slot6Explanation: [String: Any] = [
+            "explanation_id": "exp-slot-6",
+            "status": "PENDING",
+            "original_slot_status": "MISSING",
+            "reason": "Đi hỗ trợ ứng viên tại nhà máy",
+            "submitted_at": "2026-11-03T10:30:00Z",
+            "submitted_at_local": "03/11/2026 17:30",
+            "decision_note": "",
+            "row_version": 1
+        ]
+        var sixSlotsJson: [[String: Any]] = []
+        for idx in 1...6 {
+            let origStatus: String = idx == 2 ? "OUT_OF_GRACE" : (idx == 6 ? "MISSING" : "ON_TIME")
+            let effStatus: String = idx == 2 ? "OUT_OF_GRACE" : (idx == 6 ? "EXPLAINED_PENDING" : "ON_TIME")
+            var slotDict: [String: Any] = [
+                "slot_code": "SLOT_\(idx)",
+                "slot_index": idx,
+                "slot_label": "Mốc #\(idx)",
+                "session_code": idx <= 3 ? "AM" : "PM",
+                "target_time": String(format: "%02d:00", 7 + idx * 2),
+                "grace_before_minutes": 15,
+                "grace_after_minutes": 15,
+                "is_leave_covered": false,
+                "original_slot_status": origStatus,
+                "slot_status": effStatus,
+                "eligible_for_explanation": idx == 2,
+                "checkins": idx == 2 ? slot2Checkins : []
+            ]
+            if idx == 6 {
+                slotDict["explanation"] = slot6Explanation
+            }
+            sixSlotsJson.append(slotDict)
+        }
+
+        let overviewItemJson: [String: Any] = [
+            "explanation_id": "exp-slot-6",
+            "app_user_id": empId,
+            "requester": [
+                "app_user_id": empId,
+                "display_name": "Nhân viên Thực Địa",
+                "login_id": "nv01",
+                "personnel_code": "NV-01"
+            ],
+            "business_date": "2026-11-03",
+            "slot_code": "SLOT_6",
+            "slot_label": "Mốc #6",
+            "session_code": "PM",
+            "target_time": "19:00",
+            "grace_before_minutes": 15,
+            "grace_after_minutes": 15,
+            "original_slot_status": "MISSING",
+            "status": "PENDING",
+            "reason": "Đi hỗ trợ ứng viên tại nhà máy",
+            "route_kind": "TEAM_LEADER",
+            "unit_kind_snapshot": "RECRUITMENT",
+            "routed_team": [
+                "team_id": "team-1",
+                "team_code": "TD_BAC",
+                "team_name": "Tuyển dụng Miền Bắc"
+            ],
+            "submitted_at": "2026-11-03T10:30:00Z",
+            "submitted_at_local": "03/11/2026 17:30",
+            "row_version": 1,
+            "can_decide": false,
+            "actual_checkins": [Any](),
+            "events": [
+                [
+                    "event_id": "ev-1",
+                    "event_type": "SUBMITTED",
+                    "actor_app_user_id": empId,
+                    "actor_display_name": "Nhân viên Thực Địa",
+                    "to_status": "PENDING",
+                    "note": "Đi hỗ trợ ứng viên tại nhà máy",
+                    "created_at_local": "03/11/2026 17:30"
+                ]
+            ]
+        ]
+        let overviewDataJson: [String: Any] = [
+            "viewer": [
+                "app_user_id": empId,
+                "can_submit_explanation": true,
+                "can_approve_explanations": false,
+                "is_shared_non_employee": false,
+                "is_full_admin": false,
+                "is_bod": false
+            ],
+            "routing": [
+                "route_kind": "TEAM_LEADER",
+                "unit_kind": "RECRUITMENT",
+                "primary_approver": [
+                    "app_user_id": leaderId,
+                    "display_name": "Trưởng nhóm Tuyển dụng",
+                    "login_id": "leader01",
+                    "personnel_code": "TL-01",
+                    "account_enabled": true
+                ],
+                "team_id": "team-1",
+                "team_code": "TD_BAC",
+                "team_name": "Tuyển dụng Miền Bắc",
+                "profile_configured": true
+            ],
+            "today_local": "2026-11-03",
+            "selected_date": "2026-11-03",
+            "day_evaluation": [
+                "business_date": "2026-11-03",
+                "policy_version_used": 3,
+                "slots": sixSlotsJson
+            ],
+            "pagination": [
+                "limit": 50,
+                "offset": 0,
+                "total_rows": 1
+            ],
+            "items": [overviewItemJson]
+        ]
+        let overviewJson: [String: Any] = [
+            "ok": true,
+            "data": overviewDataJson
+        ]
+
+        guard case .success(let overview, _) = AttendanceExplanationContract.parseMyExplanationsOverview(overviewJson) else {
+            XCTFail("Expected parseMyExplanationsOverview to succeed")
+            return
+        }
+        XCTAssertEqual(overview.dayEvaluation.slots.count, 6)
+        XCTAssertEqual(overview.dayEvaluation.policyVersionUsed, 3)
+        XCTAssertEqual(overview.routing.primaryApprover?.resolvedDisplayName(), "Trưởng nhóm Tuyển dụng")
+        XCTAssertTrue(overview.dayEvaluation.slots[1].eligibleForExplanation)
+        XCTAssertFalse(overview.dayEvaluation.slots[0].eligibleForExplanation)
+        XCTAssertEqual(overview.dayEvaluation.slots[5].explanation?.explanationId, "exp-slot-6")
+        XCTAssertEqual(
+            AttendanceExplanationContract.formatDeviationBadge(overview.dayEvaluation.slots[1].checkins[0]),
+            "Muộn 10p"
+        )
+
+        // 3. Submit input validation
+        XCTAssertNil(
+            AttendanceExplanationContract.validateSubmitInput(
+                businessDate: "2026-11-03",
+                slotCode: "SLOT_2",
+                reason: "Kẹt xe đường cao tốc",
+                todayLocal: "2026-11-03"
+            )
+        )
+        XCTAssertEqual(
+            AttendanceExplanationContract.validateSubmitInput(
+                businessDate: "2026-11-04",
+                slotCode: "SLOT_2",
+                reason: "Kẹt xe đường cao tốc",
+                todayLocal: "2026-11-03"
+            ),
+            AttendanceExplanationContract.errorMessagesVi["ATTENDANCE_EXPLANATION_DATE_FUTURE"]
+        )
+        XCTAssertEqual(
+            AttendanceExplanationContract.validateSubmitInput(
+                businessDate: "2026-11-03",
+                slotCode: "SLOT_99",
+                reason: "Kẹt xe đường cao tốc",
+                todayLocal: "2026-11-03"
+            ),
+            AttendanceExplanationContract.errorMessagesVi["ATTENDANCE_EXPLANATION_SLOT_INVALID"]
+        )
+        XCTAssertEqual(
+            AttendanceExplanationContract.validateSubmitInput(
+                businessDate: "2026-11-03",
+                slotCode: "SLOT_2",
+                reason: "ab",
+                todayLocal: "2026-11-03"
+            ),
+            AttendanceExplanationContract.errorMessagesVi["ATTENDANCE_EXPLANATION_REASON_INVALID"]
+        )
+
+        // 4. Approval inbox parsing & decision validation (authority, self-approval forbidden, conflict detection)
+        let inboxJson: [String: Any] = [
+            "ok": true,
+            "data": [
+                "viewer": [
+                    "app_user_id": leaderId,
+                    "can_approve_explanations": true,
+                    "is_full_admin": false,
+                    "is_bod": false
+                ],
+                "pagination": [
+                    "limit": 50,
+                    "offset": 0,
+                    "total_rows": 1,
+                    "pending_count": 1
+                ],
+                "items": [
+                    [
+                        "explanation_id": "exp-slot-6",
+                        "app_user_id": empId,
+                        "requester": [
+                            "app_user_id": empId,
+                            "display_name": "Nhân viên Thực Địa",
+                            "login_id": "nv01",
+                            "personnel_code": "NV-01"
+                        ],
+                        "business_date": "2026-11-03",
+                        "slot_code": "SLOT_6",
+                        "slot_label": "Mốc #6",
+                        "session_code": "PM",
+                        "target_time": "19:00",
+                        "grace_before_minutes": 15,
+                        "grace_after_minutes": 15,
+                        "original_slot_status": "MISSING",
+                        "status": "PENDING",
+                        "reason": "Đi hỗ trợ ứng viên tại nhà máy",
+                        "row_version": 2,
+                        "can_decide": true
+                    ]
+                ]
+            ]
+        ]
+
+        guard case .success(let inbox, _) = AttendanceExplanationContract.parseApprovalInbox(inboxJson) else {
+            XCTFail("Expected parseApprovalInbox to succeed")
+            return
+        }
+        XCTAssertTrue(inbox.viewer.canApproveExplanations)
+        XCTAssertEqual(inbox.pagination.pendingCount, 1)
+        let inboxItem = try XCTUnwrap(inbox.items.first)
+        XCTAssertTrue(inboxItem.canDecide)
+        XCTAssertEqual(inboxItem.rowVersion, 2)
+
+        // Self-approval forbidden
+        XCTAssertEqual(
+            AttendanceExplanationContract.validateDecisionInput(
+                actorAppUserId: empId,
+                item: inboxItem,
+                decision: "APPROVE",
+                decisionNote: "Tự duyệt"
+            ),
+            AttendanceExplanationContract.errorMessagesVi["ATTENDANCE_EXPLANATION_SELF_APPROVAL_FORBIDDEN"]
+        )
+        // Authorized leader can approve/reject
+        XCTAssertNil(
+            AttendanceExplanationContract.validateDecisionInput(
+                actorAppUserId: leaderId,
+                item: inboxItem,
+                decision: "APPROVE",
+                decisionNote: "Xác nhận đi dự án hợp lệ"
+            )
+        )
+        XCTAssertNil(
+            AttendanceExplanationContract.validateDecisionInput(
+                actorAppUserId: leaderId,
+                item: inboxItem,
+                decision: "REJECT",
+                decisionNote: nil
+            )
+        )
+
+        // Conflict detection & BackendHttpClient error dictionary
+        XCTAssertTrue(AttendanceExplanationContract.isConflictError(httpStatus: 409, errorCode: "ATTENDANCE_EXPLANATION_VERSION_CONFLICT"))
+        XCTAssertTrue(AttendanceExplanationContract.isConflictError(httpStatus: 400, errorCode: "ATTENDANCE_EXPLANATION_ALREADY_SUBMITTED"))
+        XCTAssertFalse(AttendanceExplanationContract.isConflictError(httpStatus: 403, errorCode: "ATTENDANCE_EXPLANATION_DECIDE_DENIED"))
+        XCTAssertEqual(
+            BackendHttpClient.codeMessagesVi["ATTENDANCE_EXPLANATION_VERSION_CONFLICT"],
+            "Giải trình đã được cập nhật bởi phiên làm việc khác. Dữ liệu đã được tải lại."
         )
     }
 

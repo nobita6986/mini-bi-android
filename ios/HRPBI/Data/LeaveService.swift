@@ -5,7 +5,9 @@ import Foundation
 
 public enum AttendanceAreaTab: String, CaseIterable, Identifiable, Equatable, Sendable {
     case checkIn = "CHECK_IN"
+    case explanation = "EXPLANATION"
     case leaveRequest = "LEAVE_REQUEST"
+    case explanationApproval = "EXPLANATION_APPROVAL"
     case leaveApproval = "LEAVE_APPROVAL"
 
     public var id: String { rawValue }
@@ -14,8 +16,12 @@ public enum AttendanceAreaTab: String, CaseIterable, Identifiable, Equatable, Se
         switch self {
         case .checkIn:
             return "Chấm công"
+        case .explanation:
+            return "Giải trình chấm công"
         case .leaveRequest:
-            return "Xin nghỉ"
+            return "Xin nghỉ phép"
+        case .explanationApproval:
+            return "Xét duyệt giải trình"
         case .leaveApproval:
             return "Duyệt nghỉ"
         }
@@ -25,8 +31,12 @@ public enum AttendanceAreaTab: String, CaseIterable, Identifiable, Equatable, Se
         switch self {
         case .checkIn:
             return "camera.fill"
+        case .explanation:
+            return "clock.arrow.circlepath"
         case .leaveRequest:
             return "calendar.badge.plus"
+        case .explanationApproval:
+            return "checkmark.shield.fill"
         case .leaveApproval:
             return "checkmark.seal.fill"
         }
@@ -1398,23 +1408,65 @@ public enum LeaveContract {
         return "\(cleanPrefix)-\(UUID().uuidString.lowercased())"
     }
 
-    /// Resolves visible tabs inside the Attendance area strictly from server-returned authority.
-    /// - `.checkIn` ("Chấm công") is always visible and default.
-    /// - `.leaveRequest` ("Xin nghỉ") is visible unless backend explicitly marks the account as shared/ineligible.
-    /// - `.leaveApproval` ("Duyệt nghỉ") is visible ONLY when backend confirms `can_approve_requests = true`
-    ///   and `!is_shared_non_employee`.
+    /// Resolves visible tabs inside the Attendance area strictly from server-returned authority:
+    /// 1. `.checkIn` ("Chấm công") is always visible and default.
+    /// 2. `.explanation` ("Giải trình chấm công") is placed immediately before `.leaveRequest` ("Xin nghỉ phép")
+    ///    for eligible employee accounts (`!is_shared_non_employee` and `can_submit_explanation`).
+    /// 3. `.leaveRequest` ("Xin nghỉ phép") is visible unless backend marks the account as shared/ineligible.
+    /// 4. `.explanationApproval` ("Xét duyệt giải trình") is visible ONLY when backend confirms
+    ///    `can_approve_explanations = true` (or `authority.can_approve_requests = true` before explanation
+    ///    overview finishes loading) and `!is_shared_non_employee`.
+    /// 5. `.leaveApproval` ("Duyệt nghỉ") is visible ONLY when backend confirms `can_approve_requests = true`
+    ///    and `!is_shared_non_employee`.
     public static func resolveVisibleAttendanceTabs(
         authority: LeaveAuthorityProjection?,
-        errorCode: String? = nil
+        errorCode: String? = nil,
+        explanationViewer: AttendanceExplanationViewerProjection? = nil,
+        explanationInboxViewer: AttendanceExplanationApprovalInboxViewerProjection? = nil,
+        explanationErrorCode: String? = nil,
+        explanationInboxErrorCode: String? = nil
     ) -> [AttendanceAreaTab] {
         var tabs: [AttendanceAreaTab] = [.checkIn]
         let normalizedError = errorCode?.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
-        let isSharedOrForbidden = normalizedError == "LEAVE_SHARED_ACCOUNT_FORBIDDEN"
+        let normExpError = explanationErrorCode?.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        let normExpInboxError = explanationInboxErrorCode?.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+
+        let isSharedAccount = normalizedError == "LEAVE_SHARED_ACCOUNT_FORBIDDEN"
+            || normExpError == "ATTENDANCE_EXPLANATION_ACCESS_DENIED"
             || authority?.isSharedNonEmployee == true
-            || authority?.canSubmitRequest == false
-        if !isSharedOrForbidden {
+            || explanationViewer?.isSharedNonEmployee == true
+
+        let canSubmitExplanation = !isSharedAccount
+            && normExpError != "ATTENDANCE_EXPLANATION_SUBMIT_DENIED"
+            && (explanationViewer?.canSubmitExplanation ?? (authority?.canSubmitRequest != false))
+        if canSubmitExplanation {
+            tabs.append(.explanation)
+        }
+
+        let canSubmitLeave = !isSharedAccount && authority?.canSubmitRequest != false
+        if canSubmitLeave {
             tabs.append(.leaveRequest)
         }
+
+        let canApproveExplanations: Bool = {
+            if isSharedAccount || normExpInboxError == "ATTENDANCE_EXPLANATION_APPROVAL_ACCESS_DENIED" {
+                return false
+            }
+            if let inboxViewer = explanationInboxViewer {
+                return inboxViewer.canApproveExplanations
+            }
+            if let viewer = explanationViewer {
+                return viewer.canApproveExplanations
+            }
+            if let authority {
+                return !authority.isSharedNonEmployee && authority.canApproveRequests
+            }
+            return false
+        }()
+        if canApproveExplanations {
+            tabs.append(.explanationApproval)
+        }
+
         if let authority, !authority.isSharedNonEmployee && authority.canApproveRequests {
             tabs.append(.leaveApproval)
         }
