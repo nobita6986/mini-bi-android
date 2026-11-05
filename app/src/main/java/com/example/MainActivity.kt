@@ -2,6 +2,7 @@ package com.example
 
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.animation.AnimatedVisibility
@@ -28,6 +29,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
@@ -113,8 +115,17 @@ import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
+        enableEdgeToEdge(
+            statusBarStyle = SystemBarStyle.light(
+                android.graphics.Color.TRANSPARENT,
+                android.graphics.Color.TRANSPARENT
+            ),
+            navigationBarStyle = SystemBarStyle.light(
+                android.graphics.Color.TRANSPARENT,
+                android.graphics.Color.TRANSPARENT
+            )
+        )
         super.onCreate(savedInstanceState)
-        enableEdgeToEdge()
         setContent {
             val viewModel: MiniBiViewModel = viewModel()
             val themeId by viewModel.themeId.collectAsStateWithLifecycle()
@@ -263,12 +274,14 @@ fun MiniBiAppRoot(viewModel: MiniBiViewModel) {
         drawerContent = {
             ModalDrawerSheet(
                 modifier = Modifier.width(304.dp),
-                drawerContainerColor = MaterialTheme.colorScheme.surface
+                drawerContainerColor = MaterialTheme.colorScheme.surface,
+                windowInsets = WindowInsets(0, 0, 0, 0)
             ) {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
                         .background(palette.lightTopBar)
+                        .statusBarsPadding()
                         .padding(horizontal = 20.dp, vertical = 18.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
@@ -468,6 +481,7 @@ fun MiniBiAppRoot(viewModel: MiniBiViewModel) {
                     },
                     modifier = Modifier
                         .padding(NavigationDrawerItemDefaults.ItemPadding)
+                        .navigationBarsPadding()
                         .padding(bottom = 12.dp)
                         .testTag("drawer_logout_button")
                 )
