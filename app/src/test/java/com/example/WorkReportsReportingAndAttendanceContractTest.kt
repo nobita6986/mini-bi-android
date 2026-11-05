@@ -2435,6 +2435,10 @@ class WorkReportsReportingAndAttendanceContractTest {
                               "selected_date": "2026-11-03",
                               "day_evaluation": {
                                 "business_date": "2026-11-03",
+                                "policy_profile_id_used": "22222222-3333-4444-8555-666666666666",
+                                "policy_profile_code_used": "KHOI_TD_MB",
+                                "policy_profile_name_used": "Khối Tuyển dụng Miền Bắc",
+                                "policy_is_default_used": false,
                                 "policy_version_used": 3,
                                 "slots": [$slotsJson]
                               },
@@ -2460,11 +2464,17 @@ class WorkReportsReportingAndAttendanceContractTest {
                 attempts++
             }
 
-            // 1. Dynamic 6-slot evaluation + 3-slot evaluation support
+            // 1. Dynamic 6-slot evaluation + 3-slot evaluation support + per-employee attendance policy profile resolution
             val overview6 = repo.attendanceExplanationService.fetchMyExplanationsOverview(businessDate = "2026-11-03")
             assertEquals(6, overview6.dayEvaluation.slots.size)
             assertEquals("SLOT_6", overview6.dayEvaluation.slots.last().slotCode)
             assertTrue(overview6.dayEvaluation.slots.last().eligibleForExplanation)
+            assertEquals("22222222-3333-4444-8555-666666666666", overview6.dayEvaluation.policyProfileIdUsed)
+            assertEquals("KHOI_TD_MB", overview6.dayEvaluation.policyProfileCodeUsed)
+            assertEquals("Khối Tuyển dụng Miền Bắc", overview6.dayEvaluation.policyProfileNameUsed)
+            assertFalse(overview6.dayEvaluation.policyIsDefaultUsed)
+            assertEquals(3, overview6.dayEvaluation.policyVersionUsed)
+            assertEquals("Khung giờ: Khối Tuyển dụng Miền Bắc v3 (6 mốc)", overview6.dayEvaluation.resolvedProfileBadgeLabel())
 
             currentSlotCount = 3
             val overview3 = repo.attendanceExplanationService.fetchMyExplanationsOverview(businessDate = "2026-11-03")

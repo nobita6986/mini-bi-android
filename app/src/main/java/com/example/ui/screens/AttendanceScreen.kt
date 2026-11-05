@@ -3680,6 +3680,66 @@ private fun AttendanceExplanationTabContent(
 
                     val currentOverview = overview
                     if (currentOverview != null) {
+                        val dayEval = currentOverview.dayEvaluation
+                        val profileModeBadge = if (dayEval.policyIsDefaultUsed) {
+                            "Mặc định công ty"
+                        } else {
+                            "Nhóm cấu hình riêng"
+                        }
+                        Surface(
+                            shape = RoundedCornerShape(14.dp),
+                            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("explanation_policy_profile_summary_card")
+                        ) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(12.dp),
+                                verticalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = "Bảng chấm công áp dụng: ${dayEval.resolvedProfileDisplayName()}",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Surface(
+                                        shape = RoundedCornerShape(6.dp),
+                                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
+                                    ) {
+                                        Text(
+                                            text = profileModeBadge,
+                                            style = MaterialTheme.typography.labelSmall,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = MaterialTheme.colorScheme.primary,
+                                            maxLines = 1,
+                                            softWrap = false,
+                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                                        )
+                                    }
+                                }
+                                Text(
+                                    text = "Mã cấu hình: ${dayEval.policyProfileCodeUsed} • Phiên bản v${dayEval.policyVersionUsed} • ${dayEval.slots.size} mốc/ngày",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Text(
+                                    text = "Khung giờ chuẩn: ${dayEval.resolvedSlotScheduleSummary()}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+
                         val routing = currentOverview.routing
                         val approverName = routing.primaryApprover?.resolvedDisplayName() ?: "Hàng đợi Admin / BGĐ"
                         val routeLabel = LeaveContract.leaveRouteKindLabel(
@@ -3766,7 +3826,7 @@ private fun AttendanceExplanationTabContent(
                         color = MaterialTheme.colorScheme.primaryContainer
                     ) {
                         Text(
-                            text = "${dayEval.slots.size} mốc • Chính sách v${dayEval.policyVersionUsed}",
+                            text = dayEval.resolvedProfileBadgeLabel(),
                             style = MaterialTheme.typography.labelSmall,
                             fontWeight = FontWeight.SemiBold,
                             color = MaterialTheme.colorScheme.onPrimaryContainer,
@@ -3892,6 +3952,11 @@ private fun AttendanceExplanationTabContent(
                                 text = "Ngày nghiệp vụ: $targetDate",
                                 style = MaterialTheme.typography.bodySmall,
                                 fontWeight = FontWeight.SemiBold
+                            )
+                            Text(
+                                text = "Bảng chấm công: ${currentOverview.dayEvaluation.resolvedProfileVersionLabel()}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                             Text(
                                 text = "Mốc: ${targetSlot.slotLabel} (${targetSlot.slotCode} • ${AttendanceExplanationContract.sessionLabel(targetSlot.sessionCode)})",
@@ -4201,7 +4266,7 @@ private fun AttendanceMyExplanationHistoryCard(
             }
 
             Text(
-                text = "Trạng thái mốc gốc: ${AttendanceExplanationContract.originalSlotStatusLabel(item.originalSlotStatus)}",
+                text = "Bảng chấm công: ${item.resolvedProfileVersionLabel()} • Trạng thái mốc gốc: ${AttendanceExplanationContract.originalSlotStatusLabel(item.originalSlotStatus)}",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -4543,7 +4608,7 @@ private fun AttendanceExplanationApprovalTabContent(
                             )
 
                             Text(
-                                text = "Trạng thái gốc: ${AttendanceExplanationContract.originalSlotStatusLabel(item.originalSlotStatus)}",
+                                text = "Bảng chấm công: ${item.resolvedProfileVersionLabel()} • Trạng thái gốc: ${AttendanceExplanationContract.originalSlotStatusLabel(item.originalSlotStatus)}",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = explanationSlotStatusColor(item.originalSlotStatus),
                                 fontWeight = FontWeight.SemiBold
@@ -4718,7 +4783,7 @@ private fun AttendanceExplanationApprovalTabContent(
                     )
 
                     Text(
-                        text = "Nhân sự: ${targetItem.requester.resolvedDisplayName()} • Ngày ${targetItem.businessDate} • ${targetItem.slotLabel} (v${targetItem.rowVersion})",
+                        text = "Nhân sự: ${targetItem.requester.resolvedDisplayName()} • Ngày ${targetItem.businessDate} • ${targetItem.slotLabel} (${targetItem.resolvedProfileVersionLabel()} • v${targetItem.rowVersion})",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )

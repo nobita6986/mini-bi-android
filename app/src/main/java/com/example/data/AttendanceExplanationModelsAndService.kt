@@ -96,8 +96,26 @@ data class AttendanceExplanationDaySlotEvaluationProjection(
 data class AttendanceExplanationDayEvaluationProjection(
     val businessDate: String,
     val policyVersionUsed: Int,
-    val slots: List<AttendanceExplanationDaySlotEvaluationProjection>
-)
+    val slots: List<AttendanceExplanationDaySlotEvaluationProjection>,
+    val policyProfileIdUsed: String = AttendanceExplanationContract.DEFAULT_SLOT_POLICY_PROFILE_ID,
+    val policyProfileCodeUsed: String = AttendanceExplanationContract.DEFAULT_SLOT_POLICY_PROFILE_CODE,
+    val policyProfileNameUsed: String = AttendanceExplanationContract.DEFAULT_SLOT_POLICY_PROFILE_NAME,
+    val policyIsDefaultUsed: Boolean = true
+) {
+    fun resolvedProfileDisplayName(): String =
+        policyProfileNameUsed.trim().ifEmpty { AttendanceExplanationContract.DEFAULT_SLOT_POLICY_PROFILE_NAME }
+
+    fun resolvedProfileVersionLabel(): String =
+        "${resolvedProfileDisplayName()} v$policyVersionUsed"
+
+    fun resolvedProfileBadgeLabel(): String =
+        "Khung giờ: ${resolvedProfileDisplayName()} v$policyVersionUsed (${slots.size} mốc)"
+
+    fun resolvedSlotScheduleSummary(): String {
+        if (slots.isEmpty()) return "Chưa có mốc giờ cấu hình"
+        return slots.joinToString(" • ") { "${it.slotLabel} (${it.targetTime})" }
+    }
+}
 
 data class AttendanceExplanationAuditEventProjection(
     val eventId: String,
@@ -146,8 +164,24 @@ data class AttendanceExplanationItemProjection(
     val rowVersion: Int,
     val canDecide: Boolean,
     val actualCheckins: List<AttendanceSlotCheckinItemProjection>,
-    val events: List<AttendanceExplanationAuditEventProjection>
-)
+    val events: List<AttendanceExplanationAuditEventProjection>,
+    val slotIndex: Int = 1,
+    val policyProfileIdUsed: String = AttendanceExplanationContract.DEFAULT_SLOT_POLICY_PROFILE_ID,
+    val policyProfileCodeUsed: String = AttendanceExplanationContract.DEFAULT_SLOT_POLICY_PROFILE_CODE,
+    val policyProfileNameUsed: String = AttendanceExplanationContract.DEFAULT_SLOT_POLICY_PROFILE_NAME,
+    val policyVersionUsed: Int = 1,
+    val effectiveSlotStatus: String = if (status.equals("APPROVED", ignoreCase = true)) {
+        "EXPLAINED_APPROVED"
+    } else {
+        originalSlotStatus
+    }
+) {
+    fun resolvedProfileDisplayName(): String =
+        policyProfileNameUsed.trim().ifEmpty { AttendanceExplanationContract.DEFAULT_SLOT_POLICY_PROFILE_NAME }
+
+    fun resolvedProfileVersionLabel(): String =
+        "${resolvedProfileDisplayName()} v$policyVersionUsed"
+}
 
 data class AttendanceExplanationPaginationProjection(
     val limit: Int,
@@ -200,6 +234,10 @@ object AttendanceExplanationContract {
     const val REASON_MAX_LENGTH = 500
     const val DECISION_NOTE_MAX_LENGTH = 500
     const val DEFAULT_PAGE_LIMIT = 50
+
+    const val DEFAULT_SLOT_POLICY_PROFILE_ID = "00000000-0000-4000-8000-000000000001"
+    const val DEFAULT_SLOT_POLICY_PROFILE_CODE = "DEFAULT"
+    const val DEFAULT_SLOT_POLICY_PROFILE_NAME = "Mặc định"
 
     val APPROVAL_STATUS_FILTERS = listOf("PENDING", "APPROVED", "REJECTED", "ALL")
     val DECISION_ACTIONS = setOf("APPROVE", "REJECT")
@@ -353,8 +391,8 @@ object AttendanceExplanationContract {
             "MISSING" -> "Thiếu chấm công"
             "OUT_OF_GRACE" -> "Ngoài khung giờ"
             "ON_TIME" -> "Đúng giờ"
-            "LEAVE_EXEMPT" -> "Miễn chấm (nghỉ được duyệt)"
-            "NOT_APPLICABLE" -> "Chưa đến mốc / Không áp dụng"
+            "LEAVE_COVERED", "LEAVE_EXEMPT" -> "Miễn chấm (nghỉ được duyệt)"
+            "UPCOMING", "NOT_APPLICABLE" -> "Chưa đến mốc / Không áp dụng"
             else -> originalSlotStatus
         }
 
@@ -363,8 +401,8 @@ object AttendanceExplanationContract {
             "ON_TIME" -> "Đúng giờ"
             "OUT_OF_GRACE" -> "Ngoài khung giờ"
             "MISSING" -> "Thiếu chấm công"
-            "LEAVE_EXEMPT" -> "Miễn chấm (nghỉ được duyệt)"
-            "NOT_APPLICABLE" -> "Chưa đến mốc"
+            "LEAVE_COVERED", "LEAVE_EXEMPT" -> "Miễn chấm (nghỉ được duyệt)"
+            "UPCOMING", "NOT_APPLICABLE" -> "Chưa đến mốc"
             "EXPLAINED_PENDING" -> "Đang chờ duyệt giải trình"
             "EXPLAINED_APPROVED" -> "Giải trình được duyệt"
             "EXPLAINED_REJECTED" -> "Giải trình bị từ chối"
@@ -379,10 +417,15 @@ object AttendanceExplanationContract {
         }
 
     fun formatDeviationBadge(checkin: AttendanceSlotCheckinItemProjection): String? {
+        val minutes = if (checkin.overGraceMinutes > 0) {
+            checkin.overGraceMinutes
+        } else {
+            kotlin.math.abs(checkin.deltaMinutes ?: 0)
+        }
         return when (checkin.deviationStatus.trim().uppercase(Locale.ROOT)) {
             "ON_TIME" -> "Đúng giờ"
-            "EARLY" -> "Sớm ${checkin.overGraceMinutes}p"
-            "LATE" -> "Muộn ${checkin.overGraceMinutes}p"
+            "EARLY" -> "Sớm ${minutes}p"
+            "LATE" -> "Muộn ${minutes}p"
             else -> null
         }
     }
@@ -714,14 +757,22 @@ class AttendanceExplanationService(
         }
 
         private fun parseAuditEvent(obj: JSONObject): AttendanceExplanationAuditEventProjection {
+            val actorObj = if (obj.isNull("actor")) null else obj.optJSONObject("actor")
+            val actorSummary = actorObj?.let { parseAccountSummary(it) }
             return AttendanceExplanationAuditEventProjection(
-                eventId = obj.optString("event_id", "").trim(),
-                eventType = obj.optString("event_type", "").trim(),
-                actorAppUserId = obj.optNullableString("actor_app_user_id"),
-                actorDisplayName = obj.optNullableString("actor_display_name"),
+                eventId = obj.optNullableString("audit_event_id")
+                    ?: obj.optString("event_id", "").trim(),
+                eventType = obj.optNullableString("action")
+                    ?: obj.optString("event_type", "").trim(),
+                actorAppUserId = actorSummary?.appUserId?.takeIf { it.isNotEmpty() }
+                    ?: obj.optNullableString("actor_app_user_id"),
+                actorDisplayName = actorSummary?.resolvedDisplayName()?.takeIf { it.isNotEmpty() }
+                    ?: obj.optNullableString("actor_display_name"),
                 actorRoleContext = obj.optString("actor_role_context", "").trim(),
-                fromStatus = obj.optNullableString("from_status"),
-                toStatus = obj.optString("to_status", "").trim(),
+                fromStatus = obj.optNullableString("before_status")
+                    ?: obj.optNullableString("from_status"),
+                toStatus = obj.optNullableString("after_status")
+                    ?: obj.optString("to_status", "").trim(),
                 note = obj.optString("note", "").trim(),
                 createdAt = obj.optString("created_at", "").trim(),
                 createdAtLocal = obj.optString("created_at_local", "").trim()
@@ -730,10 +781,14 @@ class AttendanceExplanationService(
 
         internal fun parseExplanationItem(obj: JSONObject): AttendanceExplanationItemProjection {
             val requesterObj = obj.optJSONObject("requester") ?: JSONObject()
-            val routedApproverObj = if (obj.isNull("routed_approver")) null else obj.optJSONObject("routed_approver")
+            val routedApproverObj = when {
+                !obj.isNull("primary_approver") -> obj.optJSONObject("primary_approver")
+                !obj.isNull("routed_approver") -> obj.optJSONObject("routed_approver")
+                else -> null
+            }
             val routedTeamObj = obj.optJSONObject("routed_team") ?: JSONObject()
             val decidedByObj = if (obj.isNull("decided_by")) null else obj.optJSONObject("decided_by")
-            val eventsArr = obj.optJSONArray("events")
+            val eventsArr = obj.optJSONArray("audit_events") ?: obj.optJSONArray("events")
             val events = mutableListOf<AttendanceExplanationAuditEventProjection>()
             if (eventsArr != null) {
                 for (i in 0 until eventsArr.length()) {
@@ -741,19 +796,35 @@ class AttendanceExplanationService(
                     events.add(parseAuditEvent(evObj))
                 }
             }
+            val checkinsArr = obj.optJSONArray("related_checkins") ?: obj.optJSONArray("actual_checkins")
+            val slotCode = obj.optString("slot_code", "").trim()
+            val defaultSlotIndex = slotCode.removePrefix("SLOT_").toIntOrNull()?.coerceIn(1, 12) ?: 1
+            val status = obj.optString("status", "PENDING").trim()
+            val originalSlotStatus = obj.optString("original_slot_status", "MISSING").trim()
+            val policyProfileIdUsed = obj.optNullableString("policy_profile_id_used")
+                ?.lowercase(Locale.ROOT)
+                ?: AttendanceExplanationContract.DEFAULT_SLOT_POLICY_PROFILE_ID
+            val policyProfileCodeUsed = obj.optNullableString("policy_profile_code_used")
+                ?: AttendanceExplanationContract.DEFAULT_SLOT_POLICY_PROFILE_CODE
+            val policyProfileNameUsed = obj.optNullableString("policy_profile_name_used")
+                ?: AttendanceExplanationContract.DEFAULT_SLOT_POLICY_PROFILE_NAME
+            val policyVersionUsed = obj.optInt("policy_version_used", 1).coerceAtLeast(1)
+            val effectiveSlotStatus = obj.optNullableString("effective_slot_status")
+                ?: if (status.equals("APPROVED", ignoreCase = true)) "EXPLAINED_APPROVED" else originalSlotStatus
+
             return AttendanceExplanationItemProjection(
                 explanationId = obj.optString("explanation_id", "").trim(),
                 appUserId = obj.optString("app_user_id", requesterObj.optString("app_user_id", "")).trim(),
                 requester = parseAccountSummary(requesterObj),
                 businessDate = obj.optString("business_date", "").trim(),
-                slotCode = obj.optString("slot_code", "").trim(),
-                slotLabel = obj.optString("slot_label", obj.optString("slot_code", "")).trim(),
+                slotCode = slotCode,
+                slotLabel = obj.optString("slot_label", slotCode).trim(),
                 sessionCode = obj.optString("session_code", "AM").trim(),
                 targetTime = obj.optString("target_time", "00:00").trim(),
                 graceBeforeMinutes = obj.optInt("grace_before_minutes", 15),
                 graceAfterMinutes = obj.optInt("grace_after_minutes", 15),
-                originalSlotStatus = obj.optString("original_slot_status", "MISSING").trim(),
-                status = obj.optString("status", "PENDING").trim(),
+                originalSlotStatus = originalSlotStatus,
+                status = status,
                 reason = obj.optString("reason", "").trim(),
                 routeKind = obj.optString("route_kind", "TEAM_LEADER").trim(),
                 unitKindSnapshot = obj.optString("unit_kind_snapshot", "RECRUITMENT").trim(),
@@ -772,8 +843,14 @@ class AttendanceExplanationService(
                 decisionNote = obj.optString("decision_note", "").trim(),
                 rowVersion = obj.optInt("row_version", 1).coerceAtLeast(1),
                 canDecide = obj.optBoolean("can_decide", false),
-                actualCheckins = parseSlotCheckinList(obj.optJSONArray("actual_checkins")),
-                events = events
+                actualCheckins = parseSlotCheckinList(checkinsArr),
+                events = events,
+                slotIndex = obj.optInt("slot_index", defaultSlotIndex).coerceIn(1, 12),
+                policyProfileIdUsed = policyProfileIdUsed,
+                policyProfileCodeUsed = policyProfileCodeUsed,
+                policyProfileNameUsed = policyProfileNameUsed,
+                policyVersionUsed = policyVersionUsed,
+                effectiveSlotStatus = effectiveSlotStatus
             )
         }
 
@@ -811,6 +888,18 @@ class AttendanceExplanationService(
 
             val todayLocal = json.optString("today_local", AttendanceExplanationContract.todayVietnamIsoDate()).trim()
             val selectedDate = json.optString("selected_date", todayLocal).trim()
+            val evalProfileId = dayEvalObj.optNullableString("policy_profile_id_used")
+                ?.lowercase(Locale.ROOT)
+                ?: AttendanceExplanationContract.DEFAULT_SLOT_POLICY_PROFILE_ID
+            val evalProfileCode = dayEvalObj.optNullableString("policy_profile_code_used")
+                ?: AttendanceExplanationContract.DEFAULT_SLOT_POLICY_PROFILE_CODE
+            val evalProfileName = dayEvalObj.optNullableString("policy_profile_name_used")
+                ?: AttendanceExplanationContract.DEFAULT_SLOT_POLICY_PROFILE_NAME
+            val evalIsDefault = if (dayEvalObj.has("policy_is_default_used") && !dayEvalObj.isNull("policy_is_default_used")) {
+                dayEvalObj.optBoolean("policy_is_default_used", true)
+            } else {
+                evalProfileCode.equals(AttendanceExplanationContract.DEFAULT_SLOT_POLICY_PROFILE_CODE, ignoreCase = true)
+            }
 
             return AttendanceMyExplanationsOverviewProjection(
                 viewer = AttendanceExplanationViewerProjection(
@@ -835,8 +924,12 @@ class AttendanceExplanationService(
                 selectedDate = selectedDate,
                 dayEvaluation = AttendanceExplanationDayEvaluationProjection(
                     businessDate = dayEvalObj.optString("business_date", selectedDate).trim(),
-                    policyVersionUsed = dayEvalObj.optInt("policy_version_used", 1),
-                    slots = slots
+                    policyVersionUsed = dayEvalObj.optInt("policy_version_used", 1).coerceAtLeast(1),
+                    slots = slots,
+                    policyProfileIdUsed = evalProfileId,
+                    policyProfileCodeUsed = evalProfileCode,
+                    policyProfileNameUsed = evalProfileName,
+                    policyIsDefaultUsed = evalIsDefault
                 ),
                 pagination = AttendanceExplanationPaginationProjection(
                     limit = paginationObj.optInt("limit", AttendanceExplanationContract.DEFAULT_PAGE_LIMIT),
