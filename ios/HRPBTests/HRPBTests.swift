@@ -231,9 +231,27 @@ final class HRPBTests: XCTestCase {
         XCTAssertFalse(legacyDraft.isOverdue)
         XCTAssertTrue(WorkReportsContract.isActionableObligation(legacyDraft))
 
-        // 5. Verify ViewModel partitioning between `actionableObligations` and `historyObligations`
+        // 5. CANCELLED obligation (from a revoked assignment) with `is_overdue = false` and `NOT_STARTED`
+        //    MUST NOT appear in `actionableObligations` or `historyObligations` and MUST NOT be editable
+        let cancelledNotStarted = WorkReportsAndReportingService.parseObligationItem([
+            "obligation_id": 105,
+            "template_name": "Báo cáo công việc hằng ngày",
+            "period_type": "DAILY",
+            "period_key": "2026-11-05",
+            "due_at": "2026-11-05T10:00:00Z",
+            "obligation_status": "CANCELLED",
+            "submission_state": "NOT_STARTED",
+            "is_overdue": false
+        ])
+        XCTAssertEqual(cancelledNotStarted.obligationStatus, "CANCELLED")
+        XCTAssertFalse(WorkReportsContract.isActionableObligation(cancelledNotStarted))
+        XCTAssertFalse(WorkReportsContract.isHistoryObligation(cancelledNotStarted))
+        XCTAssertFalse(WorkReportsContract.isEditableObligation(cancelledNotStarted))
+        XCTAssertNotNil(BackendHttpClient.codeMessagesVi["WORK_REPORT_ACCESS_DENIED"])
+
+        // 6. Verify ViewModel partitioning between `actionableObligations` and `historyObligations`
         let vm = MiniBiViewModel()
-        vm.workReportObligations = [overdueNotStarted, overdueDraft, rejectedPastDue, legacyDraft]
+        vm.workReportObligations = [overdueNotStarted, overdueDraft, rejectedPastDue, legacyDraft, cancelledNotStarted]
         XCTAssertEqual(vm.actionableObligations.map(\.id), [103, 104])
         XCTAssertEqual(vm.historyObligations.map(\.id), [101, 102])
     }

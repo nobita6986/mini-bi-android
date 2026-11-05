@@ -4,6 +4,10 @@ import Foundation
 // Mirrors Android's `data/WorkReportsAndReportingService.kt` 100%
 
 public enum WorkReportsContract {
+    public static let obligationStatusActive = "ACTIVE"
+    public static let obligationStatusCancelled = "CANCELLED"
+    public static let obligationStatusExempted = "EXEMPTED"
+
     public static let stateNotStarted = "NOT_STARTED"
     public static let stateDraft = "DRAFT"
     public static let stateSubmitted = "SUBMITTED"
@@ -16,6 +20,7 @@ public enum WorkReportsContract {
     public static let codeDeadlinePassed = "WORK_REPORT_DEADLINE_PASSED"
     public static let codeVersionConflict = "WORK_REPORT_VERSION_CONFLICT"
     public static let deadlinePassedMessageVi = "Đã quá hạn nộp báo cáo."
+    public static let obligationInactiveMessageVi = "Kỳ báo cáo này thuộc đợt giao đã thu hồi hoặc được miễn nộp."
 
     public static func submissionStateDisplayLabel(_ state: String) -> String {
         switch state.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() {
@@ -35,7 +40,14 @@ public enum WorkReportsContract {
     }
 
     public static func obligationBadgeDisplayLabel(_ obligation: WorkReportObligationItem) -> String {
+        let normalizedStatus = obligation.obligationStatus.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
         let normalizedState = obligation.submissionState.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        if normalizedStatus == obligationStatusCancelled && normalizedState == stateNotStarted {
+            return "Đã hủy đợt giao"
+        }
+        if normalizedStatus == obligationStatusExempted && normalizedState == stateNotStarted {
+            return "Được miễn nộp"
+        }
         if obligation.isOverdue {
             switch normalizedState {
             case stateNotStarted:
@@ -54,18 +66,30 @@ public enum WorkReportsContract {
         return normalized == stateNotStarted || normalized == stateDraft || normalized == stateRejected
     }
 
-    /// Relies strictly on server `isOverdue` and `submissionState`.
+    /// Relies strictly on server `obligationStatus == "ACTIVE"`, `isOverdue`, and `submissionState`.
     /// Never locks `REJECTED` locally based on device clock vs `dueAt`.
     public static func isActionableObligation(_ obligation: WorkReportObligationItem) -> Bool {
-        !obligation.isOverdue && isActionableState(obligation.submissionState)
+        let normalizedStatus = obligation.obligationStatus.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        return normalizedStatus == obligationStatusActive
+            && !obligation.isOverdue
+            && isActionableState(obligation.submissionState)
     }
 
+    /// Mirrors Android `WorkReportsAndReportingService.isHistoryObligation`:
+    /// Excludes `CANCELLED` obligations that were never started (`NOT_STARTED`) so revoked assignments do not clutter History.
     public static func isHistoryObligation(_ obligation: WorkReportObligationItem) -> Bool {
-        !isActionableObligation(obligation)
+        if isActionableObligation(obligation) {
+            return false
+        }
+        let normalizedStatus = obligation.obligationStatus.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        let normalizedState = obligation.submissionState.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        return obligation.isOverdue
+            || normalizedState != stateNotStarted
+            || normalizedStatus == obligationStatusExempted
     }
 
     public static func isEditableObligation(_ obligation: WorkReportObligationItem) -> Bool {
-        !obligation.isOverdue && isActionableState(obligation.submissionState)
+        isActionableObligation(obligation)
     }
 
     public static func periodTypeDisplayLabel(_ periodType: String) -> String {
@@ -1777,6 +1801,12 @@ public final class WorkReportsAndReportingService {
             .ifEmpty(fallback?.periodKey ?? "")
         let dueAt = obObj.optNullableString("due_at", "deadline_at")
             ?? fallback?.dueAt
+        let obligationStatus = (
+            obObj.optNullableString("obligation_status")
+            ?? dataRoot.optNullableString("obligation_status")
+            ?? fallback?.obligationStatus
+            ?? WorkReportsContract.obligationStatusActive
+        ).trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
         let submissionState = (
             submissionObj?.optNullableString("state", "submission_state", "status")
             ?? obObj.optNullableString("submission_state", "state", "status")
@@ -1881,6 +1911,7 @@ public final class WorkReportsAndReportingService {
             periodType: periodType,
             periodKey: periodKey,
             dueAt: dueAt,
+            obligationStatus: obligationStatus.isEmpty ? WorkReportsContract.obligationStatusActive : obligationStatus,
             submissionState: submissionState,
             isOverdue: isOverdue,
             version: max(1, version),
