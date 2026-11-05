@@ -18,13 +18,13 @@ on:
   workflow_dispatch:
     inputs:
       version_tag:
-        description: "Tag phiên bản phát hành (ví dụ: V1.0.5.04112026)"
+        description: "Tag phiên bản phát hành (ví dụ: V1.0.6.06112026)"
         required: false
-        default: "V1.0.5.04112026"
+        default: "V1.0.6.06112026"
       build_number:
         description: "Số thứ tự build tăng dần cho TestFlight (CURRENT_PROJECT_VERSION)"
         required: false
-        default: "98"
+        default: "105"
       scheme:
         description: "Scheme cần đóng gói IPA (HRP-BI)"
         required: false
@@ -177,7 +177,7 @@ jobs:
             RAW_TAG="${GITHUB_REF#refs/tags/}"
           else
             TODAY=$(TZ=Asia/Ho_Chi_Minh date +"%d%m%Y")
-            RAW_TAG="V1.0.5.${TODAY}"
+            RAW_TAG="V1.0.6.${TODAY}"
           fi
 
           FULL_VER="${RAW_TAG#V}"
