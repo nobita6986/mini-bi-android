@@ -4314,6 +4314,10 @@ class WorkerUiAuthorizationRobolectricTest {
                           "selected_date": "2026-11-03",
                           "day_evaluation": {
                             "business_date": "2026-11-03",
+                            "policy_profile_id_used": "77777777-3333-4444-8555-666666666666",
+                            "policy_profile_code_used": "CA_3_MOC_VP",
+                            "policy_profile_name_used": "Bảng công 3 mốc Khối Văn phòng",
+                            "policy_is_default_used": false,
                             "policy_version_used": 2,
                             "slots": [
                               {
@@ -4430,9 +4434,13 @@ class WorkerUiAuthorizationRobolectricTest {
         assertTrue(explanationBounds.left < leaveReqBounds.left)
         composeTestRule.onNodeWithTag("attendance_tab_explanation_approval").assertDoesNotExist()
 
-        // 2. Open "Giải trình chấm công" tab, verify dynamic 3-slot configuration and submit explanation for SLOT_3
+        // 2. Open "Giải trình chấm công" tab, verify assigned attendance policy profile card, dynamic 3-slot configuration and submit explanation for SLOT_3
         composeTestRule.onNodeWithTag("attendance_tab_explanation").performClick()
         composeTestRule.waitForIdle()
+
+        composeTestRule.onNodeWithTag("explanation_policy_profile_summary_card").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Bảng chấm công áp dụng: Bảng công 3 mốc Khối Văn phòng").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Nhóm cấu hình riêng").assertIsDisplayed()
 
         val slotHeaderTitleBounds = composeTestRule.onNodeWithText("Các mốc chấm công ngày 2026-11-03")
             .assertIsDisplayed()

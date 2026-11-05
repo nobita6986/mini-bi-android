@@ -2456,6 +2456,39 @@ public struct AttendanceScreen: View {
                     }
 
                     if let currentOverview = overview {
+                        let dayEval = currentOverview.dayEvaluation
+                        let profileModeBadge = dayEval.policyIsDefaultUsed
+                            ? "Mặc định công ty"
+                            : "Nhóm cấu hình riêng"
+
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack(alignment: .center, spacing: 8) {
+                                Text("Bảng chấm công áp dụng: \(dayEval.resolvedProfileDisplayName())")
+                                    .font(.caption.weight(.bold))
+                                    .foregroundColor(theme.primary)
+                                Spacer()
+                                Text(profileModeBadge)
+                                    .font(.caption2.weight(.semibold))
+                                    .lineLimit(1)
+                                    .fixedSize(horizontal: true, vertical: false)
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 2)
+                                    .background(theme.primary.opacity(0.12))
+                                    .foregroundColor(theme.primary)
+                                    .cornerRadius(6)
+                            }
+                            Text("Mã cấu hình: \(dayEval.policyProfileCodeUsed) • Phiên bản v\(dayEval.policyVersionUsed) • \(dayEval.slots.count) mốc/ngày")
+                                .font(.caption)
+                                .foregroundColor(SemanticColors.textSecondary)
+                            Text("Khung giờ chuẩn: \(dayEval.resolvedSlotScheduleSummary())")
+                                .font(.caption2)
+                                .foregroundColor(SemanticColors.textSecondary)
+                        }
+                        .padding(10)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(theme.primaryLight.opacity(0.65))
+                        .cornerRadius(10)
+
                         let routing = currentOverview.routing
                         let approverName = routing.primaryApprover?.resolvedDisplayName() ?? "Hàng đợi Admin / BGĐ"
                         let routeLabel = LeaveContract.leaveRouteKindLabel(
@@ -2510,7 +2543,7 @@ public struct AttendanceScreen: View {
                         Text("Các mốc chấm công ngày \(dayEval.businessDate)")
                             .font(.subheadline.weight(.bold))
                             .foregroundColor(SemanticColors.textPrimary)
-                        Text("\(dayEval.slots.count) mốc • Chính sách v\(dayEval.policyVersionUsed)")
+                        Text(dayEval.resolvedProfileBadgeLabel())
                             .font(.caption2.weight(.bold))
                             .lineLimit(1)
                             .fixedSize(horizontal: true, vertical: false)
@@ -2694,7 +2727,7 @@ public struct AttendanceScreen: View {
                     .cornerRadius(8)
             }
 
-            Text("Trạng thái mốc gốc: \(AttendanceExplanationContract.originalSlotStatusLabel(item.originalSlotStatus))")
+            Text("Bảng chấm công: \(item.resolvedProfileVersionLabel()) • Trạng thái mốc gốc: \(AttendanceExplanationContract.originalSlotStatusLabel(item.originalSlotStatus))")
                 .font(.caption2)
                 .foregroundColor(SemanticColors.textSecondary)
 
@@ -2941,7 +2974,7 @@ public struct AttendanceScreen: View {
                                     .font(.caption.weight(.semibold))
                                     .foregroundColor(SemanticColors.textPrimary)
 
-                                Text("Trạng thái gốc: \(AttendanceExplanationContract.originalSlotStatusLabel(item.originalSlotStatus))")
+                                Text("Bảng chấm công: \(item.resolvedProfileVersionLabel()) • Trạng thái gốc: \(AttendanceExplanationContract.originalSlotStatusLabel(item.originalSlotStatus))")
                                     .font(.caption2.weight(.semibold))
                                     .foregroundColor(explanationSlotStatusTextColor(item.originalSlotStatus))
 
@@ -3141,6 +3174,11 @@ public struct AttendanceScreen: View {
                         Text("Ngày nghiệp vụ: \(targetDate)")
                             .font(.caption.weight(.semibold))
                             .foregroundColor(SemanticColors.textPrimary)
+                        if let dayEval = viewModel.myExplanationsOverview?.dayEvaluation {
+                            Text("Bảng chấm công: \(dayEval.resolvedProfileVersionLabel())")
+                                .font(.caption)
+                                .foregroundColor(SemanticColors.textSecondary)
+                        }
                         Text("Mốc: \(slot.slotLabel) (\(slot.slotCode) • \(AttendanceExplanationContract.sessionLabel(slot.sessionCode)))")
                             .font(.caption)
                             .foregroundColor(SemanticColors.textPrimary)
@@ -3265,7 +3303,7 @@ public struct AttendanceScreen: View {
         return NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
-                    Text("Nhân sự: \(targetItem.requester.resolvedDisplayName()) • Ngày \(targetItem.businessDate) • \(targetItem.slotLabel) (v\(targetItem.rowVersion))")
+                    Text("Nhân sự: \(targetItem.requester.resolvedDisplayName()) • Ngày \(targetItem.businessDate) • \(targetItem.slotLabel) (\(targetItem.resolvedProfileVersionLabel()) • v\(targetItem.rowVersion))")
                         .font(.caption.weight(.semibold))
                         .foregroundColor(SemanticColors.textSecondary)
 

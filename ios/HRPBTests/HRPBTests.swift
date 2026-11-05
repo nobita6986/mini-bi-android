@@ -1548,6 +1548,10 @@ final class HRPBTests: XCTestCase {
             "selected_date": "2026-11-03",
             "day_evaluation": [
                 "business_date": "2026-11-03",
+                "policy_profile_id_used": "77777777-3333-4444-8555-666666666666",
+                "policy_profile_code_used": "KHOI_TD_MB",
+                "policy_profile_name_used": "Khối Tuyển dụng Miền Bắc",
+                "policy_is_default_used": false,
                 "policy_version_used": 3,
                 "slots": sixSlotsJson
             ],
@@ -1568,7 +1572,12 @@ final class HRPBTests: XCTestCase {
             return
         }
         XCTAssertEqual(overview.dayEvaluation.slots.count, 6)
+        XCTAssertEqual(overview.dayEvaluation.policyProfileIdUsed, "77777777-3333-4444-8555-666666666666")
+        XCTAssertEqual(overview.dayEvaluation.policyProfileCodeUsed, "KHOI_TD_MB")
+        XCTAssertEqual(overview.dayEvaluation.policyProfileNameUsed, "Khối Tuyển dụng Miền Bắc")
+        XCTAssertFalse(overview.dayEvaluation.policyIsDefaultUsed)
         XCTAssertEqual(overview.dayEvaluation.policyVersionUsed, 3)
+        XCTAssertEqual(overview.dayEvaluation.resolvedProfileBadgeLabel(), "Khung giờ: Khối Tuyển dụng Miền Bắc v3 (6 mốc)")
         XCTAssertEqual(overview.routing.primaryApprover?.resolvedDisplayName(), "Trưởng nhóm Tuyển dụng")
         XCTAssertTrue(overview.dayEvaluation.slots[1].eligibleForExplanation)
         XCTAssertFalse(overview.dayEvaluation.slots[0].eligibleForExplanation)

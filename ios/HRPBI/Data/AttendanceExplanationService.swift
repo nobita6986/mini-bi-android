@@ -233,17 +233,54 @@ public struct AttendanceExplanationDaySlotEvaluationProjection: Identifiable, Eq
 
 public struct AttendanceExplanationDayEvaluationProjection: Equatable, Sendable {
     public let businessDate: String
+    public let policyProfileIdUsed: String
+    public let policyProfileCodeUsed: String
+    public let policyProfileNameUsed: String
+    public let policyIsDefaultUsed: Bool
     public let policyVersionUsed: Int
     public let slots: [AttendanceExplanationDaySlotEvaluationProjection]
 
     public init(
         businessDate: String,
+        policyProfileIdUsed: String = AttendanceExplanationContract.defaultSlotPolicyProfileId,
+        policyProfileCodeUsed: String = AttendanceExplanationContract.defaultSlotPolicyProfileCode,
+        policyProfileNameUsed: String = AttendanceExplanationContract.defaultSlotPolicyProfileName,
+        policyIsDefaultUsed: Bool = true,
         policyVersionUsed: Int = 1,
         slots: [AttendanceExplanationDaySlotEvaluationProjection] = []
     ) {
         self.businessDate = businessDate
+        self.policyProfileIdUsed = policyProfileIdUsed
+        self.policyProfileCodeUsed = policyProfileCodeUsed
+        self.policyProfileNameUsed = policyProfileNameUsed
+        self.policyIsDefaultUsed = policyIsDefaultUsed
         self.policyVersionUsed = policyVersionUsed
         self.slots = slots
+    }
+
+    public func resolvedProfileDisplayName() -> String {
+        let name = policyProfileNameUsed.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !name.isEmpty { return name }
+        let code = policyProfileCodeUsed.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !code.isEmpty { return code }
+        return AttendanceExplanationContract.defaultSlotPolicyProfileName
+    }
+
+    public func resolvedProfileVersionLabel() -> String {
+        "\(resolvedProfileDisplayName()) (v\(policyVersionUsed))"
+    }
+
+    public func resolvedProfileBadgeLabel() -> String {
+        "Khung giờ: \(resolvedProfileDisplayName()) v\(policyVersionUsed) (\(slots.count) mốc)"
+    }
+
+    public func resolvedSlotScheduleSummary() -> String {
+        if slots.isEmpty { return "Chưa có mốc cấu hình" }
+        return slots.map { slot in
+            let label = slot.slotLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+            let displayLabel = label.isEmpty ? slot.slotCode : label
+            return "\(displayLabel): \(slot.targetTime)"
+        }.joined(separator: " • ")
     }
 }
 
@@ -308,12 +345,18 @@ public struct AttendanceExplanationItemProjection: Identifiable, Equatable, Send
     public let requester: AttendanceExplanationAccountSummaryProjection
     public let businessDate: String
     public let slotCode: String
+    public let slotIndex: Int
     public let slotLabel: String
     public let sessionCode: String
     public let targetTime: String
     public let graceBeforeMinutes: Int
     public let graceAfterMinutes: Int
+    public let policyProfileIdUsed: String
+    public let policyProfileCodeUsed: String
+    public let policyProfileNameUsed: String
+    public let policyVersionUsed: Int
     public let originalSlotStatus: String
+    public let effectiveSlotStatus: String
     public let status: String
     public let reason: String
     public let routeKind: String
@@ -338,12 +381,18 @@ public struct AttendanceExplanationItemProjection: Identifiable, Equatable, Send
         requester: AttendanceExplanationAccountSummaryProjection,
         businessDate: String,
         slotCode: String,
+        slotIndex: Int = 1,
         slotLabel: String = "",
         sessionCode: String = "AM",
         targetTime: String = "00:00",
         graceBeforeMinutes: Int = 15,
         graceAfterMinutes: Int = 15,
+        policyProfileIdUsed: String = AttendanceExplanationContract.defaultSlotPolicyProfileId,
+        policyProfileCodeUsed: String = AttendanceExplanationContract.defaultSlotPolicyProfileCode,
+        policyProfileNameUsed: String = AttendanceExplanationContract.defaultSlotPolicyProfileName,
+        policyVersionUsed: Int = 1,
         originalSlotStatus: String = "MISSING",
+        effectiveSlotStatus: String = "",
         status: String = "PENDING",
         reason: String = "",
         routeKind: String = "TEAM_LEADER",
@@ -367,12 +416,18 @@ public struct AttendanceExplanationItemProjection: Identifiable, Equatable, Send
         self.requester = requester
         self.businessDate = businessDate
         self.slotCode = slotCode
+        self.slotIndex = slotIndex
         self.slotLabel = slotLabel
         self.sessionCode = sessionCode
         self.targetTime = targetTime
         self.graceBeforeMinutes = graceBeforeMinutes
         self.graceAfterMinutes = graceAfterMinutes
+        self.policyProfileIdUsed = policyProfileIdUsed
+        self.policyProfileCodeUsed = policyProfileCodeUsed
+        self.policyProfileNameUsed = policyProfileNameUsed
+        self.policyVersionUsed = policyVersionUsed
         self.originalSlotStatus = originalSlotStatus
+        self.effectiveSlotStatus = effectiveSlotStatus
         self.status = status
         self.reason = reason
         self.routeKind = routeKind
@@ -390,6 +445,18 @@ public struct AttendanceExplanationItemProjection: Identifiable, Equatable, Send
         self.canDecide = canDecide
         self.actualCheckins = actualCheckins
         self.events = events
+    }
+
+    public func resolvedProfileDisplayName() -> String {
+        let name = policyProfileNameUsed.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !name.isEmpty { return name }
+        let code = policyProfileCodeUsed.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !code.isEmpty { return code }
+        return AttendanceExplanationContract.defaultSlotPolicyProfileName
+    }
+
+    public func resolvedProfileVersionLabel() -> String {
+        "\(resolvedProfileDisplayName()) (v\(policyVersionUsed))"
     }
 }
 
@@ -509,6 +576,10 @@ public enum AttendanceExplanationContract {
     public static let reasonMaxLength = 500
     public static let decisionNoteMaxLength = 500
     public static let defaultPageLimit = 50
+
+    public static let defaultSlotPolicyProfileId = "00000000-0000-4000-8000-000000000001"
+    public static let defaultSlotPolicyProfileCode = "DEFAULT"
+    public static let defaultSlotPolicyProfileName = "Mặc định"
 
     public static let approvalStatusFilters: [String] = ["PENDING", "APPROVED", "REJECTED", "ALL"]
     public static let decisionActions: Set<String> = ["APPROVE", "REJECT"]
@@ -704,9 +775,9 @@ public enum AttendanceExplanationContract {
             return "Ngoài khung giờ"
         case "ON_TIME":
             return "Đúng giờ"
-        case "LEAVE_EXEMPT":
+        case "LEAVE_COVERED", "LEAVE_EXEMPT":
             return "Miễn chấm (nghỉ được duyệt)"
-        case "NOT_APPLICABLE":
+        case "UPCOMING", "NOT_APPLICABLE":
             return "Chưa đến mốc / Không áp dụng"
         default:
             return originalSlotStatus
@@ -721,9 +792,9 @@ public enum AttendanceExplanationContract {
             return "Ngoài khung giờ"
         case "MISSING":
             return "Thiếu chấm công"
-        case "LEAVE_EXEMPT":
+        case "LEAVE_COVERED", "LEAVE_EXEMPT":
             return "Miễn chấm (nghỉ được duyệt)"
-        case "NOT_APPLICABLE":
+        case "UPCOMING", "NOT_APPLICABLE":
             return "Chưa đến mốc"
         case "EXPLAINED_PENDING":
             return "Đang chờ duyệt giải trình"
@@ -748,13 +819,16 @@ public enum AttendanceExplanationContract {
     }
 
     public static func formatDeviationBadge(_ checkin: AttendanceSlotCheckinItemProjection) -> String? {
+        let minutes = checkin.overGraceMinutes > 0
+            ? checkin.overGraceMinutes
+            : abs(checkin.deltaMinutes ?? 0)
         switch checkin.deviationStatus.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() {
         case "ON_TIME":
             return "Đúng giờ"
         case "EARLY":
-            return "Sớm \(checkin.overGraceMinutes)p"
+            return "Sớm \(minutes)p"
         case "LATE":
-            return "Muộn \(checkin.overGraceMinutes)p"
+            return "Muộn \(minutes)p"
         default:
             return nil
         }
@@ -881,14 +955,17 @@ public enum AttendanceExplanationContract {
     }
 
     public static func parseAuditEvent(_ obj: [String: Any]) -> AttendanceExplanationAuditEventProjection {
-        AttendanceExplanationAuditEventProjection(
-            eventId: obj.optString("event_id"),
-            eventType: obj.optString("event_type"),
-            actorAppUserId: obj.optNullableString("actor_app_user_id"),
-            actorDisplayName: obj.optNullableString("actor_display_name"),
+        let actorObj = obj["actor"] as? [String: Any]
+        return AttendanceExplanationAuditEventProjection(
+            eventId: obj.optString("event_id", defaultValue: obj.optString("audit_event_id")),
+            eventType: obj.optString("event_type", defaultValue: obj.optString("action")),
+            actorAppUserId: obj.optNullableString("actor_app_user_id") ?? actorObj?.optNullableString("app_user_id"),
+            actorDisplayName: obj.optNullableString("actor_display_name")
+                ?? actorObj?.optNullableString("display_name")
+                ?? actorObj?.optNullableString("login_id"),
             actorRoleContext: obj.optString("actor_role_context"),
-            fromStatus: obj.optNullableString("from_status"),
-            toStatus: obj.optString("to_status"),
+            fromStatus: obj.optNullableString("from_status") ?? obj.optNullableString("before_status"),
+            toStatus: obj.optString("to_status", defaultValue: obj.optString("after_status")),
             note: obj.optString("note"),
             createdAt: obj.optString("created_at"),
             createdAtLocal: obj.optString("created_at_local")
@@ -897,24 +974,53 @@ public enum AttendanceExplanationContract {
 
     public static func parseExplanationItem(_ obj: [String: Any]) -> AttendanceExplanationItemProjection {
         let requesterObj = (obj["requester"] as? [String: Any]) ?? [:]
-        let routedApproverObj = obj["routed_approver"] as? [String: Any]
+        let routedApproverObj = (obj["routed_approver"] as? [String: Any])
+            ?? (obj["primary_approver"] as? [String: Any])
         let routedTeamObj = (obj["routed_team"] as? [String: Any]) ?? [:]
         let decidedByObj = obj["decided_by"] as? [String: Any]
-        let events = obj.optObjectArray("events").map { parseAuditEvent($0) }
-        let actualCheckins = obj.optObjectArray("actual_checkins").map { parseSlotCheckin($0) }
+        let rawEvents = obj.optObjectArray("events")
+        let eventsSource = rawEvents.isEmpty ? obj.optObjectArray("audit_events") : rawEvents
+        let events = eventsSource.map { parseAuditEvent($0) }
+        let rawCheckins = obj.optObjectArray("actual_checkins")
+        let checkinsSource = rawCheckins.isEmpty ? obj.optObjectArray("related_checkins") : rawCheckins
+        let actualCheckins = checkinsSource.map { parseSlotCheckin($0) }
         let slotCode = obj.optString("slot_code")
+        let parsedSlotIndex: Int = {
+            if let suffix = Int(slotCode.replacingOccurrences(of: "SLOT_", with: "", options: .caseInsensitive)) {
+                return suffix
+            }
+            return 1
+        }()
+        let slotIndex = max(1, obj.optInt("slot_index", defaultValue: parsedSlotIndex))
+        let profileCode = obj.optString(
+            "policy_profile_code_used",
+            defaultValue: defaultSlotPolicyProfileCode
+        ).uppercased()
+        let profileName = obj.optString(
+            "policy_profile_name_used",
+            defaultValue: profileCode == defaultSlotPolicyProfileCode ? defaultSlotPolicyProfileName : profileCode
+        )
         return AttendanceExplanationItemProjection(
             explanationId: obj.optString("explanation_id"),
             appUserId: obj.optString("app_user_id", defaultValue: requesterObj.optString("app_user_id")),
             requester: parseAccountSummary(requesterObj),
             businessDate: obj.optString("business_date"),
             slotCode: slotCode,
+            slotIndex: slotIndex,
             slotLabel: obj.optString("slot_label", defaultValue: slotCode),
             sessionCode: obj.optString("session_code", defaultValue: "AM"),
             targetTime: obj.optString("target_time", defaultValue: "00:00"),
             graceBeforeMinutes: obj.optInt("grace_before_minutes", defaultValue: 15),
             graceAfterMinutes: obj.optInt("grace_after_minutes", defaultValue: 15),
+            policyProfileIdUsed: obj.optString(
+                "policy_profile_id_used",
+                defaultValue: defaultSlotPolicyProfileId
+            ),
+            policyProfileCodeUsed: profileCode,
+            policyProfileNameUsed: profileName,
+            policyVersionUsed: max(1, obj.optInt("policy_version_used", defaultValue: 1)),
             originalSlotStatus: obj.optString("original_slot_status", defaultValue: "MISSING"),
+            effectiveSlotStatus: obj.optString("effective_slot_status"),
             status: obj.optString("status", defaultValue: "PENDING"),
             reason: obj.optString("reason"),
             routeKind: obj.optString("route_kind", defaultValue: "TEAM_LEADER"),
@@ -960,6 +1066,25 @@ public enum AttendanceExplanationContract {
         let todayLocal = dataObj.optString("today_local", defaultValue: todayVietnamIsoDate())
         let selectedDate = dataObj.optString("selected_date", defaultValue: todayLocal)
 
+        let evalProfileId = dayEvalObj.optString(
+            "policy_profile_id_used",
+            defaultValue: defaultSlotPolicyProfileId
+        )
+        let evalProfileCode = dayEvalObj.optString(
+            "policy_profile_code_used",
+            defaultValue: defaultSlotPolicyProfileCode
+        ).uppercased()
+        let evalProfileName = dayEvalObj.optString(
+            "policy_profile_name_used",
+            defaultValue: evalProfileCode == defaultSlotPolicyProfileCode ? defaultSlotPolicyProfileName : evalProfileCode
+        )
+        let evalIsDefault: Bool = {
+            if dayEvalObj["policy_is_default_used"] != nil && !(dayEvalObj["policy_is_default_used"] is NSNull) {
+                return dayEvalObj.optBool("policy_is_default_used", defaultValue: true)
+            }
+            return evalProfileCode == defaultSlotPolicyProfileCode || evalProfileId == defaultSlotPolicyProfileId
+        }()
+
         let overview = AttendanceMyExplanationsOverviewProjection(
             viewer: AttendanceExplanationViewerProjection(
                 appUserId: viewerObj.optString("app_user_id"),
@@ -983,7 +1108,11 @@ public enum AttendanceExplanationContract {
             selectedDate: selectedDate,
             dayEvaluation: AttendanceExplanationDayEvaluationProjection(
                 businessDate: dayEvalObj.optString("business_date", defaultValue: selectedDate),
-                policyVersionUsed: dayEvalObj.optInt("policy_version_used", defaultValue: 1),
+                policyProfileIdUsed: evalProfileId,
+                policyProfileCodeUsed: evalProfileCode,
+                policyProfileNameUsed: evalProfileName,
+                policyIsDefaultUsed: evalIsDefault,
+                policyVersionUsed: max(1, dayEvalObj.optInt("policy_version_used", defaultValue: 1)),
                 slots: slots
             ),
             pagination: AttendanceExplanationPaginationProjection(
