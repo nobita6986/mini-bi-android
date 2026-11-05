@@ -1883,6 +1883,7 @@ public struct WorkReportObligationItem: Identifiable, Equatable, Sendable {
     public var periodType: String
     public var periodKey: String
     public var dueAt: String?
+    public var obligationStatus: String
     public var submissionState: String
     public var isOverdue: Bool
     public var version: Int
@@ -1905,6 +1906,7 @@ public struct WorkReportObligationItem: Identifiable, Equatable, Sendable {
         periodType: String = "WEEKLY",
         periodKey: String = "",
         dueAt: String? = nil,
+        obligationStatus: String = "ACTIVE",
         submissionState: String = "NOT_STARTED",
         isOverdue: Bool = false,
         version: Int = 1,
@@ -1926,6 +1928,7 @@ public struct WorkReportObligationItem: Identifiable, Equatable, Sendable {
         self.periodType = periodType
         self.periodKey = periodKey
         self.dueAt = dueAt
+        self.obligationStatus = obligationStatus
         self.submissionState = submissionState
         self.isOverdue = isOverdue
         self.version = version

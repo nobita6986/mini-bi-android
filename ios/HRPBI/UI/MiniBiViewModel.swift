@@ -3131,7 +3131,8 @@ public final class MiniBiViewModel: ObservableObject {
     public func saveWorkReportDraft() async {
         guard let editor = selectedObligationEditor else { return }
         guard WorkReportsContract.isEditableObligation(editor) else {
-            showBanner(WorkReportsContract.deadlinePassedMessageVi, isError: true)
+            let isInactive = editor.obligationStatus.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() != WorkReportsContract.obligationStatusActive
+            showBanner(isInactive ? WorkReportsContract.obligationInactiveMessageVi : WorkReportsContract.deadlinePassedMessageVi, isError: true)
             return
         }
 
@@ -3151,7 +3152,8 @@ public final class MiniBiViewModel: ObservableObject {
     public func submitWorkReportFinal() async {
         guard let editor = selectedObligationEditor else { return }
         guard WorkReportsContract.isEditableObligation(editor) else {
-            showBanner(WorkReportsContract.deadlinePassedMessageVi, isError: true)
+            let isInactive = editor.obligationStatus.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() != WorkReportsContract.obligationStatusActive
+            showBanner(isInactive ? WorkReportsContract.obligationInactiveMessageVi : WorkReportsContract.deadlinePassedMessageVi, isError: true)
             return
         }
 
@@ -3238,6 +3240,15 @@ public final class MiniBiViewModel: ObservableObject {
                     }) {
                         workReportObligations[idx] = refreshed
                     }
+                }
+            } else if httpStatus == 403 {
+                showBanner(message, isError: true)
+                await loadWorkReportObligations()
+                if let refreshed = workReportObligations.first(where: {
+                    (!currentEditor.obligationIdUuid.isEmpty && $0.obligationIdUuid == currentEditor.obligationIdUuid)
+                    || ($0.id != 0 && $0.id == currentEditor.id)
+                }) {
+                    selectedObligationEditor = refreshed
                 }
             } else {
                 showBanner(message, isError: true)

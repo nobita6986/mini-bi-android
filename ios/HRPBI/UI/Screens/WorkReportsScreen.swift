@@ -414,6 +414,18 @@ public struct WorkReportEditorSheet: View {
                                     .stroke(SemanticColors.dangerBorder, lineWidth: 1)
                             )
                             .cornerRadius(8)
+                        } else if currentOb.obligationStatus.uppercased() != WorkReportsContract.obligationStatusActive {
+                            HStack(spacing: 8) {
+                                Image(systemName: "lock.fill")
+                                    .foregroundColor(SemanticColors.warningText)
+                                Text(WorkReportsContract.obligationInactiveMessageVi)
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundColor(SemanticColors.warningText)
+                            }
+                            .padding(10)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(SemanticColors.warningBg)
+                            .cornerRadius(8)
                         } else if isReadOnly {
                             HStack(spacing: 8) {
                                 Image(systemName: "eye.fill")
