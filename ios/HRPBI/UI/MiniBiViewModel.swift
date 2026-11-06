@@ -2218,6 +2218,12 @@ public final class MiniBiViewModel: ObservableObject {
 
     // MARK: - Attendance Actions
 
+    public var attendancePendingCount: Int {
+        attendanceOutboxItems.filter {
+            AttendanceContract.isRetryableStatus($0.status) || $0.status == AttendanceContract.statusUploading
+        }.count
+    }
+
     public func refreshAttendanceTimeEvaluation() {
         attendanceTimeEvaluation = timeAnchorManager.evaluateAnchor()
     }
