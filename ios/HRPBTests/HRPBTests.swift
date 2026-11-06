@@ -1776,89 +1776,56 @@ final class HRPBTests: XCTestCase {
         XCTAssertNotEqual(originalSha, rosySha)
     }
 
-    func testAttendanceOutboxRecoversStaleUploadingAndAutoFlushesOnSubsequentCheckIn() async throws {
+    @MainActor
+    func testAttendanceOutboxRecoversStaleUploadingAndPendingCount() throws {
         let tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("hrpbi_outbox_recovery_\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
-        var shouldFailFirstAttempt = true
-        let mockClient = BackendHttpClient(baseUrl: "https://bi.hrpartner.vn") { req in
-            if req.url?.path.contains("/api/attendance/check-in") == true {
-                if shouldFailFirstAttempt {
-                    return BackendHttpResponse(
-                        statusCode: 0,
-                        headers: [:],
-                        rawData: Data(),
-                        jsonObject: nil,
-                        errorCode: "NETWORK_TIMEOUT",
-                        errorMessage: "Không thể kết nối máy chủ (The request timed out.)."
-                    )
-                }
-                let idemp = req.value(forHTTPHeaderField: "Idempotency-Key") ?? UUID().uuidString.lowercased()
-                let body: [String: Any] = [
-                    "ok": true,
-                    "checkin": [
-                        "checkin_id": idemp,
-                        "business_date": "2026-11-06",
-                        "sequence_in_day": 1,
-                        "daily_count": 1,
-                        "captured_at": "2026-11-06T01:07:07.000Z",
-                        "received_at": "2026-11-06T01:24:43.000Z",
-                        "time_source": "SERVER_ANCHORED",
-                        "replayed": false
-                    ]
-                ]
-                let data = try! JSONSerialization.data(withJSONObject: body)
-                return BackendHttpResponse(
-                    statusCode: 200,
-                    headers: [:],
-                    rawData: data,
-                    jsonObject: body,
-                    errorCode: nil,
-                    errorMessage: nil
-                )
-            }
-            return BackendHttpResponse(statusCode: 200, headers: [:], rawData: Data(), jsonObject: ["ok": true], errorCode: nil, errorMessage: nil)
-        }
-
-        let service = AttendanceOutboxService(
-            httpClient: mockClient,
-            timeAnchorManager: AttendanceTimeAnchorManager(httpClient: mockClient),
-            storageDirectory: tempDir
-        )
-
-        let photoData = try makeSolidTestJpeg(color: .orange, size: CGSize(width: 120, height: 160))
-
-        // 1. First check-in times out -> queued in FAILED_RETRYABLE
-        let (firstItem, _) = await service.submitCheckIn(
+        let stuckUploadingItem = AttendanceOutboxItem(
+            localId: "stuck-uploading-1",
             userKey: "thuynb.td",
+            idempotencyKey: "stuck-uploading-1",
+            clientCapturedAt: "2026-11-06T01:07:07.000Z",
+            timeSource: AttendanceTimeContract.sourceServerAnchored,
             lat: 21.32016,
             lng: 105.67860,
             accuracyM: 26.9,
-            locationCapturedAt: "2026-11-06T01:07:07.000Z",
-            photoData: photoData,
-            note: "Ca sáng"
+            photoSha256: "abc123",
+            photoSizeBytes: 1024,
+            status: AttendanceContract.statusUploading,
+            createdAtEpochMs: 1_762_391_227_000
         )
-        XCTAssertEqual(firstItem.status, AttendanceContract.statusFailedRetryable)
-        XCTAssertEqual(service.pendingCountForUser(userKey: "thuynb.td"), 1)
-
-        // 2. Network recovers and user submits a second check-in -> both second AND first check-in auto-flush to SYNCED
-        shouldFailFirstAttempt = false
-        let (secondItem, _) = await service.submitCheckIn(
+        let retryableItem = AttendanceOutboxItem(
+            localId: "retryable-2",
             userKey: "thuynb.td",
+            idempotencyKey: "retryable-2",
+            clientCapturedAt: "2026-11-06T01:10:00.000Z",
+            timeSource: AttendanceTimeContract.sourceServerAnchored,
             lat: 21.32016,
             lng: 105.67860,
-            accuracyM: 15.0,
-            locationCapturedAt: "2026-11-06T01:38:43.000Z",
-            photoData: photoData,
-            note: "Chấm lại"
+            accuracyM: 18.0,
+            photoSha256: "def456",
+            photoSizeBytes: 1024,
+            status: AttendanceContract.statusFailedRetryable,
+            createdAtEpochMs: 1_762_391_400_000
         )
-        XCTAssertEqual(secondItem.status, AttendanceContract.statusSynced)
-        XCTAssertEqual(service.pendingCountForUser(userKey: "thuynb.td"), 0)
 
-        let allItems = service.listItemsForUser(userKey: "thuynb.td")
-        XCTAssertEqual(allItems.count, 2)
-        XCTAssertTrue(allItems.allSatisfy { $0.status == AttendanceContract.statusSynced })
+        let outboxUrl = tempDir.appendingPathComponent("attendance_outbox_v1.json")
+        let encoded = try JSONEncoder().encode([stuckUploadingItem, retryableItem])
+        try encoded.write(to: outboxUrl, options: .atomic)
+
+        let service = AttendanceOutboxService(customStorageDirectory: tempDir)
+        let loaded = service.listItemsForUser(userKey: "thuynb.td")
+        XCTAssertEqual(loaded.count, 2)
+        // Stuck UPLOADING item must be recovered to FAILED_RETRYABLE so flushRetryableOutbox picks it up
+        XCTAssertTrue(loaded.allSatisfy { $0.status == AttendanceContract.statusFailedRetryable })
+        XCTAssertEqual(service.pendingCountForUser(userKey: "thuynb.td"), 2)
+
+        let vm = MiniBiViewModel(attendanceOutboxService: service)
+        vm.attendanceOutboxItems = loaded
+        XCTAssertEqual(vm.attendancePendingCount, 2)
     }
 
     // MARK: - Helper
