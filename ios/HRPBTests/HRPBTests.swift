@@ -1733,6 +1733,49 @@ final class HRPBTests: XCTestCase {
         )
     }
 
+    func testAttendanceBeautyFilterPresetsAndPersistence() throws {
+        let suiteName = "com.aistudio.minibi.tests.beauty.\(UUID().uuidString)"
+        let customDefaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { customDefaults.removePersistentDomain(forName: suiteName) }
+
+        // Default preset when none saved is .natural ("Tự nhiên")
+        XCTAssertEqual(AttendanceBeautyFilter.loadSavedPreset(defaults: customDefaults), .natural)
+        XCTAssertEqual(AttendanceBeautyPreset.original.labelVi, "Gốc")
+        XCTAssertEqual(AttendanceBeautyPreset.natural.labelVi, "Tự nhiên")
+        XCTAssertEqual(AttendanceBeautyPreset.brightSmooth.labelVi, "Sáng mịn")
+        XCTAssertEqual(AttendanceBeautyPreset.rosy.labelVi, "Hồng hào")
+
+        AttendanceBeautyFilter.savePreset(.brightSmooth, defaults: customDefaults)
+        XCTAssertEqual(AttendanceBeautyFilter.loadSavedPreset(defaults: customDefaults), .brightSmooth)
+
+        let rawJpeg = try makeSolidTestJpeg(
+            color: UIColor(red: 0.72, green: 0.56, blue: 0.48, alpha: 1.0),
+            size: CGSize(width: 240, height: 320)
+        )
+
+        let originalOutput = AttendanceBeautyFilter.apply(to: rawJpeg, preset: .original, maxDimensionPx: 1600)
+        let naturalOutput = AttendanceBeautyFilter.apply(to: rawJpeg, preset: .natural, maxDimensionPx: 1600)
+        let brightSmoothOutput = AttendanceBeautyFilter.apply(to: rawJpeg, preset: .brightSmooth, maxDimensionPx: 1600)
+        let rosyOutput = AttendanceBeautyFilter.apply(to: rawJpeg, preset: .rosy, maxDimensionPx: 1600)
+
+        for output in [originalOutput, naturalOutput, brightSmoothOutput, rosyOutput] {
+            XCTAssertFalse(output.isEmpty)
+            let img = try XCTUnwrap(UIImage(data: output))
+            XCTAssertEqual(img.size.width, 240, accuracy: 1.0)
+            XCTAssertEqual(img.size.height, 320, accuracy: 1.0)
+        }
+
+        // Beautified presets should transform the mid-tone skin color compared to original
+        let originalSha = AttendanceContract.computeSha256Hex(originalOutput)
+        let naturalSha = AttendanceContract.computeSha256Hex(naturalOutput)
+        let brightSmoothSha = AttendanceContract.computeSha256Hex(brightSmoothOutput)
+        let rosySha = AttendanceContract.computeSha256Hex(rosyOutput)
+
+        XCTAssertNotEqual(originalSha, naturalSha)
+        XCTAssertNotEqual(originalSha, brightSmoothSha)
+        XCTAssertNotEqual(originalSha, rosySha)
+    }
+
     // MARK: - Helper
 
     private func makeSolidTestJpeg(color: UIColor, size: CGSize) throws -> Data {

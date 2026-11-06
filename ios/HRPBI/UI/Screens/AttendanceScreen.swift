@@ -90,7 +90,10 @@ public struct AttendanceScreen: View {
     @StateObject private var locationManager = AttendanceLocationManager()
     @Environment(\.scenePhase) private var scenePhase
 
+    @State private var rawCapturedPhotoData: Data?
     @State private var capturedPhotoData: Data?
+    @State private var selectedBeautyPreset: AttendanceBeautyPreset = AttendanceBeautyFilter.loadSavedPreset()
+    @State private var isShowingCapturedPhotoZoomSheet: Bool = false
     @State private var frozenCaptureTimestamp: CapturedAttendanceTimestamp?
     @State private var noteInput: String = ""
     @State private var isShowingCamera: Bool = false
@@ -202,8 +205,10 @@ public struct AttendanceScreen: View {
             }
         }
         .sheet(isPresented: $isShowingCamera) {
-            CameraPhotoCaptureSheet { data in
-                capturedPhotoData = data
+            CameraPhotoCaptureSheet(preferredCameraDevice: .front) { data in
+                let normalizedRaw = AttendanceContract.normalizeCameraJpeg(data, maxDimensionPx: 1600, compressionQuality: 0.90)
+                rawCapturedPhotoData = normalizedRaw
+                capturedPhotoData = AttendanceBeautyFilter.apply(to: normalizedRaw, preset: selectedBeautyPreset)
                 frozenCaptureTimestamp = viewModel.timeAnchorManager.resolveCaptureTime()
                 if !viewModel.timeAnchorManager.evaluateAnchor().isTrusted {
                     Task {
@@ -214,6 +219,9 @@ public struct AttendanceScreen: View {
                     }
                 }
             }
+        }
+        .sheet(isPresented: $isShowingCapturedPhotoZoomSheet) {
+            capturedPhotoBeautyPreviewSheet(theme: theme)
         }
         .sheet(isPresented: Binding(
             get: { exportedReportUrl != nil },
@@ -459,34 +467,54 @@ public struct AttendanceScreen: View {
                     }
 
                     if let photoData = capturedPhotoData, let uiImg = UIImage(data: photoData) {
-                        HStack(spacing: 12) {
-                            Image(uiImage: uiImg)
-                                .resizable()
-                                .scaledToFill()
-                                .frame(width: 72, height: 72)
-                                .clipShape(RoundedRectangle(cornerRadius: 10))
+                        VStack(alignment: .leading, spacing: 10) {
+                            HStack(spacing: 12) {
+                                Button {
+                                    isShowingCapturedPhotoZoomSheet = true
+                                } label: {
+                                    ZStack(alignment: .bottomTrailing) {
+                                        Image(uiImage: uiImg)
+                                            .resizable()
+                                            .scaledToFill()
+                                            .frame(width: 80, height: 80)
+                                            .clipShape(RoundedRectangle(cornerRadius: 10))
+                                        Image(systemName: "magnifyingglass.circle.fill")
+                                            .font(.system(size: 18))
+                                            .foregroundColor(.white)
+                                            .shadow(radius: 2)
+                                            .padding(4)
+                                    }
+                                }
+                                .buttonStyle(.plain)
 
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text("Đã khoá mốc thời gian chụp")
-                                    .font(.caption.weight(.bold))
-                                    .foregroundColor(SemanticColors.successText)
-                                if let frozen = frozenCaptureTimestamp {
-                                    Text(AttendanceTimeAnchorManager.formatDisplayDateTimeVi(isoString: frozen.capturedAtIso, fallbackEpochMs: frozen.capturedEpochMs))
-                                        .font(.caption)
-                                        .foregroundColor(SemanticColors.textPrimary)
-                                    Text(frozen.statusBadgeVi)
-                                        .font(.caption2)
-                                        .foregroundColor(SemanticColors.textMuted)
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text("Đã khoá mốc thời gian chụp")
+                                        .font(.caption.weight(.bold))
+                                        .foregroundColor(SemanticColors.successText)
+                                    if let frozen = frozenCaptureTimestamp {
+                                        Text(AttendanceTimeAnchorManager.formatDisplayDateTimeVi(isoString: frozen.capturedAtIso, fallbackEpochMs: frozen.capturedEpochMs))
+                                            .font(.caption)
+                                            .foregroundColor(SemanticColors.textPrimary)
+                                        Text(frozen.statusBadgeVi)
+                                            .font(.caption2)
+                                            .foregroundColor(SemanticColors.textMuted)
+                                    }
+                                    Text("Chạm vào ảnh để phóng to")
+                                        .font(.system(size: 10, weight: .medium))
+                                        .foregroundColor(theme.primary)
+                                }
+                                Spacer()
+                                Button {
+                                    rawCapturedPhotoData = nil
+                                    capturedPhotoData = nil
+                                    frozenCaptureTimestamp = nil
+                                } label: {
+                                    Image(systemName: "xmark.circle.fill")
+                                        .foregroundColor(SemanticColors.dangerText)
                                 }
                             }
-                            Spacer()
-                            Button {
-                                capturedPhotoData = nil
-                                frozenCaptureTimestamp = nil
-                            } label: {
-                                Image(systemName: "xmark.circle.fill")
-                                    .foregroundColor(SemanticColors.dangerText)
-                            }
+
+                            beautyPresetSelectorRow(theme: theme)
                         }
                         .padding(10)
                         .background(SemanticColors.successBg.opacity(0.45))
@@ -530,6 +558,7 @@ public struct AttendanceScreen: View {
                                 note: noteInput,
                                 frozenTimestamp: ts
                             )
+                            rawCapturedPhotoData = nil
                             capturedPhotoData = nil
                             frozenCaptureTimestamp = nil
                             noteInput = ""
@@ -686,6 +715,109 @@ public struct AttendanceScreen: View {
         .refreshable {
             locationManager.requestLocationUpdate()
             await viewModel.syncAttendanceTimeAnchor()
+        }
+    }
+
+    // MARK: - Beauty Filter Selector & Full-Screen Preview Sheet
+
+    private func applyBeautyPreset(_ preset: AttendanceBeautyPreset) {
+        selectedBeautyPreset = preset
+        AttendanceBeautyFilter.savePreset(preset)
+        guard let rawData = rawCapturedPhotoData else { return }
+        capturedPhotoData = AttendanceBeautyFilter.apply(to: rawData, preset: preset)
+    }
+
+    @ViewBuilder
+    private func beautyPresetSelectorRow(theme: MiniBiThemePalette) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 4) {
+                Image(systemName: "sparkles")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundColor(theme.primary)
+                Text("Chế độ làm đẹp:")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundColor(SemanticColors.textPrimary)
+                Spacer()
+                Text(selectedBeautyPreset.labelVi)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(theme.primary)
+            }
+
+            HStack(spacing: 6) {
+                ForEach(AttendanceBeautyPreset.allCases) { preset in
+                    let isSelected = selectedBeautyPreset == preset
+                    Button {
+                        applyBeautyPreset(preset)
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: preset.iconName)
+                                .font(.system(size: 10, weight: .semibold))
+                            Text(preset.labelVi)
+                                .font(.system(size: 11, weight: isSelected ? .bold : .medium))
+                                .lineLimit(1)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 7)
+                        .background(isSelected ? theme.primary : Color.white)
+                        .foregroundColor(isSelected ? .white : SemanticColors.textPrimary)
+                        .cornerRadius(8)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8)
+                                .stroke(isSelected ? theme.primary : SemanticColors.borderSubtle, lineWidth: 1)
+                        )
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func capturedPhotoBeautyPreviewSheet(theme: MiniBiThemePalette) -> some View {
+        NavigationStack {
+            VStack(spacing: 16) {
+                if let photoData = capturedPhotoData, let uiImg = UIImage(data: photoData) {
+                    Image(uiImage: uiImg)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(maxWidth: .infinity, maxHeight: 440)
+                        .clipShape(RoundedRectangle(cornerRadius: 16))
+                        .shadow(color: Color.black.opacity(0.08), radius: 8, x: 0, y: 4)
+                        .padding(.horizontal, 16)
+                }
+
+                VStack(alignment: .leading, spacing: 10) {
+                    beautyPresetSelectorRow(theme: theme)
+
+                    if let frozen = frozenCaptureTimestamp {
+                        HStack(spacing: 6) {
+                            Image(systemName: "clock.badge.checkmark.fill")
+                                .foregroundColor(SemanticColors.successText)
+                            Text("Giờ chụp đã khoá: \(AttendanceTimeAnchorManager.formatDisplayDateTimeVi(isoString: frozen.capturedAtIso, fallbackEpochMs: frozen.capturedEpochMs))")
+                                .font(.caption.weight(.semibold))
+                                .foregroundColor(SemanticColors.textPrimary)
+                        }
+                    }
+                }
+                .padding(14)
+                .background(Color.white)
+                .cornerRadius(14)
+                .padding(.horizontal, 16)
+
+                Spacer()
+            }
+            .padding(.top, 12)
+            .background(theme.background)
+            .navigationTitle("Xem trước ảnh chấm công")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Xong") {
+                        isShowingCapturedPhotoZoomSheet = false
+                    }
+                    .font(.subheadline.weight(.bold))
+                }
+            }
         }
     }
 
