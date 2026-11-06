@@ -2,6 +2,324 @@ import Foundation
 import UIKit
 import CryptoKit
 import Network
+import CoreImage
+import Vision
+
+// MARK: - Attendance Beauty Filter (Post-Capture CoreImage + Vision Portrait Enhancement)
+
+public enum AttendanceBeautyPreset: String, CaseIterable, Identifiable, Sendable {
+    case original = "ORIGINAL"
+    case natural = "NATURAL"
+    case brightSmooth = "BRIGHT_SMOOTH"
+    case rosy = "ROSY"
+
+    public var id: String { rawValue }
+
+    public var labelVi: String {
+        switch self {
+        case .original:
+            return "Gốc"
+        case .natural:
+            return "Tự nhiên"
+        case .brightSmooth:
+            return "Sáng mịn"
+        case .rosy:
+            return "Hồng hào"
+        }
+    }
+
+    public var iconName: String {
+        switch self {
+        case .original:
+            return "camera.aperture"
+        case .natural:
+            return "sparkles"
+        case .brightSmooth:
+            return "sun.max.fill"
+        case .rosy:
+            return "wand.and.stars"
+        }
+    }
+}
+
+public enum AttendanceBeautyFilter {
+    private static let presetDefaultsKey = "hrpbi.attendance.beauty_preset.v1"
+    private static let sharedCIContext: CIContext = {
+        CIContext(options: [
+            .useSoftwareRenderer: false,
+            .priorityRequestLow: false
+        ])
+    }()
+
+    public static func loadSavedPreset(defaults: UserDefaults = .standard) -> AttendanceBeautyPreset {
+        guard let raw = defaults.string(forKey: presetDefaultsKey),
+              let preset = AttendanceBeautyPreset(rawValue: raw) else {
+            return .natural
+        }
+        return preset
+    }
+
+    public static func savePreset(_ preset: AttendanceBeautyPreset, defaults: UserDefaults = .standard) {
+        defaults.set(preset.rawValue, forKey: presetDefaultsKey)
+    }
+
+    /// Applies the selected portrait beauty preset to a raw/normalized JPEG image.
+    /// Guarantees upright orientation and bounded dimensions (`maxDimensionPx`),
+    /// returning valid JPEG bytes ready for preview and SHA-256 check-in submission.
+    public static func apply(
+        to rawData: Data,
+        preset: AttendanceBeautyPreset,
+        maxDimensionPx: CGFloat = 1600,
+        compressionQuality: CGFloat = 0.85
+    ) -> Data {
+        let normalizedData = AttendanceContract.normalizeCameraJpeg(
+            rawData,
+            maxDimensionPx: maxDimensionPx,
+            compressionQuality: max(compressionQuality, 0.88)
+        )
+        guard preset != .original else {
+            if compressionQuality < 0.88 {
+                return AttendanceContract.normalizeCameraJpeg(
+                    normalizedData,
+                    maxDimensionPx: maxDimensionPx,
+                    compressionQuality: compressionQuality
+                )
+            }
+            return normalizedData
+        }
+
+        guard let uprightImage = UIImage(data: normalizedData),
+              let baseCIImage = CIImage(image: uprightImage) else {
+            return normalizedData
+        }
+
+        let extent = baseCIImage.extent
+        guard !extent.isEmpty, extent.width > 1, extent.height > 1 else {
+            return normalizedData
+        }
+
+        let params = filterParameters(for: preset)
+        var working = baseCIImage
+
+        // 1. Exposure & Backlight Shadow Recovery
+        if let exposure = CIFilter(name: "CIExposureAdjust") {
+            exposure.setValue(working, forKey: kCIInputImageKey)
+            exposure.setValue(params.exposureEV, forKey: kCIInputEVKey)
+            if let out = exposure.outputImage {
+                working = out
+            }
+        }
+
+        if let shadowHighlight = CIFilter(name: "CIHighlightShadowAdjust") {
+            shadowHighlight.setValue(working, forKey: kCIInputImageKey)
+            shadowHighlight.setValue(params.shadowAmount, forKey: "inputShadowAmount")
+            shadowHighlight.setValue(params.highlightAmount, forKey: "inputHighlightAmount")
+            if let out = shadowHighlight.outputImage {
+                working = out
+            }
+        }
+
+        // 2. Skin Smoothing (Noise reduction + soft frequency blend + face-aware mask boost)
+        var denoised = working
+        if let nr = CIFilter(name: "CINoiseReduction") {
+            nr.setValue(working, forKey: kCIInputImageKey)
+            nr.setValue(0.025, forKey: "inputNoiseLevel")
+            nr.setValue(0.40, forKey: "inputSharpness")
+            if let out = nr.outputImage?.cropped(to: extent) {
+                denoised = out
+            }
+        }
+
+        if let blur = CIFilter(name: "CIGaussianBlur") {
+            blur.setValue(denoised.clampedToExtent(), forKey: kCIInputImageKey)
+            blur.setValue(params.blurRadius, forKey: kCIInputRadiusKey)
+            if let blurred = blur.outputImage?.cropped(to: extent) {
+                if let faceMask = buildFaceSmoothingMask(for: baseCIImage, extent: extent, baseOpacity: params.smoothingBlend, facePeakOpacity: min(0.75, params.smoothingBlend + 0.18)),
+                   let blendMask = CIFilter(name: "CIBlendWithMask") {
+                    blendMask.setValue(blurred, forKey: kCIInputImageKey)
+                    blendMask.setValue(denoised, forKey: kCIInputBackgroundImageKey)
+                    blendMask.setValue(faceMask, forKey: kCIInputMaskImageKey)
+                    if let out = blendMask.outputImage?.cropped(to: extent) {
+                        working = out
+                    }
+                } else if let dissolve = CIFilter(name: "CIDissolveTransition") {
+                    dissolve.setValue(denoised, forKey: kCIInputImageKey)
+                    dissolve.setValue(blurred, forKey: kCIInputTargetImageKey)
+                    dissolve.setValue(params.smoothingBlend, forKey: kCIInputTimeKey)
+                    if let out = dissolve.outputImage?.cropped(to: extent) {
+                        working = out
+                    }
+                }
+            }
+        }
+
+        // Restore crispness on eyes, eyebrows, hair, and facial contours
+        if let sharpen = CIFilter(name: "CISharpenLuminance") {
+            sharpen.setValue(working, forKey: kCIInputImageKey)
+            sharpen.setValue(params.sharpenLuminance, forKey: kCIInputSharpnessKey)
+            sharpen.setValue(1.5, forKey: kCIInputRadiusKey)
+            if let out = sharpen.outputImage?.cropped(to: extent) {
+                working = out
+            }
+        }
+
+        // 3. Warm / Rosy Skin Tone & Soft Contrast
+        if let tempTint = CIFilter(name: "CITemperatureAndTint") {
+            tempTint.setValue(working, forKey: kCIInputImageKey)
+            tempTint.setValue(CIVector(x: 6500, y: 0), forKey: "inputNeutral")
+            tempTint.setValue(CIVector(x: params.targetTemp, y: params.targetTint), forKey: "inputTargetNeutral")
+            if let out = tempTint.outputImage?.cropped(to: extent) {
+                working = out
+            }
+        }
+
+        if let colorControls = CIFilter(name: "CIColorControls") {
+            colorControls.setValue(working, forKey: kCIInputImageKey)
+            colorControls.setValue(params.brightness, forKey: kCIInputBrightnessKey)
+            colorControls.setValue(params.contrast, forKey: kCIInputContrastKey)
+            colorControls.setValue(params.saturation, forKey: kCIInputSaturationKey)
+            if let out = colorControls.outputImage?.cropped(to: extent) {
+                working = out
+            }
+        }
+
+        guard let cgImage = sharedCIContext.createCGImage(working, from: extent) else {
+            return normalizedData
+        }
+
+        let filteredUIImage = UIImage(cgImage: cgImage, scale: 1.0, orientation: .up)
+        if let jpeg = filteredUIImage.jpegData(compressionQuality: compressionQuality), !jpeg.isEmpty {
+            return jpeg
+        }
+        return normalizedData
+    }
+
+    private struct FilterParameters {
+        let exposureEV: CGFloat
+        let shadowAmount: CGFloat
+        let highlightAmount: CGFloat
+        let blurRadius: CGFloat
+        let smoothingBlend: CGFloat
+        let sharpenLuminance: CGFloat
+        let targetTemp: CGFloat
+        let targetTint: CGFloat
+        let brightness: CGFloat
+        let contrast: CGFloat
+        let saturation: CGFloat
+    }
+
+    private static func filterParameters(for preset: AttendanceBeautyPreset) -> FilterParameters {
+        switch preset {
+        case .original:
+            return FilterParameters(
+                exposureEV: 0.0,
+                shadowAmount: 0.0,
+                highlightAmount: 1.0,
+                blurRadius: 0.0,
+                smoothingBlend: 0.0,
+                sharpenLuminance: 0.0,
+                targetTemp: 6500,
+                targetTint: 0,
+                brightness: 0.0,
+                contrast: 1.0,
+                saturation: 1.0
+            )
+        case .natural:
+            return FilterParameters(
+                exposureEV: 0.16,
+                shadowAmount: 0.25,
+                highlightAmount: 0.92,
+                blurRadius: 2.8,
+                smoothingBlend: 0.34,
+                sharpenLuminance: 0.32,
+                targetTemp: 6320,
+                targetTint: -6,
+                brightness: 0.015,
+                contrast: 0.975,
+                saturation: 1.04
+            )
+        case .brightSmooth:
+            return FilterParameters(
+                exposureEV: 0.30,
+                shadowAmount: 0.38,
+                highlightAmount: 0.88,
+                blurRadius: 4.2,
+                smoothingBlend: 0.50,
+                sharpenLuminance: 0.38,
+                targetTemp: 6380,
+                targetTint: -8,
+                brightness: 0.030,
+                contrast: 0.960,
+                saturation: 1.02
+            )
+        case .rosy:
+            return FilterParameters(
+                exposureEV: 0.22,
+                shadowAmount: 0.30,
+                highlightAmount: 0.90,
+                blurRadius: 3.2,
+                smoothingBlend: 0.40,
+                sharpenLuminance: 0.34,
+                targetTemp: 6100,
+                targetTint: -18,
+                brightness: 0.020,
+                contrast: 0.975,
+                saturation: 1.10
+            )
+        }
+    }
+
+    /// Detects faces via Vision and builds a soft radial mask that boosts skin smoothing
+    /// on facial regions while keeping a baseline smoothing level across the rest of the frame.
+    private static func buildFaceSmoothingMask(
+        for image: CIImage,
+        extent: CGRect,
+        baseOpacity: CGFloat,
+        facePeakOpacity: CGFloat
+    ) -> CIImage? {
+        let request = VNDetectFaceRectanglesRequest()
+        let handler = VNImageRequestHandler(ciImage: image, options: [:])
+        do {
+            try handler.perform([request])
+        } catch {
+            return nil
+        }
+
+        guard let faces = request.results, !faces.isEmpty else {
+            return nil
+        }
+
+        let baseColor = CIColor(red: baseOpacity, green: baseOpacity, blue: baseOpacity, alpha: 1.0)
+        let peakColor = CIColor(red: facePeakOpacity, green: facePeakOpacity, blue: facePeakOpacity, alpha: 1.0)
+        var compositeMask = CIImage(color: baseColor).cropped(to: extent)
+
+        for face in faces {
+            let bbox = face.boundingBox
+            let centerX = extent.minX + bbox.midX * extent.width
+            let centerY = extent.minY + bbox.midY * extent.height
+            let faceRadius = max(bbox.width * extent.width, bbox.height * extent.height) * 0.72
+            guard faceRadius > 8,
+                  let radial = CIFilter(name: "CIRadialGradient") else {
+                continue
+            }
+            radial.setValue(CIVector(x: centerX, y: centerY), forKey: "inputCenter")
+            radial.setValue(faceRadius * 0.45, forKey: "inputRadius0")
+            radial.setValue(faceRadius * 1.15, forKey: "inputRadius1")
+            radial.setValue(peakColor, forKey: "inputColor0")
+            radial.setValue(baseColor, forKey: "inputColor1")
+            if let faceGradient = radial.outputImage?.cropped(to: extent),
+               let lighten = CIFilter(name: "CIMaximumCompositing") {
+                lighten.setValue(faceGradient, forKey: kCIInputImageKey)
+                lighten.setValue(compositeMask, forKey: kCIInputBackgroundImageKey)
+                if let merged = lighten.outputImage?.cropped(to: extent) {
+                    compositeMask = merged
+                }
+            }
+        }
+
+        return compositeMask
+    }
+}
 
 // MARK: - Attendance Contract & Offline Outbox Service
 // Mirrors Android's `data/AttendanceOutboxService.kt` 100%

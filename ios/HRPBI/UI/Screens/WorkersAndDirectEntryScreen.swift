@@ -1279,10 +1279,15 @@ public struct ContractMultiAttachmentPickerView: View {
 // MARK: - Camera Photo Capture Sheet
 
 public struct CameraPhotoCaptureSheet: UIViewControllerRepresentable {
+    public let preferredCameraDevice: UIImagePickerController.CameraDevice
     public let onPhotoCaptured: (Data) -> Void
     @Environment(\.dismiss) private var dismiss
 
-    public init(onPhotoCaptured: @escaping (Data) -> Void) {
+    public init(
+        preferredCameraDevice: UIImagePickerController.CameraDevice = .rear,
+        onPhotoCaptured: @escaping (Data) -> Void
+    ) {
+        self.preferredCameraDevice = preferredCameraDevice
         self.onPhotoCaptured = onPhotoCaptured
     }
 
@@ -1290,6 +1295,9 @@ public struct CameraPhotoCaptureSheet: UIViewControllerRepresentable {
         let picker = UIImagePickerController()
         if UIImagePickerController.isSourceTypeAvailable(.camera) {
             picker.sourceType = .camera
+            if UIImagePickerController.isCameraDeviceAvailable(preferredCameraDevice) {
+                picker.cameraDevice = preferredCameraDevice
+            }
         } else {
             picker.sourceType = .photoLibrary
         }
