@@ -887,6 +887,9 @@ interface MiniBiDao {
     @Query("SELECT * FROM attendance_outbox WHERE appUserId = :appUserId AND syncStatus IN ('QUEUED', 'RETRYABLE_ERROR') ORDER BY epochMillis ASC")
     suspend fun getRetryableAttendanceOutboxForUser(appUserId: String): List<AttendanceEntity>
 
+    @Query("SELECT * FROM attendance_outbox WHERE appUserId = :appUserId AND syncStatus = 'SYNCING' ORDER BY epochMillis ASC")
+    suspend fun getSyncingAttendanceOutboxForUser(appUserId: String): List<AttendanceEntity>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertAttendance(record: AttendanceEntity): Long
 

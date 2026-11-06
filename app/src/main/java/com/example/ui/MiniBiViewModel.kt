@@ -3541,8 +3541,15 @@ class MiniBiViewModel internal constructor(
 
     fun syncAttendanceHistoryFromServer(actor: AppActor? = currentActor.value) {
         val resolvedActor = actor ?: return
-        if (!WorkReportsContract.isUuid(resolvedActor.appUserId)) return
+        if (resolvedActor.appUserId.isBlank()) return
         viewModelScope.launch {
+            runCatching {
+                repository.attendanceOutboxService.flushRetryableOutbox(
+                    appUserId = resolvedActor.appUserId,
+                    scheduleWorkOnFailure = true
+                )
+            }.onFailure { it.rethrowIfCancelled() }
+            if (!WorkReportsContract.isUuid(resolvedActor.appUserId)) return@launch
             runCatching {
                 val todayIso = resolveReferenceTodayIsoHcm(resolvedActor.appUserId)
                 repository.attendanceOutboxService.syncServerHistoryForUser(

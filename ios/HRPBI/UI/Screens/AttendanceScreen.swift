@@ -196,7 +196,8 @@ public struct AttendanceScreen: View {
             viewModel.refreshAttendanceTimeEvaluation()
             let eval = viewModel.attendanceTimeEvaluation
             let nowSec = now.timeIntervalSince1970
-            let needsSync = !eval.isTrusted || (eval.remainingValidMs ?? 0) <= AttendanceTimeContract.refreshBeforeExpiryMs
+            let hasPendingOutbox = viewModel.attendancePendingCount > 0 && !viewModel.isSubmittingAttendance && !viewModel.isSyncingAttendance
+            let needsSync = !eval.isTrusted || (eval.remainingValidMs ?? 0) <= AttendanceTimeContract.refreshBeforeExpiryMs || hasPendingOutbox
             if needsSync && (nowSec - lastAutoTimeSyncAttemptSec >= 15.0) {
                 lastAutoTimeSyncAttemptSec = nowSec
                 Task {
