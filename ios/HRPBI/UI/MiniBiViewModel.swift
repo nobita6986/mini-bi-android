@@ -260,6 +260,10 @@ public final class MiniBiViewModel: ObservableObject {
             Task { @MainActor [weak self] in
                 guard let self, let username = self.currentUser?.username, !username.isEmpty else { return }
                 self.attendanceOutboxItems = self.attendanceOutboxService.listItemsForUser(userKey: username)
+                self.todayServerAttendanceCount = max(
+                    self.todayServerAttendanceCount,
+                    self.attendanceOutboxService.todaySyncedCountForUser(userKey: username)
+                )
             }
         }
     }
@@ -2214,6 +2218,12 @@ public final class MiniBiViewModel: ObservableObject {
 
     // MARK: - Attendance Actions
 
+    public var attendancePendingCount: Int {
+        attendanceOutboxItems.filter {
+            AttendanceContract.isRetryableStatus($0.status) || $0.status == AttendanceContract.statusUploading
+        }.count
+    }
+
     public func refreshAttendanceTimeEvaluation() {
         attendanceTimeEvaluation = timeAnchorManager.evaluateAnchor()
     }
@@ -2222,6 +2232,9 @@ public final class MiniBiViewModel: ObservableObject {
         _ = await timeAnchorManager.syncTimeAnchor()
         attendanceTimeEvaluation = timeAnchorManager.evaluateAnchor()
         if let username = currentUser?.username, !username.isEmpty {
+            if attendanceOutboxService.pendingCountForUser(userKey: username) > 0 {
+                _ = await attendanceOutboxService.flushRetryableOutbox(userKey: username)
+            }
             let histRes = await attendanceOutboxService.syncServerHistoryForUser(userKey: username)
             if case .success(let data, _) = histRes {
                 attendanceOutboxItems = data.items

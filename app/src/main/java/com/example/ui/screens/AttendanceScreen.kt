@@ -303,10 +303,11 @@ fun AttendanceScreen(
         }
     }
 
-    val retryableCount = remember(attendanceRecords) {
+    val retryableCount = remember(attendanceRecords, submitting) {
         attendanceRecords.count {
             it.syncStatus == AttendanceOutboxStatus.QUEUED ||
-                it.syncStatus == AttendanceOutboxStatus.RETRYABLE_ERROR
+                it.syncStatus == AttendanceOutboxStatus.RETRYABLE_ERROR ||
+                (!submitting && it.syncStatus == AttendanceOutboxStatus.SYNCING)
         }
     }
 

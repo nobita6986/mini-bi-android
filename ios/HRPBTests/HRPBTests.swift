@@ -1776,6 +1776,58 @@ final class HRPBTests: XCTestCase {
         XCTAssertNotEqual(originalSha, rosySha)
     }
 
+    @MainActor
+    func testAttendanceOutboxRecoversStaleUploadingAndPendingCount() throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("hrpbi_outbox_recovery_\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let stuckUploadingItem = AttendanceOutboxItem(
+            localId: "stuck-uploading-1",
+            userKey: "thuynb.td",
+            idempotencyKey: "stuck-uploading-1",
+            clientCapturedAt: "2026-11-06T01:07:07.000Z",
+            timeSource: AttendanceTimeContract.sourceServerAnchored,
+            lat: 21.32016,
+            lng: 105.67860,
+            accuracyM: 26.9,
+            photoSha256: "abc123",
+            photoSizeBytes: 1024,
+            status: AttendanceContract.statusUploading,
+            createdAtEpochMs: 1_762_391_227_000
+        )
+        let retryableItem = AttendanceOutboxItem(
+            localId: "retryable-2",
+            userKey: "thuynb.td",
+            idempotencyKey: "retryable-2",
+            clientCapturedAt: "2026-11-06T01:10:00.000Z",
+            timeSource: AttendanceTimeContract.sourceServerAnchored,
+            lat: 21.32016,
+            lng: 105.67860,
+            accuracyM: 18.0,
+            photoSha256: "def456",
+            photoSizeBytes: 1024,
+            status: AttendanceContract.statusFailedRetryable,
+            createdAtEpochMs: 1_762_391_400_000
+        )
+
+        let outboxUrl = tempDir.appendingPathComponent("attendance_outbox_v1.json")
+        let encoded = try JSONEncoder().encode([stuckUploadingItem, retryableItem])
+        try encoded.write(to: outboxUrl, options: .atomic)
+
+        let service = AttendanceOutboxService(customStorageDirectory: tempDir)
+        let loaded = service.listItemsForUser(userKey: "thuynb.td")
+        XCTAssertEqual(loaded.count, 2)
+        // Stuck UPLOADING item must be recovered to FAILED_RETRYABLE so flushRetryableOutbox picks it up
+        XCTAssertTrue(loaded.allSatisfy { $0.status == AttendanceContract.statusFailedRetryable })
+        XCTAssertEqual(service.pendingCountForUser(userKey: "thuynb.td"), 2)
+
+        let vm = MiniBiViewModel(attendanceOutboxService: service)
+        vm.attendanceOutboxItems = loaded
+        XCTAssertEqual(vm.attendancePendingCount, 2)
+    }
+
     // MARK: - Helper
 
     private func makeSolidTestJpeg(color: UIColor, size: CGSize) throws -> Data {

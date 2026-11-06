@@ -445,7 +445,10 @@ public final class AttendanceOutboxService {
             guard let self, path.status == .satisfied else { return }
             guard let userKey = userKeyProvider(), !userKey.isEmpty else { return }
             Task {
-                _ = await self.flushRetryableOutbox(userKey: userKey)
+                let synced = await self.flushRetryableOutbox(userKey: userKey)
+                if synced > 0 {
+                    _ = await self.syncServerHistoryForUser(userKey: userKey)
+                }
             }
         }
         monitor.start(queue: monitorQueue)
@@ -532,6 +535,9 @@ public final class AttendanceOutboxService {
 
         upsertItem(initialItem)
         let sendResult = await processSingleOutboxItem(localId: localId)
+        if case .success = sendResult {
+            _ = await flushRetryableOutbox(userKey: userKey)
+        }
         let currentItem = getItem(localId: localId) ?? initialItem
         return (currentItem, sendResult)
     }
@@ -539,6 +545,7 @@ public final class AttendanceOutboxService {
     // MARK: - Flush Retryable Outbox
 
     public func flushRetryableOutbox(userKey: String) async -> Int {
+        recoverInterruptedUploads()
         let candidates = listItemsForUser(userKey: userKey).filter {
             AttendanceContract.isRetryableStatus($0.status)
         }.sorted { $0.createdAtEpochMs < $1.createdAtEpochMs }
@@ -1096,11 +1103,11 @@ public final class AttendanceOutboxService {
         return result
     }
 
-    private func recoverInterruptedUploads() {
+    public func recoverInterruptedUploads() {
         lock.lock()
         var changed = false
         for i in items.indices {
-            if items[i].status == AttendanceContract.statusUploading {
+            if items[i].status == AttendanceContract.statusUploading && !inFlightLocalIds.contains(items[i].localId) {
                 items[i].status = AttendanceContract.statusFailedRetryable
                 changed = true
             }
@@ -1109,6 +1116,9 @@ public final class AttendanceOutboxService {
             Self.saveItems(items, to: outboxFileUrl)
         }
         lock.unlock()
+        if changed {
+            onOutboxChanged?()
+        }
     }
 
     private func getItem(localId: String) -> AttendanceOutboxItem? {

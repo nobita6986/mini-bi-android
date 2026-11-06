@@ -802,6 +802,9 @@ class AttendanceOutboxService(
 ) {
 
     companion object {
+        private val inFlightRecordIds: MutableSet<Long> =
+            java.util.Collections.synchronizedSet(HashSet<Long>())
+
         fun isDeviceNetworkConnected(context: Context): Boolean {
             val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
                 ?: return true
@@ -936,11 +939,20 @@ class AttendanceOutboxService(
             )
         }
 
-        syncExistingRecord(
+        val outcome = syncExistingRecord(
             record = storedRecord,
             currentActorId = actor.appUserId,
             scheduleWorkOnFailure = true
         )
+        if (outcome.isSynced) {
+            runCatching {
+                flushRetryableOutbox(
+                    appUserId = actor.appUserId,
+                    scheduleWorkOnFailure = true
+                )
+            }
+        }
+        outcome
     }
 
     suspend fun syncRecordById(
@@ -1079,7 +1091,32 @@ class AttendanceOutboxService(
     }
 
     /**
-     * Retries only records belonging to `appUserId` that are in `QUEUED` or `RETRYABLE_ERROR`.
+     * Recovers any records belonging to `appUserId` that were left in `SYNCING`
+     * by an interrupted coroutine or killed app process (i.e. not currently in `inFlightRecordIds`),
+     * downgrading them to `RETRYABLE_ERROR` so they can be retried cleanly.
+     */
+    suspend fun recoverInterruptedSyncingRecords(appUserId: String): Int = withContext(Dispatchers.IO) {
+        val cleanActorId = appUserId.trim()
+        if (cleanActorId.isEmpty()) return@withContext 0
+        val syncingRecords = dao.getSyncingAttendanceOutboxForUser(cleanActorId)
+        var recoveredCount = 0
+        for (record in syncingRecords) {
+            if (!inFlightRecordIds.contains(record.id)) {
+                dao.updateAttendance(
+                    record.copy(
+                        syncStatus = AttendanceOutboxStatus.RETRYABLE_ERROR,
+                        statusMessage = AttendanceContract.MSG_QUEUED_OFFLINE
+                    )
+                )
+                recoveredCount++
+            }
+        }
+        recoveredCount
+    }
+
+    /**
+     * Retries only records belonging to `appUserId` that are in `QUEUED` or `RETRYABLE_ERROR`
+     * (after recovering any orphaned `SYNCING` records that are no longer in flight).
      * Never sends another actor's queued records under the current session,
      * never calls `/api/attendance/time` to mutate captured timestamps,
      * and never retries `400`/`401`/`403`/`404`/`409`/`422`.
@@ -1097,6 +1134,8 @@ class AttendanceOutboxService(
                 terminalFailureCount = 0
             )
         }
+
+        recoverInterruptedSyncingRecords(cleanActorId)
 
         val pending = dao.getRetryableAttendanceOutboxForUser(cleanActorId)
         if (pending.isEmpty()) {
@@ -1200,95 +1239,121 @@ class AttendanceOutboxService(
             )
         }
 
-        val syncingRecord = if (record.syncStatus != AttendanceOutboxStatus.SYNCING) {
-            record.copy(
-                syncStatus = AttendanceOutboxStatus.SYNCING,
-                statusMessage = AttendanceContract.MSG_SYNCING
-            ).also { dao.updateAttendance(it) }
-        } else {
-            record
-        }
-
-        return try {
-            // Preserve the EXACT same idempotencyKey, clientCapturedAtIso, timeSource, timeToken, and elapsedSinceAnchorMs across every retry
-            val metadataJson = AttendanceContract.buildMetadataJson(
-                latitude = syncingRecord.latitude,
-                longitude = syncingRecord.longitude,
-                accuracyMeters = syncingRecord.accuracyMeters,
-                addressHint = syncingRecord.addressHint,
-                clientCapturedAtIso = syncingRecord.clientCapturedAtIso,
-                note = syncingRecord.note,
-                idempotencyKey = syncingRecord.idempotencyKey,
-                photoSha256 = verifiedSha,
-                timeSource = syncingRecord.timeSource,
-                timeToken = syncingRecord.timeToken,
-                elapsedSinceAnchorMs = syncingRecord.elapsedSinceAnchorMs
-            )
-            val multipartBody = AttendanceContract.buildMultipartBody(
-                metadataJson = metadataJson,
-                photoFile = photoFile
-            )
-            val responseJson = httpClient.postMultipartJson(
-                path = AttendanceContract.ENDPOINT_CHECK_IN,
-                multipartBody = multipartBody,
-                idempotencyKey = syncingRecord.idempotencyKey,
-                requireOkTrue = true,
-                clearSessionOn401 = true
-            )
-            val serverResult = AttendanceContract.parseCheckInSuccessResponse(responseJson)
-            val synced = syncingRecord.copy(
-                syncStatus = AttendanceOutboxStatus.SYNCED,
-                statusMessage = AttendanceContract.MSG_SYNCED,
-                backendErrorCode = null,
-                httpStatusCode = 200,
-                serverCheckinId = serverResult.checkinId,
-                serverBusinessDate = serverResult.businessDate,
-                serverSequenceInDay = serverResult.sequenceInDay,
-                serverDailyCount = serverResult.dailyCount,
-                serverCapturedAtIso = serverResult.capturedAtIso,
-                serverReceivedAtIso = serverResult.receivedAtIso,
-                serverTimeSource = serverResult.timeSource,
-                serverReplayed = serverResult.replayed
-            )
-            dao.updateAttendance(synced)
-            AttendanceSubmissionOutcome(
-                record = synced,
-                isSynced = true,
-                userMessage = AttendanceContract.MSG_SYNCED,
+        if (!inFlightRecordIds.add(record.id)) {
+            return AttendanceSubmissionOutcome(
+                record = record,
+                isSynced = false,
+                userMessage = AttendanceContract.MSG_SYNCING,
                 isError = false
             )
-        } catch (e: BackendApiException) {
-            val classified = AttendanceContract.classifyFailure(e)
-            val updated = syncingRecord.copy(
-                syncStatus = classified.syncStatus,
-                statusMessage = classified.statusMessage,
-                backendErrorCode = classified.backendErrorCode,
-                httpStatusCode = classified.httpStatusCode,
-                retryCount = if (classified.shouldAutoRetry) syncingRecord.retryCount + 1 else syncingRecord.retryCount
-            )
-            dao.updateAttendance(updated)
-            if (classified.shouldAutoRetry && scheduleWorkOnFailure) {
-                outboxWorkScheduler()
+        }
+
+        try {
+            val syncingRecord = if (record.syncStatus != AttendanceOutboxStatus.SYNCING) {
+                record.copy(
+                    syncStatus = AttendanceOutboxStatus.SYNCING,
+                    statusMessage = AttendanceContract.MSG_SYNCING
+                ).also { dao.updateAttendance(it) }
+            } else {
+                record
             }
-            AttendanceSubmissionOutcome(
-                record = updated,
-                isSynced = false,
-                userMessage = classified.statusMessage,
-                isError = true
-            )
-        } catch (e: Exception) {
-            val unexpected = syncingRecord.copy(
-                syncStatus = AttendanceOutboxStatus.REJECTED,
-                statusMessage = e.message?.takeIf { it.isNotBlank() } ?: "Lỗi xử lý phản hồi chấm công.",
-                backendErrorCode = "CLIENT_UNEXPECTED_ERROR"
-            )
-            dao.updateAttendance(unexpected)
-            AttendanceSubmissionOutcome(
-                record = unexpected,
-                isSynced = false,
-                userMessage = unexpected.statusMessage,
-                isError = true
-            )
+
+            return try {
+                // Preserve the EXACT same idempotencyKey, clientCapturedAtIso, timeSource, timeToken, and elapsedSinceAnchorMs across every retry
+                val metadataJson = AttendanceContract.buildMetadataJson(
+                    latitude = syncingRecord.latitude,
+                    longitude = syncingRecord.longitude,
+                    accuracyMeters = syncingRecord.accuracyMeters,
+                    addressHint = syncingRecord.addressHint,
+                    clientCapturedAtIso = syncingRecord.clientCapturedAtIso,
+                    note = syncingRecord.note,
+                    idempotencyKey = syncingRecord.idempotencyKey,
+                    photoSha256 = verifiedSha,
+                    timeSource = syncingRecord.timeSource,
+                    timeToken = syncingRecord.timeToken,
+                    elapsedSinceAnchorMs = syncingRecord.elapsedSinceAnchorMs
+                )
+                val multipartBody = AttendanceContract.buildMultipartBody(
+                    metadataJson = metadataJson,
+                    photoFile = photoFile
+                )
+                val responseJson = httpClient.postMultipartJson(
+                    path = AttendanceContract.ENDPOINT_CHECK_IN,
+                    multipartBody = multipartBody,
+                    idempotencyKey = syncingRecord.idempotencyKey,
+                    requireOkTrue = true,
+                    clearSessionOn401 = true
+                )
+                val serverResult = AttendanceContract.parseCheckInSuccessResponse(responseJson)
+                val synced = syncingRecord.copy(
+                    syncStatus = AttendanceOutboxStatus.SYNCED,
+                    statusMessage = AttendanceContract.MSG_SYNCED,
+                    backendErrorCode = null,
+                    httpStatusCode = 200,
+                    serverCheckinId = serverResult.checkinId,
+                    serverBusinessDate = serverResult.businessDate,
+                    serverSequenceInDay = serverResult.sequenceInDay,
+                    serverDailyCount = serverResult.dailyCount,
+                    serverCapturedAtIso = serverResult.capturedAtIso,
+                    serverReceivedAtIso = serverResult.receivedAtIso,
+                    serverTimeSource = serverResult.timeSource,
+                    serverReplayed = serverResult.replayed
+                )
+                dao.updateAttendance(synced)
+                AttendanceSubmissionOutcome(
+                    record = synced,
+                    isSynced = true,
+                    userMessage = AttendanceContract.MSG_SYNCED,
+                    isError = false
+                )
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) {
+                    val interrupted = syncingRecord.copy(
+                        syncStatus = AttendanceOutboxStatus.RETRYABLE_ERROR,
+                        statusMessage = AttendanceContract.MSG_QUEUED_OFFLINE,
+                        retryCount = syncingRecord.retryCount + 1
+                    )
+                    dao.updateAttendance(interrupted)
+                    if (scheduleWorkOnFailure) {
+                        outboxWorkScheduler()
+                    }
+                }
+                throw e
+            } catch (e: BackendApiException) {
+                val classified = AttendanceContract.classifyFailure(e)
+                val updated = syncingRecord.copy(
+                    syncStatus = classified.syncStatus,
+                    statusMessage = classified.statusMessage,
+                    backendErrorCode = classified.backendErrorCode,
+                    httpStatusCode = classified.httpStatusCode,
+                    retryCount = if (classified.shouldAutoRetry) syncingRecord.retryCount + 1 else syncingRecord.retryCount
+                )
+                dao.updateAttendance(updated)
+                if (classified.shouldAutoRetry && scheduleWorkOnFailure) {
+                    outboxWorkScheduler()
+                }
+                AttendanceSubmissionOutcome(
+                    record = updated,
+                    isSynced = false,
+                    userMessage = classified.statusMessage,
+                    isError = true
+                )
+            } catch (e: Exception) {
+                val unexpected = syncingRecord.copy(
+                    syncStatus = AttendanceOutboxStatus.REJECTED,
+                    statusMessage = e.message?.takeIf { it.isNotBlank() } ?: "Lỗi xử lý phản hồi chấm công.",
+                    backendErrorCode = "CLIENT_UNEXPECTED_ERROR"
+                )
+                dao.updateAttendance(unexpected)
+                AttendanceSubmissionOutcome(
+                    record = unexpected,
+                    isSynced = false,
+                    userMessage = unexpected.statusMessage,
+                    isError = true
+                )
+            }
+        } finally {
+            inFlightRecordIds.remove(record.id)
         }
     }
 

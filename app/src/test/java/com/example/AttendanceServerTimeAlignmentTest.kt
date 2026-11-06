@@ -675,7 +675,16 @@ class AttendanceServerTimeAlignmentTest {
         assertNull(service.syncRecordById(recordId = actorAQueued.record.id, currentActorId = actorB.appUserId))
         assertEquals(beforeFlushReqCount, server.requestCount)
 
-        // Actor A logs back in and flushes outbox: Actor A's record now syncs cleanly!
+        // Simulate an interrupted upload that left Actor A's record stuck in SYNCING ("Đang gửi...")
+        database.miniBiDao().updateAttendance(
+            preserved.copy(
+                syncStatus = AttendanceOutboxStatus.SYNCING,
+                statusMessage = AttendanceContract.MSG_SYNCING
+            )
+        )
+        assertEquals(AttendanceOutboxStatus.SYNCING, database.miniBiDao().getAttendanceById(actorAQueued.record.id)!!.syncStatus)
+
+        // Actor A logs back in and flushes outbox: orphaned SYNCING record is recovered and syncs cleanly!
         server.enqueue(
             MockResponse().setResponseCode(200).setBody(
                 """
