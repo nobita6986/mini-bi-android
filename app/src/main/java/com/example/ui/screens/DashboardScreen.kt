@@ -288,9 +288,9 @@ fun DashboardScreen(
             currentTabLabel.startsWith("Báo cáo tổng quát") -> {
                 item {
                     when {
-                        generalOverviewLoading && generalOverview == null ->
+                        generalOverviewLoading ->
                             LoadingSectionCard("Đang tải báo cáo tổng quát tuyển dụng…")
-                        generalOverviewError != null && generalOverview == null ->
+                        generalOverviewError != null ->
                             DashboardStatusCard(
                                 title = "Không thể tải báo cáo tổng quát",
                                 subtitle = generalOverviewError.orEmpty()
@@ -1268,6 +1268,7 @@ internal fun WorkforceDeepReportSection(
     onLoadMoreProjects: (() -> Unit)? = null
 ) {
     val palette = LocalMiniBiPalette.current
+    val hasPeriodFilter = !metrics.periodFromDate.isNullOrBlank() || !metrics.periodToDate.isNullOrBlank()
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Card(
             modifier = Modifier.fillMaxWidth(),
@@ -1282,47 +1283,92 @@ internal fun WorkforceDeepReportSection(
                     text = "Báo cáo Chuyên sâu Lực lượng Lao động (${DirectEntryContract.isoDateToUiDate(metrics.asOfDate)})",
                     style = MaterialTheme.typography.titleMedium
                 )
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    BiMetricKpiCard(
-                        modifier = Modifier.weight(1f),
-                        label = "ĐANG LÀM",
-                        value = "${metrics.onCount}",
-                        unit = "NLĐ",
-                        hint = "Tổng hồ sơ: ${metrics.eligibleEpisodeTotal}",
-                        accentColor = SemanticColors.SuccessLight
-                    )
-                    BiMetricKpiCard(
-                        modifier = Modifier.weight(1f),
-                        label = "CHỜ VIỆC",
-                        value = "${metrics.unconfirmedCount}",
-                        unit = "NLĐ",
-                        hint = "TB chờ: ${metrics.avgWaitingDays?.toString() ?: "—"} ngày",
-                        accentColor = SemanticColors.RunningLight
-                    )
-                }
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    BiMetricKpiCard(
-                        modifier = Modifier.weight(1f),
-                        label = "GIỮ CHÂN 7 NGÀY",
-                        value = metrics.retention7dPct?.let { "${it}%" } ?: "—",
-                        unit = "ổn định",
-                        hint = "30 ngày: ${metrics.retention30dPct?.let { "${it}%" } ?: "—"}",
-                        accentColor = palette.lightPrimary
-                    )
-                    BiMetricKpiCard(
-                        modifier = Modifier.weight(1f),
-                        label = "THÂM NIÊN TB",
-                        value = metrics.avgTenureDays?.toString() ?: "—",
-                        unit = "ngày",
-                        hint = "Đã nghỉ: ${metrics.offCount}",
-                        accentColor = SemanticColors.WarningLight
-                    )
+                if (hasPeriodFilter) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        BiMetricKpiCard(
+                            modifier = Modifier.weight(1f),
+                            label = "TUYỂN MỚI KỲ",
+                            value = "${metrics.periodNewEpisodes ?: 0}",
+                            unit = "NLĐ",
+                            hint = "Tích lũy: ${metrics.eligibleEpisodeTotal} NLĐ",
+                            accentColor = palette.lightPrimary
+                        )
+                        BiMetricKpiCard(
+                            modifier = Modifier.weight(1f),
+                            label = "VÀO LÀM (ON)",
+                            value = "${metrics.periodOnInflow ?: 0}",
+                            unit = "NLĐ",
+                            hint = "Đang làm cuối kỳ: ${metrics.onCount}",
+                            accentColor = SemanticColors.SuccessLight
+                        )
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        BiMetricKpiCard(
+                            modifier = Modifier.weight(1f),
+                            label = "NGHỈ TRONG KỲ",
+                            value = "${metrics.periodOffInflow ?: 0}",
+                            unit = "NLĐ",
+                            hint = "Đã nghỉ cuối kỳ: ${metrics.offCount}",
+                            accentColor = SemanticColors.WarningLight
+                        )
+                        BiMetricKpiCard(
+                            modifier = Modifier.weight(1f),
+                            label = "GIỮ CHÂN 7 NGÀY",
+                            value = metrics.retention7dPct?.let { "${it}%" } ?: "—",
+                            unit = "ổn định",
+                            hint = "30 ngày: ${metrics.retention30dPct?.let { "${it}%" } ?: "—"}",
+                            accentColor = SemanticColors.RunningLight
+                        )
+                    }
+                } else {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        BiMetricKpiCard(
+                            modifier = Modifier.weight(1f),
+                            label = "ĐANG LÀM",
+                            value = "${metrics.onCount}",
+                            unit = "NLĐ",
+                            hint = "Tổng hồ sơ: ${metrics.eligibleEpisodeTotal}",
+                            accentColor = SemanticColors.SuccessLight
+                        )
+                        BiMetricKpiCard(
+                            modifier = Modifier.weight(1f),
+                            label = "CHỜ VIỆC",
+                            value = "${metrics.unconfirmedCount}",
+                            unit = "NLĐ",
+                            hint = "TB chờ: ${metrics.avgWaitingDays?.toString() ?: "—"} ngày",
+                            accentColor = SemanticColors.RunningLight
+                        )
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        BiMetricKpiCard(
+                            modifier = Modifier.weight(1f),
+                            label = "GIỮ CHÂN 7 NGÀY",
+                            value = metrics.retention7dPct?.let { "${it}%" } ?: "—",
+                            unit = "ổn định",
+                            hint = "30 ngày: ${metrics.retention30dPct?.let { "${it}%" } ?: "—"}",
+                            accentColor = palette.lightPrimary
+                        )
+                        BiMetricKpiCard(
+                            modifier = Modifier.weight(1f),
+                            label = "THÂM NIÊN TB",
+                            value = metrics.avgTenureDays?.toString() ?: "—",
+                            unit = "ngày",
+                            hint = "Đã nghỉ: ${metrics.offCount}",
+                            accentColor = SemanticColors.WarningLight
+                        )
+                    }
                 }
                 PeriodBalanceSummaryBanner(
                     fromDate = metrics.periodFromDate,

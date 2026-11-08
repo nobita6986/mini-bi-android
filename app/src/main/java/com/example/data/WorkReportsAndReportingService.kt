@@ -6,6 +6,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
@@ -1408,11 +1410,30 @@ class WorkReportsAndReportingService(
     // F1. Reporting Reads: Workforce Deep + Team Report + Team Drill-Down
     // =========================================================================
 
-    suspend fun fetchAdminTeamCodeMap(): Map<String, String> = withContext(Dispatchers.IO) {
+    suspend fun fetchAdminTeamCodeMap(probeAdminCatalog: Boolean = true): Map<String, String> = withContext(Dispatchers.IO) {
         val result = linkedMapOf(
             "__system_vendor__" to "__system_vendor__",
-            "display:vendor" to "__system_vendor__"
+            "display:vendor" to "__system_vendor__",
+            "hungyen" to "hungyen",
+            "display:chi nh?nh h?ng y?n" to "hungyen",
+            "marketing" to "marketing",
+            "display:marketing hrp" to "marketing",
+            "team1" to "TEAM1",
+            "display:team 1" to "TEAM1",
+            "team2" to "TEAM2",
+            "display:team 2" to "TEAM2",
+            "team3" to "TEAM3",
+            "display:team 3" to "TEAM3",
+            "team4" to "TEAM4",
+            "display:team 4" to "TEAM4",
+            "team5" to "TEAM5",
+            "display:team 5" to "TEAM5",
+            "team6" to "TEAM6",
+            "display:team 6" to "TEAM6",
+            "team7" to "TEAM7",
+            "display:team 7" to "TEAM7"
         )
+        if (!probeAdminCatalog) return@withContext result
         try {
             var page = 1
             while (page <= 5) {
@@ -1430,11 +1451,11 @@ class WorkReportsAndReportingService(
                     result[code.lowercase(Locale.ROOT)] = code
                     val displayName = t.optString("display_name", "").trim()
                     if (displayName.isNotBlank()) {
-                        result.putIfAbsent("display:${displayName.lowercase(Locale.ROOT)}", code)
+                        result["display:${displayName.lowercase(Locale.ROOT)}"] = code
                     }
                     val teamId = t.optString("team_id", "").trim()
                     if (teamId.isNotBlank()) {
-                        result.putIfAbsent("id:${teamId.lowercase(Locale.ROOT)}", code)
+                        result["id:${teamId.lowercase(Locale.ROOT)}"] = code
                     }
                 }
                 val total = listObj.optInt("total", teamsArr.length())
@@ -1526,18 +1547,37 @@ class WorkReportsAndReportingService(
         val periodOffInflow = byStatusObj?.optJSONObject("off")?.optInt("totalInflowCount", 0)
         val periodNetOnChange = byStatusObj?.optJSONObject("on")?.optInt("netChange", 0)
 
-        val leaveReasonsArr = wf.optJSONObject("leaveReasons")?.optJSONArray("byCategory") ?: JSONArray()
+        val leaveReasonsObj = wf.optJSONObject("leaveReasons")
+        val periodLeaveReasonsObj = leaveReasonsObj?.optJSONObject("periodLeaveReasons")
+        val usePeriodLeaveReasons = balanceApplicable &&
+            periodLeaveReasonsObj?.optBoolean("applicable", false) == true
+        val leaveReasonsArr = if (usePeriodLeaveReasons) {
+            periodLeaveReasonsObj?.optJSONArray("byCategory") ?: JSONArray()
+        } else {
+            leaveReasonsObj?.optJSONArray("byCategory") ?: JSONArray()
+        }
         val leaveReasons = buildList {
             for (i in 0 until leaveReasonsArr.length()) {
                 val cat = leaveReasonsArr.optJSONObject(i) ?: continue
-                val count = cat.optInt("episodeCount", 0)
+                val count = if (usePeriodLeaveReasons) {
+                    cat.optInt("episodeCount", cat.optInt("eventCount", 0))
+                } else {
+                    cat.optInt("episodeCount", 0)
+                }
                 if (count <= 0) continue
+                val sharePct = if (usePeriodLeaveReasons) {
+                    cat.optNullableRatePercent("shareOfOffEventsRate")
+                        ?: cat.optNullableRatePercent("shareOfOffRate")
+                        ?: 0f
+                } else {
+                    cat.optNullableRatePercent("shareOfOffRate") ?: 0f
+                }
                 add(
                     BiBucketItem(
                         key = cat.optString("key", "reason_$i"),
                         display = cat.optString("label", ""),
                         count = count,
-                        sharePct = cat.optNullableRatePercent("shareOfOffRate") ?: 0f
+                        sharePct = sharePct
                     )
                 )
             }
@@ -1888,15 +1928,18 @@ class WorkReportsAndReportingService(
             BiBucketItem(key = "unknown", display = "Không xác định", count = 0, sharePct = 0f)
         )
 
+        val semaphore = Semaphore(4)
         val results = coroutineScope {
             distinctHints.values.map { hint ->
                 async {
-                    fetchSingleBucketPeriodRawOrNull(
-                        hint = hint,
-                        knownTeamCodeMap = knownTeamCodeMap,
-                        fromDate = fromDate,
-                        toDate = toDate
-                    )
+                    semaphore.withPermit {
+                        fetchSingleBucketPeriodRawOrNull(
+                            hint = hint,
+                            knownTeamCodeMap = knownTeamCodeMap,
+                            fromDate = fromDate,
+                            toDate = toDate
+                        )
+                    }
                 }
             }.awaitAll()
         }

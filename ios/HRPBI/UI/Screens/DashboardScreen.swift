@@ -64,6 +64,30 @@ public struct DashboardScreen: View {
                         .padding(.vertical, 16)
                     }
 
+                    if !viewModel.dashboardErrorMessage.isEmpty && !viewModel.isLoadingDashboard {
+                        HStack(alignment: .top, spacing: 10) {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .foregroundColor(SemanticColors.dangerText)
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Không thể tải dữ liệu báo cáo")
+                                    .font(.subheadline.weight(.semibold))
+                                    .foregroundColor(SemanticColors.dangerText)
+                                Text(viewModel.dashboardErrorMessage)
+                                    .font(.caption)
+                                    .foregroundColor(SemanticColors.textSecondary)
+                            }
+                            Spacer()
+                            Button("Thử lại") {
+                                Task { await viewModel.loadDashboardData(includeCccdTabs: false) }
+                            }
+                            .font(.caption.weight(.bold))
+                            .foregroundColor(theme.primary)
+                        }
+                        .padding(12)
+                        .background(Color(hex: 0xFEF2F2))
+                        .cornerRadius(12)
+                    }
+
                     switch viewModel.selectedDashboardSubTab {
                     case .overview:
                         overviewSection
@@ -144,24 +168,25 @@ public struct DashboardScreen: View {
     private var overviewSection: some View {
         let kpis = viewModel.generalOverview.kpis
         let theme = viewModel.selectedTheme
+        let hasDateFilter = viewModel.selectedDatePreset != .all
 
         return VStack(alignment: .leading, spacing: 14) {
             // KPI Cards Grid
             LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
                 kpiCard(
-                    title: "Tổng nhân sự",
+                    title: hasDateFilter ? "Tuyển mới trong kỳ" : "Tổng nhân sự",
                     value: "\(kpis.totalHeadcount)",
-                    subtitle: "Tuyển mới: +\(kpis.newCount)",
+                    subtitle: hasDateFilter ? "Kỳ: \(viewModel.selectedDatePreset.titleVi)" : "Tuyển mới: +\(kpis.newCount)",
                     accentColor: theme.primary
                 )
                 kpiCard(
-                    title: "Đang làm việc",
+                    title: hasDateFilter ? "Vào làm trong kỳ" : "Đang làm việc",
                     value: "\(kpis.activeCount)",
                     subtitle: "Giữ chân: \(WorkReportsContract.formatPercentVi(kpis.retentionRate))",
                     accentColor: SemanticColors.successText
                 )
                 kpiCard(
-                    title: "Đã nghỉ việc",
+                    title: hasDateFilter ? "Nghỉ trong kỳ" : "Đã nghỉ việc",
                     value: "\(kpis.inactiveCount)",
                     subtitle: "Nghỉ trong kỳ: \(kpis.resignedInPeriodCount)",
                     accentColor: SemanticColors.dangerText
@@ -177,7 +202,7 @@ public struct DashboardScreen: View {
             // Projects Breakdown Card
             VStack(alignment: .leading, spacing: 10) {
                 HStack {
-                    Text("Thống kê nhân sự theo Dự án")
+                    Text(hasDateFilter ? "Thống kê Dự án (\(viewModel.selectedDatePreset.titleVi))" : "Thống kê nhân sự theo Dự án")
                         .font(.headline)
                         .foregroundColor(SemanticColors.textPrimary)
                     Spacer()
@@ -230,13 +255,13 @@ public struct DashboardScreen: View {
             // Recruiters & Managers Performance
             if !viewModel.generalOverview.recruiters.isEmpty {
                 personPerformanceCard(
-                    title: "Hiệu suất Người tuyển dụng",
+                    title: hasDateFilter ? "Hiệu suất Người tuyển dụng (\(viewModel.selectedDatePreset.titleVi))" : "Hiệu suất Người tuyển dụng",
                     rows: viewModel.generalOverview.recruiters
                 )
             }
             if !viewModel.generalOverview.managers.isEmpty {
                 personPerformanceCard(
-                    title: "Hiệu suất Quản lý dự án",
+                    title: hasDateFilter ? "Hiệu suất Theo Nhóm (\(viewModel.selectedDatePreset.titleVi))" : "Hiệu suất Quản lý dự án",
                     rows: viewModel.generalOverview.managers
                 )
             }
@@ -247,12 +272,14 @@ public struct DashboardScreen: View {
 
     private var deepMetricsSection: some View {
         let deep = viewModel.workforceDeepMetrics
+        let hasDateFilter = viewModel.selectedDatePreset != .all
+        let periodSuffix = hasDateFilter ? " (\(viewModel.selectedDatePreset.titleVi))" : ""
         return VStack(alignment: .leading, spacing: 14) {
-            bucketDistributionCard(title: "Phân bổ Thâm niên làm việc", buckets: deep.tenureBuckets)
-            bucketDistributionCard(title: "Phân bổ Độ tuổi", buckets: deep.ageBuckets)
-            bucketDistributionCard(title: "Cơ cấu Giới tính", buckets: deep.genderBuckets)
-            bucketDistributionCard(title: "Trạng thái Hồ sơ Hợp đồng", buckets: deep.contractBuckets)
-            bucketDistributionCard(title: "Phân tích Lý do nghỉ việc", buckets: deep.resignReasonBuckets)
+            bucketDistributionCard(title: "Phân bổ Thâm niên & Giữ chân\(periodSuffix)", buckets: deep.tenureBuckets)
+            bucketDistributionCard(title: "Cơ cấu Theo Nhóm Tuyển dụng\(periodSuffix)", buckets: deep.ageBuckets)
+            bucketDistributionCard(title: "Cơ cấu Nguồn Tuyển dụng (HRP / Vendor)\(periodSuffix)", buckets: deep.genderBuckets)
+            bucketDistributionCard(title: "Biến động & Trạng thái Nhân sự\(periodSuffix)", buckets: deep.contractBuckets)
+            bucketDistributionCard(title: "Phân tích Lý do nghỉ việc\(periodSuffix)", buckets: deep.resignReasonBuckets)
         }
     }
 

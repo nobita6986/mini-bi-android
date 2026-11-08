@@ -1001,8 +1001,11 @@ class MiniBiViewModel internal constructor(
         _generalOverviewError.value = null
         viewModelScope.launch {
             try {
-                if (cachedAdminTeamCodeMap == null && actor.hasCapability("catalog_master_manage")) {
-                    cachedAdminTeamCodeMap = repository.workReportsAndReportingService.fetchAdminTeamCodeMap()
+                if (cachedAdminTeamCodeMap == null) {
+                    val canProbeCatalog = actor.hasCapability("catalog_master_manage") ||
+                        actor.hasCapability("team_master_manage")
+                    cachedAdminTeamCodeMap = repository.workReportsAndReportingService
+                        .fetchAdminTeamCodeMap(probeAdminCatalog = canProbeCatalog)
                 }
                 val codeMap = cachedAdminTeamCodeMap.orEmpty()
                 val rawMetrics = repository.workReportsAndReportingService.fetchWorkforceDeep(
@@ -1075,6 +1078,18 @@ class MiniBiViewModel internal constructor(
                     val periodByProvider = periodAgg?.byProvider.orEmpty()
                     val leadingPeriodProject = periodByProject.firstOrNull { it.key != "unknown" }
                         ?: periodByProject.firstOrNull()
+
+                    if (periodAgg != null) {
+                        _workforceDeep.value = metrics.copy(
+                            byProject = periodByProject.take(20),
+                            byRecruiter = periodByRecruiter.take(20),
+                            byTeam = periodByTeam.ifEmpty { normalizedTeams },
+                            byProvider = periodByProvider.ifEmpty { metrics.byProvider },
+                            projectHasMore = false,
+                            projectNextCursor = null,
+                            totalProjectCount = periodByProject.count { it.key != "unknown" && it.count > 0 }
+                        )
+                    }
 
                     _generalOverview.value = GeneralOverviewSnapshot(
                         asOfDate = metrics.asOfDate,
