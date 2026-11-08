@@ -459,10 +459,80 @@ public enum WorkReportsContract {
     }
 }
 
+public struct PeriodAllScopeAggregation {
+    public let totalWorkers: Int
+    public let activeCount: Int
+    public let inactiveCount: Int
+    public let unconfirmedCount: Int
+    public let projects: [ProjectBreakdownRow]
+    public let recruiters: [PersonPerformanceRow]
+    public let managers: [PersonPerformanceRow]
+    public let teamBuckets: [DistributionBucket]
+    public let providerBuckets: [DistributionBucket]
+    public let teams: [TeamSummaryRow]
+}
+
+private actor DashboardReportingCoalescer {
+    private var inFlightWorkforceDeep: [String: Task<BackendHttpResponse, Never>] = [:]
+    private var cachedWorkforceDeep: [String: (timestamp: Date, response: BackendHttpResponse)] = [:]
+
+    private var inFlightPeriodAgg: [String: Task<PeriodAllScopeAggregation?, Never>] = [:]
+    private var cachedPeriodAgg: [String: (timestamp: Date, value: PeriodAllScopeAggregation)] = [:]
+
+    private let cacheTtlSeconds: TimeInterval = 2.5
+
+    func fetchWorkforceDeep(
+        key: String,
+        loader: @escaping @Sendable () async -> BackendHttpResponse
+    ) async -> BackendHttpResponse {
+        let now = Date()
+        if let hit = cachedWorkforceDeep[key], now.timeIntervalSince(hit.timestamp) <= cacheTtlSeconds {
+            return hit.response
+        }
+        if let existing = inFlightWorkforceDeep[key] {
+            return await existing.value
+        }
+        let task = Task {
+            await loader()
+        }
+        inFlightWorkforceDeep[key] = task
+        let response = await task.value
+        inFlightWorkforceDeep.removeValue(forKey: key)
+        if response.isSuccess {
+            cachedWorkforceDeep[key] = (Date(), response)
+        }
+        return response
+    }
+
+    func fetchPeriodAggregation(
+        key: String,
+        loader: @escaping @Sendable () async -> PeriodAllScopeAggregation?
+    ) async -> PeriodAllScopeAggregation? {
+        let now = Date()
+        if let hit = cachedPeriodAgg[key], now.timeIntervalSince(hit.timestamp) <= cacheTtlSeconds {
+            return hit.value
+        }
+        if let existing = inFlightPeriodAgg[key] {
+            return await existing.value
+        }
+        let task = Task {
+            await loader()
+        }
+        inFlightPeriodAgg[key] = task
+        let result = await task.value
+        inFlightPeriodAgg.removeValue(forKey: key)
+        if let result {
+            cachedPeriodAgg[key] = (Date(), result)
+        }
+        return result
+    }
+}
+
 public final class WorkReportsAndReportingService {
     public static let shared = WorkReportsAndReportingService()
 
     private let httpClient: BackendHttpClient
+    private let reportingCoalescer = DashboardReportingCoalescer()
 
     public init(httpClient: BackendHttpClient = .shared) {
         self.httpClient = httpClient
@@ -931,6 +1001,467 @@ public final class WorkReportsAndReportingService {
         return queryItems
     }
 
+    private static let canonicalTeamCodeMap: [String: String] = [
+        "__system_vendor__": "__system_vendor__",
+        "tài khoản nhà cung cấp": "__system_vendor__",
+        "hungyen": "hungyen",
+        "nhóm hưng yên": "hungyen",
+        "marketing": "marketing",
+        "bộ phận marketing": "marketing",
+        "team1": "TEAM1",
+        "nhóm tuyển dụng 1": "TEAM1",
+        "team2": "TEAM2",
+        "nhóm tuyển dụng 2": "TEAM2",
+        "team3": "TEAM3",
+        "nhóm tuyển dụng 3": "TEAM3",
+        "team4": "TEAM4",
+        "nhóm tuyển dụng 4": "TEAM4",
+        "team5": "TEAM5",
+        "nhóm tuyển dụng 5": "TEAM5",
+        "team6": "TEAM6",
+        "nhóm tuyển dụng 6": "TEAM6",
+        "team7": "TEAM7",
+        "nhóm tuyển dụng 7": "TEAM7",
+        "unknown": "unknown",
+        "chưa gán nhóm": "unknown"
+    ]
+
+    private static func resolveCanonicalTeamCode(rawKey: String, rawDisplay: String) -> String {
+        let keyTrim = rawKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        let dispTrim = rawDisplay.trimmingCharacters(in: .whitespacesAndNewlines)
+        let keyLower = keyTrim.lowercased()
+        let dispLower = dispTrim.lowercased()
+        if let mapped = canonicalTeamCodeMap[keyLower] { return mapped }
+        if let mapped = canonicalTeamCodeMap[dispLower] { return mapped }
+        if keyLower.hasPrefix("team"), keyLower.count >= 5 {
+            return keyTrim.uppercased()
+        }
+        return keyTrim.isEmpty ? "unknown" : keyTrim
+    }
+
+    public static func leaveCategoryLabelVi(_ key: String, fallback: String = "") -> String {
+        let cleanFallback = fallback.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lowerKey = key.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if !cleanFallback.isEmpty && cleanFallback.lowercased() != lowerKey {
+            return cleanFallback
+        }
+        switch lowerKey {
+        case "salary_benefits":
+            return "Lương & chế độ đãi ngộ"
+        case "work_environment":
+            return "Môi trường & điều kiện làm việc"
+        case "personal_family":
+            return "Lý do cá nhân / gia đình"
+        case "health_medical":
+            return "Sức khỏe / y tế"
+        case "management_team":
+            return "Quản lý / nội bộ nhóm"
+        case "contract_end":
+            return "Hết hạn hợp đồng / cắt giảm"
+        case "disciplinary_violation":
+            return "Vi phạm kỷ luật / tự ý nghỉ"
+        case "other":
+            return "Lý do khác"
+        case "unknown":
+            return "Chưa ghi nhận lý do"
+        default:
+            return cleanFallback.isEmpty ? key : cleanFallback
+        }
+    }
+
+    private func fetchCoalescedWorkforceDeepResponse(
+        startDate: String?,
+        endDate: String?
+    ) async -> BackendHttpResponse {
+        let cleanStart = (startDate ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanEnd = (endDate ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let key = "wf_deep|\(cleanStart)|\(cleanEnd)"
+        let queryItems = Self.buildWorkforceDeepQueryItems(startDate: cleanStart, endDate: cleanEnd)
+        let client = self.httpClient
+        return await reportingCoalescer.fetchWorkforceDeep(key: key) {
+            await client.request(
+                method: "GET",
+                path: "/api/reporting/workforce-deep",
+                queryItems: queryItems
+            )
+        }
+    }
+
+    public static func encodeTeamBucketKey(_ rawTeamCodeOrBucketKey: String) -> String {
+        let trimmed = rawTeamCodeOrBucketKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "unknown" }
+        if trimmed == "unknown" || trimmed.hasPrefix("team.") {
+            return trimmed
+        }
+        let b64 = Data(trimmed.utf8)
+            .base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+        return "team.\(b64)"
+    }
+
+    public static func decodeTeamBucketCode(_ rawTeamCodeOrBucketKey: String) -> String {
+        let trimmed = rawTeamCodeOrBucketKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.hasPrefix("team.") else { return trimmed }
+        var b64 = String(trimmed.dropFirst("team.".count))
+            .replacingOccurrences(of: "-", with: "+")
+            .replacingOccurrences(of: "_", with: "/")
+        let rem = b64.count % 4
+        if rem > 0 {
+            b64 += String(repeating: "=", count: 4 - rem)
+        }
+        if let data = Data(base64Encoded: b64),
+           let decoded = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !decoded.isEmpty {
+            return decoded
+        }
+        return trimmed
+    }
+
+    private static func parseReportingBucketEntries(
+        from report: [String: Any],
+        keys: [String]
+    ) -> [(key: String, display: String, totalCount: Int, onCount: Int, offCount: Int, unconfirmedCount: Int)] {
+        for key in keys {
+            if let dict = report[key] as? [String: Any] {
+                var rows: [(key: String, display: String, totalCount: Int, onCount: Int, offCount: Int, unconfirmedCount: Int)] = []
+                for (mapKey, val) in dict {
+                    guard let obj = val as? [String: Any] else { continue }
+                    let count = obj.optInt("recruitedCount", "recruited_count", "total_count", "totalCount", "eligible_episode_count", "count")
+                    guard count > 0 else { continue }
+                    let itemKey = obj.optString("key", defaultValue: mapKey)
+                    let display = obj.optString("display", "label", "name", defaultValue: itemKey)
+                    let onCnt = obj.optInt("on_count", "onCount", defaultValue: count)
+                    let offCnt = obj.optInt("off_count", "offCount")
+                    let unconfCnt = obj.optInt("unconfirmed_count", "unconfirmedCount")
+                    rows.append((itemKey, display, count, onCnt, offCnt, unconfCnt))
+                }
+                return rows
+            }
+            let arr = report.optObjectArray(key)
+            if !arr.isEmpty {
+                return arr.compactMap { obj in
+                    let count = obj.optInt("recruitedCount", "recruited_count", "total_count", "totalCount", "eligible_episode_count", "count")
+                    guard count > 0 else { return nil }
+                    let itemKey = obj.optString("key", "project_id", "recruiter_id", "code", defaultValue: "unknown")
+                    let display = obj.optString("display", "project_display", "recruiter_display", "label", "name", defaultValue: itemKey)
+                    let onCnt = obj.optInt("on_count", "onCount", defaultValue: count)
+                    let offCnt = obj.optInt("off_count", "offCount")
+                    let unconfCnt = obj.optInt("unconfirmed_count", "unconfirmedCount")
+                    return (itemKey, display, count, onCnt, offCnt, unconfCnt)
+                }
+            }
+        }
+        return []
+    }
+
+    private func fetchSingleTeamPeriodReport(
+        canonicalCode: String,
+        rawKey: String,
+        startDate: String,
+        endDate: String
+    ) async -> [String: Any]? {
+        let decodedRaw = Self.decodeTeamBucketCode(rawKey)
+        var candidates: [String] = []
+        for c in [canonicalCode, decodedRaw, decodedRaw.uppercased(), decodedRaw.lowercased()] {
+            let trimmed = c.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty && !candidates.contains(trimmed) {
+                candidates.append(trimmed)
+            }
+        }
+        for candidate in candidates {
+            let bucketKey = Self.encodeTeamBucketKey(candidate)
+            var q: [URLQueryItem] = [
+                URLQueryItem(name: "bucket_key", value: bucketKey),
+                URLQueryItem(name: "limit", value: "1")
+            ]
+            if !startDate.isEmpty { q.append(URLQueryItem(name: "from", value: startDate)) }
+            if !endDate.isEmpty { q.append(URLQueryItem(name: "to", value: endDate)) }
+            let resp = await httpClient.request(
+                method: "GET",
+                path: "/api/reporting/team-report",
+                queryItems: q
+            )
+            if resp.isSuccess, let root = resp.jsonObject, root["bucket"] != nil || root["report"] != nil {
+                return root
+            }
+            if resp.statusCode == 401 || resp.statusCode == 403 {
+                break
+            }
+        }
+        return nil
+    }
+
+    private func fetchCoalescedPeriodAggregation(
+        teamBucketsRaw: [[String: Any]],
+        startDate: String,
+        endDate: String
+    ) async -> PeriodAllScopeAggregation? {
+        let cleanStart = startDate.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanEnd = endDate.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanStart.isEmpty || !cleanEnd.isEmpty else { return nil }
+        let cacheKey = "period_agg|\(cleanStart)|\(cleanEnd)"
+
+        struct TeamSeed: Sendable {
+            let rawKey: String
+            let display: String
+            let canonicalCode: String
+        }
+
+        var seeds: [TeamSeed] = []
+        var seenCanonical: Set<String> = []
+        for (idx, b) in teamBucketsRaw.enumerated() {
+            let rawKey = b.optString("key", "team_id", "code", defaultValue: "team_\(idx)")
+            let display = b.optString("display", "team_name", "name", defaultValue: rawKey)
+            let canonical = Self.resolveCanonicalTeamCode(rawKey: rawKey, rawDisplay: display)
+            let dedupKey = canonical.lowercased()
+            if !seenCanonical.contains(dedupKey) {
+                seenCanonical.insert(dedupKey)
+                seeds.append(TeamSeed(rawKey: rawKey, display: display, canonicalCode: canonical))
+            }
+        }
+        if !seenCanonical.contains("unknown") {
+            seenCanonical.insert("unknown")
+            seeds.append(TeamSeed(rawKey: "unknown", display: "Chưa gán nhóm", canonicalCode: "unknown"))
+        }
+
+        return await reportingCoalescer.fetchPeriodAggregation(key: cacheKey) { [weak self] in
+            guard let self else { return nil }
+
+            struct TeamPeriodSlice {
+                let seed: TeamSeed
+                let report: [String: Any]
+            }
+
+            var slices: [TeamPeriodSlice] = []
+            let chunkSize = 4
+            var offset = 0
+            while offset < seeds.count {
+                let endIdx = min(offset + chunkSize, seeds.count)
+                let batch = Array(seeds[offset..<endIdx])
+                let batchResults = await withTaskGroup(of: TeamPeriodSlice?.self, returning: [TeamPeriodSlice].self) { group in
+                    for seed in batch {
+                        group.addTask {
+                            if let rep = await self.fetchSingleTeamPeriodReport(
+                                canonicalCode: seed.canonicalCode,
+                                rawKey: seed.rawKey,
+                                startDate: cleanStart,
+                                endDate: cleanEnd
+                            ) {
+                                return TeamPeriodSlice(seed: seed, report: rep)
+                            }
+                            return nil
+                        }
+                    }
+                    var collected: [TeamPeriodSlice] = []
+                    for await item in group {
+                        if let item { collected.append(item) }
+                    }
+                    return collected
+                }
+                slices.append(contentsOf: batchResults)
+                offset = endIdx
+            }
+
+            guard !slices.isEmpty else { return nil }
+
+            struct MutableBucket {
+                var key: String
+                var display: String
+                var totalCount: Int = 0
+                var onCount: Int = 0
+                var offCount: Int = 0
+                var unconfirmedCount: Int = 0
+            }
+
+            var totalWorkers = 0
+            var activeCount = 0
+            var inactiveCount = 0
+            var unconfirmedCount = 0
+
+            var projectMap: [String: MutableBucket] = [:]
+            var recruiterMap: [String: MutableBucket] = [:]
+            var providerMap: [String: MutableBucket] = [:]
+            var teamRows: [TeamSummaryRow] = []
+            var managerRows: [PersonPerformanceRow] = []
+            var teamDistRaw: [(key: String, label: String, count: Int)] = []
+
+            for slice in slices {
+                let rootObj = slice.report
+                let rep = (rootObj["report"] as? [String: Any]) ?? rootObj
+                let bucketObj = (rootObj["bucket"] as? [String: Any]) ?? (rep["team"] as? [String: Any]) ?? [:]
+                let detailObj = (rootObj["detail"] as? [String: Any]) ?? [:]
+                let wfSnapObj = ((rootObj["workforce"] as? [String: Any])?["snapshot"] as? [String: Any])
+                    ?? (rep["summary"] as? [String: Any])
+                    ?? [:]
+
+                let tTotal = rep.optInt("recruitedTotal", "recruited_total", defaultValue: detailObj.optInt("total", defaultValue: wfSnapObj.optInt("total_count", "totalCount", "total")))
+                let tOn = wfSnapObj.optInt("onCount", "on_count", "active_count", defaultValue: tTotal)
+                let tOff = wfSnapObj.optInt("offCount", "off_count", "inactive_count")
+                let tUnconf = wfSnapObj.optInt("unconfirmedCount", "unconfirmed_count")
+
+                totalWorkers += tTotal
+                activeCount += tOn
+                inactiveCount += tOff
+                unconfirmedCount += tUnconf
+
+                for p in Self.parseReportingBucketEntries(from: rep, keys: ["byProject", "by_project"]) {
+                    let normKey = p.key.lowercased()
+                    var cur = projectMap[normKey] ?? MutableBucket(key: p.key, display: p.display)
+                    cur.totalCount += p.totalCount
+                    cur.onCount += p.onCount
+                    cur.offCount += p.offCount
+                    cur.unconfirmedCount += p.unconfirmedCount
+                    projectMap[normKey] = cur
+                }
+
+                var teamMembers: [PersonPerformanceRow] = []
+                for r in Self.parseReportingBucketEntries(from: rep, keys: ["byRecruiter", "by_recruiter"]) {
+                    let normKey = r.key.lowercased()
+                    var cur = recruiterMap[normKey] ?? MutableBucket(key: r.key, display: r.display)
+                    cur.totalCount += r.totalCount
+                    cur.onCount += r.onCount
+                    cur.offCount += r.offCount
+                    cur.unconfirmedCount += r.unconfirmedCount
+                    recruiterMap[normKey] = cur
+
+                    if slice.seed.canonicalCode != "unknown" {
+                        teamMembers.append(
+                            PersonPerformanceRow(
+                                id: "\(slice.seed.rawKey)_\(r.key)",
+                                code: r.key,
+                                name: r.display,
+                                totalCount: r.totalCount,
+                                activeCount: r.onCount,
+                                inactiveCount: r.offCount,
+                                activeRatePct: r.totalCount > 0 ? (Double(r.onCount) * 100.0 / Double(r.totalCount)) : 0.0
+                            )
+                        )
+                    }
+                }
+                teamMembers.sort { $0.totalCount > $1.totalCount }
+
+                for pr in Self.parseReportingBucketEntries(from: rep, keys: ["byProvider", "by_provider"]) {
+                    let normKey = pr.key.lowercased()
+                    var cur = providerMap[normKey] ?? MutableBucket(key: pr.key, display: pr.display)
+                    cur.totalCount += pr.totalCount
+                    cur.onCount += pr.onCount
+                    cur.offCount += pr.offCount
+                    cur.unconfirmedCount += pr.unconfirmedCount
+                    providerMap[normKey] = cur
+                }
+
+                let teamDisplay = bucketObj.optString("display", "displayName", "display_name", defaultValue: slice.seed.display)
+                if tTotal > 0 || slice.seed.canonicalCode != "unknown" {
+                    let rate = tTotal > 0 ? min(100.0, Double(tOn) * 100.0 / Double(tTotal)) : 0.0
+                    if tTotal > 0 {
+                        managerRows.append(
+                            PersonPerformanceRow(
+                                id: slice.seed.rawKey,
+                                code: slice.seed.canonicalCode,
+                                name: teamDisplay,
+                                totalCount: tTotal,
+                                activeCount: min(tTotal, tOn),
+                                inactiveCount: min(tTotal, tOff),
+                                activeRatePct: rate
+                            )
+                        )
+                        teamDistRaw.append((key: slice.seed.rawKey, label: teamDisplay, count: tTotal))
+                    }
+                    if slice.seed.canonicalCode != "unknown" || tTotal > 0 {
+                        teamRows.append(
+                            TeamSummaryRow(
+                                id: slice.seed.rawKey,
+                                teamCode: slice.seed.canonicalCode,
+                                teamName: teamDisplay,
+                                leaderName: "",
+                                memberCount: teamMembers.count,
+                                totalWorkers: tTotal,
+                                activeWorkers: min(tTotal, tOn),
+                                inactiveWorkers: min(tTotal, tOff),
+                                newWorkers: tTotal,
+                                activeRatePct: rate,
+                                members: teamMembers
+                            )
+                        )
+                    }
+                }
+            }
+
+            let sortedProjects = projectMap.values
+                .filter { $0.totalCount > 0 }
+                .sorted { $0.totalCount != $1.totalCount ? $0.totalCount > $1.totalCount : $0.display < $1.display }
+                .enumerated()
+                .map { idx, b in
+                    ProjectBreakdownRow(
+                        id: b.key.isEmpty ? "proj_\(idx)" : b.key,
+                        projectName: b.display,
+                        totalCount: b.totalCount,
+                        activeCount: b.onCount,
+                        inactiveCount: b.offCount,
+                        newCount: b.totalCount,
+                        activeSharePct: b.totalCount > 0 ? (Double(b.onCount) * 100.0 / Double(b.totalCount)) : 0.0
+                    )
+                }
+
+            let sortedRecruiters = recruiterMap.values
+                .filter { $0.totalCount > 0 }
+                .sorted { $0.totalCount != $1.totalCount ? $0.totalCount > $1.totalCount : $0.display < $1.display }
+                .map { b in
+                    PersonPerformanceRow(
+                        id: b.key,
+                        code: b.key,
+                        name: b.display,
+                        totalCount: b.totalCount,
+                        activeCount: b.onCount,
+                        inactiveCount: b.offCount,
+                        activeRatePct: b.totalCount > 0 ? (Double(b.onCount) * 100.0 / Double(b.totalCount)) : 0.0
+                    )
+                }
+
+            managerRows.sort { $0.totalCount > $1.totalCount }
+            teamRows.sort { $0.totalWorkers > $1.totalWorkers }
+
+            let safeTotal = max(1, totalWorkers)
+            let teamBuckets = teamDistRaw
+                .sorted { $0.count > $1.count }
+                .map { item in
+                    DistributionBucket(
+                        id: item.key,
+                        label: item.label,
+                        count: item.count,
+                        percentage: Double(item.count) * 100.0 / Double(safeTotal)
+                    )
+                }
+
+            let providerBuckets = providerMap.values
+                .filter { $0.totalCount > 0 }
+                .sorted { $0.totalCount > $1.totalCount }
+                .map { b in
+                    DistributionBucket(
+                        id: b.key,
+                        label: b.display,
+                        count: b.totalCount,
+                        percentage: Double(b.totalCount) * 100.0 / Double(safeTotal)
+                    )
+                }
+
+            return PeriodAllScopeAggregation(
+                totalWorkers: totalWorkers,
+                activeCount: activeCount,
+                inactiveCount: inactiveCount,
+                unconfirmedCount: unconfirmedCount,
+                projects: sortedProjects,
+                recruiters: sortedRecruiters,
+                managers: managerRows,
+                teamBuckets: teamBuckets,
+                providerBuckets: providerBuckets,
+                teams: teamRows
+            )
+        }
+    }
+
     private static func normalizeWorkerDateIso(_ raw: String) -> String {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return "" }
@@ -1014,13 +1545,11 @@ public final class WorkReportsAndReportingService {
         let cleanStart = (startDate ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         let cleanEnd = (endDate ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         let hasDateFilter = !cleanStart.isEmpty || !cleanEnd.isEmpty
-        let queryItems = Self.buildWorkforceDeepQueryItems(startDate: startDate, endDate: endDate)
 
         if normalizedScope == "all" || normalizedScope.isEmpty {
-            let response = await httpClient.request(
-                method: "GET",
-                path: "/api/reporting/workforce-deep",
-                queryItems: queryItems
+            let response = await fetchCoalescedWorkforceDeepResponse(
+                startDate: cleanStart,
+                endDate: cleanEnd
             )
 
             if response.isSuccess, let root = response.jsonObject {
@@ -1038,6 +1567,11 @@ public final class WorkReportsAndReportingService {
                     let retentionObj = (wfObj["retention"] as? [String: Any]) ?? [:]
                     let checkpointsObj = (retentionObj["checkpoints"] as? [String: Any]) ?? [:]
                     let d30Obj = (checkpointsObj["d30"] as? [String: Any]) ?? [:]
+                    let d7Obj = (checkpointsObj["d7"] as? [String: Any]) ?? [:]
+                    let periodCohortObj = (retentionObj["period_cohort"] as? [String: Any])
+                        ?? (retentionObj["periodCohort"] as? [String: Any]) ?? [:]
+                    let periodCpObj = (periodCohortObj["checkpoints"] as? [String: Any]) ?? [:]
+                    let periodD7Obj = (periodCpObj["d7"] as? [String: Any]) ?? [:]
 
                     let snapshotTotal = snapshotObj.optInt("eligible_episode_total", "eligibleEpisodeTotal", "total")
                     let snapshotOn = snapshotObj.optInt("on_count", "onCount", "active_count")
@@ -1045,6 +1579,19 @@ public final class WorkReportsAndReportingService {
                     let snapshotUnconfirmed = snapshotObj.optInt("unconfirmed_count", "unconfirmedCount", "interview_count")
                     let newCount = newEpObj.optInt("total", "count")
                     let resignedInPeriodCount = offFlowObj.optInt("total_inflow_count", "totalInflowCount", "count")
+
+                    let dimsObj = (wfObj["dimensions"] as? [String: Any]) ?? [:]
+                    let byTeamObj = (dimsObj["by_team"] as? [String: Any])
+                        ?? (dimsObj["byTeam"] as? [String: Any]) ?? [:]
+                    let teamBuckets = byTeamObj.optObjectArray("buckets")
+
+                    let periodAgg: PeriodAllScopeAggregation? = hasDateFilter
+                        ? await fetchCoalescedPeriodAggregation(
+                            teamBucketsRaw: teamBuckets,
+                            startDate: cleanStart,
+                            endDate: cleanEnd
+                        )
+                        : nil
 
                     let totalWorkers: Int
                     let activeCount: Int
@@ -1055,6 +1602,11 @@ public final class WorkReportsAndReportingService {
                         activeCount = onFlowObj.optInt("total_inflow_count", "totalInflowCount", "count")
                         inactiveCount = resignedInPeriodCount
                         unconfirmedCount = waitingFlowObj.optInt("total_inflow_count", "totalInflowCount", "count")
+                    } else if let periodAgg, hasDateFilter {
+                        totalWorkers = periodAgg.totalWorkers
+                        activeCount = periodAgg.activeCount
+                        inactiveCount = periodAgg.inactiveCount
+                        unconfirmedCount = periodAgg.unconfirmedCount
                     } else {
                         totalWorkers = snapshotTotal
                         activeCount = snapshotOn
@@ -1062,16 +1614,28 @@ public final class WorkReportsAndReportingService {
                         unconfirmedCount = snapshotUnconfirmed
                     }
 
-                    let d30RetentionRatio = d30Obj.optNullableDouble("retention_rate", "retentionRate")
                     let retentionRate: Double = {
-                        if let r = d30RetentionRatio {
+                        if hasDateFilter {
+                            if let pRate = periodD7Obj.optNullableDouble("retention_rate", "retentionRate") {
+                                return pRate <= 1.0 && pRate > 0.0 ? pRate * 100.0 : pRate
+                            }
+                            if let d7Rate = d7Obj.optNullableDouble("retention_rate", "retentionRate") {
+                                return d7Rate <= 1.0 && d7Rate > 0.0 ? d7Rate * 100.0 : d7Rate
+                            }
+                        }
+                        if let r = d30Obj.optNullableDouble("retention_rate", "retentionRate") {
                             return r <= 1.0 && r > 0.0 ? r * 100.0 : r
                         }
                         return snapshotTotal > 0 ? (Double(snapshotOn) * 100.0 / Double(snapshotTotal)) : 0.0
                     }()
-                    let turnoverRate = snapshotTotal > 0
-                        ? (Double(snapshotOff) * 100.0 / Double(snapshotTotal))
-                        : 0.0
+                    let turnoverRate: Double = {
+                        if hasDateFilter && totalWorkers > 0 {
+                            return Double(inactiveCount) * 100.0 / Double(totalWorkers)
+                        }
+                        return snapshotTotal > 0
+                            ? (Double(snapshotOff) * 100.0 / Double(snapshotTotal))
+                            : 0.0
+                    }()
 
                     let kpis = GeneralOverviewKpis(
                         totalHeadcount: totalWorkers,
@@ -1084,7 +1648,22 @@ public final class WorkReportsAndReportingService {
                         turnoverRate: turnoverRate
                     )
 
-                    let dimsObj = (wfObj["dimensions"] as? [String: Any]) ?? [:]
+                    if let periodAgg, hasDateFilter {
+                        return .success(
+                            GeneralOverviewData(
+                                scope: scope,
+                                kpis: kpis,
+                                projects: periodAgg.projects,
+                                projectsTotal: periodAgg.projects.count,
+                                projectsPage: 1,
+                                projectsTotalPages: 1,
+                                recruiters: periodAgg.recruiters,
+                                managers: periodAgg.managers
+                            ),
+                            statusCode: response.statusCode
+                        )
+                    }
+
                     let byProjectObj = (dimsObj["by_project"] as? [String: Any])
                         ?? (dimsObj["byProject"] as? [String: Any]) ?? [:]
                     let projectsBuckets = byProjectObj.optObjectArray("buckets")
@@ -1132,9 +1711,6 @@ public final class WorkReportsAndReportingService {
                         )
                     }
 
-                    let byTeamObj = (dimsObj["by_team"] as? [String: Any])
-                        ?? (dimsObj["byTeam"] as? [String: Any]) ?? [:]
-                    let teamBuckets = byTeamObj.optObjectArray("buckets")
                     let managers: [PersonPerformanceRow] = teamBuckets.enumerated().map { idx, m in
                         let mTotal = m.optInt("eligible_episode_count", "eligibleEpisodeCount", "total_workers", "total")
                         let mActive = m.optInt("on_count", "onCount", "active_count")
@@ -1245,6 +1821,14 @@ public final class WorkReportsAndReportingService {
                 )
                 return .success(overview, statusCode: response.statusCode)
             }
+
+            if response.statusCode != 403 && response.statusCode != 404 {
+                return .failure(
+                    message: response.errorMessage ?? "Không thể tải báo cáo tổng quát.",
+                    httpStatus: response.statusCode,
+                    errorCode: response.errorCode
+                )
+            }
         }
 
         // Scoped or non-Admin fallback: aggregate from `/api/direct-entry/workers`
@@ -1340,12 +1924,13 @@ public final class WorkReportsAndReportingService {
         startDate: String? = nil,
         endDate: String? = nil
     ) async -> MiniBiApiResult<WorkforceDeepMetricsData> {
-        let queryItems = Self.buildWorkforceDeepQueryItems(startDate: startDate, endDate: endDate)
+        let cleanStart = (startDate ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanEnd = (endDate ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let hasDateFilter = !cleanStart.isEmpty || !cleanEnd.isEmpty
 
-        let response = await httpClient.request(
-            method: "GET",
-            path: "/api/reporting/workforce-deep",
-            queryItems: queryItems
+        let response = await fetchCoalescedWorkforceDeepResponse(
+            startDate: cleanStart,
+            endDate: cleanEnd
         )
 
         if response.isSuccess, let root = response.jsonObject {
@@ -1356,10 +1941,92 @@ public final class WorkReportsAndReportingService {
                 let offCount = snapshotObj.optInt("off_count", "offCount")
                 let unconfirmedCount = snapshotObj.optInt("unconfirmed_count", "unconfirmedCount")
 
+                let balanceObj = (wfObj["balance"] as? [String: Any]) ?? [:]
+                let balanceApplicable = balanceObj.optBool("applicable", defaultValue: false)
+                let newEpObj = (balanceObj["new_episodes_in_period"] as? [String: Any])
+                    ?? (balanceObj["newEpisodesInPeriod"] as? [String: Any]) ?? [:]
+                let byStatusObj = (balanceObj["by_status"] as? [String: Any])
+                    ?? (balanceObj["byStatus"] as? [String: Any]) ?? [:]
+                let onFlowObj = (byStatusObj["on"] as? [String: Any]) ?? [:]
+                let offFlowObj = (byStatusObj["off"] as? [String: Any]) ?? [:]
+                let waitingFlowObj = (byStatusObj["unconfirmed"] as? [String: Any]) ?? [:]
+
                 let retentionObj = (wfObj["retention"] as? [String: Any]) ?? [:]
                 let checkpointsObj = (retentionObj["checkpoints"] as? [String: Any]) ?? [:]
                 var tenureBuckets: [DistributionBucket] = []
-                for (key, title) in [("d7", "Giữ chân sau 7 ngày (D7)"), ("d30", "Giữ chân sau 30 ngày (D30)"), ("d90", "Giữ chân sau 90 ngày (D90)")] {
+
+                if hasDateFilter {
+                    let periodCohortObj = (retentionObj["period_cohort"] as? [String: Any])
+                        ?? (retentionObj["periodCohort"] as? [String: Any]) ?? [:]
+                    let cohortSize = periodCohortObj.optInt("cohort_size", "cohortSize")
+                    if cohortSize > 0 {
+                        tenureBuckets.append(
+                            DistributionBucket(
+                                id: "period_cohort_size",
+                                label: "Nhóm tuyển mới trong kỳ",
+                                count: cohortSize,
+                                percentage: 100.0
+                            )
+                        )
+                        let pCpObj = (periodCohortObj["checkpoints"] as? [String: Any]) ?? [:]
+                        for (key, title) in [
+                            ("d7", "Giữ chân D7 (nhóm trong kỳ)"),
+                            ("d30", "Giữ chân D30 (nhóm trong kỳ)"),
+                            ("d90", "Giữ chân D90 (nhóm trong kỳ)")
+                        ] {
+                            if let cp = pCpObj[key] as? [String: Any] {
+                                let eligible = cp.optInt("eligible_count", "eligibleCount")
+                                let retained = cp.optInt("retained_count", "retainedCount")
+                                if eligible > 0 {
+                                    let rawRate = cp.optDouble("retention_rate", "retentionRate")
+                                    let pct = rawRate <= 1.0 && rawRate > 0.0 ? rawRate * 100.0 : rawRate
+                                    tenureBuckets.append(
+                                        DistributionBucket(
+                                            id: "period_\(key)",
+                                            label: "\(title) (\(retained)/\(eligible))",
+                                            count: retained,
+                                            percentage: pct
+                                        )
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                let durationObj = (wfObj["duration"] as? [String: Any]) ?? [:]
+                let distRaw = durationObj.optObjectArray("distribution")
+                let durationTotal = max(1, distRaw.reduce(0) { $0 + $1.optInt("episode_count", "episodeCount", "count") })
+                let durationLabels: [String: String] = [
+                    "0_7_days": "Thâm niên 0–7 ngày",
+                    "8_30_days": "Thâm niên 8–30 ngày",
+                    "31_90_days": "Thâm niên 31–90 ngày",
+                    "90_plus_days": "Thâm niên trên 90 ngày"
+                ]
+                for (idx, b) in distRaw.enumerated() {
+                    let key = b.optString("bucket", "key", defaultValue: "dur_\(idx)")
+                    let cnt = b.optInt("episode_count", "episodeCount", "count")
+                    if cnt > 0 {
+                        let rawShare = b.optDouble("share_rate", "shareRate")
+                        let pct = rawShare > 0.0
+                            ? (rawShare <= 1.0 ? rawShare * 100.0 : rawShare)
+                            : (Double(cnt) * 100.0 / Double(durationTotal))
+                        tenureBuckets.append(
+                            DistributionBucket(
+                                id: "dur_\(key)",
+                                label: durationLabels[key] ?? key,
+                                count: cnt,
+                                percentage: pct
+                            )
+                        )
+                    }
+                }
+
+                for (key, title) in [
+                    ("d7", "Giữ chân sau 7 ngày (D7 lũy kế)"),
+                    ("d30", "Giữ chân sau 30 ngày (D30 lũy kế)"),
+                    ("d90", "Giữ chân sau 90 ngày (D90 lũy kế)")
+                ] {
                     if let cp = checkpointsObj[key] as? [String: Any] {
                         let retained = cp.optInt("retained_count", "retainedCount")
                         let rawRate = cp.optDouble("retention_rate", "retentionRate")
@@ -1369,47 +2036,114 @@ public final class WorkReportsAndReportingService {
                 }
 
                 let dimsObj = (wfObj["dimensions"] as? [String: Any]) ?? [:]
-                let byProviderObj = (dimsObj["by_provider"] as? [String: Any]) ?? (dimsObj["byProvider"] as? [String: Any]) ?? [:]
-                let providerBucketsRaw = byProviderObj.optObjectArray("buckets")
-                let providerBuckets: [DistributionBucket] = providerBucketsRaw.enumerated().map { idx, b in
-                    let cnt = b.optInt("eligible_episode_count", "eligibleEpisodeCount", "on_count")
-                    let pct = Double(cnt) * 100.0 / Double(totalEp)
-                    return DistributionBucket(
-                        id: b.optString("key", defaultValue: "prov_\(idx)"),
-                        label: b.optString("display", "label", "key", defaultValue: "Nguồn \(idx + 1)"),
-                        count: cnt,
-                        percentage: pct
-                    )
-                }
-
                 let byTeamObj = (dimsObj["by_team"] as? [String: Any]) ?? (dimsObj["byTeam"] as? [String: Any]) ?? [:]
                 let teamBucketsRaw = byTeamObj.optObjectArray("buckets")
-                let teamBuckets: [DistributionBucket] = teamBucketsRaw.enumerated().map { idx, b in
-                    let cnt = b.optInt("eligible_episode_count", "eligibleEpisodeCount", "on_count")
-                    let pct = Double(cnt) * 100.0 / Double(totalEp)
-                    return DistributionBucket(
-                        id: b.optString("key", defaultValue: "team_\(idx)"),
-                        label: b.optString("display", "label", "key", defaultValue: "Nhóm \(idx + 1)"),
-                        count: cnt,
-                        percentage: pct
-                    )
-                }
 
-                let statusBuckets: [DistributionBucket] = [
-                    DistributionBucket(id: "ON", label: "Đang làm việc (ON)", count: onCount, percentage: Double(onCount) * 100.0 / Double(totalEp)),
-                    DistributionBucket(id: "UNCONFIRMED", label: "Chờ nhận việc (UNCONFIRMED)", count: unconfirmedCount, percentage: Double(unconfirmedCount) * 100.0 / Double(totalEp)),
-                    DistributionBucket(id: "OFF", label: "Đã nghỉ việc (OFF)", count: offCount, percentage: Double(offCount) * 100.0 / Double(totalEp))
-                ]
+                let periodAgg: PeriodAllScopeAggregation? = hasDateFilter
+                    ? await fetchCoalescedPeriodAggregation(
+                        teamBucketsRaw: teamBucketsRaw,
+                        startDate: cleanStart,
+                        endDate: cleanEnd
+                    )
+                    : nil
+
+                let byProviderObj = (dimsObj["by_provider"] as? [String: Any]) ?? (dimsObj["byProvider"] as? [String: Any]) ?? [:]
+                let providerBucketsRaw = byProviderObj.optObjectArray("buckets")
+                let providerBuckets: [DistributionBucket] = {
+                    if let periodAgg, hasDateFilter, !periodAgg.providerBuckets.isEmpty {
+                        return periodAgg.providerBuckets
+                    }
+                    return providerBucketsRaw.enumerated().map { idx, b in
+                        let cnt = b.optInt("eligible_episode_count", "eligibleEpisodeCount", "on_count")
+                        let pct = Double(cnt) * 100.0 / Double(totalEp)
+                        return DistributionBucket(
+                            id: b.optString("key", defaultValue: "prov_\(idx)"),
+                            label: b.optString("display", "label", "key", defaultValue: "Nguồn \(idx + 1)"),
+                            count: cnt,
+                            percentage: pct
+                        )
+                    }
+                }()
+
+                let teamBuckets: [DistributionBucket] = {
+                    if let periodAgg, hasDateFilter, !periodAgg.teamBuckets.isEmpty {
+                        return periodAgg.teamBuckets
+                    }
+                    return teamBucketsRaw.enumerated().map { idx, b in
+                        let cnt = b.optInt("eligible_episode_count", "eligibleEpisodeCount", "on_count")
+                        let pct = Double(cnt) * 100.0 / Double(totalEp)
+                        return DistributionBucket(
+                            id: b.optString("key", defaultValue: "team_\(idx)"),
+                            label: b.optString("display", "label", "key", defaultValue: "Nhóm \(idx + 1)"),
+                            count: cnt,
+                            percentage: pct
+                        )
+                    }
+                }()
+
+                let statusBuckets: [DistributionBucket] = {
+                    if hasDateFilter && balanceApplicable {
+                        let newCount = newEpObj.optInt("total", "count")
+                        let onInflow = onFlowObj.optInt("total_inflow_count", "totalInflowCount", "count")
+                        let waitingInflow = waitingFlowObj.optInt("total_inflow_count", "totalInflowCount", "count")
+                        let offInflow = offFlowObj.optInt("total_inflow_count", "totalInflowCount", "count")
+                        let denom = Double(max(1, max(newCount, onInflow + waitingInflow + offInflow)))
+                        return [
+                            DistributionBucket(
+                                id: "PERIOD_NEW",
+                                label: "Tuyển mới trong kỳ",
+                                count: newCount,
+                                percentage: min(100.0, Double(newCount) * 100.0 / denom)
+                            ),
+                            DistributionBucket(
+                                id: "PERIOD_ON",
+                                label: "Vào làm (ON) trong kỳ",
+                                count: onInflow,
+                                percentage: min(100.0, Double(onInflow) * 100.0 / denom)
+                            ),
+                            DistributionBucket(
+                                id: "PERIOD_UNCONFIRMED",
+                                label: "Chờ nhận việc trong kỳ",
+                                count: waitingInflow,
+                                percentage: min(100.0, Double(waitingInflow) * 100.0 / denom)
+                            ),
+                            DistributionBucket(
+                                id: "PERIOD_OFF",
+                                label: "Nghỉ việc (OFF) trong kỳ",
+                                count: offInflow,
+                                percentage: min(100.0, Double(offInflow) * 100.0 / denom)
+                            )
+                        ]
+                    }
+                    return [
+                        DistributionBucket(id: "ON", label: "Đang làm việc (ON)", count: onCount, percentage: Double(onCount) * 100.0 / Double(totalEp)),
+                        DistributionBucket(id: "UNCONFIRMED", label: "Chờ nhận việc (UNCONFIRMED)", count: unconfirmedCount, percentage: Double(unconfirmedCount) * 100.0 / Double(totalEp)),
+                        DistributionBucket(id: "OFF", label: "Đã nghỉ việc (OFF)", count: offCount, percentage: Double(offCount) * 100.0 / Double(totalEp))
+                    ]
+                }()
 
                 let leaveReasonsObj = (wfObj["leave_reasons"] as? [String: Any]) ?? (wfObj["leaveReasons"] as? [String: Any]) ?? [:]
-                let leaveCatsRaw = leaveReasonsObj.optObjectArray("by_category").ifEmpty(leaveReasonsObj.optObjectArray("byCategory"))
-                let resignBuckets: [DistributionBucket] = leaveCatsRaw.enumerated().map { idx, c in
+                let periodLeaveObj = (leaveReasonsObj["period_leave_reasons"] as? [String: Any])
+                    ?? (leaveReasonsObj["periodLeaveReasons"] as? [String: Any]) ?? [:]
+                let usePeriodLeave = hasDateFilter && periodLeaveObj.optBool("applicable", defaultValue: false)
+                let leaveSourceObj = usePeriodLeave ? periodLeaveObj : leaveReasonsObj
+                let leaveCatsRaw = leaveSourceObj.optObjectArray("by_category").ifEmpty(leaveSourceObj.optObjectArray("byCategory"))
+                let resignBuckets: [DistributionBucket] = leaveCatsRaw.enumerated().compactMap { idx, c in
                     let cnt = c.optInt("episode_count", "episodeCount", "count")
-                    let rawShare = c.optDouble("share_of_off_rate", "shareOfOffRate", "percentage")
+                    guard cnt > 0 else { return nil }
+                    let rawShare = c.optDouble(
+                        "share_of_off_events_rate",
+                        "shareOfOffEventsRate",
+                        "share_of_off_rate",
+                        "shareOfOffRate",
+                        "percentage"
+                    )
                     let pct = rawShare <= 1.0 && rawShare > 0.0 ? rawShare * 100.0 : rawShare
+                    let rawKey = c.optString("category", "key", defaultValue: "leave_\(idx)")
+                    let rawLabel = c.optString("label", "display")
                     return DistributionBucket(
-                        id: c.optString("key", defaultValue: "leave_\(idx)"),
-                        label: c.optString("label", "display", "key", defaultValue: "Lý do \(idx + 1)"),
+                        id: rawKey,
+                        label: Self.leaveCategoryLabelVi(rawKey, fallback: rawLabel),
                         count: cnt,
                         percentage: pct
                     )
@@ -1453,6 +2187,14 @@ public final class WorkReportsAndReportingService {
             return .success(deepData, statusCode: response.statusCode)
         }
 
+        if response.statusCode != 403 && response.statusCode != 404 {
+            return .failure(
+                message: response.errorMessage ?? "Không thể tải báo cáo chuyên sâu.",
+                httpStatus: response.statusCode,
+                errorCode: response.errorCode
+            )
+        }
+
         if let fallbackData = await fetchMergedWorkersForScopedFallback(
             preferredScope: scope,
             startDate: startDate,
@@ -1485,7 +2227,11 @@ public final class WorkReportsAndReportingService {
             )
         }
 
-        return .success(WorkforceDeepMetricsData(), statusCode: response.statusCode)
+        return .failure(
+            message: response.errorMessage ?? "Không thể tải báo cáo chuyên sâu.",
+            httpStatus: response.statusCode,
+            errorCode: response.errorCode
+        )
     }
 
     public func fetchTeamReport(
@@ -1493,11 +2239,13 @@ public final class WorkReportsAndReportingService {
         endDate: String? = nil,
         teamCode: String? = nil
     ) async -> MiniBiApiResult<TeamReportData> {
-        let queryItems = Self.buildWorkforceDeepQueryItems(startDate: startDate, endDate: endDate)
-        let deepResponse = await httpClient.request(
-            method: "GET",
-            path: "/api/reporting/workforce-deep",
-            queryItems: queryItems
+        let cleanStart = (startDate ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanEnd = (endDate ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let hasDateFilter = !cleanStart.isEmpty || !cleanEnd.isEmpty
+
+        let deepResponse = await fetchCoalescedWorkforceDeepResponse(
+            startDate: cleanStart,
+            endDate: cleanEnd
         )
 
         if deepResponse.isSuccess,
@@ -1506,6 +2254,16 @@ public final class WorkReportsAndReportingService {
            let dimsObj = wfObj["dimensions"] as? [String: Any] {
             let byTeamObj = (dimsObj["by_team"] as? [String: Any]) ?? (dimsObj["byTeam"] as? [String: Any]) ?? [:]
             let teamBuckets = byTeamObj.optObjectArray("buckets")
+
+            if hasDateFilter,
+               let periodAgg = await fetchCoalescedPeriodAggregation(
+                   teamBucketsRaw: teamBuckets,
+                   startDate: cleanStart,
+                   endDate: cleanEnd
+               ),
+               !periodAgg.teams.isEmpty {
+                return .success(TeamReportData(teams: periodAgg.teams), statusCode: deepResponse.statusCode)
+            }
 
             let teams: [TeamSummaryRow] = teamBuckets.enumerated().map { idx, b in
                 let key = b.optString("key", "team_id", defaultValue: "team_\(idx)")

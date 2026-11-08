@@ -51,6 +51,7 @@ public final class MiniBiViewModel: ObservableObject {
     @Published public var filterEndDate: String = ""
     @Published public var dashboardScope: String = "all"
     @Published public var isLoadingDashboard: Bool = false
+    @Published public var dashboardErrorMessage: String = ""
     @Published public var generalOverview: GeneralOverviewData = GeneralOverviewData()
     @Published public var workforceDeepMetrics: WorkforceDeepMetricsData = WorkforceDeepMetricsData()
     @Published public var teamReport: TeamReportData = TeamReportData()
@@ -592,10 +593,14 @@ public final class MiniBiViewModel: ObservableObject {
 
     // MARK: - Dashboard & CCCD Review Actions
 
+    private var dashboardReloadTask: Task<Void, Never>?
+
     public func applyDatePreset(_ preset: DateFilterPreset, reload: Bool = true) {
         selectedDatePreset = preset
         var cal = Calendar(identifier: .gregorian)
         cal.timeZone = TimeZone(identifier: "Asia/Ho_Chi_Minh") ?? .current
+        cal.firstWeekday = 2 // Monday (ISO-8601 / Vietnam standard)
+        cal.minimumDaysInFirstWeek = 4
         let now = Date()
         let df = DateFormatter()
         df.locale = Locale(identifier: "en_US_POSIX")
@@ -626,41 +631,82 @@ public final class MiniBiViewModel: ObservableObject {
         }
 
         if reload {
-            Task { await loadDashboardData() }
+            dashboardReloadTask?.cancel()
+            dashboardReloadTask = Task { [weak self] in
+                await self?.loadDashboardData(includeCccdTabs: false)
+            }
         }
     }
 
-    public func loadDashboardData() async {
+    public func loadDashboardData(includeCccdTabs: Bool = true) async {
+        let targetScope = dashboardScope
+        let targetStart = filterStartDate
+        let targetEnd = filterEndDate
+
         isLoadingDashboard = true
+        dashboardErrorMessage = ""
         defer { isLoadingDashboard = false }
 
         async let overviewTask = workReportsService.fetchGeneralOverview(
-            scope: dashboardScope,
-            startDate: filterStartDate,
-            endDate: filterEndDate
+            scope: targetScope,
+            startDate: targetStart,
+            endDate: targetEnd
         )
         async let deepTask = workReportsService.fetchWorkforceDeepMetrics(
-            scope: dashboardScope,
-            startDate: filterStartDate,
-            endDate: filterEndDate
+            scope: targetScope,
+            startDate: targetStart,
+            endDate: targetEnd
         )
         async let teamTask = workReportsService.fetchTeamReport(
-            startDate: filterStartDate,
-            endDate: filterEndDate
-        )
-        async let dupTask = workReportsService.fetchDuplicateCccdReport(search: duplicateSearchQuery)
-        async let cccdTask = directEntryService.fetchCccdReviewList(
-            status: cccdReviewFilterStatus,
-            search: cccdReviewSearchQuery
+            startDate: targetStart,
+            endDate: targetEnd
         )
 
-        if case .success(let ov, _) = await overviewTask { generalOverview = ov }
-        if case .success(let dp, _) = await deepTask { workforceDeepMetrics = dp }
-        if case .success(let tm, _) = await teamTask { teamReport = tm }
-        if case .success(let dup, _) = await dupTask { duplicateCccdReport = dup }
-        if case .success(let cccd, _) = await cccdTask {
-            cccdReviewItems = cccd.items
-            cccdReviewTotal = cccd.total
+        let overviewRes = await overviewTask
+        let deepRes = await deepTask
+        let teamRes = await teamTask
+
+        guard !Task.isCancelled,
+              dashboardScope == targetScope,
+              filterStartDate == targetStart,
+              filterEndDate == targetEnd else {
+            return
+        }
+
+        var firstError: String?
+        switch overviewRes {
+        case .success(let ov, _):
+            generalOverview = ov
+        case .failure(let message, _, _, _):
+            firstError = message
+        }
+
+        switch deepRes {
+        case .success(let dp, _):
+            workforceDeepMetrics = dp
+        case .failure(let message, _, _, _):
+            if firstError == nil { firstError = message }
+        }
+
+        if case .success(let tm, _) = teamRes {
+            teamReport = tm
+        }
+
+        if let firstError, !firstError.isEmpty {
+            dashboardErrorMessage = firstError
+        }
+
+        if includeCccdTabs {
+            async let dupTask = workReportsService.fetchDuplicateCccdReport(search: duplicateSearchQuery)
+            async let cccdTask = directEntryService.fetchCccdReviewList(
+                status: cccdReviewFilterStatus,
+                search: cccdReviewSearchQuery
+            )
+            if case .success(let dup, _) = await dupTask { duplicateCccdReport = dup }
+            if case .success(let cccd, _) = await cccdTask {
+                cccdReviewItems = cccd.items
+                cccdReviewTotal = cccd.total
+            }
         }
     }
 
