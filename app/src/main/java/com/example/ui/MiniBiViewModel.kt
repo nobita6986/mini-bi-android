@@ -642,7 +642,13 @@ class MiniBiViewModel internal constructor(
     private var scopedOverviewJob: Job? = null
     private var teamReportJob: Job? = null
     private var duplicateCccdJob: Job? = null
+    private var bootstrapJob: Job? = null
     private var logoutJob: Job? = null
+    private var sessionGeneration: Long = 0L
+    private var lastBoundActor: AppActor? = null
+    private var lastBoundActorFromRepo: Boolean = false
+    private val inFlightSessionJobs = mutableMapOf<String, Job>()
+    private var lastWorkerFetchSignature: String? = null
     private var salaryAdvanceCreateIdempotencyKey: String = SalaryAdvanceContract.newIdempotencyKey("sa-create")
     private var salaryAdvanceLastSubmittedFingerprint: String? = null
     private var salaryAdvanceMessageIdempotencyKey: String = SalaryAdvanceContract.newIdempotencyKey("sa-msg")
@@ -650,12 +656,98 @@ class MiniBiViewModel internal constructor(
     private var salaryAdvanceEvidenceReserveKey: String = SalaryAdvanceContract.newIdempotencyKey("sa-ev-res")
     private var salaryAdvanceEvidenceFinalizeKey: String = SalaryAdvanceContract.newIdempotencyKey("sa-ev-fin")
 
+    private fun resolveSessionActor(actorOverride: AppActor? = null): AppActor? {
+        if (actorOverride != null) return actorOverride
+        val repoActor = currentActor.value
+        if (repoActor != null) return repoActor
+        return if (!lastBoundActorFromRepo) lastBoundActor else null
+    }
+
+    private fun bindActorGeneration(actor: AppActor): Long {
+        val cleanId = actor.appUserId.trim()
+        val prevId = lastBoundActor?.appUserId?.trim()
+        if (prevId != null && !prevId.equals(cleanId, ignoreCase = true)) {
+            ++sessionGeneration
+            cancelAllInFlightSessionJobs()
+        }
+        lastBoundActor = actor
+        if (currentActor.value?.appUserId?.equals(cleanId, ignoreCase = true) == true) {
+            lastBoundActorFromRepo = true
+        }
+        return sessionGeneration
+    }
+
+    private fun isSessionValid(expectedGen: Long, expectedAppUserId: String): Boolean {
+        if (sessionGeneration != expectedGen) return false
+        val repoActor = currentActor.value
+        if (repoActor != null) {
+            return repoActor.appUserId.equals(expectedAppUserId, ignoreCase = true)
+        }
+        if (lastBoundActorFromRepo) return false
+        return lastBoundActor?.appUserId?.equals(expectedAppUserId, ignoreCase = true) == true
+    }
+
+    private fun cancelAllInFlightSessionJobs() {
+        val jobs = inFlightSessionJobs.values.toList()
+        inFlightSessionJobs.clear()
+        jobs.forEach { it.cancel() }
+        lastWorkerFetchSignature = null
+    }
+
+    private fun launchDeduplicatedSessionJob(
+        key: String,
+        actorOverride: AppActor? = null,
+        force: Boolean = false,
+        block: suspend (actor: AppActor, gen: Long) -> Unit
+    ): Job? {
+        val actor = resolveSessionActor(actorOverride) ?: return null
+        val userKey = actor.appUserId.trim().lowercase(Locale.ROOT)
+        if (userKey.isEmpty()) return null
+        val gen = bindActorGeneration(actor)
+        val compositeKey = "g$gen:$userKey:$key"
+        val existing = inFlightSessionJobs[compositeKey]
+        if (existing != null && existing.isActive) {
+            if (!force) return existing
+            existing.cancel()
+            inFlightSessionJobs.remove(compositeKey)
+        }
+        if (key.contains(':')) {
+            val familyPrefix = "g$gen:$userKey:${key.substringBefore(':')}:"
+            inFlightSessionJobs.entries
+                .filter { it.key.startsWith(familyPrefix) && it.key != compositeKey }
+                .toList()
+                .forEach { (oldKey, oldJob) ->
+                    oldJob.cancel()
+                    inFlightSessionJobs.remove(oldKey)
+                }
+        }
+        val launched = viewModelScope.launch(start = kotlinx.coroutines.CoroutineStart.LAZY) {
+            try {
+                if (isSessionValid(gen, actor.appUserId)) {
+                    block(actor, gen)
+                }
+            } finally {
+                val selfJob = kotlin.coroutines.coroutineContext[Job]
+                if (selfJob != null && inFlightSessionJobs[compositeKey] === selfJob) {
+                    inFlightSessionJobs.remove(compositeKey)
+                }
+            }
+        }
+        inFlightSessionJobs[compositeKey] = launched
+        launched.start()
+        return launched
+    }
+
     init {
         bootstrapSession()
     }
 
     internal fun cancelScopeForTest() {
         clearBanner()
+        ++sessionGeneration
+        cancelAllInFlightSessionJobs()
+        bootstrapJob?.cancel()
+        bootstrapJob = null
         workerFetchJob?.cancel()
         workerFetchJob = null
         workforceDeepJob?.cancel()
@@ -679,14 +771,20 @@ class MiniBiViewModel internal constructor(
     }
 
     fun bootstrapSession() {
+        val expectedGen = ++sessionGeneration
+        cancelAllInFlightSessionJobs()
+        bootstrapJob?.cancel()
         _sessionBootstrapping.value = true
-        viewModelScope.launch {
+        bootstrapJob = viewModelScope.launch {
             try {
                 val res = repository.bootstrapSession()
+                if (sessionGeneration != expectedGen) return@launch
                 if (res.isSuccess) {
                     val baseActor = res.getOrThrow()
                     val resolvedActor = repository.syncDirectEntrySession(baseActor)
                         ?: baseActor.copy(allowedWorkerTabs = emptyList())
+                    bindActorGeneration(resolvedActor)
+                    if (!isSessionValid(expectedGen, resolvedActor.appUserId)) return@launch
                     _activeWorkerTabKey.value = resolveVisibleWorkerTabs(resolvedActor).firstOrNull()?.key.orEmpty()
                     _sessionBootstrapping.value = false
                     syncAttendanceTimeAnchor(actor = resolvedActor, force = false)
@@ -697,7 +795,9 @@ class MiniBiViewModel internal constructor(
                 }
             } catch (e: Exception) {
                 e.rethrowIfCancelled()
-                _sessionBootstrapping.value = false
+                if (sessionGeneration == expectedGen) {
+                    _sessionBootstrapping.value = false
+                }
             }
         }
     }
@@ -707,17 +807,20 @@ class MiniBiViewModel internal constructor(
             closeSalaryAdvanceDialog()
         }
         val actor = currentActor.value
-        if (destination == MainDestination.WORKERS && actor != null && resolveVisibleWorkerTabs(actor).isEmpty()) {
-            ensureInitialWorkerTabLoaded(actor)
+        if (destination == MainDestination.WORKERS && (actor == null || resolveVisibleWorkerTabs(actor).isEmpty())) {
+            if (actor != null) {
+                ensureInitialWorkerTabLoaded(actor)
+            }
+            return
+        }
+        if (destination == MainDestination.NEW_ENTRY && (actor == null || !actor.canAccessNewEntryScreen())) {
             return
         }
         _currentDestination.value = destination
         if (actor == null) return
         when (destination) {
             MainDestination.DASHBOARD -> {
-                if ((_generalOverview.value == null && !_generalOverviewLoading.value) ||
-                    (_duplicateGroups.value.isEmpty() && !_duplicateLoading.value)
-                ) {
+                if (_generalOverview.value == null && !_generalOverviewLoading.value && _generalOverviewError.value == null) {
                     refreshDashboardData(actor)
                 }
             }
@@ -725,10 +828,10 @@ class MiniBiViewModel internal constructor(
                 refreshWorkReportsData(actor)
             }
             MainDestination.NEW_ENTRY -> {
-                if (actor.canLoadDirectEntryCatalog()) {
-                    loadCatalogIfNeeded()
-                }
-                if (actor.hasCapability("submission_read") || actor.hasCapability("submission_create")) {
+                if (actor.canAccessNewEntryScreen()) {
+                    if (actor.canLoadDirectEntryCatalog()) {
+                        loadCatalogIfNeeded()
+                    }
                     refreshOwnSubmissionsForHistory()
                 }
             }
@@ -794,6 +897,9 @@ class MiniBiViewModel internal constructor(
         if (_loginBusy.value) return
         _loginBusy.value = true
         _loginError.value = null
+        val loginGen = ++sessionGeneration
+        cancelAllInFlightSessionJobs()
+        bootstrapJob?.cancel()
         viewModelScope.launch {
             try {
                 logoutJob?.join()
@@ -803,10 +909,13 @@ class MiniBiViewModel internal constructor(
                     password = password,
                     rememberAccount = rememberAccount
                 )
+                if (sessionGeneration != loginGen) return@launch
                 result.onSuccess { actor ->
                     if (previousActorId != null && !previousActorId.equals(actor.appUserId, ignoreCase = true)) {
                         resetSessionScopedViewModelState()
                     } else {
+                        ++sessionGeneration
+                        cancelAllInFlightSessionJobs()
                         ++workerFetchToken
                         workerFetchJob?.cancel()
                         workerFetchJob = null
@@ -822,8 +931,11 @@ class MiniBiViewModel internal constructor(
                         _catalog.value = null
                         resetSalaryAdvanceAllState()
                     }
+                    val postResetGen = sessionGeneration
                     val resolvedActor = repository.syncDirectEntrySession(actor)
                         ?: actor.copy(allowedWorkerTabs = emptyList())
+                    bindActorGeneration(resolvedActor)
+                    if (!isSessionValid(postResetGen, resolvedActor.appUserId)) return@onSuccess
                     _activeWorkerTabKey.value = resolveVisibleWorkerTabs(resolvedActor).firstOrNull()?.key.orEmpty()
                     _loginError.value = null
                     showBanner("Xin chào ${resolvedActor.displayName}")
@@ -832,9 +944,11 @@ class MiniBiViewModel internal constructor(
                     refreshDashboardData(resolvedActor)
                 }.onFailure { err ->
                     err.rethrowIfCancelled()
-                    _loginError.value = (err as? BackendApiException)?.message
-                        ?: err.message
-                        ?: "Không thể kết nối đăng nhập. Vui lòng thử lại."
+                    if (sessionGeneration == loginGen) {
+                        _loginError.value = (err as? BackendApiException)?.message
+                            ?: err.message
+                            ?: "Không thể kết nối đăng nhập. Vui lòng thử lại."
+                    }
                 }
             } finally {
                 _loginBusy.value = false
@@ -849,6 +963,12 @@ class MiniBiViewModel internal constructor(
     }
 
     private fun resetSessionScopedViewModelState() {
+        ++sessionGeneration
+        lastBoundActor = null
+        lastBoundActorFromRepo = false
+        cancelAllInFlightSessionJobs()
+        bootstrapJob?.cancel()
+        bootstrapJob = null
         ++workerFetchToken
         workerFetchJob?.cancel()
         workerFetchJob = null
@@ -1083,16 +1203,19 @@ class MiniBiViewModel internal constructor(
         } else {
             WorkReportsContract.resolveDatePresetRange(_dashboardDatePreset.value)
         }
-        _workforceLoading.value = true
-        _workforceError.value = null
-        _generalOverviewLoading.value = true
-        _generalOverviewError.value = null
-        workforceDeepJob?.cancel()
-        workforceDeepJob = viewModelScope.launch {
+        val dedupeKey = "workforce_deep:${effectiveFrom.orEmpty()}:${effectiveTo.orEmpty()}"
+        workforceDeepJob = launchDeduplicatedSessionJob(
+            key = dedupeKey,
+            actorOverride = actor
+        ) { targetActor, gen ->
+            _workforceLoading.value = true
+            _workforceError.value = null
+            _generalOverviewLoading.value = true
+            _generalOverviewError.value = null
             try {
                 if (cachedAdminTeamCodeMap == null) {
-                    val canProbeCatalog = actor.hasCapability("catalog_master_manage") ||
-                        actor.hasCapability("team_master_manage")
+                    val canProbeCatalog = targetActor.hasCapability("catalog_master_manage") ||
+                        targetActor.hasCapability("team_master_manage")
                     cachedAdminTeamCodeMap = repository.workReportsAndReportingService
                         .fetchAdminTeamCodeMap(probeAdminCatalog = canProbeCatalog)
                 }
@@ -1101,6 +1224,7 @@ class MiniBiViewModel internal constructor(
                     fromDate = effectiveFrom,
                     toDate = effectiveTo
                 )
+                if (!isSessionValid(gen, targetActor.appUserId)) return@launchDeduplicatedSessionJob
                 val normalizedTeams = rawMetrics.byTeam.map { b ->
                     val canonicalCode = codeMap[b.key.lowercase(Locale.ROOT)]
                         ?: codeMap["display:${b.display.trim().lowercase(Locale.ROOT)}"]
@@ -1161,6 +1285,7 @@ class MiniBiViewModel internal constructor(
                             fromDate = effectiveFrom,
                             toDate = effectiveTo
                         )
+                    if (!isSessionValid(gen, targetActor.appUserId)) return@launchDeduplicatedSessionJob
                     val periodByProject = periodAgg?.byProject.orEmpty()
                     val periodByRecruiter = periodAgg?.byRecruiter.orEmpty()
                     val periodByTeam = periodAgg?.byTeam.orEmpty()
@@ -1238,9 +1363,10 @@ class MiniBiViewModel internal constructor(
                     loadTeamReport(targetBucket.key, effectiveFrom, effectiveTo)
                 }
             } catch (e: BackendApiException) {
+                if (!isSessionValid(gen, targetActor.appUserId)) return@launchDeduplicatedSessionJob
                 if (e.kind == BackendFailureKind.FORBIDDEN) {
                     _workforceError.value = e.message
-                    refreshScopedGeneralOverview(actor)
+                    refreshScopedGeneralOverview(targetActor)
                 } else {
                     _workforceError.value = e.message
                     _generalOverviewError.value = e.message
@@ -1248,35 +1374,41 @@ class MiniBiViewModel internal constructor(
                 }
             } catch (e: Exception) {
                 e.rethrowIfCancelled()
+                if (!isSessionValid(gen, targetActor.appUserId)) return@launchDeduplicatedSessionJob
                 val msg = e.message ?: "Không thể tải báo cáo lực lượng lao động."
                 _workforceError.value = msg
                 _generalOverviewError.value = msg
                 _generalOverviewLoading.value = false
             } finally {
-                _workforceLoading.value = false
+                if (isSessionValid(gen, targetActor.appUserId)) {
+                    _workforceLoading.value = false
+                }
             }
         }
     }
 
     private fun refreshScopedGeneralOverview(actor: AppActor) {
         val isTeamActor = actor.hasScopeKind("team")
-        _generalOverviewLoading.value = true
-        _generalOverviewError.value = null
-        if (isTeamActor) {
-            _teamReportLoading.value = true
-            _teamReportError.value = null
-        } else {
-            _teamReport.value = null
-            _teamScopeOptions.value = emptyList()
-            cachedTeamScopeWorkers = emptyList()
-            cachedTeamTotalSummary = 0
-        }
-        scopedOverviewJob?.cancel()
-        scopedOverviewJob = viewModelScope.launch {
+        val presetKey = _dashboardDatePreset.value.key
+        scopedOverviewJob = launchDeduplicatedSessionJob(
+            key = "scoped_overview:$presetKey",
+            actorOverride = actor
+        ) { targetActor, gen ->
+            _generalOverviewLoading.value = true
+            _generalOverviewError.value = null
+            if (isTeamActor) {
+                _teamReportLoading.value = true
+                _teamReportError.value = null
+            } else {
+                _teamReport.value = null
+                _teamScopeOptions.value = emptyList()
+                cachedTeamScopeWorkers = emptyList()
+                cachedTeamTotalSummary = 0
+            }
             try {
                 // Never load Direct Entry catalog on login/resume/dashboard; use only already-cached catalog if any.
                 val recruiterMap = _catalog.value?.recruiters.orEmpty().associateBy { it.recruiterId }
-                val allowedWorkerScopes = actor.safeAllowedWorkerTabs
+                val allowedWorkerScopes = targetActor.safeAllowedWorkerTabs
                     .filter { it in DirectEntryContract.ALLOWED_WORKER_SCOPES }
                     .toSet()
 
@@ -1335,6 +1467,7 @@ class MiniBiViewModel internal constructor(
                 val managedPage = if ("managed" in allowedWorkerScopes) fetchAllScopePagesOrNull("managed") else null
                 val recruitedPage = if ("recruited" in allowedWorkerScopes) fetchAllScopePagesOrNull("recruited") else null
 
+                if (!isSessionValid(gen, targetActor.appUserId)) return@launchDeduplicatedSessionJob
                 if (teamPage == null && managedPage == null && recruitedPage == null && firstError != null) {
                     throw firstError!!
                 }
@@ -1572,16 +1705,20 @@ class MiniBiViewModel internal constructor(
                                 emptyList()
                             }
                             try {
-                                _teamReport.value = repository.workReportsAndReportingService.fetchTeamReport(
+                                val loadedTeam = repository.workReportsAndReportingService.fetchTeamReport(
                                     bucketKeyOrTeamCode = selectedGrant,
                                     fromDate = presetFrom,
                                     toDate = presetTo
                                 )
+                                if (isSessionValid(gen, targetActor.appUserId)) {
+                                    _teamReport.value = loadedTeam
+                                }
                             } catch (teamErr: Exception) {
                                 teamErr.rethrowIfCancelled()
+                                if (!isSessionValid(gen, targetActor.appUserId)) return@launchDeduplicatedSessionJob
                                 if (teamPage != null) {
                                     _teamReport.value = buildGrantedTeamSnapshotFromCache(
-                                        actor = actor,
+                                        actor = targetActor,
                                         teamRef = selectedGrant,
                                         fromDate = presetFrom,
                                         toDate = presetTo
@@ -1598,6 +1735,7 @@ class MiniBiViewModel internal constructor(
                 }
             } catch (e: Exception) {
                 e.rethrowIfCancelled()
+                if (!isSessionValid(gen, targetActor.appUserId)) return@launchDeduplicatedSessionJob
                 val msg = (e as? BackendApiException)?.message
                     ?: e.message
                     ?: "Không thể tải báo cáo tổng quát từ máy chủ."
@@ -1606,9 +1744,11 @@ class MiniBiViewModel internal constructor(
                     _teamReportError.value = msg
                 }
             } finally {
-                _generalOverviewLoading.value = false
-                if (isTeamActor) {
-                    _teamReportLoading.value = false
+                if (isSessionValid(gen, targetActor.appUserId)) {
+                    _generalOverviewLoading.value = false
+                    if (isTeamActor) {
+                        _teamReportLoading.value = false
+                    }
                 }
             }
         }
@@ -1725,14 +1865,16 @@ class MiniBiViewModel internal constructor(
                 runCatching { WorkReportsContract.encodeTeamBucketKey(b.key) == trimmedKey }.getOrDefault(false)
         }
 
-        _teamReportLoading.value = true
-        _teamReportError.value = null
-        teamReportJob?.cancel()
-        teamReportJob = viewModelScope.launch {
+        teamReportJob = launchDeduplicatedSessionJob(
+            key = "team_report:$trimmedKey:${effectiveFrom.orEmpty()}:${effectiveTo.orEmpty()}",
+            actorOverride = actor
+        ) { targetActor, gen ->
+            _teamReportLoading.value = true
+            _teamReportError.value = null
             try {
                 if (cachedAdminTeamCodeMap == null &&
-                    actor.hasScopeKind("all") &&
-                    actor.hasCapability("catalog_master_manage")
+                    targetActor.hasScopeKind("all") &&
+                    targetActor.hasCapability("catalog_master_manage")
                 ) {
                     cachedAdminTeamCodeMap = repository.workReportsAndReportingService.fetchAdminTeamCodeMap()
                 }
@@ -1743,6 +1885,7 @@ class MiniBiViewModel internal constructor(
                     knownTeamCodeMap = cachedAdminTeamCodeMap.orEmpty(),
                     knownBucketHint = matchedBucketHint
                 )
+                if (!isSessionValid(gen, targetActor.appUserId)) return@launchDeduplicatedSessionJob
                 val resolvedCanonicalCode = WorkReportsContract.decodeTeamBucketCode(snap.bucketKey)
                 if (resolvedCanonicalCode.isNotBlank() && resolvedCanonicalCode != "unknown") {
                     val updatedMap = LinkedHashMap(cachedAdminTeamCodeMap.orEmpty())
@@ -1752,12 +1895,15 @@ class MiniBiViewModel internal constructor(
                 _teamReport.value = snap
             } catch (e: Exception) {
                 e.rethrowIfCancelled()
+                if (!isSessionValid(gen, targetActor.appUserId)) return@launchDeduplicatedSessionJob
                 _teamReport.value = null
                 _teamReportError.value = (e as? BackendApiException)?.message
                     ?: e.message
                     ?: "Không thể tải báo cáo theo nhóm."
             } finally {
-                _teamReportLoading.value = false
+                if (isSessionValid(gen, targetActor.appUserId)) {
+                    _teamReportLoading.value = false
+                }
             }
         }
     }
@@ -1794,32 +1940,41 @@ class MiniBiViewModel internal constructor(
 
     fun refreshDuplicateCccdReport(
         page: Int = _duplicatePage.value,
-        managedOnly: Boolean = _duplicateManagedOnly.value
+        managedOnly: Boolean = _duplicateManagedOnly.value,
+        actor: AppActor? = null
     ) {
-        _duplicatePage.value = page.coerceIn(1, 1000)
+        val resolvedActor = resolveSessionActor(actor) ?: return
+        val safePage = page.coerceIn(1, 1000)
+        _duplicatePage.value = safePage
         _duplicateManagedOnly.value = managedOnly
-        _duplicateLoading.value = true
-        _duplicateError.value = null
-        duplicateCccdJob?.cancel()
-        duplicateCccdJob = viewModelScope.launch {
+        duplicateCccdJob = launchDeduplicatedSessionJob(
+            key = "duplicate_cccd:$safePage:$managedOnly",
+            actorOverride = resolvedActor
+        ) { targetActor, gen ->
+            _duplicateLoading.value = true
+            _duplicateError.value = null
             try {
                 val report = repository.workReportsAndReportingService.fetchDuplicateCccdReport(
-                    page = _duplicatePage.value,
+                    page = safePage,
                     pageSize = 25,
                     managedOnly = managedOnly
                 )
+                if (!isSessionValid(gen, targetActor.appUserId)) return@launchDeduplicatedSessionJob
                 _duplicateGroups.value = report.groups
                 _duplicatePage.value = report.page
                 _duplicateHasMore.value = report.hasMore
             } catch (e: Exception) {
                 e.rethrowIfCancelled()
+                if (!isSessionValid(gen, targetActor.appUserId)) return@launchDeduplicatedSessionJob
                 _duplicateGroups.value = emptyList()
                 _duplicateHasMore.value = false
                 _duplicateError.value = (e as? BackendApiException)?.message
                     ?: e.message
                     ?: "Không thể tải danh sách cảnh báo CCCD trùng."
             } finally {
-                _duplicateLoading.value = false
+                if (isSessionValid(gen, targetActor.appUserId)) {
+                    _duplicateLoading.value = false
+                }
             }
         }
     }
@@ -2052,28 +2207,33 @@ class MiniBiViewModel internal constructor(
 
     fun refreshWorkReportsData(actor: AppActor? = currentActor.value) {
         val resolvedActor = actor ?: return
-        if (_workReportsLoading.value) return
-        _workReportsLoading.value = true
-        _workReportsError.value = null
-        viewModelScope.launch {
+        launchDeduplicatedSessionJob(
+            key = "work_reports_data",
+            actorOverride = resolvedActor
+        ) { targetActor, gen ->
+            _workReportsLoading.value = true
+            _workReportsError.value = null
             try {
                 var loadedObligations: List<WorkReportObligationEntity> = emptyList()
                 try {
                     loadedObligations = repository.workReportsAndReportingService.fetchMyObligations()
                 } catch (e: Exception) {
                     e.rethrowIfCancelled()
-                    _workReportsError.value = (e as? BackendApiException)?.message
-                        ?: e.message
-                        ?: "Không thể tải danh sách báo cáo từ máy chủ."
+                    if (isSessionValid(gen, targetActor.appUserId)) {
+                        _workReportsError.value = (e as? BackendApiException)?.message
+                            ?: e.message
+                            ?: "Không thể tải danh sách báo cáo từ máy chủ."
+                    }
                 }
+                if (!isSessionValid(gen, targetActor.appUserId)) return@launchDeduplicatedSessionJob
 
-                val canReview = resolvedActor.hasCapability("report_review") &&
-                    (resolvedActor.hasScopeKind("team") || resolvedActor.hasScopeKind("all"))
+                val canReview = targetActor.hasCapability("report_review") &&
+                    (targetActor.hasScopeKind("team") || targetActor.hasScopeKind("all"))
                 val loadedReviews = if (canReview) {
                     runCatching { repository.workReportsAndReportingService.fetchPendingReviews() }
                         .onFailure { err ->
                             err.rethrowIfCancelled()
-                            if (_workReportsError.value == null) {
+                            if (isSessionValid(gen, targetActor.appUserId) && _workReportsError.value == null) {
                                 _workReportsError.value = (err as? BackendApiException)?.message
                             }
                         }
@@ -2081,10 +2241,11 @@ class MiniBiViewModel internal constructor(
                 } else {
                     emptyList()
                 }
+                if (!isSessionValid(gen, targetActor.appUserId)) return@launchDeduplicatedSessionJob
                 _reviewQueue.value = loadedReviews
 
-                val canAnalytics = resolvedActor.hasCapability("report_analytics_view") &&
-                    (resolvedActor.hasScopeKind("team") || resolvedActor.hasScopeKind("all"))
+                val canAnalytics = targetActor.hasCapability("report_analytics_view") &&
+                    (targetActor.hasScopeKind("team") || targetActor.hasScopeKind("all"))
                 if (canAnalytics) {
                     val templateMap = linkedMapOf<String, String>()
                     loadedObligations.forEach { ob ->
@@ -2098,8 +2259,9 @@ class MiniBiViewModel internal constructor(
                         }
                     }
                     val serverTemplates = runCatching {
-                        repository.workReportsAndReportingService.fetchSelectableTemplates(resolvedActor)
+                        repository.workReportsAndReportingService.fetchSelectableTemplates(targetActor)
                     }.onFailure { it.rethrowIfCancelled() }.getOrDefault(emptyList())
+                    if (!isSessionValid(gen, targetActor.appUserId)) return@launchDeduplicatedSessionJob
                     serverTemplates.forEach { opt ->
                         if (opt.templateId.isNotBlank() && opt.displayName.isNotBlank()) {
                             templateMap.putIfAbsent(opt.templateId, opt.displayName)
@@ -2134,7 +2296,9 @@ class MiniBiViewModel internal constructor(
                                 finality = existingSnap?.finality ?: "final"
                             )
                         }.onFailure { it.rethrowIfCancelled() }.onSuccess { snap ->
-                            _analyticsSnapshot.value = snap
+                            if (isSessionValid(gen, targetActor.appUserId)) {
+                                _analyticsSnapshot.value = snap
+                            }
                         }
                     }
                 } else {
@@ -2142,7 +2306,9 @@ class MiniBiViewModel internal constructor(
                     _availableReportTemplates.value = emptyList()
                 }
             } finally {
-                _workReportsLoading.value = false
+                if (isSessionValid(gen, targetActor.appUserId)) {
+                    _workReportsLoading.value = false
+                }
             }
         }
     }
@@ -2211,8 +2377,8 @@ class MiniBiViewModel internal constructor(
                 _editingObligation.value = null
                 showBanner("Đã lưu bản nháp báo cáo.")
             } catch (e: BackendApiException) {
-                showBanner(e.message, isError = true)
                 if (e.backendCode == "WORK_REPORT_DEADLINE_PASSED") {
+                    showBanner(e.message, isError = true)
                     handleWorkReportDeadlinePassed(obligation)
                 } else if (e.kind == BackendFailureKind.CONFLICT) {
                     val refreshed = runCatching {
@@ -2224,6 +2390,12 @@ class MiniBiViewModel internal constructor(
                     if (refreshed != null) {
                         _editingObligation.value = refreshed
                     }
+                    showBanner(
+                        "Dữ liệu báo cáo đã thay đổi trên máy chủ (phiên bản mới). Nội dung bạn đang nhập được giữ nguyên — vui lòng kiểm tra và xác nhận gửi lại.",
+                        isError = true
+                    )
+                } else {
+                    showBanner(e.message, isError = true)
                 }
             } catch (e: Exception) {
                 e.rethrowIfCancelled()
@@ -2249,8 +2421,8 @@ class MiniBiViewModel internal constructor(
                 val vnState = WorkReportsContract.submissionStateDisplayLabel(updated.submissionState)
                 showBanner("Đã nộp báo cáo thành công ($vnState).")
             } catch (e: BackendApiException) {
-                showBanner(e.message, isError = true)
                 if (e.backendCode == "WORK_REPORT_DEADLINE_PASSED") {
+                    showBanner(e.message, isError = true)
                     handleWorkReportDeadlinePassed(obligation)
                 } else if (e.kind == BackendFailureKind.CONFLICT) {
                     val refreshed = runCatching {
@@ -2262,6 +2434,12 @@ class MiniBiViewModel internal constructor(
                     if (refreshed != null) {
                         _editingObligation.value = refreshed
                     }
+                    showBanner(
+                        "Dữ liệu báo cáo đã thay đổi trên máy chủ (phiên bản mới). Nội dung bạn đang nhập được giữ nguyên — vui lòng kiểm tra và xác nhận nộp lại.",
+                        isError = true
+                    )
+                } else {
+                    showBanner(e.message, isError = true)
                 }
             } catch (e: Exception) {
                 e.rethrowIfCancelled()
@@ -2349,41 +2527,70 @@ class MiniBiViewModel internal constructor(
 
     fun loadCatalogIfNeeded(
         effectiveDateIso: String = DirectEntryContract.todayIsoInHcm(),
-        force: Boolean = false
+        force: Boolean = false,
+        actor: AppActor? = null
     ) {
-        val actor = currentActor.value
-        if (actor != null && !actor.canLoadDirectEntryCatalog()) {
+        val resolvedActor = resolveSessionActor(actor)
+        if (resolvedActor == null || !resolvedActor.canLoadDirectEntryCatalog()) {
             _catalog.value = null
             _catalogLoading.value = false
             return
         }
-        if (!force && (_catalogLoading.value || _catalog.value?.effectiveDate == effectiveDateIso)) {
+        if (!force && _catalog.value?.effectiveDate == effectiveDateIso) {
             return
         }
-        _catalogLoading.value = true
-        _catalogError.value = null
-        viewModelScope.launch {
+        launchDeduplicatedSessionJob(
+            key = "catalog:$effectiveDateIso",
+            actorOverride = resolvedActor,
+            force = force
+        ) { targetActor, gen ->
+            _catalogLoading.value = true
+            _catalogError.value = null
             try {
                 val loaded = repository.directEntryService.fetchCatalog(effectiveDateIso)
-                _catalog.value = loaded
+                if (isSessionValid(gen, targetActor.appUserId)) {
+                    _catalog.value = loaded
+                }
             } catch (e: Exception) {
                 e.rethrowIfCancelled()
-                _catalogError.value = (e as? BackendApiException)?.message
-                    ?: e.message
-                    ?: "Không thể tải danh mục từ máy chủ."
+                if (isSessionValid(gen, targetActor.appUserId)) {
+                    _catalogError.value = (e as? BackendApiException)?.message
+                        ?: e.message
+                        ?: "Không thể tải danh mục từ máy chủ."
+                }
             } finally {
-                _catalogLoading.value = false
+                if (isSessionValid(gen, targetActor.appUserId)) {
+                    _catalogLoading.value = false
+                }
             }
         }
     }
 
-    fun refreshOwnSubmissionsForHistory() {
-        viewModelScope.launch {
+    fun refreshOwnSubmissionsForHistory(
+        actor: AppActor? = null
+    ) {
+        val resolvedActor = resolveSessionActor(actor)
+        if (resolvedActor == null ||
+            (!resolvedActor.canAccessNewEntryScreen() &&
+                "uploader" !in resolvedActor.safeAllowedWorkerTabs &&
+                !resolvedActor.hasCapability("submission_read"))
+        ) {
+            _ownSubmissions.value = emptyList()
+            _submissionsHasMore.value = false
+            _submissionsNextCursor.value = null
+            return
+        }
+        launchDeduplicatedSessionJob(
+            key = "own_submissions:first",
+            actorOverride = resolvedActor
+        ) { targetActor, gen ->
             try {
                 val page = repository.directEntryService.listOwnSubmissions(pageSize = 20)
-                _ownSubmissions.value = page.items
-                _submissionsHasMore.value = page.hasMore
-                _submissionsNextCursor.value = page.nextCursor
+                if (isSessionValid(gen, targetActor.appUserId)) {
+                    _ownSubmissions.value = page.items
+                    _submissionsHasMore.value = page.hasMore
+                    _submissionsNextCursor.value = page.nextCursor
+                }
             } catch (e: Exception) {
                 e.rethrowIfCancelled()
                 // Non-blocking history preview
@@ -2566,7 +2773,7 @@ class MiniBiViewModel internal constructor(
                             succeededCount++
                         } catch (e: Exception) {
                             e.rethrowIfCancelled()
-                            knownVersion = 1
+                            knownVersion = null
                             failedTasks.add(
                                 task.copy(idempotencyBaseKey = UUID.randomUUID().toString())
                             )
@@ -2773,11 +2980,11 @@ class MiniBiViewModel internal constructor(
             }
             onSubmittedSuccess()
         } catch (e: BackendApiException) {
-            if (e.backendCode == "DUPLICATE_CCCD_CONFIRMATION_REQUIRED") {
+            if (e.backendCode == "DUPLICATE_CCCD_CONFIRMATION_REQUIRED" || e.kind == BackendFailureKind.CONFLICT) {
                 val refreshedPreflight = runCatching {
                     repository.directEntryService.preflightDuplicateCccd(submissionId)
                 }.onFailure { it.rethrowIfCancelled() }.getOrNull()
-                if (refreshedPreflight != null && refreshedPreflight.conflictCount > 0) {
+                if (refreshedPreflight != null && (refreshedPreflight.conflictCount > 0 || e.kind == BackendFailureKind.CONFLICT)) {
                     refreshOwnSubmissionsForHistory()
                     _pendingDuplicateCccdSubmission.value = PendingDuplicateCccdSubmission(
                         entryCount = entryCount,
@@ -2786,6 +2993,11 @@ class MiniBiViewModel internal constructor(
                         navigateToWorkersOnConfirm = navigateToWorkersOnConfirm,
                         pendingAttachments = pendingAttachments
                     )
+                    if (e.kind == BackendFailureKind.CONFLICT) {
+                        val conflictMsg = "Dữ liệu đợt nhập đã thay đổi phiên bản trên máy chủ. Dữ liệu mới nhất đã được tải lại — vui lòng kiểm tra và xác nhận gửi lại."
+                        _workerMutationError.value = conflictMsg
+                        showBanner(conflictMsg, isError = true)
+                    }
                     return
                 }
             }
@@ -2857,16 +3069,21 @@ class MiniBiViewModel internal constructor(
                     selectWorkerTab(_activeWorkerTabKey.value)
                 }
             } catch (e: BackendApiException) {
-                if (e.backendCode == "DUPLICATE_CCCD_CONFIRMATION_REQUIRED") {
+                if (e.backendCode == "DUPLICATE_CCCD_CONFIRMATION_REQUIRED" || e.kind == BackendFailureKind.CONFLICT) {
                     val refreshedPreflight = runCatching {
                         repository.directEntryService.preflightDuplicateCccd(pending.preflight.submissionId)
                     }.onFailure { it.rethrowIfCancelled() }.getOrNull()
-                    if (refreshedPreflight != null && refreshedPreflight.conflictCount > 0) {
+                    if (refreshedPreflight != null) {
                         _pendingDuplicateCccdSubmission.value = pending.copy(preflight = refreshedPreflight)
                     }
                 }
-                _workerMutationError.value = e.message
-                showBanner(e.message, isError = true)
+                val errMsg = if (e.kind == BackendFailureKind.CONFLICT) {
+                    "Dữ liệu đợt nhập đã thay đổi phiên bản trên máy chủ. Dữ liệu mới nhất đã được tải lại — vui lòng kiểm tra và xác nhận gửi lại."
+                } else {
+                    e.message
+                }
+                _workerMutationError.value = errMsg
+                showBanner(errMsg, isError = true)
             } catch (e: Exception) {
                 e.rethrowIfCancelled()
                 val msg = e.message ?: "Không thể xác nhận gửi chính thức đợt nhập liệu."
@@ -2944,29 +3161,12 @@ class MiniBiViewModel internal constructor(
         actorOverride: AppActor? = null
     ) {
         val cleanKey = tabKey.trim()
-        val effectiveActor = actorOverride ?: currentActor.value
-        if (effectiveActor != null) {
-            val allowedKeys = resolveVisibleWorkerTabs(effectiveActor).map { it.key }
-            if (cleanKey.isBlank() || cleanKey !in allowedKeys) {
-                ++workerFetchToken
-                workerFetchJob?.cancel()
-                workerFetchJob = null
-                _activeWorkerTabKey.value = ""
-                _workerRows.value = emptyList()
-                _ownSubmissions.value = emptyList()
-                _workerSummary.value = null
-                _workerHasMore.value = false
-                _workerNextCursor.value = null
-                _submissionsHasMore.value = false
-                _submissionsNextCursor.value = null
-                _workerLoading.value = false
-                _workerError.value = "Tài khoản chưa được cấp quyền xem danh sách người lao động."
-                return
-            }
-        } else if (cleanKey !in ActorContractParser.ALLOWED_WORKER_TABS) {
+        val effectiveActor = resolveSessionActor(actorOverride)
+        if (effectiveActor == null) {
             ++workerFetchToken
             workerFetchJob?.cancel()
             workerFetchJob = null
+            lastWorkerFetchSignature = null
             _activeWorkerTabKey.value = ""
             _workerRows.value = emptyList()
             _ownSubmissions.value = emptyList()
@@ -2976,7 +3176,31 @@ class MiniBiViewModel internal constructor(
             _submissionsHasMore.value = false
             _submissionsNextCursor.value = null
             _workerLoading.value = false
-            _workerError.value = "Phạm vi danh sách người lao động không hợp lệ."
+            _workerError.value = null
+            return
+        }
+        val allowedKeys = resolveVisibleWorkerTabs(effectiveActor).map { it.key }
+        if (cleanKey.isBlank() || cleanKey !in allowedKeys) {
+            ++workerFetchToken
+            workerFetchJob?.cancel()
+            workerFetchJob = null
+            lastWorkerFetchSignature = null
+            _activeWorkerTabKey.value = ""
+            _workerRows.value = emptyList()
+            _ownSubmissions.value = emptyList()
+            _workerSummary.value = null
+            _workerHasMore.value = false
+            _workerNextCursor.value = null
+            _submissionsHasMore.value = false
+            _submissionsNextCursor.value = null
+            _workerLoading.value = false
+            _workerError.value = "Tài khoản chưa được cấp quyền xem danh sách người lao động."
+            return
+        }
+
+        val expectedGen = bindActorGeneration(effectiveActor)
+        val signature = "g$expectedGen:${effectiveActor.appUserId.lowercase(Locale.ROOT)}:$cleanKey:$search:${projectId.orEmpty()}:${recruiterId.orEmpty()}:${employmentStatus.orEmpty()}"
+        if (_workerLoading.value && workerFetchJob?.isActive == true && lastWorkerFetchSignature == signature) {
             return
         }
 
@@ -2985,8 +3209,10 @@ class MiniBiViewModel internal constructor(
         lastFilterProjectId = projectId
         lastFilterRecruiterId = recruiterId
         lastFilterStatus = employmentStatus
+        lastWorkerFetchSignature = signature
 
         val fetchToken = ++workerFetchToken
+        val expectedActorId = effectiveActor.appUserId
         workerFetchJob?.cancel()
         workerFetchJob = viewModelScope.launch {
             _workerLoading.value = true
@@ -2994,14 +3220,14 @@ class MiniBiViewModel internal constructor(
             if (cleanKey == "uploader") {
                 try {
                     val page = repository.directEntryService.listOwnSubmissions(pageSize = 20, cursor = null)
-                    if (workerFetchToken == fetchToken) {
+                    if (workerFetchToken == fetchToken && isSessionValid(expectedGen, expectedActorId)) {
                         _ownSubmissions.value = page.items
                         _submissionsHasMore.value = page.hasMore
                         _submissionsNextCursor.value = page.nextCursor
                     }
                 } catch (e: Exception) {
                     e.rethrowIfCancelled()
-                    if (workerFetchToken == fetchToken) {
+                    if (workerFetchToken == fetchToken && isSessionValid(expectedGen, expectedActorId)) {
                         _ownSubmissions.value = emptyList()
                         _submissionsHasMore.value = false
                         _submissionsNextCursor.value = null
@@ -3010,7 +3236,7 @@ class MiniBiViewModel internal constructor(
                             ?: "Không thể tải lịch sử đợt nhập liệu."
                     }
                 } finally {
-                    if (workerFetchToken == fetchToken) {
+                    if (workerFetchToken == fetchToken && isSessionValid(expectedGen, expectedActorId)) {
                         _workerLoading.value = false
                     }
                 }
@@ -3025,14 +3251,14 @@ class MiniBiViewModel internal constructor(
                         recruiterId = recruiterId,
                         employmentStatus = employmentStatus
                     )
-                    if (workerFetchToken == fetchToken) {
+                    if (workerFetchToken == fetchToken && isSessionValid(expectedGen, expectedActorId)) {
                         _workerRows.value = page.items
                         _workerHasMore.value = page.hasMore
                         _workerNextCursor.value = page.nextCursor
                         _workerSummary.value = page.summary
                     }
                 } catch (e: BackendApiException) {
-                    if (workerFetchToken != fetchToken) return@launch
+                    if (workerFetchToken != fetchToken || !isSessionValid(expectedGen, expectedActorId)) return@launch
                     // Do NOT probe/fallback to another scope on 403!
                     // Per App BI `relationDenialIsEmpty`: 403 on `managed` or `recruited` means the actor
                     // currently has no active project assignment or recruiter link -> render empty list, not error.
@@ -3048,7 +3274,7 @@ class MiniBiViewModel internal constructor(
                         val cached = runCatching { repository.getCachedWorkersByScope(cleanKey) }
                             .onFailure { it.rethrowIfCancelled() }
                             .getOrDefault(emptyList())
-                        if (workerFetchToken != fetchToken) return@launch
+                        if (workerFetchToken != fetchToken || !isSessionValid(expectedGen, expectedActorId)) return@launch
                         _workerRows.value = cached
                     } else {
                         _workerRows.value = emptyList()
@@ -3058,14 +3284,14 @@ class MiniBiViewModel internal constructor(
                     _workerError.value = e.message
                 } catch (e: Exception) {
                     e.rethrowIfCancelled()
-                    if (workerFetchToken == fetchToken) {
+                    if (workerFetchToken == fetchToken && isSessionValid(expectedGen, expectedActorId)) {
                         _workerRows.value = emptyList()
                         _workerHasMore.value = false
                         _workerNextCursor.value = null
                         _workerError.value = e.message ?: "Không thể tải danh sách người lao động."
                     }
                 } finally {
-                    if (workerFetchToken == fetchToken) {
+                    if (workerFetchToken == fetchToken && isSessionValid(expectedGen, expectedActorId)) {
                         _workerLoading.value = false
                     }
                 }
@@ -3152,10 +3378,10 @@ class MiniBiViewModel internal constructor(
         _selectedEntryDetail.value = null
     }
 
-    fun openProposeChange(worker: WorkerProfileEntity) {
+    fun openProposeChange(worker: WorkerProfileEntity, actorOverride: AppActor? = null) {
         if (!worker.allowedActions.proposeChange) return
         _workerMutationError.value = null
-        loadCatalogIfNeeded()
+        loadCatalogIfNeeded(actor = actorOverride)
         viewModelScope.launch {
             val detail = if (worker.allowedActions.view) {
                 runCatching { repository.directEntryService.getEntryDetail(worker.entryId) }
@@ -3227,12 +3453,12 @@ class MiniBiViewModel internal constructor(
         }
     }
 
-    fun openDirectEdit(worker: WorkerProfileEntity) {
+    fun openDirectEdit(worker: WorkerProfileEntity, actorOverride: AppActor? = null) {
         if (!worker.allowedActions.directEdit) return
         cleanupAllDirectEditStagedFiles()
         _directEditProfileSaveMessage.value = null
         _workerMutationError.value = null
-        loadCatalogIfNeeded()
+        loadCatalogIfNeeded(actor = actorOverride)
         viewModelScope.launch {
             try {
                 val detail = repository.directEntryService.getEntryDetail(worker.entryId)
@@ -3325,6 +3551,17 @@ class MiniBiViewModel internal constructor(
                 _directEditTarget.value = currentWorker.copy(entryVersion = outcome.entryVersion) to updatedDetail
 
                 if (!outcome.ok) {
+                    if (outcome.code == "CONFLICT") {
+                        val refreshed = runCatching { repository.directEntryService.getEntryDetail(currentDetail.entryId) }
+                            .onFailure { it.rethrowIfCancelled() }
+                            .getOrNull()
+                        if (refreshed != null) {
+                            _directEditTarget.value = currentWorker.copy(entryVersion = refreshed.version) to refreshed
+                            if (_selectedEntryDetail.value?.entryId == refreshed.entryId) {
+                                _selectedEntryDetail.value = refreshed
+                            }
+                        }
+                    }
                     val errMsg = outcome.message
                         ?: DirectEntryContract.directEditDocumentErrorMessage(documentType, outcome.code)
                     _directEditFileStatuses.value = _directEditFileStatuses.value + (
@@ -3532,9 +3769,8 @@ class MiniBiViewModel internal constructor(
                     )
                 }
             } catch (e: BackendApiException) {
-                _workerMutationError.value = e.message
                 if (e.kind == BackendFailureKind.CONFLICT) {
-                    // Version conflict: reload baseline from backend
+                    // Version conflict: reload baseline from backend while preserving user's draft input
                     val currentWorker = _directEditTarget.value?.first
                     val latest = runCatching { repository.directEntryService.getEntryDetail(entryId) }
                         .onFailure { it.rethrowIfCancelled() }
@@ -3542,7 +3778,12 @@ class MiniBiViewModel internal constructor(
                     if (currentWorker != null && latest != null) {
                         _directEditTarget.value = currentWorker.copy(entryVersion = latest.version) to latest
                     }
+                    val conflictMsg = "Dữ liệu hồ sơ đã thay đổi trên máy chủ (phiên bản mới). Nội dung bạn đang nhập được giữ nguyên — vui lòng kiểm tra và bấm Lưu lại để xác nhận."
+                    _workerMutationError.value = conflictMsg
+                    showBanner(conflictMsg, isError = true)
                     selectWorkerTab(_activeWorkerTabKey.value)
+                } else {
+                    _workerMutationError.value = e.message
                 }
             } catch (e: Exception) {
                 e.rethrowIfCancelled()
@@ -3679,10 +3920,14 @@ class MiniBiViewModel internal constructor(
 
     fun syncAttendanceTimeAnchor(actor: AppActor? = currentActor.value, force: Boolean = false) {
         val resolvedActor = actor ?: return
-        viewModelScope.launch {
+        launchDeduplicatedSessionJob(
+            key = "attendance_time_anchor",
+            actorOverride = resolvedActor,
+            force = force
+        ) { targetActor, _ ->
             runCatching {
                 repository.attendanceTimeAnchorManager.syncTimeAnchor(
-                    appUserId = resolvedActor.appUserId,
+                    appUserId = targetActor.appUserId,
                     force = force
                 )
             }.onFailure { it.rethrowIfCancelled() }
@@ -3692,18 +3937,23 @@ class MiniBiViewModel internal constructor(
     fun syncAttendanceHistoryFromServer(actor: AppActor? = currentActor.value) {
         val resolvedActor = actor ?: return
         if (resolvedActor.appUserId.isBlank()) return
-        viewModelScope.launch {
+        launchDeduplicatedSessionJob(
+            key = "attendance_history_sync",
+            actorOverride = resolvedActor
+        ) { targetActor, gen ->
             runCatching {
                 repository.attendanceOutboxService.flushRetryableOutbox(
-                    appUserId = resolvedActor.appUserId,
+                    appUserId = targetActor.appUserId,
                     scheduleWorkOnFailure = true
                 )
             }.onFailure { it.rethrowIfCancelled() }
-            if (!WorkReportsContract.isUuid(resolvedActor.appUserId)) return@launch
+            if (!isSessionValid(gen, targetActor.appUserId) || !WorkReportsContract.isUuid(targetActor.appUserId)) {
+                return@launchDeduplicatedSessionJob
+            }
             runCatching {
-                val todayIso = resolveReferenceTodayIsoHcm(resolvedActor.appUserId)
+                val todayIso = resolveReferenceTodayIsoHcm(targetActor.appUserId)
                 repository.attendanceOutboxService.syncServerHistoryForUser(
-                    actor = resolvedActor,
+                    actor = targetActor,
                     referenceTodayIso = todayIso
                 )
             }.onFailure { it.rethrowIfCancelled() }
@@ -4030,13 +4280,21 @@ class MiniBiViewModel internal constructor(
         refreshMyLeaveSummary(year = year)
     }
 
-    fun refreshMyLeaveSummary(year: Int = _leaveYear.value) {
-        _myLeaveLoading.value = true
-        _myLeaveError.value = null
-        _myLeaveErrorCode.value = null
-        viewModelScope.launch {
+    fun refreshMyLeaveSummary(
+        year: Int = _leaveYear.value,
+        actor: AppActor? = null
+    ) {
+        val resolvedActor = resolveSessionActor(actor) ?: return
+        launchDeduplicatedSessionJob(
+            key = "leave_me:$year",
+            actorOverride = resolvedActor
+        ) { targetActor, gen ->
+            _myLeaveLoading.value = true
+            _myLeaveError.value = null
+            _myLeaveErrorCode.value = null
             try {
                 val summary = repository.leaveService.fetchMyLeaveSummary(leaveYear = year)
+                if (!isSessionValid(gen, targetActor.appUserId)) return@launchDeduplicatedSessionJob
                 _myLeaveSummary.value = summary
                 _leaveYear.value = summary.leaveYear
                 _myLeaveError.value = null
@@ -4057,6 +4315,7 @@ class MiniBiViewModel internal constructor(
                     )
                 }
             } catch (e: BackendApiException) {
+                if (!isSessionValid(gen, targetActor.appUserId)) return@launchDeduplicatedSessionJob
                 _myLeaveError.value = e.message
                 _myLeaveErrorCode.value = e.backendCode
                 if (e.backendCode == "LEAVE_SHARED_ACCOUNT_FORBIDDEN") {
@@ -4065,9 +4324,13 @@ class MiniBiViewModel internal constructor(
                 }
             } catch (e: Exception) {
                 e.rethrowIfCancelled()
-                _myLeaveError.value = e.message ?: "Không thể tải thông tin phép cá nhân."
+                if (isSessionValid(gen, targetActor.appUserId)) {
+                    _myLeaveError.value = e.message ?: "Không thể tải thông tin phép cá nhân."
+                }
             } finally {
-                _myLeaveLoading.value = false
+                if (isSessionValid(gen, targetActor.appUserId)) {
+                    _myLeaveLoading.value = false
+                }
             }
         }
     }
@@ -4321,21 +4584,25 @@ class MiniBiViewModel internal constructor(
     }
 
     fun refreshMyAttendanceExplanations(
-        businessDate: String? = _explanationSelectedDate.value
+        businessDate: String? = _explanationSelectedDate.value,
+        actor: AppActor? = null
     ) {
+        val resolvedActor = resolveSessionActor(actor) ?: return
         val cleanDate = businessDate?.trim()?.takeIf { AttendanceExplanationContract.isValidIsoDate(it) }
-        myExplanationsFetchJob?.cancel()
-        _myExplanationsLoading.value = true
-        _myExplanationsError.value = null
-        _myExplanationsErrorCode.value = null
-        var launchedJob: Job? = null
-        launchedJob = viewModelScope.launch {
+        myExplanationsFetchJob = launchDeduplicatedSessionJob(
+            key = "attendance_explanations:${cleanDate.orEmpty()}",
+            actorOverride = resolvedActor
+        ) { targetActor, gen ->
+            _myExplanationsLoading.value = true
+            _myExplanationsError.value = null
+            _myExplanationsErrorCode.value = null
             try {
                 val overview = repository.attendanceExplanationService.fetchMyExplanationsOverview(
                     businessDate = cleanDate,
                     limit = LEAVE_INBOX_PAGE_SIZE,
                     offset = 0
                 )
+                if (!isSessionValid(gen, targetActor.appUserId)) return@launchDeduplicatedSessionJob
                 _myExplanationsOverview.value = overview
                 _explanationSelectedDate.value = overview.selectedDate
                 _myExplanationsError.value = null
@@ -4356,6 +4623,7 @@ class MiniBiViewModel internal constructor(
                     )
                 }
             } catch (e: BackendApiException) {
+                if (!isSessionValid(gen, targetActor.appUserId)) return@launchDeduplicatedSessionJob
                 _myExplanationsError.value = e.message
                 _myExplanationsErrorCode.value = e.backendCode
                 if (e.backendCode == "ATTENDANCE_EXPLANATION_ACCESS_DENIED" ||
@@ -4369,14 +4637,15 @@ class MiniBiViewModel internal constructor(
                 }
             } catch (e: Exception) {
                 e.rethrowIfCancelled()
-                _myExplanationsError.value = e.message ?: "Không thể tải dữ liệu giải trình chấm công."
+                if (isSessionValid(gen, targetActor.appUserId)) {
+                    _myExplanationsError.value = e.message ?: "Không thể tải dữ liệu giải trình chấm công."
+                }
             } finally {
-                if (myExplanationsFetchJob === launchedJob) {
+                if (isSessionValid(gen, targetActor.appUserId)) {
                     _myExplanationsLoading.value = false
                 }
             }
         }
-        myExplanationsFetchJob = launchedJob
     }
 
     fun submitAttendanceExplanation(
@@ -4664,29 +4933,40 @@ class MiniBiViewModel internal constructor(
 
     fun loadSalaryAdvanceContextIfNeeded(
         force: Boolean = false,
-        actor: AppActor? = currentActor.value
+        actor: AppActor? = null
     ) {
-        if (_salaryAdvanceContextLoading.value) return
-        val resolvedActor = actor ?: currentActor.value
-        if (resolvedActor != null && !resolvedActor.canAttemptPmSalaryAdvanceContext()) {
+        val resolvedActor = resolveSessionActor(actor)
+        if (resolvedActor == null || !resolvedActor.canAttemptPmSalaryAdvanceContext()) {
             _salaryAdvanceContext.value = null
             _salaryAdvanceContextLoading.value = false
             return
         }
         val existing = _salaryAdvanceContext.value
-        if (!force && existing != null && (resolvedActor == null || existing.appUserId == resolvedActor.appUserId)) {
+        if (!force && existing != null && existing.appUserId.equals(resolvedActor.appUserId, ignoreCase = true)) {
             return
         }
-        _salaryAdvanceContextLoading.value = true
-        viewModelScope.launch {
+        launchDeduplicatedSessionJob(
+            key = "salary_advance_context",
+            actorOverride = resolvedActor,
+            force = force
+        ) { targetActor, gen ->
+            _salaryAdvanceContextLoading.value = true
             try {
                 val ctx = repository.salaryAdvanceService.getContext()
-                _salaryAdvanceContext.value = ctx
+                if (isSessionValid(gen, targetActor.appUserId) &&
+                    (ctx.appUserId.isBlank() || ctx.appUserId.equals(targetActor.appUserId, ignoreCase = true))
+                ) {
+                    _salaryAdvanceContext.value = ctx
+                }
             } catch (e: Exception) {
                 e.rethrowIfCancelled()
-                _salaryAdvanceContext.value = null
+                if (isSessionValid(gen, targetActor.appUserId)) {
+                    _salaryAdvanceContext.value = null
+                }
             } finally {
-                _salaryAdvanceContextLoading.value = false
+                if (isSessionValid(gen, targetActor.appUserId)) {
+                    _salaryAdvanceContextLoading.value = false
+                }
             }
         }
     }

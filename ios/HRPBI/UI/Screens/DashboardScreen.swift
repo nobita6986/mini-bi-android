@@ -832,12 +832,14 @@ public struct CccdReviewDetailSheet: View {
                             Button {
                                 KeyboardDismissal.dismiss()
                                 Task {
-                                    await viewModel.resolveCccdReview(
+                                    let ok = await viewModel.resolveCccdReview(
                                         entryId: item.entryId,
                                         action: DirectEntryContract.resolveActionStandardizeFromQr,
                                         note: reviewNoteInput
                                     )
-                                    dismiss()
+                                    if ok {
+                                        dismiss()
+                                    }
                                 }
                             } label: {
                                 Text("Chuẩn hoá theo QR")
@@ -852,13 +854,15 @@ public struct CccdReviewDetailSheet: View {
                             Button {
                                 KeyboardDismissal.dismiss()
                                 Task {
-                                    await viewModel.resolveCccdReview(
+                                    let ok = await viewModel.resolveCccdReview(
                                         entryId: item.entryId,
                                         action: DirectEntryContract.resolveActionUpdateEnteredCccd,
                                         correctedCccd: correctedCccdInput.isEmpty ? item.enteredCccd : correctedCccdInput,
                                         note: reviewNoteInput
                                     )
-                                    dismiss()
+                                    if ok {
+                                        dismiss()
+                                    }
                                 }
                             } label: {
                                 Text("Cập nhật CCCD nhập")

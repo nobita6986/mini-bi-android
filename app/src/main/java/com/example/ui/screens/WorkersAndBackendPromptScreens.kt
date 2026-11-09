@@ -239,6 +239,32 @@ fun DirectEntryNewWorkersScreen(
 ) {
     BackHandler(onBack = onBackToDashboard)
 
+    if (!actor.canAccessNewEntryScreen()) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(24.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(
+                    text = "Bạn không có quyền truy cập chức năng Cấp mới hồ sơ NLĐ.",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = "Tài khoản hiện tại không được phân quyền tạo mới và gửi hồ sơ người lao động.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+        return
+    }
+
     val context = LocalContext.current
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
@@ -270,9 +296,9 @@ fun DirectEntryNewWorkersScreen(
     }
 
     LaunchedEffect(actor.appUserId) {
-        viewModel.loadCatalogIfNeeded()
+        viewModel.loadCatalogIfNeeded(actor = actor)
         if (actor.hasCapability("submission_read") || actor.hasCapability("submission_create")) {
-            viewModel.refreshOwnSubmissionsForHistory()
+            viewModel.refreshOwnSubmissionsForHistory(actor = actor)
         }
     }
 
@@ -2383,7 +2409,8 @@ fun WorkersAndDirectEntryScreen(
             search = searchQuery,
             projectId = selectedProjectId,
             recruiterId = selectedRecruiterId,
-            employmentStatus = selectedStatusCode
+            employmentStatus = selectedStatusCode,
+            actorOverride = actor
         )
     }
     val effectiveFilterChange: (String, String?, String?, String?) -> Unit = { q, proj, rec, status ->
@@ -2395,14 +2422,15 @@ fun WorkersAndDirectEntryScreen(
                 search = q,
                 projectId = proj,
                 recruiterId = rec,
-                employmentStatus = status
+                employmentStatus = status,
+                actorOverride = actor
             )
         }
     }
     val effectiveOpenDetail: (String) -> Unit = onOpenEntryDetail ?: { viewModel.openEntryDetail(it) }
     val effectiveCloseDetail: () -> Unit = onCloseEntryDetail ?: { viewModel.closeEntryDetail() }
-    val effectiveOpenPropose: (WorkerProfileEntity) -> Unit = onOpenProposeChange ?: { viewModel.openProposeChange(it) }
-    val effectiveOpenDirectEdit: (WorkerProfileEntity) -> Unit = onOpenDirectEdit ?: { viewModel.openDirectEdit(it) }
+    val effectiveOpenPropose: (WorkerProfileEntity) -> Unit = onOpenProposeChange ?: { viewModel.openProposeChange(it, actorOverride = actor) }
+    val effectiveOpenDirectEdit: (WorkerProfileEntity) -> Unit = onOpenDirectEdit ?: { viewModel.openDirectEdit(it, actorOverride = actor) }
     val effectiveOpenSalaryAdvance: () -> Unit = onOpenSalaryAdvance ?: { viewModel.openSalaryAdvanceDialog() }
 
     val focusManager = LocalFocusManager.current
@@ -3329,32 +3357,48 @@ internal fun WorkerProposeChangeDialog(
     val expectedVersion = baselineDetail?.version ?: worker.entryVersion
     var selectedTargetKind by remember { mutableStateOf("ENTRY_FIELD") }
 
-    // ENTRY_FIELD fields
-    var projectId by remember(baselineDetail, worker) {
+    // ENTRY_FIELD fields (keyed on worker.entryId so 409 baseline reload preserves user draft edits)
+    var projectId by remember(worker.entryId) {
         mutableStateOf(baselineDetail?.projectId ?: worker.projectId)
     }
-    var firstWorkDateUi by remember(baselineDetail, worker) {
+    var firstWorkDateUi by remember(worker.entryId) {
         mutableStateOf(DirectEntryContract.isoDateToUiDate(baselineDetail?.firstWorkDate ?: worker.firstWorkDate))
     }
-    var laborTypeKey by remember(baselineDetail, worker) {
+    var laborTypeKey by remember(worker.entryId) {
         mutableStateOf(baselineDetail?.laborType ?: worker.laborType)
     }
-    var displayName by remember(baselineDetail, worker) {
+    var displayName by remember(worker.entryId) {
         mutableStateOf(baselineDetail?.displayName ?: worker.displayName)
     }
-    var phone by remember(baselineDetail) {
+    var phone by remember(worker.entryId) {
         mutableStateOf(baselineDetail?.phone.orEmpty())
     }
 
     // PAYMENT fields
-    var bankId by remember(baselineDetail, catalog) {
+    var bankId by remember(worker.entryId) {
         mutableStateOf(baselineDetail?.bankId ?: catalog?.banks?.firstOrNull()?.bankId.orEmpty())
     }
-    var accountNumber by remember(baselineDetail) {
+    var accountNumber by remember(worker.entryId) {
         mutableStateOf(baselineDetail?.accountNumber.orEmpty())
     }
-    var accountHolderName by remember(baselineDetail, worker) {
+    var accountHolderName by remember(worker.entryId) {
         mutableStateOf(baselineDetail?.accountHolderName ?: worker.displayName)
+    }
+    var hydratedInitialDetail by remember(worker.entryId) {
+        mutableStateOf(baselineDetail != null)
+    }
+    LaunchedEffect(worker.entryId, baselineDetail != null) {
+        if (!hydratedInitialDetail && baselineDetail != null) {
+            hydratedInitialDetail = true
+            projectId = baselineDetail.projectId
+            firstWorkDateUi = DirectEntryContract.isoDateToUiDate(baselineDetail.firstWorkDate)
+            laborTypeKey = baselineDetail.laborType
+            displayName = baselineDetail.displayName
+            phone = baselineDetail.phone.orEmpty()
+            bankId = baselineDetail.bankId ?: catalog?.banks?.firstOrNull()?.bankId.orEmpty()
+            accountNumber = baselineDetail.accountNumber.orEmpty()
+            accountHolderName = baselineDetail.accountHolderName ?: worker.displayName
+        }
     }
 
     // WORK_STATUS fields
@@ -3688,7 +3732,7 @@ internal fun WorkerPrivilegedEditDialog(
     val mergedBanks = remember(catalogBanks) {
         DirectEntryContract.mergeVietQrBankCatalog(catalogBanks)
     }
-    var form by remember(baselineDetail) {
+    var form by remember(baselineDetail.entryId) {
         mutableStateOf(DirectEntryContract.createInitialDirectEditFormInput(baselineDetail, catalogBanks))
     }
     val selectableStatusCodes = remember(baselineDetail.employmentStatus) {

@@ -158,6 +158,13 @@ public struct MiniBiUser: Codable, Equatable, Identifiable, Sendable {
         "all"
     ]
 
+    public static let canonicalWorkerDirectoryScopes: [String] = [
+        "managed",
+        "recruited",
+        "team",
+        "all"
+    ]
+
     public let id: String
     public let username: String
     public let fullName: String
@@ -178,15 +185,22 @@ public struct MiniBiUser: Codable, Equatable, Identifiable, Sendable {
         Self.sanitizeAllowedWorkerTabs(allowedWorkerTabs)
     }
 
-    public var canLoadDirectEntryCatalog: Bool {
-        if !safeAllowedWorkerTabs.isEmpty {
-            return true
+    public func hasCapability(_ capability: String) -> Bool {
+        let target = capability.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !target.isEmpty else { return false }
+        return permissions.contains {
+            $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == target
         }
-        let lowerCaps = Set(permissions.map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() })
-        return lowerCaps.contains("entry_create")
-            || lowerCaps.contains("entry_submit")
-            || lowerCaps.contains("entry_direct_edit")
-            || lowerCaps.contains("change_request_propose")
+    }
+
+    /// Server contract for `GET /api/direct-entry/catalog`: `entry_create || entry_own`.
+    public var canLoadDirectEntryCatalog: Bool {
+        hasCapability("entry_create") || hasCapability("entry_own")
+    }
+
+    /// Only show/allow entering the New Worker Entry ("Cấp mới") screen when `entry_create && submission_create`.
+    public var canAccessNewWorkerEntry: Bool {
+        hasCapability("entry_create") && hasCapability("submission_create")
     }
 
     /// Server PM salary-advance predicate requires an active project manager assignment
@@ -996,6 +1010,22 @@ public struct DirectEntryBatchHistoryItem: Identifiable, Equatable, Sendable {
         self.approvedRows = approvedRows
         self.pendingRows = pendingRows
         self.createdAt = createdAt
+    }
+}
+
+public struct OwnSubmissionsPage: Equatable, Sendable {
+    public let items: [DirectEntryBatchHistoryItem]
+    public let nextCursor: String?
+    public let hasMore: Bool
+
+    public init(
+        items: [DirectEntryBatchHistoryItem] = [],
+        nextCursor: String? = nil,
+        hasMore: Bool = false
+    ) {
+        self.items = items
+        self.nextCursor = nextCursor
+        self.hasMore = hasMore
     }
 }
 

@@ -210,16 +210,19 @@ public final class DirectEntryService: @unchecked Sendable {
         }
 
         let encoded = entryIdUuid.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? entryIdUuid
+        let idemKey = UUID().uuidString.lowercased()
         var response = await httpClient.request(
             method: "POST",
             path: "/api/direct-entry/entries/\(encoded)/cccd-review/resolve",
-            jsonBody: body
+            jsonBody: body,
+            additionalHeaders: ["Idempotency-Key": idemKey]
         )
         if response.statusCode == 404 {
             response = await httpClient.request(
                 method: "POST",
                 path: "/api/direct-entry/cccd-review/\(encoded)/resolve",
-                jsonBody: body
+                jsonBody: body,
+                additionalHeaders: ["Idempotency-Key": idemKey]
             )
         }
         guard response.isSuccess else {
@@ -403,14 +406,24 @@ public final class DirectEntryService: @unchecked Sendable {
         self.lastLoadedCatalog = DirectEntryAssigneeOptions()
     }
 
-    public func fetchBatchHistory() async -> MiniBiApiResult<[DirectEntryBatchHistoryItem]> {
+    public func listOwnSubmissions(
+        pageSize: Int = 20,
+        cursor: String? = nil
+    ) async -> MiniBiApiResult<OwnSubmissionsPage> {
+        let clampedPageSize = min(max(pageSize, 1), 100)
+        var queryItems: [URLQueryItem] = [
+            URLQueryItem(name: "page_size", value: String(clampedPageSize))
+        ]
+        if let cleanCursor = cursor?.trimmingCharacters(in: .whitespacesAndNewlines), !cleanCursor.isEmpty {
+            queryItems.append(URLQueryItem(name: "cursor", value: cleanCursor))
+        }
         let response = await httpClient.request(
             method: "GET",
             path: "/api/direct-entry/submissions",
-            queryItems: [URLQueryItem(name: "page_size", value: "20")]
+            queryItems: queryItems
         )
         if response.statusCode == 403 || response.statusCode == 404 {
-            return .success([], statusCode: response.statusCode)
+            return .success(OwnSubmissionsPage(items: [], nextCursor: nil, hasMore: false), statusCode: response.statusCode)
         }
         guard response.isSuccess else {
             return .failure(
@@ -428,8 +441,9 @@ public final class DirectEntryService: @unchecked Sendable {
 
         let items = rawList.enumerated().map { idx, obj in
             let subUuid = obj.optString("submission_id", "batch_id", "id")
+            let stableHash = abs(subUuid.hashValue)
             return DirectEntryBatchHistoryItem(
-                batchId: obj.optInt64("submission_id", "batch_id", "id") ?? Int64(idx + 1),
+                batchId: obj.optInt64("submission_id", "batch_id", "id") ?? Int64(stableHash > 0 ? stableHash : idx + 1),
                 submissionIdUuid: subUuid,
                 status: obj.optString("state", "status", defaultValue: "SUBMITTED"),
                 totalRows: obj.optInt("entry_count", "total_rows", "total"),
@@ -438,7 +452,27 @@ public final class DirectEntryService: @unchecked Sendable {
                 createdAt: obj.optString("submitted_at", "created_at", "updated_at")
             )
         }
-        return .success(items, statusCode: response.statusCode)
+        let rawNextCursor = dataObj.optString("next_cursor")
+            .ifEmpty(root.optString("next_cursor"))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let nextCursor: String? = rawNextCursor.isEmpty ? nil : rawNextCursor
+        let hasMore = (dataObj["has_more"] as? Bool)
+            ?? (root["has_more"] as? Bool)
+            ?? (nextCursor != nil)
+        return .success(
+            OwnSubmissionsPage(items: items, nextCursor: nextCursor, hasMore: hasMore),
+            statusCode: response.statusCode
+        )
+    }
+
+    public func fetchBatchHistory() async -> MiniBiApiResult<[DirectEntryBatchHistoryItem]> {
+        let res = await listOwnSubmissions(pageSize: 20, cursor: nil)
+        switch res {
+        case .success(let page, let code):
+            return .success(page.items, statusCode: code)
+        case .failure(let msg, let code, let errCode):
+            return .failure(message: msg, httpStatus: code, errorCode: errCode)
+        }
     }
 
     public func checkDuplicates(drafts: [NewWorkerEntryDraft]) async -> MiniBiApiResult<[DirectEntryDuplicateCandidate]> {
@@ -885,19 +919,8 @@ public final class DirectEntryService: @unchecked Sendable {
         }
 
         // Step 1: Reserve R2 presigned upload slot (`POST /api/direct-entry/entries/{entryId}/documents`)
-        var initRes = await reserveSlot(version: expectedEntryVersion, idemSuffix: "reserve")
-        if initRes.statusCode == 409 {
-            let detailRes = await httpClient.request(
-                method: "GET",
-                path: "/api/direct-entry/entries/\(encodedEntryId)"
-            )
-            if detailRes.isSuccess, let dRoot = detailRes.jsonObject {
-                let entryObj = (dRoot["entry"] as? [String: Any]) ?? (dRoot["data"] as? [String: Any]) ?? dRoot
-                let latestVer = max(1, entryObj.optInt("version", "entry_version", defaultValue: expectedEntryVersion))
-                expectedEntryVersion = latestVer
-                initRes = await reserveSlot(version: latestVer, idemSuffix: "reserve:v\(latestVer)")
-            }
-        }
+        // Never blind-retry or auto-replace expected_entry_version on HTTP 409 version conflict.
+        let initRes = await reserveSlot(version: expectedEntryVersion, idemSuffix: "reserve")
 
         if initRes.isSuccess, let root = initRes.jsonObject {
             let docObj = (root["document"] as? [String: Any]) ?? root
@@ -960,6 +983,17 @@ public final class DirectEntryService: @unchecked Sendable {
 
             let fileUrl = docObj.optString("file_url", "url", "document_id", "doc_id", defaultValue: prepared.fileName)
             return (.success(fileUrl, statusCode: initRes.statusCode), reservedEntryVersion)
+        }
+
+        guard initRes.statusCode == 404 || initRes.statusCode == 405 else {
+            return (
+                .failure(
+                    message: initRes.errorMessage ?? "Tải tệp hồ sơ cấp mới thất bại.",
+                    httpStatus: initRes.statusCode,
+                    errorCode: initRes.errorCode
+                ),
+                expectedEntryVersion
+            )
         }
 
         // Fallback to multipart upload for legacy/test servers
@@ -1584,9 +1618,6 @@ public final class DirectEntryService: @unchecked Sendable {
         let cleanId = entryId.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !cleanId.isEmpty else {
             return .failure(message: "Không tìm thấy mã định danh hồ sơ NLĐ.")
-        }
-        if self.lastLoadedCatalog.catalogProjects.isEmpty && self.lastLoadedCatalog.catalogRecruiters.isEmpty {
-            _ = await fetchAssigneeOptions()
         }
         let encoded = cleanId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? cleanId
         let response = await httpClient.request(

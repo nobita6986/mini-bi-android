@@ -430,6 +430,7 @@ class MiniBiRepository(
 
     private val _activeActor = MutableStateFlow<AppActor?>(null)
     val currentActorFlow: StateFlow<AppActor?> = _activeActor.asStateFlow()
+    private val authSessionEpoch = java.util.concurrent.atomic.AtomicLong(0L)
 
     val themeIdFlow: Flow<String> = safePrefsFlow.map { prefs ->
         prefs[KEY_THEME_ID] ?: "hr-partner"
@@ -490,6 +491,7 @@ class MiniBiRepository(
     }
 
     suspend fun bootstrapSession(): Result<AppActor> = withContext(Dispatchers.IO) {
+        val startEpoch = authSessionEpoch.get()
         try {
             val displayHint = safePrefsFlow.first()[KEY_DISPLAY_IDENTIFIER]
             val json = httpClient.getJson(
@@ -497,6 +499,16 @@ class MiniBiRepository(
                 requireOkTrue = true,
                 clearSessionOn401 = false
             )
+            if (authSessionEpoch.get() != startEpoch) {
+                return@withContext Result.failure(
+                    BackendApiException(
+                        kind = BackendFailureKind.UNAUTHENTICATED,
+                        statusCode = null,
+                        backendCode = "SESSION_SUPERSEDED",
+                        message = "Phiên xác thực đã thay đổi."
+                    )
+                )
+            }
             val actor = ActorContractParser.parseEnvelopeActor(json, displayHint)
             _activeActor.value = actor
             if (dao.getRetryableAttendanceOutboxForUser(actor.appUserId).isNotEmpty()) {
@@ -504,16 +516,20 @@ class MiniBiRepository(
             }
             Result.success(actor)
         } catch (e: BackendApiException) {
-            if (e.kind == BackendFailureKind.UNAUTHENTICATED || e.kind == BackendFailureKind.FORBIDDEN) {
-                clearLocalSessionAndCache()
-            } else {
-                // Never expose stale cached actor if backend session could not be verified
-                _activeActor.value = null
+            if (authSessionEpoch.get() == startEpoch) {
+                if (e.kind == BackendFailureKind.UNAUTHENTICATED || e.kind == BackendFailureKind.FORBIDDEN) {
+                    clearLocalSessionAndCache()
+                } else {
+                    // Never expose stale cached actor if backend session could not be verified
+                    _activeActor.value = null
+                }
             }
             Result.failure(e)
         } catch (e: Exception) {
             if (e is CancellationException) throw e
-            _activeActor.value = null
+            if (authSessionEpoch.get() == startEpoch) {
+                _activeActor.value = null
+            }
             Result.failure(
                 BackendApiException(
                     kind = BackendFailureKind.CONTRACT_INVALID,
@@ -543,6 +559,7 @@ class MiniBiRepository(
             )
         }
 
+        val loginEpoch = authSessionEpoch.incrementAndGet()
         try {
             val payloadJson = JSONObject().apply {
                 put("email", trimmedIdentifier)
@@ -554,6 +571,16 @@ class MiniBiRepository(
                 requireOkTrue = true,
                 clearSessionOn401 = false
             )
+            if (authSessionEpoch.get() != loginEpoch) {
+                return@withContext Result.failure(
+                    BackendApiException(
+                        kind = BackendFailureKind.UNAUTHENTICATED,
+                        statusCode = null,
+                        backendCode = "SESSION_SUPERSEDED",
+                        message = "Phiên đăng nhập đã thay đổi."
+                    )
+                )
+            }
             val displayId = formatDisplayIdentifier(trimmedIdentifier)
             val actor = ActorContractParser.parseEnvelopeActor(json, displayId)
             prefsDataStore.edit { prefs ->
@@ -604,6 +631,7 @@ class MiniBiRepository(
      */
     suspend fun syncDirectEntrySession(actor: AppActor? = _activeActor.value): AppActor? = withContext(Dispatchers.IO) {
         val baseActor = actor ?: return@withContext null
+        val startEpoch = authSessionEpoch.get()
         val resolvedTabs = try {
             val json = directEntryService.fetchDirectEntrySession()
             ActorContractParser.parseDirectEntrySessionAllowedWorkerTabs(
@@ -613,6 +641,9 @@ class MiniBiRepository(
         } catch (e: Exception) {
             if (e is CancellationException) throw e
             emptyList()
+        }
+        if (authSessionEpoch.get() != startEpoch) {
+            return@withContext _activeActor.value
         }
         val current = _activeActor.value
         if (current == null || !current.appUserId.equals(baseActor.appUserId, ignoreCase = true)) {
@@ -629,6 +660,7 @@ class MiniBiRepository(
     }
 
     suspend fun clearLocalSessionAndCache() {
+        authSessionEpoch.incrementAndGet()
         _activeActor.value = null
         attendanceTimeAnchorManager.clearAnchor()
         cookieJar.clearAll()

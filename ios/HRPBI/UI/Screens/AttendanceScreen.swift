@@ -184,13 +184,6 @@ public struct AttendanceScreen: View {
                 await viewModel.syncAttendanceTimeAnchor()
             }
         }
-        .onReceive(NotificationCenter.default.publisher(for: UIApplication.willEnterForegroundNotification)) { _ in
-            locationManager.requestLocationUpdate()
-            lastAutoTimeSyncAttemptSec = Date().timeIntervalSince1970
-            Task {
-                await viewModel.syncAttendanceTimeAnchor()
-            }
-        }
         .onReceive(liveClockTimer) { now in
             liveClockTick &+= 1
             viewModel.refreshAttendanceTimeEvaluation()

@@ -438,7 +438,7 @@ fun CccdReviewDetailDialog(
     var activeMode by remember(item.entryId) {
         mutableStateOf(if (hasQrPayload) "STANDARDIZE_QR" else "UPDATE_CCCD")
     }
-    var editedCccd by remember(item.entryId, item.enteredNationalId) {
+    var editedCccd by remember(item.entryId) {
         mutableStateOf(item.enteredNationalId.orEmpty())
     }
     var applyBlankFromQr by remember(item.entryId) { mutableStateOf(true) }
@@ -450,7 +450,7 @@ fun CccdReviewDetailDialog(
             .filter { !it.qrValue.isNullOrBlank() && it.field in DirectEntryContract.ALLOWED_CCCD_STANDARDIZE_FIELDS }
             .map { it.field }
     }
-    val selectedStandardizeFields = remember(item.entryId, availableQrFields) {
+    val selectedStandardizeFields = remember(item.entryId) {
         mutableStateListOf<String>().apply {
             val defaultSelection = item.comparison
                 .filter {

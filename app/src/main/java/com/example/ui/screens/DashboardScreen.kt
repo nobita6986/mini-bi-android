@@ -129,9 +129,7 @@ fun DashboardScreen(
     }
 
     LaunchedEffect(actor.appUserId) {
-        if ((generalOverview == null && !generalOverviewLoading && generalOverviewError == null) ||
-            (duplicateGroups.isEmpty() && !duplicateLoading && duplicateError == null)
-        ) {
+        if (generalOverview == null && !generalOverviewLoading && generalOverviewError == null) {
             viewModel.refreshDashboardData(actor)
         }
     }

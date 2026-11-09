@@ -2454,7 +2454,8 @@ public final class WorkReportsAndReportingService {
         let response = await httpClient.request(
             method: "POST",
             path: "/api/direct-entry/duplicate-cccd-report/self-withdraw",
-            jsonBody: body
+            jsonBody: body,
+            additionalHeaders: ["Idempotency-Key": idempotencyKey]
         )
         guard response.isSuccess else {
             return .failure(

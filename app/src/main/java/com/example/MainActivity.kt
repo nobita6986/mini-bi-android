@@ -775,14 +775,20 @@ fun MiniBiAppRoot(viewModel: MiniBiViewModel) {
                         }
 
                         MainDestination.NEW_ENTRY -> {
-                            DirectEntryNewWorkersScreen(
-                                actor = authenticatedActor,
-                                viewModel = viewModel,
-                                onNavigateToWorkersList = {
-                                    viewModel.navigateTo(MainDestination.WORKERS)
-                                },
-                                onBackToDashboard = { viewModel.navigateTo(MainDestination.DASHBOARD) }
-                            )
+                            if (canCreateEntry) {
+                                DirectEntryNewWorkersScreen(
+                                    actor = authenticatedActor,
+                                    viewModel = viewModel,
+                                    onNavigateToWorkersList = {
+                                        viewModel.navigateTo(MainDestination.WORKERS)
+                                    },
+                                    onBackToDashboard = { viewModel.navigateTo(MainDestination.DASHBOARD) }
+                                )
+                            } else {
+                                LaunchedEffect(authenticatedActor.appUserId) {
+                                    viewModel.navigateTo(MainDestination.DASHBOARD)
+                                }
+                            }
                         }
                     }
                 }

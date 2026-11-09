@@ -39,13 +39,11 @@ data class AppActor(
     fun hasScopeKind(kind: String): Boolean = scopes.any { it.kind == kind }
 
     fun canLoadDirectEntryCatalog(): Boolean {
-        return hasCapability("entry_create") ||
-            hasCapability("submission_create") ||
-            hasCapability("entry_propose_change") ||
-            hasCapability("change_propose") ||
-            hasCapability("entry_admin") ||
-            hasCapability("change_review") ||
-            safeAllowedWorkerTabs.any { it in DirectEntryContract.ALLOWED_WORKER_SCOPES }
+        return hasCapability("entry_create") || hasCapability("entry_own")
+    }
+
+    fun canAccessNewEntryScreen(): Boolean {
+        return hasCapability("entry_create") && hasCapability("submission_create")
     }
 
     /**

@@ -407,7 +407,7 @@ public final class MiniBiRepository {
         pageSize: Int = 30
     ) async -> MiniBiApiResult<(items: [WorkerItem], total: Int, totalPages: Int)> {
         let normalizedScope = scope.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard MiniBiUser.canonicalWorkerTabs.contains(normalizedScope) else {
+        guard MiniBiUser.canonicalWorkerDirectoryScopes.contains(normalizedScope) else {
             return .failure(
                 message: "Tài khoản không có quyền truy cập phạm vi người lao động này.",
                 httpStatus: 403,
@@ -543,11 +543,15 @@ public final class MiniBiRepository {
         return .success(Self.parseWorkerItem(obj), statusCode: response.statusCode)
     }
 
-    public func exportWorkersExcel(scope: String = "all", search: String = "", project: String = "") async -> MiniBiApiResult<URL> {
-        let validScope: String = {
-            let s = scope.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            return ["recruited", "managed", "team", "all"].contains(s) ? s : "all"
-        }()
+    public func exportWorkersExcel(scope: String = "", search: String = "", project: String = "") async -> MiniBiApiResult<URL> {
+        let validScope = scope.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard MiniBiUser.canonicalWorkerDirectoryScopes.contains(validScope) else {
+            return .failure(
+                message: "Phạm vi này không hỗ trợ xuất danh sách người lao động.",
+                httpStatus: 403,
+                errorCode: "WORKER_EXPORT_SCOPE_DENIED"
+            )
+        }
         let cleanProject = project.trimmingCharacters(in: .whitespacesAndNewlines)
         let body: [String: Any] = [
             "scope": validScope,

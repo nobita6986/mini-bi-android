@@ -1844,14 +1844,25 @@ final class HRPBTests: XCTestCase {
 
     // MARK: - 10. Fail-Closed Worker Tabs & Authorization Regression Tests
 
+    private struct RecordedMockRequest {
+        let url: String
+        let method: String
+        let headers: [String: String]
+        let bodyString: String
+    }
+
     private final class MockURLProtocol: URLProtocol {
         nonisolated(unsafe) static var requestHandler: ((URLRequest) throws -> (HTTPURLResponse, Data))?
+        nonisolated(unsafe) static var pathDelaySec: [String: TimeInterval] = [:]
         private static let lock = NSLock()
         nonisolated(unsafe) private static var recordedUrlsStorage: [String] = []
+        nonisolated(unsafe) private static var recordedRequestsStorage: [RecordedMockRequest] = []
 
         static func resetRecordedUrls() {
             lock.lock()
             recordedUrlsStorage.removeAll()
+            recordedRequestsStorage.removeAll()
+            pathDelaySec.removeAll()
             lock.unlock()
         }
 
@@ -1859,6 +1870,34 @@ final class HRPBTests: XCTestCase {
             lock.lock()
             defer { lock.unlock() }
             return recordedUrlsStorage
+        }
+
+        static func recordedRequests() -> [RecordedMockRequest] {
+            lock.lock()
+            defer { lock.unlock() }
+            return recordedRequestsStorage
+        }
+
+        private static func readBodyData(from request: URLRequest) -> Data {
+            if let data = request.httpBody {
+                return data
+            }
+            guard let stream = request.httpBodyStream else {
+                return Data()
+            }
+            stream.open()
+            defer { stream.close() }
+            var buffer = [UInt8](repeating: 0, count: 4096)
+            var result = Data()
+            while stream.hasBytesAvailable {
+                let count = stream.read(&buffer, maxLength: buffer.count)
+                if count > 0 {
+                    result.append(buffer, count: count)
+                } else {
+                    break
+                }
+            }
+            return result
         }
 
         override class func canInit(with request: URLRequest) -> Bool {
@@ -1871,21 +1910,45 @@ final class HRPBTests: XCTestCase {
 
         override func startLoading() {
             let fullUrl = request.url?.absoluteString ?? ""
+            let path = request.url?.path ?? ""
+            let bodyData = Self.readBodyData(from: request)
+            let bodyStr = String(data: bodyData, encoding: .utf8) ?? ""
+            let rec = RecordedMockRequest(
+                url: fullUrl,
+                method: request.httpMethod ?? "GET",
+                headers: request.allHTTPHeaderFields ?? [:],
+                bodyString: bodyStr
+            )
             Self.lock.lock()
             Self.recordedUrlsStorage.append(fullUrl)
+            Self.recordedRequestsStorage.append(rec)
+            let delay = Self.pathDelaySec.first(where: { path.contains($0.key) })?.value ?? 0
             Self.lock.unlock()
 
-            guard let handler = Self.requestHandler else {
-                client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
-                return
+            let executeResponse = { [weak self] in
+                guard let self else { return }
+                guard let handler = Self.requestHandler else {
+                    self.client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
+                    return
+                }
+                do {
+                    var reqWithBody = self.request
+                    if reqWithBody.httpBody == nil && !bodyData.isEmpty {
+                        reqWithBody.httpBody = bodyData
+                    }
+                    let (response, data) = try handler(reqWithBody)
+                    self.client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+                    self.client?.urlProtocol(self, didLoad: data)
+                    self.client?.urlProtocolDidFinishLoading(self)
+                } catch {
+                    self.client?.urlProtocol(self, didFailWithError: error)
+                }
             }
-            do {
-                let (response, data) = try handler(request)
-                client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-                client?.urlProtocol(self, didLoad: data)
-                client?.urlProtocolDidFinishLoading(self)
-            } catch {
-                client?.urlProtocol(self, didFailWithError: error)
+
+            if delay > 0 {
+                DispatchQueue.global().asyncAfter(deadline: .now() + delay, execute: executeResponse)
+            } else {
+                executeResponse()
             }
         }
 
@@ -2151,6 +2214,462 @@ final class HRPBTests: XCTestCase {
         await vm.loadWorkers(resetPage: true)
         let urls = MockURLProtocol.recordedUrls()
         XCTAssertFalse(urls.contains(where: { $0.contains("/api/direct-entry/workers") }))
+    }
+
+    @MainActor
+    func testRegression6_UploaderTabCallsSubmissionsNeverWorkersOrExportScopeAll() async throws {
+        MockURLProtocol.resetRecordedUrls()
+        MockURLProtocol.requestHandler = { req in
+            let url = req.url!
+            let path = url.path
+            let body: String
+            if path == "/api/direct-entry/submissions" {
+                body = """
+                {"ok":true,"items":[{"submission_id":"aaaa1111-2222-4333-8444-555555555555","state":"SUBMITTED","entry_count":3,"created_at":"2026-11-08T08:00:00Z"}],"has_more":true,"next_cursor":"cur-2"}
+                """
+            } else if path == "/api/direct-entry/workers" {
+                body = """
+                {"ok":true,"scope":"managed","items":[{"entry_id":"eeee1111-2222-4333-8444-555555555555","employee_code":"HRP001","display_name":"Nguyễn Văn A"}],"summary":{"total_workers":1}}
+                """
+            } else {
+                body = """
+                {"ok":true,"data":[]}
+                """
+            }
+            let resp = HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/json"])!
+            return (resp, Data(body.utf8))
+        }
+
+        let client = makeMockHttpClient()
+        let repo = MiniBiRepository(httpClient: client, keychain: KeychainStore(serviceName: "com.aistudio.minibi.repo6.\(UUID().uuidString)"))
+        let directEntry = DirectEntryService(httpClient: client)
+        let reporting = WorkReportsAndReportingService(httpClient: client)
+        let salaryAdvance = SalaryAdvanceService(httpClient: client)
+
+        let vm = MiniBiViewModel(
+            repository: repo,
+            directEntryService: directEntry,
+            workReportsService: reporting,
+            salaryAdvanceService: salaryAdvance
+        )
+
+        // Case A: allowed_worker_tabs = ["uploader", "managed"]
+        let uploaderAndManagedUser = MiniBiUser(
+            id: "11112222-3333-4444-8555-666666666666",
+            username: "uploader.pm",
+            fullName: "Người Nhập Hộ & QLDA",
+            permissions: ["entry_read", "submission_read"],
+            allowedWorkerTabs: ["uploader", "managed"]
+        )
+        vm.currentUser = uploaderAndManagedUser
+        vm.isAuthenticated = true
+        vm.selectedWorkerScope = "uploader"
+
+        await vm.loadWorkers(resetPage: true)
+        XCTAssertEqual(vm.ownSubmissions.count, 1)
+        XCTAssertTrue(vm.ownSubmissionsHasMore)
+        XCTAssertEqual(vm.ownSubmissionsNextCursor, "cur-2")
+
+        // Attempting to export while on uploader or calling fetchWorkers(scope: "uploader") directly must fail closed
+        let directFetchUploader = await repo.fetchWorkers(scope: "uploader")
+        if case .success = directFetchUploader {
+            XCTFail("Expected fetchWorkers(scope: uploader) to fail closed")
+        }
+        let exportUploader = await repo.exportWorkersExcel(scope: "uploader")
+        if case .success = exportUploader {
+            XCTFail("Expected exportWorkersExcel(scope: uploader) to fail closed and never convert to scope=all")
+        }
+
+        // Switching to "managed" calls workers?scope=managed
+        vm.selectedWorkerScope = "managed"
+        await vm.loadWorkers(resetPage: true)
+        XCTAssertEqual(vm.workers.count, 1)
+
+        // Case B: allowed_worker_tabs = ["uploader"] only
+        MockURLProtocol.resetRecordedUrls()
+        let uploaderOnlyUser = MiniBiUser(
+            id: "22223333-4444-4555-8666-777777777777",
+            username: "uploader.only",
+            fullName: "Chỉ Nhập Hộ",
+            permissions: ["entry_read", "submission_read"],
+            allowedWorkerTabs: ["uploader"]
+        )
+        vm.currentUser = uploaderOnlyUser
+        vm.selectedWorkerScope = ""
+        await vm.loadWorkers(resetPage: true)
+        XCTAssertEqual(vm.selectedWorkerScope, "uploader")
+
+        let allUrls = MockURLProtocol.recordedUrls()
+        XCTAssertTrue(allUrls.contains(where: { $0.contains("/api/direct-entry/submissions") }))
+        XCTAssertFalse(allUrls.contains(where: { $0.contains("scope=uploader") }))
+        XCTAssertFalse(allUrls.contains(where: { $0.contains("/api/direct-entry/workers") }))
+        XCTAssertFalse(allUrls.contains(where: { $0.contains("/api/direct-entry/workers/export") }))
+    }
+
+    @MainActor
+    func testRegression7_CatalogAndNewEntryNavigationPermissions() async throws {
+        MockURLProtocol.resetRecordedUrls()
+        MockURLProtocol.requestHandler = { req in
+            let url = req.url!
+            let body = """
+            {"ok":true,"projects":[{"project_id":"p1","display_name":"Dự án A"}],"recruiters":[],"banks":[],"labor_types":[]}
+            """
+            let resp = HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/json"])!
+            return (resp, Data(body.utf8))
+        }
+
+        let client = makeMockHttpClient()
+        let repo = MiniBiRepository(httpClient: client, keychain: KeychainStore(serviceName: "com.aistudio.minibi.repo7.\(UUID().uuidString)"))
+        let directEntry = DirectEntryService(httpClient: client)
+        let reporting = WorkReportsAndReportingService(httpClient: client)
+        let salaryAdvance = SalaryAdvanceService(httpClient: client)
+
+        let vm = MiniBiViewModel(
+            repository: repo,
+            directEntryService: directEntry,
+            workReportsService: reporting,
+            salaryAdvanceService: salaryAdvance
+        )
+
+        // 1. luanpt (`allowed_worker_tabs=[]`), recruited-only, and uploader-only:
+        //    neither canLoadDirectEntryCatalog (`entry_create || entry_own`) nor canAccessNewWorkerEntry (`entry_create && submission_create`)
+        let unauthorizedAccounts: [MiniBiUser] = [
+            MiniBiUser(id: "u-luanpt", username: "luanpt", permissions: ["entry_read"], allowedWorkerTabs: []),
+            MiniBiUser(id: "u-recruited", username: "rec01", permissions: ["entry_read"], allowedWorkerTabs: ["recruited"]),
+            MiniBiUser(id: "u-uploader", username: "up01", permissions: ["entry_read", "submission_read", "submission_create"], allowedWorkerTabs: ["uploader"])
+        ]
+
+        for account in unauthorizedAccounts {
+            XCTAssertFalse(account.canLoadDirectEntryCatalog, "Expected \(account.username) not to have catalog permission")
+            XCTAssertFalse(account.canAccessNewWorkerEntry, "Expected \(account.username) not to access Cấp mới")
+
+            vm.currentUser = account
+            vm.isAuthenticated = true
+            vm.currentDestination = .dashboard
+
+            // Attempt navigateTo(.newEntry) and notification navigation to Cấp mới
+            vm.navigateTo(.newEntry)
+            XCTAssertEqual(vm.currentDestination, .dashboard)
+
+            let notifItem = NotificationItem(
+                id: "n-1",
+                title: "Cấp mới",
+                body: "Mở cấp mới",
+                type: "DIRECT_ENTRY",
+                actionUrl: "/direct-entry",
+                isRead: false,
+                createdAt: "2026-11-08T08:00:00Z"
+            )
+            await vm.onNotificationTapped(notifItem)
+            XCTAssertNotEqual(vm.currentDestination, .newEntry)
+
+            await vm.loadDirectEntryAssigneeOptions(force: true)
+        }
+
+        XCTAssertFalse(MockURLProtocol.recordedUrls().contains(where: { $0.contains("/api/direct-entry/catalog") }))
+
+        // 2. Account with `entry_own` ONLY -> can read catalog (`entry_create || entry_own`), but CANNOT enter Cấp mới (`entry_create && submission_create`)
+        let entryOwnOnly = MiniBiUser(
+            id: "u-entry-own",
+            username: "own01",
+            permissions: ["entry_own"],
+            allowedWorkerTabs: ["recruited"]
+        )
+        XCTAssertTrue(entryOwnOnly.canLoadDirectEntryCatalog)
+        XCTAssertFalse(entryOwnOnly.canAccessNewWorkerEntry)
+        vm.currentUser = entryOwnOnly
+        vm.navigateTo(.newEntry)
+        XCTAssertEqual(vm.currentDestination, .dashboard)
+
+        // 3. Account with `entry_create && submission_create` -> CAN enter Cấp mới and CAN load catalog
+        let fullCreator = MiniBiUser(
+            id: "u-creator",
+            username: "creator01",
+            permissions: ["entry_create", "submission_create"],
+            allowedWorkerTabs: ["uploader"]
+        )
+        XCTAssertTrue(fullCreator.canLoadDirectEntryCatalog)
+        XCTAssertTrue(fullCreator.canAccessNewWorkerEntry)
+        vm.currentUser = fullCreator
+        vm.navigateTo(.newEntry)
+        XCTAssertEqual(vm.currentDestination, .newEntry)
+        await vm.loadDirectEntryAssigneeOptions(force: true)
+        XCTAssertTrue(MockURLProtocol.recordedUrls().contains(where: { $0.contains("/api/direct-entry/catalog") }))
+    }
+
+    @MainActor
+    func testRegression8_NullUserFailClosedAndDelayedResponseFromAccountABlockedAfterSwitchToAccountB() async throws {
+        MockURLProtocol.resetRecordedUrls()
+        MockURLProtocol.pathDelaySec = [
+            "/api/direct-entry/catalog": 0.25,
+            "/api/salary-advance/context": 0.25,
+            "/api/direct-entry/workers": 0.25
+        ]
+        MockURLProtocol.requestHandler = { req in
+            let url = req.url!
+            let path = url.path
+            let body: String
+            if path == "/api/direct-entry/catalog" {
+                body = """
+                {"ok":true,"projects":[{"project_id":"proj-a","display_name":"Dự án Tài Khoản A"}],"recruiters":[],"banks":[],"labor_types":[]}
+                """
+            } else if path == "/api/salary-advance/context" {
+                body = """
+                {"ok":true,"actor":{"app_user_id":"aaaa1111-2222-4333-8444-555555555555","display_name":"Account A","is_project_manager":true,"managed_projects":[{"project_id":"proj-a","project_code":"PA","project_name":"Dự án A","is_active_assignment":true,"has_active_accountant":true}]}}
+                """
+            } else if path == "/api/direct-entry/workers" {
+                body = """
+                {"ok":true,"scope":"managed","items":[{"entry_id":"w-a-1","employee_code":"A001","display_name":"Công Nhân Của A"}],"summary":{"total_workers":1}}
+                """
+            } else {
+                body = """
+                {"ok":true,"data":[]}
+                """
+            }
+            let resp = HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/json"])!
+            return (resp, Data(body.utf8))
+        }
+
+        let client = makeMockHttpClient()
+        let repo = MiniBiRepository(httpClient: client, keychain: KeychainStore(serviceName: "com.aistudio.minibi.repo8.\(UUID().uuidString)"))
+        let directEntry = DirectEntryService(httpClient: client)
+        let reporting = WorkReportsAndReportingService(httpClient: client)
+        let salaryAdvance = SalaryAdvanceService(httpClient: client)
+
+        let vm = MiniBiViewModel(
+            repository: repo,
+            directEntryService: directEntry,
+            workReportsService: reporting,
+            salaryAdvanceService: salaryAdvance
+        )
+
+        // 1. Null user must fail closed and fire 0 requests
+        vm.currentUser = nil
+        vm.isAuthenticated = false
+        await vm.loadDirectEntryAssigneeOptions(force: true)
+        await vm.loadSalaryAdvanceContext(force: true)
+        await vm.loadWorkers(resetPage: true)
+        XCTAssertTrue(MockURLProtocol.recordedUrls().isEmpty)
+
+        // 2. Login Account A and launch delayed requests
+        let userA = MiniBiUser(
+            id: "aaaa1111-2222-4333-8444-555555555555",
+            username: "account.a",
+            fullName: "Account A",
+            permissions: ["entry_create", "submission_create"],
+            allowedWorkerTabs: ["managed"]
+        )
+        vm.currentUser = userA
+        vm.isAuthenticated = true
+        vm.selectedWorkerScope = "managed"
+
+        let taskCatalogA = Task { await vm.loadDirectEntryAssigneeOptions(force: true) }
+        let taskSalaryA = Task { await vm.loadSalaryAdvanceContext(force: true) }
+        let taskWorkersA = Task { await vm.loadWorkers(resetPage: true) }
+
+        // Give Account A requests 50ms to start in-flight
+        try await Task.sleep(nanoseconds: 50_000_000)
+
+        // Switch session to Account B (`luanpt` with no permissions) BEFORE Account A responses return
+        let userB = MiniBiUser(
+            id: "bbbb2222-3333-4444-8555-666666666666",
+            username: "luanpt",
+            fullName: "Account B",
+            permissions: ["entry_read"],
+            allowedWorkerTabs: []
+        )
+        vm.onAuthenticatedSessionEstablished(user: userB)
+
+        _ = await (taskCatalogA.value, taskSalaryA.value, taskWorkersA.value)
+        try await Task.sleep(nanoseconds: 300_000_000)
+
+        // Verify Account A's delayed responses NEVER committed into Account B's state
+        XCTAssertEqual(vm.currentUser?.id, userB.id)
+        XCTAssertTrue(vm.directEntryOptions.catalogProjects.isEmpty)
+        XCTAssertNil(vm.salaryAdvanceContext)
+        XCTAssertTrue(vm.workers.isEmpty)
+    }
+
+    @MainActor
+    func testRegression9_OpeningWorkersCallsSalaryAdvanceContextExactlyOnceAndDeduplicatesLifecycle() async throws {
+        MockURLProtocol.resetRecordedUrls()
+        MockURLProtocol.pathDelaySec = [
+            "/api/salary-advance/context": 0.10,
+            "/api/direct-entry/workers": 0.10
+        ]
+        MockURLProtocol.requestHandler = { req in
+            let url = req.url!
+            let path = url.path
+            let body: String
+            if path == "/api/salary-advance/context" {
+                body = """
+                {"ok":true,"actor":{"app_user_id":"aaaa1111-2222-4333-8444-555555555555","display_name":"PM User","is_project_manager":true,"managed_projects":[{"project_id":"p1","project_code":"P1","project_name":"Dự án 1","is_active_assignment":true,"has_active_accountant":true}]}}
+                """
+            } else {
+                body = """
+                {"ok":true,"scope":"managed","items":[],"summary":{"total_workers":0}}
+                """
+            }
+            let resp = HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/json"])!
+            return (resp, Data(body.utf8))
+        }
+
+        let client = makeMockHttpClient()
+        let repo = MiniBiRepository(httpClient: client, keychain: KeychainStore(serviceName: "com.aistudio.minibi.repo9.\(UUID().uuidString)"))
+        let directEntry = DirectEntryService(httpClient: client)
+        let reporting = WorkReportsAndReportingService(httpClient: client)
+        let salaryAdvance = SalaryAdvanceService(httpClient: client)
+
+        let vm = MiniBiViewModel(
+            repository: repo,
+            directEntryService: directEntry,
+            workReportsService: reporting,
+            salaryAdvanceService: salaryAdvance
+        )
+        let pmUser = MiniBiUser(
+            id: "aaaa1111-2222-4333-8444-555555555555",
+            username: "pm.user",
+            fullName: "PM User",
+            permissions: ["entry_read"],
+            allowedWorkerTabs: ["managed", "recruited"]
+        )
+        vm.currentUser = pmUser
+        vm.isAuthenticated = true
+        vm.selectedWorkerScope = "managed"
+
+        // Simulate simultaneous navigateTo(.workers) + WorkersScreen.onAppear + overlapping loadWorkers/loadSalaryAdvanceContext calls
+        vm.navigateTo(.workers)
+        async let c1: Void = vm.loadSalaryAdvanceContext()
+        async let c2: Void = vm.loadSalaryAdvanceContext()
+        async let w1: Void = vm.loadWorkers(resetPage: true)
+        async let w2: Void = vm.loadWorkers(resetPage: true)
+        _ = await (c1, c2, w1, w2)
+
+        let urls = MockURLProtocol.recordedUrls()
+        let salaryContextUrls = urls.filter { $0.contains("/api/salary-advance/context") }
+        let workerUrls = urls.filter { $0.contains("/api/direct-entry/workers") }
+        XCTAssertEqual(salaryContextUrls.count, 1, "Expected /api/salary-advance/context to be called exactly once")
+        XCTAssertEqual(workerUrls.count, 1, "Expected overlapping loadWorkers(resetPage: true) to coalesce into 1 request")
+    }
+
+    @MainActor
+    func testRegression10_PT409VersionConflictReloadsLatestVersionPreservesDraftAndUsesNewIdempotencyKey() async throws {
+        MockURLProtocol.resetRecordedUrls()
+        let entryId = "11111111-2222-4333-8444-555555555555"
+        var privilegedEditAttempt = 0
+
+        MockURLProtocol.requestHandler = { req in
+            let url = req.url!
+            let path = url.path
+            let method = req.httpMethod ?? "GET"
+            if path.hasSuffix("/privileged-edit") && method == "POST" {
+                privilegedEditAttempt += 1
+                if privilegedEditAttempt == 1 {
+                    let body = """
+                    {"ok":false,"code":"CONFLICT","message":"Phiên bản hồ sơ đã cũ."}
+                    """
+                    let resp = HTTPURLResponse(url: url, statusCode: 409, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/json"])!
+                    return (resp, Data(body.utf8))
+                } else {
+                    let body = """
+                    {"ok":true,"entry":{"entry_id":"\(entryId)","version":4,"employee_code":"HRP009","display_name":"Nguyễn Văn Mới","project_id":"p1","project_display":"Dự án 1","recruiter_id":"r1","recruiter_display":"Tuyển 1","labor_type":"OFFICIAL","first_work_date":"2026-11-01","employment_status":"ON","national_id":"001200012345","allowed_actions":{"view":true,"direct_edit":true}}}
+                    """
+                    let resp = HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/json"])!
+                    return (resp, Data(body.utf8))
+                }
+            } else if path.contains("/api/direct-entry/entries/\(entryId)") && method == "GET" {
+                let body = """
+                {"ok":true,"entry":{"entry_id":"\(entryId)","version":3,"employee_code":"HRP009","display_name":"Nguyễn Văn Cũ","project_id":"p1","project_display":"Dự án 1","recruiter_id":"r1","recruiter_display":"Tuyển 1","labor_type":"OFFICIAL","first_work_date":"2026-11-01","employment_status":"ON","national_id":"001200012345","allowed_actions":{"view":true,"direct_edit":true}}}
+                """
+                let resp = HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/json"])!
+                return (resp, Data(body.utf8))
+            } else {
+                let body = """
+                {"ok":true,"items":[]}
+                """
+                let resp = HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/json"])!
+                return (resp, Data(body.utf8))
+            }
+        }
+
+        let client = makeMockHttpClient()
+        let repo = MiniBiRepository(httpClient: client, keychain: KeychainStore(serviceName: "com.aistudio.minibi.repo10.\(UUID().uuidString)"))
+        let directEntry = DirectEntryService(httpClient: client)
+        let reporting = WorkReportsAndReportingService(httpClient: client)
+        let salaryAdvance = SalaryAdvanceService(httpClient: client)
+
+        let vm = MiniBiViewModel(
+            repository: repo,
+            directEntryService: directEntry,
+            workReportsService: reporting,
+            salaryAdvanceService: salaryAdvance
+        )
+        vm.currentUser = MiniBiUser(
+            id: "aaaa1111-2222-4333-8444-555555555555",
+            username: "admin01",
+            permissions: ["entry_read", "entry_direct_edit"],
+            allowedWorkerTabs: ["managed"]
+        )
+        vm.isAuthenticated = true
+        vm.directEditBaselineDetail = WorkerEntryDetail(
+            entryId: entryId,
+            entryVersion: 1,
+            maNld: "HRP009",
+            hoTen: "Nguyễn Văn Cũ",
+            soCccd: "001200012345",
+            ngaySinh: "01/01/1995",
+            gioiTinh: "Nam",
+            ngayCapCccd: "01/01/2021",
+            noiCapCccd: "",
+            queQuan: "Hà Nội",
+            sdt: "0912345678",
+            projectId: "p1",
+            duAn: "Dự án 1",
+            recruiterId: "r1",
+            nguoiTuyen: "Tuyển 1",
+            providerType: "hrp",
+            laborTypeKey: "OFFICIAL",
+            nganhNghe: "Chính thức",
+            ngayVaoLam: "01/11/2026",
+            employmentStatusCode: "ON",
+            trangThaiLabel: "Đang làm",
+            employmentEffectiveDate: "",
+            lyDoNghi: "",
+            ghiChu: "",
+            bankId: "",
+            nganHang: "",
+            soTaiKhoan: "",
+            chuTaiKhoan: "",
+            canDirectEdit: true,
+            portraitPreviewPath: nil,
+            portraitDownloadPath: nil,
+            documents: []
+        )
+
+        var userDraftForm = DirectEntryService.buildDirectEditFormInput(from: vm.directEditBaselineDetail!)
+        userDraftForm.hoTen = "Nguyễn Văn Mới"
+
+        // 1. First submit hits HTTP 409 CONFLICT -> must NOT blind retry, must reload server version (v3), and show conflict message
+        await vm.submitDirectEditProfileAndDocuments(form: userDraftForm, stagedFiles: [:])
+        let postReqsAfterFirst = MockURLProtocol.recordedRequests().filter { $0.url.contains("/privileged-edit") }
+        XCTAssertEqual(postReqsAfterFirst.count, 1, "Must not blind-retry mutation on 409")
+        XCTAssertTrue(postReqsAfterFirst[0].bodyString.contains("\"expected_entry_version\":1"))
+        XCTAssertEqual(vm.directEditBaselineDetail?.entryVersion, 3, "Must reload latest version from server on 409")
+        XCTAssertNotNil(vm.directEditErrorMessage)
+        // User's draft form remains untouched ("Nguyễn Văn Mới")
+        XCTAssertEqual(userDraftForm.hoTen, "Nguyễn Văn Mới")
+
+        // 2. User reviews and confirms re-submitting -> sends refreshed expected_entry_version (3) and a NEW Idempotency-Key
+        await vm.submitDirectEditProfileAndDocuments(form: userDraftForm, stagedFiles: [:])
+        let postReqsAfterSecond = MockURLProtocol.recordedRequests().filter { $0.url.contains("/privileged-edit") }
+        XCTAssertEqual(postReqsAfterSecond.count, 2)
+        XCTAssertTrue(postReqsAfterSecond[1].bodyString.contains("\"expected_entry_version\":3"))
+        let firstIdempKey = postReqsAfterFirst[0].headers["Idempotency-Key"] ?? ""
+        let secondIdempKey = postReqsAfterSecond[1].headers["Idempotency-Key"] ?? ""
+        XCTAssertFalse(firstIdempKey.isEmpty)
+        XCTAssertFalse(secondIdempKey.isEmpty)
+        XCTAssertNotEqual(firstIdempKey, secondIdempKey, "Re-submission after 409 must use a fresh Idempotency-Key")
+        XCTAssertEqual(vm.directEditBaselineDetail?.entryVersion, 4)
     }
 
     // MARK: - Helper
