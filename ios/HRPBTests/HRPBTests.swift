@@ -2731,7 +2731,7 @@ final class HRPBTests: XCTestCase {
         vm.ownSubmissionsHasMore = true
         // Pre-populate catalog so openDirectEdit goes straight to fetchWorkerEntryDetail
         vm.directEntryOptions = DirectEntryAssigneeOptions(
-            catalogProjects: [CatalogProjectItem(projectId: "p1", displayName: "Dự án A")]
+            catalogProjects: [DirectEntryCatalogProject(projectId: "p1", displayName: "Dự án A")]
         )
 
         let workerRowA = WorkerItem(maNld: entryIdA, hoTen: "Công Nhân A", canDirectEdit: true)

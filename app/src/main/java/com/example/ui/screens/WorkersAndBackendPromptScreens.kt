@@ -678,7 +678,7 @@ fun DirectEntryNewWorkersScreen(
                     draftRows[index] = updated
                     runCatching { DirectEntryContract.uiDateToIsoDate(updated.firstWorkDateUi) }
                         .getOrNull()
-                        ?.let { iso -> viewModel.loadCatalogIfNeeded(iso) }
+                        ?.let { iso -> viewModel.loadCatalogIfNeeded(iso, actor = actor) }
                 },
                 onRemove = {
                     row.allAttachments().forEach { ref -> effectiveDiscardRef(ref) }
