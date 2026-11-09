@@ -2334,9 +2334,9 @@ final class HRPBTests: XCTestCase {
         // 1. luanpt (`allowed_worker_tabs=[]`), recruited-only, and uploader-only:
         //    neither canLoadDirectEntryCatalog (`entry_create || entry_own`) nor canAccessNewWorkerEntry (`entry_create && submission_create`)
         let unauthorizedAccounts: [MiniBiUser] = [
-            MiniBiUser(id: "u-luanpt", username: "luanpt", permissions: ["entry_read"], allowedWorkerTabs: []),
-            MiniBiUser(id: "u-recruited", username: "rec01", permissions: ["entry_read"], allowedWorkerTabs: ["recruited"]),
-            MiniBiUser(id: "u-uploader", username: "up01", permissions: ["entry_read", "submission_read", "submission_create"], allowedWorkerTabs: ["uploader"])
+            MiniBiUser(id: "u-luanpt", username: "luanpt", fullName: "Phạm Thành Luân", permissions: ["entry_read"], allowedWorkerTabs: []),
+            MiniBiUser(id: "u-recruited", username: "rec01", fullName: "Tuyển Dụng 01", permissions: ["entry_read"], allowedWorkerTabs: ["recruited"]),
+            MiniBiUser(id: "u-uploader", username: "up01", fullName: "Nhập Hộ 01", permissions: ["entry_read", "submission_read", "submission_create"], allowedWorkerTabs: ["uploader"])
         ]
 
         for account in unauthorizedAccounts {
@@ -2351,16 +2351,16 @@ final class HRPBTests: XCTestCase {
             vm.navigateTo(.newEntry)
             XCTAssertEqual(vm.currentDestination, .dashboard)
 
-            let notifItem = NotificationItem(
-                id: "n-1",
+            let notifItem = AppNotificationItem(
+                id: 1,
                 title: "Cấp mới",
                 body: "Mở cấp mới",
                 type: "DIRECT_ENTRY",
-                actionUrl: "/direct-entry",
                 isRead: false,
-                createdAt: "2026-11-08T08:00:00Z"
+                createdAt: "2026-11-08T08:00:00Z",
+                targetRoute: "/direct-entry"
             )
-            await vm.onNotificationTapped(notifItem)
+            await vm.handleNotificationTap(notifItem)
             XCTAssertNotEqual(vm.currentDestination, .newEntry)
 
             await vm.loadDirectEntryAssigneeOptions(force: true)
@@ -2372,6 +2372,7 @@ final class HRPBTests: XCTestCase {
         let entryOwnOnly = MiniBiUser(
             id: "u-entry-own",
             username: "own01",
+            fullName: "Own 01",
             permissions: ["entry_own"],
             allowedWorkerTabs: ["recruited"]
         )
@@ -2385,6 +2386,7 @@ final class HRPBTests: XCTestCase {
         let fullCreator = MiniBiUser(
             id: "u-creator",
             username: "creator01",
+            fullName: "Creator 01",
             permissions: ["entry_create", "submission_create"],
             allowedWorkerTabs: ["uploader"]
         )
@@ -2572,14 +2574,16 @@ final class HRPBTests: XCTestCase {
                     return (resp, Data(body.utf8))
                 } else {
                     let body = """
-                    {"ok":true,"entry":{"entry_id":"\(entryId)","version":4,"employee_code":"HRP009","display_name":"Nguyễn Văn Mới","project_id":"p1","project_display":"Dự án 1","recruiter_id":"r1","recruiter_display":"Tuyển 1","labor_type":"OFFICIAL","first_work_date":"2026-11-01","employment_status":"ON","national_id":"001200012345","allowed_actions":{"view":true,"direct_edit":true}}}
+                    {"ok":true,"entry":{"entry_id":"\(entryId)","version":4,"employee_code":"hrp-1126-000009","display_name":"Nguyễn Văn Mới","project_id":"p1","project_display":"Dự án 1","recruiter_id":"22222222-3333-4444-8555-666666666666","recruiter_display":"Tuyển 1","labor_type":"OFFICIAL","first_work_date":"2026-11-01","employment_status":"ON","national_id":"001200012345","allowed_actions":{"view":true,"direct_edit":true}}}
                     """
                     let resp = HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/json"])!
                     return (resp, Data(body.utf8))
                 }
             } else if path.contains("/api/direct-entry/entries/\(entryId)") && method == "GET" {
+                let ver = privilegedEditAttempt >= 2 ? 4 : 3
+                let name = privilegedEditAttempt >= 2 ? "Nguyễn Văn Mới" : "Nguyễn Văn Cũ"
                 let body = """
-                {"ok":true,"entry":{"entry_id":"\(entryId)","version":3,"employee_code":"HRP009","display_name":"Nguyễn Văn Cũ","project_id":"p1","project_display":"Dự án 1","recruiter_id":"r1","recruiter_display":"Tuyển 1","labor_type":"OFFICIAL","first_work_date":"2026-11-01","employment_status":"ON","national_id":"001200012345","allowed_actions":{"view":true,"direct_edit":true}}}
+                {"ok":true,"entry":{"entry_id":"\(entryId)","version":\(ver),"employee_code":"hrp-1126-000009","display_name":"\(name)","project_id":"p1","project_display":"Dự án 1","recruiter_id":"22222222-3333-4444-8555-666666666666","recruiter_display":"Tuyển 1","labor_type":"OFFICIAL","first_work_date":"2026-11-01","employment_status":"ON","national_id":"001200012345","allowed_actions":{"view":true,"direct_edit":true}}}
                 """
                 let resp = HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/json"])!
                 return (resp, Data(body.utf8))
@@ -2607,43 +2611,33 @@ final class HRPBTests: XCTestCase {
         vm.currentUser = MiniBiUser(
             id: "aaaa1111-2222-4333-8444-555555555555",
             username: "admin01",
+            fullName: "Quản Trị Viên",
             permissions: ["entry_read", "entry_direct_edit"],
             allowedWorkerTabs: ["managed"]
         )
         vm.isAuthenticated = true
         vm.directEditBaselineDetail = WorkerEntryDetail(
             entryId: entryId,
-            entryVersion: 1,
-            maNld: "HRP009",
-            hoTen: "Nguyễn Văn Cũ",
-            soCccd: "001200012345",
-            ngaySinh: "01/01/1995",
-            gioiTinh: "Nam",
-            ngayCapCccd: "01/01/2021",
-            noiCapCccd: "",
-            queQuan: "Hà Nội",
-            sdt: "0912345678",
+            version: 1,
             projectId: "p1",
-            duAn: "Dự án 1",
-            recruiterId: "r1",
-            nguoiTuyen: "Tuyển 1",
+            projectDisplay: "Dự án 1",
+            firstWorkDate: "2026-11-01",
+            employeeCode: "hrp-1126-000009",
+            recruiterId: "22222222-3333-4444-8555-666666666666",
+            recruiterDisplay: "Tuyển 1",
             providerType: "hrp",
-            laborTypeKey: "OFFICIAL",
-            nganhNghe: "Chính thức",
-            ngayVaoLam: "01/11/2026",
-            employmentStatusCode: "ON",
-            trangThaiLabel: "Đang làm",
-            employmentEffectiveDate: "",
-            lyDoNghi: "",
-            ghiChu: "",
-            bankId: "",
-            nganHang: "",
-            soTaiKhoan: "",
-            chuTaiKhoan: "",
-            canDirectEdit: true,
-            portraitPreviewPath: nil,
-            portraitDownloadPath: nil,
-            documents: []
+            laborType: "OFFICIAL",
+            laborTypeDisplay: "Chính thức",
+            displayName: "Nguyễn Văn Cũ",
+            gender: "MALE",
+            dateOfBirth: "1995-01-01",
+            nationalId: "001200012345",
+            nationalIdIssuedAt: "2021-01-01",
+            address: "Hà Nội",
+            phone: "0912345678",
+            employmentStatus: "ON",
+            employmentEffectiveDate: "2026-11-01",
+            canDirectEdit: true
         )
 
         var userDraftForm = DirectEntryService.buildDirectEditFormInput(from: vm.directEditBaselineDetail!)
