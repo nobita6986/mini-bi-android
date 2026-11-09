@@ -556,6 +556,7 @@ public final class MiniBiViewModel: ObservableObject {
         workersTotalPages = 1
         isLoadingWorkers = false
         selectedWorkerDetail = nil
+        isUploadingWorkerContract = false
         ownSubmissions = []
         ownSubmissionsNextCursor = nil
         ownSubmissionsHasMore = false
@@ -563,6 +564,9 @@ public final class MiniBiViewModel: ObservableObject {
         ownSubmissionsErrorMessage = nil
         directEntryOptions = DirectEntryAssigneeOptions()
         directEntryHistoryBatches = []
+        isSubmittingNewWorkers = false
+        pendingDuplicateConfirmCandidates = []
+        showDuplicateConfirmDialog = false
         directEntryService.clearCatalogCache()
         closeDirectEdit()
         salaryAdvanceContext = nil
@@ -578,7 +582,11 @@ public final class MiniBiViewModel: ObservableObject {
         cccdReviewTotal = 0
         selectedCccdReviewItem = nil
         workReportObligations = []
+        selectedObligationEditor = nil
+        editorFieldValues = [:]
+        isSavingWorkReport = false
         workReportReviews = []
+        selectedReviewDetail = nil
         workReportTemplates = []
         workReportAnalytics = WorkReportsAnalyticsSnapshot()
         isLoadingDashboard = false
