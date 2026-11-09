@@ -1210,6 +1210,11 @@ public final class MiniBiViewModel: ObservableObject {
     /// Validates, checks duplicate CCCDs, submits valid rows in `newWorkerDraftRows`, uploads their documents
     /// (automatically merging 2+ contract images into 1 PDF), and removes ONLY the rows that succeeded!
     public func submitNewWorkerDraftBatch(confirmedDuplicates: Bool = false) async {
+        guard let token = captureSessionToken(),
+              let user = currentUser,
+              user.canAccessNewWorkerEntry else {
+            return
+        }
         let validRows = newWorkerDraftRows.filter { $0.isReadyForSubmit }
         if validRows.isEmpty {
             if let firstRow = newWorkerDraftRows.first, let err = firstRow.validateAndroidContractError() {
@@ -1221,10 +1226,15 @@ public final class MiniBiViewModel: ObservableObject {
         }
 
         isSubmittingNewWorkers = true
-        defer { isSubmittingNewWorkers = false }
+        defer {
+            if isSessionValid(token) {
+                isSubmittingNewWorkers = false
+            }
+        }
 
         if !confirmedDuplicates {
             let checkRes = await directEntryService.checkDuplicates(drafts: validRows)
+            guard !Task.isCancelled, isSessionValid(token) else { return }
             if case .success(let duplicates, _) = checkRes, !duplicates.isEmpty {
                 pendingDuplicateConfirmCandidates = duplicates
                 showDuplicateConfirmDialog = true
@@ -1239,54 +1249,64 @@ public final class MiniBiViewModel: ObservableObject {
             drafts: validRows,
             confirmDuplicates: confirmedDuplicates
         )
+        guard !Task.isCancelled, isSessionValid(token) else { return }
 
         switch submitRes {
         case .success(let outcome, _):
+            let canUploadDocs = currentUser?.hasCapability("document_upload") == true
             // Upload staged documents (Portrait + CCCD front/back + multi-image merged PDF contract) for each created entry
-            for row in validRows {
-                let entryIdUuid = outcome.entryIdUuidByRowId[row.rowId]
-                    ?? outcome.entryIdByRowId[row.rowId].map { String($0) }
-                if let entryIdUuid, !entryIdUuid.isEmpty {
-                    var currentEntryVersion: Int = 1
-                    if let portrait = row.portraitFile {
-                        let up = await directEntryService.uploadEntryDocumentAttachmentsWithVersion(
-                            entryIdUuid: entryIdUuid,
-                            docType: DirectEntryContract.docTypeWorkerPortrait,
-                            attachments: [portrait],
-                            initialEntryVersion: currentEntryVersion
-                        )
-                        currentEntryVersion = up.nextEntryVersion
-                    }
-                    if let front = row.cccdFrontFile {
-                        let up = await directEntryService.uploadEntryDocumentAttachmentsWithVersion(
-                            entryIdUuid: entryIdUuid,
-                            docType: DirectEntryContract.docTypeCccdFront,
-                            attachments: [front],
-                            initialEntryVersion: currentEntryVersion
-                        )
-                        currentEntryVersion = up.nextEntryVersion
-                    }
-                    if let back = row.cccdBackFile {
-                        let up = await directEntryService.uploadEntryDocumentAttachmentsWithVersion(
-                            entryIdUuid: entryIdUuid,
-                            docType: DirectEntryContract.docTypeCccdBack,
-                            attachments: [back],
-                            initialEntryVersion: currentEntryVersion
-                        )
-                        currentEntryVersion = up.nextEntryVersion
-                    }
-                    if !row.contractFiles.isEmpty {
-                        let up = await directEntryService.uploadEntryDocumentAttachmentsWithVersion(
-                            entryIdUuid: entryIdUuid,
-                            docType: DirectEntryContract.docTypeEmploymentContract,
-                            attachments: row.contractFiles,
-                            initialEntryVersion: currentEntryVersion
-                        )
-                        currentEntryVersion = up.nextEntryVersion
+            if canUploadDocs {
+                for row in validRows {
+                    guard !Task.isCancelled, isSessionValid(token) else { return }
+                    let entryIdUuid = outcome.entryIdUuidByRowId[row.rowId]
+                        ?? outcome.entryIdByRowId[row.rowId].map { String($0) }
+                    if let entryIdUuid, !entryIdUuid.isEmpty {
+                        var currentEntryVersion: Int = 1
+                        if let portrait = row.portraitFile {
+                            let up = await directEntryService.uploadEntryDocumentAttachmentsWithVersion(
+                                entryIdUuid: entryIdUuid,
+                                docType: DirectEntryContract.docTypeWorkerPortrait,
+                                attachments: [portrait],
+                                initialEntryVersion: currentEntryVersion
+                            )
+                            guard !Task.isCancelled, isSessionValid(token) else { return }
+                            currentEntryVersion = up.nextEntryVersion
+                        }
+                        if let front = row.cccdFrontFile {
+                            let up = await directEntryService.uploadEntryDocumentAttachmentsWithVersion(
+                                entryIdUuid: entryIdUuid,
+                                docType: DirectEntryContract.docTypeCccdFront,
+                                attachments: [front],
+                                initialEntryVersion: currentEntryVersion
+                            )
+                            guard !Task.isCancelled, isSessionValid(token) else { return }
+                            currentEntryVersion = up.nextEntryVersion
+                        }
+                        if let back = row.cccdBackFile {
+                            let up = await directEntryService.uploadEntryDocumentAttachmentsWithVersion(
+                                entryIdUuid: entryIdUuid,
+                                docType: DirectEntryContract.docTypeCccdBack,
+                                attachments: [back],
+                                initialEntryVersion: currentEntryVersion
+                            )
+                            guard !Task.isCancelled, isSessionValid(token) else { return }
+                            currentEntryVersion = up.nextEntryVersion
+                        }
+                        if !row.contractFiles.isEmpty {
+                            let up = await directEntryService.uploadEntryDocumentAttachmentsWithVersion(
+                                entryIdUuid: entryIdUuid,
+                                docType: DirectEntryContract.docTypeEmploymentContract,
+                                attachments: row.contractFiles,
+                                initialEntryVersion: currentEntryVersion
+                            )
+                            guard !Task.isCancelled, isSessionValid(token) else { return }
+                            currentEntryVersion = up.nextEntryVersion
+                        }
                     }
                 }
             }
 
+            guard !Task.isCancelled, isSessionValid(token) else { return }
             // Preserve any unsaved/incomplete draft rows; only remove rows that were saved!
             let savedRowIdSet = Set(validRows.map { $0.rowId })
             let remainingRows = newWorkerDraftRows.filter { !savedRowIdSet.contains($0.rowId) }
@@ -1371,6 +1391,7 @@ public final class MiniBiViewModel: ObservableObject {
             guard !Task.isCancelled,
                   self.isSessionValid(token),
                   self.selectedWorkerScope == resolvedScope,
+                  self.workersPage == targetPage,
                   self.workerSearchQuery == targetSearch,
                   self.workerProjectFilter == targetProject,
                   self.workerStatusFilter == targetStatus else {
@@ -1392,8 +1413,15 @@ public final class MiniBiViewModel: ObservableObject {
     }
 
     public func uploadWorkerContract(maNld: String, attachments: [LocalAttachmentItem]) async -> Bool {
+        guard let token = captureSessionToken(),
+              let user = currentUser,
+              user.hasCapability("document_upload"),
+              !attachments.isEmpty else {
+            return false
+        }
         isUploadingWorkerContract = true
         let res = await repository.uploadWorkerContractAttachments(maNld: maNld, attachments: attachments)
+        guard !Task.isCancelled, isSessionValid(token) else { return false }
         isUploadingWorkerContract = false
         switch res {
         case .success(let fileUrl, _):
@@ -1418,10 +1446,12 @@ public final class MiniBiViewModel: ObservableObject {
     // MARK: - Direct Edit ("Sửa trực tiếp hồ sơ NLĐ") Actions
 
     public func openDirectEdit(_ worker: WorkerItem) async {
-        guard worker.canDirectEdit else {
+        guard let token = captureSessionToken(), let user = currentUser else { return }
+        guard user.hasCapability("entry_direct_edit") && worker.canDirectEdit else {
             showBanner("Bạn không có quyền sửa trực tiếp hồ sơ này.", isError: true)
             return
         }
+        let targetEntryId = worker.maNld
         directEditWorkerTarget = worker
         directEditBaselineDetail = nil
         directEditLoadingDetail = true
@@ -1433,16 +1463,25 @@ public final class MiniBiViewModel: ObservableObject {
 
         if directEntryOptions.catalogProjects.isEmpty {
             await loadDirectEntryAssigneeOptions()
+            guard !Task.isCancelled,
+                  isSessionValid(token),
+                  directEditWorkerTarget?.maNld == targetEntryId else {
+                return
+            }
         }
 
-        let targetEntryId = worker.maNld
         let detailRes = await directEntryService.fetchWorkerEntryDetail(entryId: targetEntryId)
+        guard !Task.isCancelled,
+              isSessionValid(token),
+              directEditWorkerTarget?.maNld == targetEntryId else {
+            return
+        }
         directEditLoadingDetail = false
 
         switch detailRes {
         case .success(let detail, _):
             directEditBaselineDetail = detail
-            if !detail.canDirectEdit {
+            if !detail.canDirectEdit || currentUser?.hasCapability("entry_direct_edit") != true {
                 directEditErrorMessage = "Tài khoản hiện tại không có quyền sửa trực tiếp hồ sơ này."
             }
         case .failure(let message, _, _, _):
@@ -1467,7 +1506,11 @@ public final class MiniBiViewModel: ObservableObject {
         onAllComplete: (() -> Void)? = nil
     ) async {
         guard !directEditSavingProfile else { return }
-        guard let baseline = directEditBaselineDetail else { return }
+        guard let token = captureSessionToken(),
+              let user = currentUser,
+              let baseline = directEditBaselineDetail else {
+            return
+        }
 
         directEditErrorMessage = nil
         directEditFieldErrors = [:]
@@ -1483,7 +1526,20 @@ public final class MiniBiViewModel: ObservableObject {
         }
 
         let patch = DirectEntryService.buildDirectEditPatch(baseline: baseline, input: form)
-        let nonEmptyStaged = stagedFiles.filter { !$0.value.isEmpty }
+        let requestedStaged = stagedFiles.filter { !$0.value.isEmpty }
+        let canDirectEdit = user.hasCapability("entry_direct_edit") && baseline.canDirectEdit
+        let canUploadDocs = user.hasCapability("document_upload")
+
+        if !patch.isEmpty && !canDirectEdit {
+            directEditErrorMessage = "Tài khoản hiện tại không có quyền sửa trực tiếp hồ sơ này."
+            return
+        }
+        if patch.isEmpty && !requestedStaged.isEmpty && !canUploadDocs {
+            directEditErrorMessage = "Tài khoản hiện tại không có quyền tải tệp đính kèm."
+            return
+        }
+
+        let nonEmptyStaged = canUploadDocs ? requestedStaged : [:]
 
         if patch.isEmpty && nonEmptyStaged.isEmpty {
             directEditErrorMessage = "Chưa có thay đổi thông tin hoặc tệp đính kèm nào để lưu."
@@ -1501,6 +1557,7 @@ public final class MiniBiViewModel: ObservableObject {
                 expectedEntryVersion: currentVersion,
                 patch: patch
             )
+            guard !Task.isCancelled, isSessionValid(token) else { return }
             directEditSavingProfile = false
 
             switch editRes {
@@ -1509,7 +1566,9 @@ public final class MiniBiViewModel: ObservableObject {
                 directEditBaselineDetail = updatedDetail
                 directEditProfileSavedMessage = "Đã lưu thông tin hồ sơ (v\(currentVersion))."
                 // Refresh baseline so subsequent retries don't re-submit already saved profile changes
-                if case .success(let refreshed, _) = await directEntryService.fetchWorkerEntryDetail(entryId: targetEntryId) {
+                let refreshRes = await directEntryService.fetchWorkerEntryDetail(entryId: targetEntryId)
+                guard !Task.isCancelled, isSessionValid(token) else { return }
+                if case .success(let refreshed, _) = refreshRes {
                     directEditBaselineDetail = refreshed
                     currentVersion = refreshed.entryVersion
                 }
@@ -1517,7 +1576,9 @@ public final class MiniBiViewModel: ObservableObject {
             case .failure(let message, let httpStatus, let errorCode, _):
                 let codeUpper = (errorCode ?? "").uppercased()
                 if httpStatus == 409 || codeUpper.contains("CONFLICT") {
-                    if case .success(let refreshed, _) = await directEntryService.fetchWorkerEntryDetail(entryId: targetEntryId) {
+                    let refreshRes = await directEntryService.fetchWorkerEntryDetail(entryId: targetEntryId)
+                    guard !Task.isCancelled, isSessionValid(token) else { return }
+                    if case .success(let refreshed, _) = refreshRes {
                         directEditBaselineDetail = refreshed
                     }
                     directEditErrorMessage = "Hồ sơ đã được cập nhật ở phiên bản mới trên máy chủ. Nội dung bạn vừa chỉnh sửa vẫn được giữ nguyên — vui lòng kiểm tra và bấm Lưu lại để xác nhận."
@@ -1538,6 +1599,7 @@ public final class MiniBiViewModel: ObservableObject {
                 DirectEntryContract.docTypeEmploymentContract,
             ]
             for docType in orderedDocTypes {
+                guard !Task.isCancelled, isSessionValid(token) else { return }
                 guard let files = nonEmptyStaged[docType], !files.isEmpty else { continue }
                 let displayName = files.count >= 2
                     ? "\(files.count) tệp ảnh (ghép PDF)"
@@ -1554,6 +1616,7 @@ public final class MiniBiViewModel: ObservableObject {
                     attachments: files,
                     initialEntryVersion: currentVersion
                 )
+                guard !Task.isCancelled, isSessionValid(token) else { return }
                 currentVersion = upRes.nextEntryVersion
                 if var cur = directEditBaselineDetail {
                     cur.entryVersion = currentVersion
@@ -1567,8 +1630,17 @@ public final class MiniBiViewModel: ObservableObject {
                         status: .success,
                         message: "Đã tải tệp thành công."
                     )
-                case .failure(let errMsg, _, _, _):
+                case .failure(let errMsg, let httpStatus, let errorCode, _):
                     anyFileFailed = true
+                    let codeUpper = (errorCode ?? "").uppercased()
+                    if httpStatus == 409 || codeUpper.contains("CONFLICT") {
+                        let conflictRefresh = await directEntryService.fetchWorkerEntryDetail(entryId: targetEntryId)
+                        guard !Task.isCancelled, isSessionValid(token) else { return }
+                        if case .success(let refreshed, _) = conflictRefresh {
+                            directEditBaselineDetail = refreshed
+                            currentVersion = refreshed.entryVersion
+                        }
+                    }
                     directEditFileStatuses[docType] = DirectEditFileStatus(
                         docType: docType,
                         fileName: displayName,
@@ -1578,12 +1650,16 @@ public final class MiniBiViewModel: ObservableObject {
                 }
             }
 
-            if case .success(let refreshed, _) = await directEntryService.fetchWorkerEntryDetail(entryId: targetEntryId) {
+            let finalRefresh = await directEntryService.fetchWorkerEntryDetail(entryId: targetEntryId)
+            guard !Task.isCancelled, isSessionValid(token) else { return }
+            if case .success(let refreshed, _) = finalRefresh {
                 directEditBaselineDetail = refreshed
             }
         }
 
+        guard !Task.isCancelled, isSessionValid(token) else { return }
         await loadWorkers(resetPage: false)
+        guard !Task.isCancelled, isSessionValid(token) else { return }
 
         if anyFileFailed {
             directEditErrorMessage = "Một số tệp đính kèm tải lên chưa thành công. Thông tin hồ sơ đã được bảo toàn, bạn có thể bấm Thử lại trên từng tệp lỗi."
@@ -1599,7 +1675,13 @@ public final class MiniBiViewModel: ObservableObject {
         attachments: [LocalAttachmentItem],
         onComplete: (() -> Void)? = nil
     ) async {
-        guard let baseline = directEditBaselineDetail, !attachments.isEmpty else { return }
+        guard let token = captureSessionToken(),
+              let user = currentUser,
+              user.hasCapability("document_upload"),
+              let baseline = directEditBaselineDetail,
+              !attachments.isEmpty else {
+            return
+        }
         let targetEntryId = baseline.entryId
         let displayName = attachments.count >= 2
             ? "\(attachments.count) tệp ảnh (ghép PDF)"
@@ -1618,8 +1700,11 @@ public final class MiniBiViewModel: ObservableObject {
             attachments: attachments,
             initialEntryVersion: baseline.entryVersion
         )
+        guard !Task.isCancelled, isSessionValid(token) else { return }
 
-        if case .success(let refreshed, _) = await directEntryService.fetchWorkerEntryDetail(entryId: targetEntryId) {
+        let refreshRes = await directEntryService.fetchWorkerEntryDetail(entryId: targetEntryId)
+        guard !Task.isCancelled, isSessionValid(token) else { return }
+        if case .success(let refreshed, _) = refreshRes {
             directEditBaselineDetail = refreshed
         } else if var cur = directEditBaselineDetail {
             cur.entryVersion = upRes.nextEntryVersion
@@ -1638,14 +1723,19 @@ public final class MiniBiViewModel: ObservableObject {
                 directEditErrorMessage = nil
             }
             await loadWorkers(resetPage: false)
+            guard !Task.isCancelled, isSessionValid(token) else { return }
             onComplete?()
-        case .failure(let errMsg, _, _, _):
+        case .failure(let errMsg, let httpStatus, let errorCode, _):
             directEditFileStatuses[docType] = DirectEditFileStatus(
                 docType: docType,
                 fileName: displayName,
                 status: .error,
                 message: errMsg
             )
+            let codeUpper = (errorCode ?? "").uppercased()
+            if httpStatus == 409 || codeUpper.contains("CONFLICT") {
+                directEditErrorMessage = "Hồ sơ đã được cập nhật ở phiên bản mới trên máy chủ. Dữ liệu mới nhất đã được tải lại — vui lòng kiểm tra và bấm Thử lại để xác nhận."
+            }
         }
     }
 
@@ -3597,6 +3687,7 @@ public final class MiniBiViewModel: ObservableObject {
     }
 
     public func openObligationEditor(_ obligation: WorkReportObligationItem) async {
+        guard let token = captureSessionToken() else { return }
         selectedObligationEditor = obligation
         editorFieldValues = Self.seedDefaultFieldValues(base: obligation.formPayload, sections: obligation.sections)
 
@@ -3605,6 +3696,7 @@ public final class MiniBiViewModel: ObservableObject {
             obligationIdUuid: obligation.obligationIdUuid,
             fallback: obligation
         )
+        guard !Task.isCancelled, isSessionValid(token) else { return }
         if case .success(let detail, _) = detailRes {
             selectedObligationEditor = detail
             editorFieldValues = Self.seedDefaultFieldValues(base: detail.formPayload, sections: detail.sections)
@@ -3623,7 +3715,10 @@ public final class MiniBiViewModel: ObservableObject {
     }
 
     public func saveWorkReportDraft() async {
-        guard let editor = selectedObligationEditor else { return }
+        guard let token = captureSessionToken(),
+              let editor = selectedObligationEditor else {
+            return
+        }
         guard WorkReportsContract.isEditableObligation(editor) else {
             let isInactive = editor.obligationStatus.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() != WorkReportsContract.obligationStatusActive
             showBanner(isInactive ? WorkReportsContract.obligationInactiveMessageVi : WorkReportsContract.deadlinePassedMessageVi, isError: true)
@@ -3638,13 +3733,17 @@ public final class MiniBiViewModel: ObservableObject {
             sections: editor.sections,
             fallback: editor
         )
+        guard !Task.isCancelled, isSessionValid(token) else { return }
         isSavingWorkReport = false
 
-        await handleWorkReportMutationResult(result, currentEditor: editor, isFinalSubmit: false)
+        await handleWorkReportMutationResult(result, currentEditor: editor, isFinalSubmit: false, token: token)
     }
 
     public func submitWorkReportFinal() async {
-        guard let editor = selectedObligationEditor else { return }
+        guard let token = captureSessionToken(),
+              let editor = selectedObligationEditor else {
+            return
+        }
         guard WorkReportsContract.isEditableObligation(editor) else {
             let isInactive = editor.obligationStatus.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() != WorkReportsContract.obligationStatusActive
             showBanner(isInactive ? WorkReportsContract.obligationInactiveMessageVi : WorkReportsContract.deadlinePassedMessageVi, isError: true)
@@ -3668,16 +3767,19 @@ public final class MiniBiViewModel: ObservableObject {
             sections: editor.sections,
             fallback: editor
         )
+        guard !Task.isCancelled, isSessionValid(token) else { return }
         isSavingWorkReport = false
 
-        await handleWorkReportMutationResult(result, currentEditor: editor, isFinalSubmit: true)
+        await handleWorkReportMutationResult(result, currentEditor: editor, isFinalSubmit: true, token: token)
     }
 
     private func handleWorkReportMutationResult(
         _ result: MiniBiApiResult<WorkReportObligationItem>,
         currentEditor: WorkReportObligationItem,
-        isFinalSubmit: Bool
+        isFinalSubmit: Bool,
+        token: SessionRequestToken
     ) async {
+        guard !Task.isCancelled, isSessionValid(token) else { return }
         switch result {
         case .success(let updated, _):
             var merged = updated
@@ -3725,6 +3827,7 @@ public final class MiniBiViewModel: ObservableObject {
                     obligationIdUuid: currentEditor.obligationIdUuid,
                     fallback: currentEditor
                 )
+                guard !Task.isCancelled, isSessionValid(token) else { return }
                 if case .success(let refreshed, _) = detailRes {
                     var updatedEditor = refreshed
                     if updatedEditor.sections.isEmpty {
@@ -3749,6 +3852,7 @@ public final class MiniBiViewModel: ObservableObject {
             } else if httpStatus == 403 {
                 showBanner(message, isError: true)
                 await loadWorkReportObligations()
+                guard !Task.isCancelled, isSessionValid(token) else { return }
                 if let refreshed = workReportObligations.first(where: {
                     (!currentEditor.obligationIdUuid.isEmpty && $0.obligationIdUuid == currentEditor.obligationIdUuid)
                     || ($0.id != 0 && $0.id == currentEditor.id)
@@ -3766,6 +3870,7 @@ public final class MiniBiViewModel: ObservableObject {
         decision: String,
         comment: String
     ) async {
+        guard let token = captureSessionToken() else { return }
         let targetObligationId = review.obligationIdUuid.isEmpty ? review.submissionIdUuid : review.obligationIdUuid
         let res = await workReportsService.decideReview(
             submissionIdUuid: targetObligationId,
@@ -3773,6 +3878,7 @@ public final class MiniBiViewModel: ObservableObject {
             comment: comment,
             expectedVersion: review.version
         )
+        guard !Task.isCancelled, isSessionValid(token) else { return }
         switch res {
         case .success:
             selectedReviewDetail = nil
@@ -3782,6 +3888,7 @@ public final class MiniBiViewModel: ObservableObject {
             let codeUpper = (errorCode ?? "").uppercased()
             if httpStatus == 409 || codeUpper.contains("CONFLICT") {
                 await loadWorkReportsData()
+                guard !Task.isCancelled, isSessionValid(token) else { return }
                 if let refreshed = workReportReviews.first(where: {
                     $0.id == review.id
                     || (!review.obligationIdUuid.isEmpty && $0.obligationIdUuid == review.obligationIdUuid)

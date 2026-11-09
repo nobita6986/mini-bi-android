@@ -2670,6 +2670,331 @@ final class HRPBTests: XCTestCase {
         XCTAssertNil(vm.directEditErrorMessage)
     }
 
+    @MainActor
+    func testRegression11_StalePaginationAndOpenDirectEditAcrossSessionsDiscarded() async throws {
+        MockURLProtocol.resetRecordedUrls()
+        let entryIdA = "aaaa1111-1111-4222-8333-444444444444"
+        MockURLProtocol.pathDelaySec = [
+            "/api/direct-entry/workers": 0.25,
+            "/api/direct-entry/entries/\(entryIdA)": 0.25,
+            "/api/direct-entry/submissions": 0.25
+        ]
+        MockURLProtocol.requestHandler = { req in
+            let url = req.url!
+            let path = url.path
+            let body: String
+            if path.contains("/api/direct-entry/entries/\(entryIdA)") {
+                body = """
+                {"ok":true,"entry":{"entry_id":"\(entryIdA)","version":2,"employee_code":"hrp-1126-000101","display_name":"Chi Tiết Của A","project_id":"p1","project_display":"Dự án A","recruiter_id":"22222222-3333-4444-8555-666666666666","recruiter_display":"Tuyển A","labor_type":"OFFICIAL","first_work_date":"2026-11-01","employment_status":"ON","national_id":"001200012345","allowed_actions":{"view":true,"direct_edit":true}}}
+                """
+            } else if path == "/api/direct-entry/workers" {
+                body = """
+                {"ok":true,"scope":"managed","items":[{"entry_id":"\(entryIdA)","employee_code":"hrp-1126-000101","display_name":"Công Nhân Trang 2 Của A"}],"summary":{"total_workers":2}}
+                """
+            } else if path == "/api/direct-entry/submissions" {
+                body = """
+                {"ok":true,"items":[{"submission_id":"bbbb1111-2222-4333-8444-555555555555","state":"SUBMITTED","entry_count":2,"created_at":"2026-11-08T08:00:00Z"}],"has_more":false,"next_cursor":null}
+                """
+            } else {
+                body = """
+                {"ok":true,"items":[]}
+                """
+            }
+            let resp = HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/json"])!
+            return (resp, Data(body.utf8))
+        }
+
+        let client = makeMockHttpClient()
+        let repo = MiniBiRepository(httpClient: client, keychain: KeychainStore(serviceName: "com.aistudio.minibi.repo11.\(UUID().uuidString)"))
+        let directEntry = DirectEntryService(httpClient: client)
+        let reporting = WorkReportsAndReportingService(httpClient: client)
+        let salaryAdvance = SalaryAdvanceService(httpClient: client)
+
+        let vm = MiniBiViewModel(
+            repository: repo,
+            directEntryService: directEntry,
+            workReportsService: reporting,
+            salaryAdvanceService: salaryAdvance
+        )
+        let userA = MiniBiUser(
+            id: "aaaa0011-2222-4333-8444-555555555555",
+            username: "account.a",
+            fullName: "Account A",
+            permissions: ["entry_read", "entry_direct_edit", "submission_read"],
+            allowedWorkerTabs: ["managed", "uploader"]
+        )
+        vm.currentUser = userA
+        vm.isAuthenticated = true
+        vm.selectedWorkerScope = "managed"
+        vm.workersPage = 2
+        vm.ownSubmissionsNextCursor = "cur-a-2"
+        vm.ownSubmissionsHasMore = true
+        // Pre-populate catalog so openDirectEdit goes straight to fetchWorkerEntryDetail
+        vm.directEntryOptions = DirectEntryAssigneeOptions(
+            catalogProjects: [CatalogProjectItem(projectId: "p1", displayName: "Dự án A")]
+        )
+
+        let workerRowA = WorkerItem(maNld: entryIdA, hoTen: "Công Nhân A", canDirectEdit: true)
+        let taskWorkersPage2A = Task { await vm.loadWorkers(resetPage: false) }
+        let taskSubmissionsMoreA = Task { await vm.loadMoreOwnSubmissions() }
+        let taskOpenDirectEditA = Task { await vm.openDirectEdit(workerRowA) }
+
+        try await Task.sleep(nanoseconds: 50_000_000)
+
+        // Switch session to Account B before Account A's pagination and openDirectEdit complete
+        let userB = MiniBiUser(
+            id: "bbbb0011-2222-4333-8444-555555555555",
+            username: "luanpt",
+            fullName: "Account B",
+            permissions: ["entry_read"],
+            allowedWorkerTabs: []
+        )
+        vm.onAuthenticatedSessionEstablished(user: userB)
+
+        _ = await (taskWorkersPage2A.value, taskSubmissionsMoreA.value, taskOpenDirectEditA.value)
+        try await Task.sleep(nanoseconds: 300_000_000)
+
+        XCTAssertEqual(vm.currentUser?.id, userB.id)
+        XCTAssertTrue(vm.workers.isEmpty, "Account B workers must not contain page 2 data from Account A")
+        XCTAssertTrue(vm.ownSubmissions.isEmpty, "Account B ownSubmissions must not contain appended items from Account A")
+        XCTAssertNil(vm.directEditWorkerTarget, "Account B directEditWorkerTarget must remain nil")
+        XCTAssertNil(vm.directEditBaselineDetail, "Account B directEditBaselineDetail must remain nil")
+        XCTAssertFalse(vm.isLoadingWorkers)
+        XCTAssertFalse(vm.isLoadingOwnSubmissions)
+        XCTAssertFalse(vm.directEditLoadingDetail)
+    }
+
+    @MainActor
+    func testRegression12_StalePT409ReloadAcrossSessionsDiscarded() async throws {
+        MockURLProtocol.resetRecordedUrls()
+        let entryIdA = "aaaa1212-2222-4333-8444-555555555555"
+        let obligationIdA = "dddd1212-2222-4333-8444-555555555555"
+        // Delay the GET reload endpoints triggered after 409 CONFLICT
+        MockURLProtocol.pathDelaySec = [
+            "/api/direct-entry/entries/\(entryIdA)": 0.25,
+            "/api/work-reports/obligations/\(obligationIdA)": 0.25
+        ]
+        MockURLProtocol.requestHandler = { req in
+            let url = req.url!
+            let path = url.path
+            let method = req.httpMethod ?? "GET"
+            if path.hasSuffix("/privileged-edit") && method == "POST" {
+                let body = """
+                {"ok":false,"code":"CONFLICT","message":"Version conflict"}
+                """
+                let resp = HTTPURLResponse(url: url, statusCode: 409, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/json"])!
+                return (resp, Data(body.utf8))
+            } else if path.contains("/api/direct-entry/entries/\(entryIdA)") && method == "GET" {
+                let body = """
+                {"ok":true,"entry":{"entry_id":"\(entryIdA)","version":9,"employee_code":"hrp-1126-000109","display_name":"Hồ Sơ Mới Của A","project_id":"p1","project_display":"Dự án 1","recruiter_id":"22222222-3333-4444-8555-666666666666","recruiter_display":"Tuyển 1","labor_type":"OFFICIAL","first_work_date":"2026-11-01","employment_status":"ON","national_id":"001200012345","allowed_actions":{"view":true,"direct_edit":true}}}
+                """
+                let resp = HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/json"])!
+                return (resp, Data(body.utf8))
+            } else if path.contains("/api/work-reports/submissions/\(obligationIdA)/submit") && method == "POST" {
+                let body = """
+                {"ok":false,"code":"WORK_REPORT_VERSION_CONFLICT","message":"Obligation conflict"}
+                """
+                let resp = HTTPURLResponse(url: url, statusCode: 409, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/json"])!
+                return (resp, Data(body.utf8))
+            } else if path.contains("/api/work-reports/obligations/\(obligationIdA)") && method == "GET" {
+                let body = """
+                {"ok":true,"obligation":{"obligation_id":"\(obligationIdA)","template_name":"Báo Cáo Của A v9","obligation_status":"ACTIVE","submission_state":"DRAFT","submission_version":9,"is_overdue":false}}
+                """
+                let resp = HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/json"])!
+                return (resp, Data(body.utf8))
+            } else {
+                let body = """
+                {"ok":true,"items":[]}
+                """
+                let resp = HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/json"])!
+                return (resp, Data(body.utf8))
+            }
+        }
+
+        let client = makeMockHttpClient()
+        let repo = MiniBiRepository(httpClient: client, keychain: KeychainStore(serviceName: "com.aistudio.minibi.repo12.\(UUID().uuidString)"))
+        let directEntry = DirectEntryService(httpClient: client)
+        let reporting = WorkReportsAndReportingService(httpClient: client)
+        let salaryAdvance = SalaryAdvanceService(httpClient: client)
+
+        let vm = MiniBiViewModel(
+            repository: repo,
+            directEntryService: directEntry,
+            workReportsService: reporting,
+            salaryAdvanceService: salaryAdvance
+        )
+        let userA = MiniBiUser(
+            id: "aaaa0012-2222-4333-8444-555555555555",
+            username: "account.a",
+            fullName: "Account A",
+            permissions: ["entry_read", "entry_direct_edit", "document_upload"],
+            allowedWorkerTabs: ["managed"]
+        )
+        vm.currentUser = userA
+        vm.isAuthenticated = true
+        vm.directEditBaselineDetail = WorkerEntryDetail(
+            entryId: entryIdA,
+            version: 1,
+            projectId: "p1",
+            projectDisplay: "Dự án 1",
+            firstWorkDate: "2026-11-01",
+            employeeCode: "hrp-1126-000109",
+            recruiterId: "22222222-3333-4444-8555-666666666666",
+            recruiterDisplay: "Tuyển 1",
+            providerType: "hrp",
+            laborType: "OFFICIAL",
+            laborTypeDisplay: "Chính thức",
+            displayName: "Nguyễn Văn Cũ",
+            gender: "MALE",
+            dateOfBirth: "1995-01-01",
+            nationalId: "001200012345",
+            nationalIdIssuedAt: "2021-01-01",
+            address: "Hà Nội",
+            phone: "0912345678",
+            employmentStatus: "ON",
+            employmentEffectiveDate: "2026-11-01",
+            canDirectEdit: true
+        )
+        vm.selectedObligationEditor = WorkReportsAndReportingService.parseObligationItem([
+            "obligation_id": obligationIdA,
+            "template_name": "Báo Cáo Của A",
+            "obligation_status": "ACTIVE",
+            "submission_state": "DRAFT",
+            "submission_version": 1,
+            "is_overdue": false
+        ])
+
+        var draftFormA = DirectEntryService.buildDirectEditFormInput(from: vm.directEditBaselineDetail!)
+        draftFormA.hoTen = "Tên Sửa Bởi A"
+
+        // Account A submits direct edit and work report -> both receive immediate 409 CONFLICT and enter delayed GET reload
+        let taskDirectEdit409A = Task {
+            await vm.submitDirectEditProfileAndDocuments(form: draftFormA, stagedFiles: [:])
+        }
+        let taskWorkReport409A = Task {
+            await vm.submitWorkReportFinal()
+        }
+
+        try await Task.sleep(nanoseconds: 60_000_000)
+
+        // Switch session to Account B while Account A's PT409 reload requests are still in-flight
+        let userB = MiniBiUser(
+            id: "bbbb0012-2222-4333-8444-555555555555",
+            username: "luanpt",
+            fullName: "Account B",
+            permissions: ["entry_read"],
+            allowedWorkerTabs: []
+        )
+        vm.onAuthenticatedSessionEstablished(user: userB)
+        vm.dismissBanner()
+
+        _ = await (taskDirectEdit409A.value, taskWorkReport409A.value)
+        try await Task.sleep(nanoseconds: 300_000_000)
+
+        XCTAssertEqual(vm.currentUser?.id, userB.id)
+        XCTAssertNil(vm.directEditBaselineDetail, "Account B directEditBaselineDetail must not be updated by Account A PT409 reload")
+        XCTAssertNil(vm.directEditErrorMessage, "Account B directEditErrorMessage must remain nil")
+        XCTAssertNil(vm.selectedObligationEditor, "Account B selectedObligationEditor must not be updated by Account A PT409 reload")
+        XCTAssertNil(vm.bannerMessage, "Account B bannerMessage must not show Account A PT409 conflict banner")
+    }
+
+    @MainActor
+    func testRegression13_NullUserAndMissingDocumentUploadCapabilityMakeZeroNetworkRequests() async throws {
+        MockURLProtocol.resetRecordedUrls()
+        MockURLProtocol.pathDelaySec = [:]
+        MockURLProtocol.requestHandler = { req in
+            let url = req.url!
+            let body = """
+            {"ok":true,"items":[]}
+            """
+            let resp = HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/json"])!
+            return (resp, Data(body.utf8))
+        }
+
+        let client = makeMockHttpClient()
+        let repo = MiniBiRepository(httpClient: client, keychain: KeychainStore(serviceName: "com.aistudio.minibi.repo13.\(UUID().uuidString)"))
+        let directEntry = DirectEntryService(httpClient: client)
+        let reporting = WorkReportsAndReportingService(httpClient: client)
+        let salaryAdvance = SalaryAdvanceService(httpClient: client)
+
+        let vm = MiniBiViewModel(
+            repository: repo,
+            directEntryService: directEntry,
+            workReportsService: reporting,
+            salaryAdvanceService: salaryAdvance
+        )
+
+        let entryId = "aaaa1313-2222-4333-8444-555555555555"
+        let baseline = WorkerEntryDetail(
+            entryId: entryId,
+            version: 1,
+            projectId: "p1",
+            projectDisplay: "Dự án 1",
+            firstWorkDate: "2026-11-01",
+            employeeCode: "hrp-1126-000113",
+            recruiterId: "22222222-3333-4444-8555-666666666666",
+            recruiterDisplay: "Tuyển 1",
+            providerType: "hrp",
+            laborType: "OFFICIAL",
+            laborTypeDisplay: "Chính thức",
+            displayName: "Nguyễn Văn 13",
+            gender: "MALE",
+            dateOfBirth: "1995-01-01",
+            nationalId: "001200012345",
+            nationalIdIssuedAt: "2021-01-01",
+            address: "Hà Nội",
+            phone: "0912345678",
+            employmentStatus: "ON",
+            employmentEffectiveDate: "2026-11-01",
+            canDirectEdit: true
+        )
+        let dummyImg = try makeSolidTestJpeg(color: .systemRed, size: CGSize(width: 200, height: 200))
+        let attachment = LocalAttachmentItem(fileName: "portrait.jpg", mimeType: "image/jpeg", data: dummyImg)
+
+        // Part 1: currentUser == nil -> openDirectEdit, submitDirectEditProfileAndDocuments, retryDirectEditDocument, uploadWorkerContract make 0 requests
+        vm.currentUser = nil
+        vm.isAuthenticated = false
+        vm.directEditBaselineDetail = baseline
+        var modifiedForm = DirectEntryService.buildDirectEditFormInput(from: baseline)
+        modifiedForm.hoTen = "Tên Mới Khi Null User"
+
+        await vm.openDirectEdit(WorkerItem(maNld: entryId, hoTen: "Nguyễn Văn 13", canDirectEdit: true))
+        await vm.submitDirectEditProfileAndDocuments(
+            form: modifiedForm,
+            stagedFiles: [DirectEntryContract.docTypeWorkerPortrait: [attachment]]
+        )
+        await vm.retryDirectEditDocument(
+            docType: DirectEntryContract.docTypeWorkerPortrait,
+            attachments: [attachment]
+        )
+        _ = await vm.uploadWorkerContract(maNld: entryId, attachments: [attachment])
+        XCTAssertTrue(MockURLProtocol.recordedUrls().isEmpty, "Null user must make 0 network requests")
+
+        // Part 2: User WITHOUT `document_upload` capability -> retryDirectEditDocument, uploadWorkerContract, and doc-only submitDirectEditProfileAndDocuments make 0 requests
+        MockURLProtocol.resetRecordedUrls()
+        vm.currentUser = MiniBiUser(
+            id: "aaaa0013-2222-4333-8444-555555555555",
+            username: "nodoc.user",
+            fullName: "No Doc Upload",
+            permissions: ["entry_read", "entry_direct_edit"],
+            allowedWorkerTabs: ["managed"]
+        )
+        vm.isAuthenticated = true
+        vm.directEditBaselineDetail = baseline
+        let unchangedForm = DirectEntryService.buildDirectEditFormInput(from: baseline)
+
+        await vm.retryDirectEditDocument(
+            docType: DirectEntryContract.docTypeWorkerPortrait,
+            attachments: [attachment]
+        )
+        _ = await vm.uploadWorkerContract(maNld: entryId, attachments: [attachment])
+        await vm.submitDirectEditProfileAndDocuments(
+            form: unchangedForm,
+            stagedFiles: [DirectEntryContract.docTypeWorkerPortrait: [attachment]]
+        )
+        XCTAssertTrue(MockURLProtocol.recordedUrls().isEmpty, "User without document_upload capability must make 0 document upload requests")
+    }
+
     // MARK: - Helper
 
     private func makeSolidTestJpeg(color: UIColor, size: CGSize) throws -> Data {

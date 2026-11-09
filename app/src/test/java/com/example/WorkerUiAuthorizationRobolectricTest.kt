@@ -5630,6 +5630,42 @@ class WorkerUiAuthorizationRobolectricTest {
             override fun dispatch(request: RecordedRequest): MockResponse {
                 val path = request.path.orEmpty()
                 return when {
+                    path.startsWith("/api/auth/session") -> MockResponse()
+                        .setResponseCode(401)
+                        .setHeader("Content-Type", "application/json")
+                        .setBody("""{"ok":false,"code":"UNAUTHENTICATED","message":"Unauthenticated"}""")
+                    path.startsWith("/api/auth/login") -> MockResponse()
+                        .setResponseCode(200)
+                        .setHeader("Content-Type", "application/json")
+                        .addHeader("Set-Cookie", "mini_bi_sid=sid_reg10; Path=/; HttpOnly")
+                        .setBody(
+                            """
+                            {
+                              "ok": true,
+                              "actor": {
+                                "app_user_id": "aaaa0010-2222-4333-8444-555555555555",
+                                "display_name": "Admin Direct Edit",
+                                "capabilities": ["entry_read", "entry_direct_edit", "document_upload"],
+                                "scopes": [{"kind": "all", "reference": "global", "valid_from": "2026-01-01", "valid_to": null}],
+                                "self_recruiter_suggestion": null
+                              }
+                            }
+                            """.trimIndent()
+                        )
+                    path.startsWith("/api/direct-entry/session") -> MockResponse()
+                        .setResponseCode(200)
+                        .setHeader("Content-Type", "application/json")
+                        .setBody(
+                            """
+                            {
+                              "ok": true,
+                              "actor": {
+                                "app_user_id": "aaaa0010-2222-4333-8444-555555555555",
+                                "allowed_worker_tabs": ["managed"]
+                              }
+                            }
+                            """.trimIndent()
+                        )
                     path == "/api/direct-entry/entries/$entryId" && request.method == "GET" -> MockResponse()
                         .setResponseCode(200)
                         .setHeader("Content-Type", "application/json")
@@ -5715,6 +5751,13 @@ class WorkerUiAuthorizationRobolectricTest {
             canDirectEdit = true
         ).copy(entryVersion = 3)
 
+        // Authenticate session first so currentActor has entry_direct_edit capability
+        vm.login("admin_reg10@hrpartner.vn", "pass10", rememberAccount = false)
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            !vm.loginBusy.value && vm.currentActor.value?.appUserId == "aaaa0010-2222-4333-8444-555555555555"
+        }
+
         // 1. Open Direct Edit -> loads baseline version 3
         vm.openDirectEdit(workerRow)
         composeTestRule.waitUntil(timeoutMillis = 5_000) {
@@ -5790,5 +5833,633 @@ class WorkerUiAuthorizationRobolectricTest {
             "Nguyễn Văn Bản Nháp Giữ Nguyên",
             capturedEditRequests[1].second.getJSONObject("patch").getJSONObject("worker_details").getString("display_name")
         )
+    }
+
+    @Test
+    fun `regression 11 - delayed loadMoreWorkersOrSubmissions openEntryDetail and openDirectEdit from Account A never mutate Account B state`() {
+        var activeAccount = "account_a"
+        var initialLoadDone = false
+        val loadMoreStarted = java.util.concurrent.CountDownLatch(1)
+        val openDetailStarted = java.util.concurrent.CountDownLatch(1)
+        val releaseAccountAResponses = java.util.concurrent.CountDownLatch(1)
+        val entryIdA = "aaaaaaaa-1111-4222-8333-444444444444"
+
+        val server = MockWebServer()
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val path = request.path.orEmpty()
+                return when {
+                    path.startsWith("/api/auth/login") -> {
+                        val isA = activeAccount == "account_a"
+                        val userId = if (isA) "aaaa0011-2222-4333-8444-555555555555" else "bbbb0011-2222-4333-8444-555555555555"
+                        val caps = if (isA) """["entry_read", "entry_direct_edit", "document_upload"]""" else """["entry_read"]"""
+                        MockResponse()
+                            .setResponseCode(200)
+                            .setHeader("Content-Type", "application/json")
+                            .addHeader("Set-Cookie", "mini_bi_sid=sid_$activeAccount; Path=/; HttpOnly")
+                            .setBody(
+                                """
+                                {
+                                  "ok": true,
+                                  "actor": {
+                                    "app_user_id": "$userId",
+                                    "display_name": "${if (isA) "Account A" else "Account B"}",
+                                    "capabilities": $caps,
+                                    "scopes": [{"kind": "own", "reference": "self", "valid_from": "2026-01-01", "valid_to": null}],
+                                    "self_recruiter_suggestion": null
+                                  }
+                                }
+                                """.trimIndent()
+                            )
+                    }
+                    path.startsWith("/api/direct-entry/session") -> {
+                        val isA = activeAccount == "account_a"
+                        val userId = if (isA) "aaaa0011-2222-4333-8444-555555555555" else "bbbb0011-2222-4333-8444-555555555555"
+                        val tabs = if (isA) """["managed"]""" else """[]"""
+                        MockResponse()
+                            .setResponseCode(200)
+                            .setHeader("Content-Type", "application/json")
+                            .setBody(
+                                """
+                                {
+                                  "ok": true,
+                                  "actor": {
+                                    "app_user_id": "$userId",
+                                    "allowed_worker_tabs": $tabs
+                                  }
+                                }
+                                """.trimIndent()
+                            )
+                    }
+                    path.startsWith("/api/direct-entry/workers") && path.contains("cursor=cur-a-page-2") -> {
+                        loadMoreStarted.countDown()
+                        releaseAccountAResponses.await(5, TimeUnit.SECONDS)
+                        MockResponse()
+                            .setResponseCode(200)
+                            .setHeader("Content-Type", "application/json")
+                            .setBody(
+                                """
+                                {
+                                  "ok": true,
+                                  "scope": "managed",
+                                  "items": [
+                                    {
+                                      "entry_id": "eeeeeeee-2222-4222-8333-444444444444",
+                                      "submission_id": "bbbbbbbb-2222-4222-8333-444444444444",
+                                      "entry_version": 1,
+                                      "employee_code": "hrp-1026-000202",
+                                      "display_name": "Công Nhân Trang 2 Của A",
+                                      "project_id": "PRJ_01",
+                                      "project_display": "Dự án A",
+                                      "recruiter_id": "cccccccc-1111-4222-8333-444444444444",
+                                      "recruiter_display": "Tuyển A",
+                                      "provider_type": "hrp",
+                                      "labor_type": "TEMPORARY",
+                                      "labor_type_display": "Thời vụ",
+                                      "first_work_date": "2026-10-01",
+                                      "employment_status": "ON",
+                                      "employment_effective_date": "2026-10-01",
+                                      "employment_status_version": 1,
+                                      "allowed_actions": {"view": true, "propose_change": false, "direct_edit": true}
+                                    }
+                                  ],
+                                  "summary": {"total_workers": 2, "project_count": 1, "recruiter_count": 1},
+                                  "page_size": 25,
+                                  "has_more": false,
+                                  "next_cursor": null
+                                }
+                                """.trimIndent()
+                            )
+                    }
+                    path.startsWith("/api/direct-entry/workers") -> {
+                        initialLoadDone = true
+                        MockResponse()
+                            .setResponseCode(200)
+                            .setHeader("Content-Type", "application/json")
+                            .setBody(
+                                """
+                                {
+                                  "ok": true,
+                                  "scope": "managed",
+                                  "items": [
+                                    {
+                                      "entry_id": "$entryIdA",
+                                      "submission_id": "bbbbbbbb-1111-4222-8333-444444444444",
+                                      "entry_version": 1,
+                                      "employee_code": "hrp-1026-000101",
+                                      "display_name": "Công Nhân Trang 1 Của A",
+                                      "project_id": "PRJ_01",
+                                      "project_display": "Dự án A",
+                                      "recruiter_id": "cccccccc-1111-4222-8333-444444444444",
+                                      "recruiter_display": "Tuyển A",
+                                      "provider_type": "hrp",
+                                      "labor_type": "TEMPORARY",
+                                      "labor_type_display": "Thời vụ",
+                                      "first_work_date": "2026-10-01",
+                                      "employment_status": "ON",
+                                      "employment_effective_date": "2026-10-01",
+                                      "employment_status_version": 1,
+                                      "allowed_actions": {"view": true, "propose_change": false, "direct_edit": true}
+                                    }
+                                  ],
+                                  "summary": {"total_workers": 2, "project_count": 1, "recruiter_count": 1},
+                                  "page_size": 25,
+                                  "has_more": true,
+                                  "next_cursor": "cur-a-page-2"
+                                }
+                                """.trimIndent()
+                            )
+                    }
+                    path == "/api/direct-entry/entries/$entryIdA" && request.method == "GET" -> {
+                        openDetailStarted.countDown()
+                        releaseAccountAResponses.await(5, TimeUnit.SECONDS)
+                        MockResponse()
+                            .setResponseCode(200)
+                            .setHeader("Content-Type", "application/json")
+                            .setBody(
+                                """
+                                {
+                                  "ok": true,
+                                  "entry": {
+                                    "entry_id": "$entryIdA",
+                                    "submission_id": "bbbbbbbb-1111-4222-8333-444444444444",
+                                    "version": 2,
+                                    "project_id": "PRJ_01",
+                                    "first_work_date": "2026-10-01",
+                                    "employee_code": "hrp-1026-000101",
+                                    "recruiter_id": "cccccccc-1111-4222-8333-444444444444",
+                                    "provider_type": "hrp",
+                                    "labor_type": "TEMPORARY",
+                                    "worker_details": {"display_name": "Chi Tiết Của A"},
+                                    "payment": {"state": "empty"},
+                                    "employment_status": {"status": "ON", "effective_date": "2026-10-01", "version": 1},
+                                    "documents": []
+                                  }
+                                }
+                                """.trimIndent()
+                            )
+                    }
+                    else -> MockResponse()
+                        .setResponseCode(200)
+                        .setHeader("Content-Type", "application/json")
+                        .setBody("""{"ok":true,"items":[],"has_more":false,"next_cursor":null}""")
+                }
+            }
+        }
+        server.start()
+
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val db = buildTestDb(app)
+        val cookieFile = File(app.cacheDir, "reg11_cookies_${System.nanoTime()}.enc")
+        val prefsFile = File(app.cacheDir, "reg11_prefs_${System.nanoTime()}.preferences_pb")
+        val repo = MiniBiRepository(
+            context = app,
+            database = db,
+            defaultServerUrl = server.url("/").toString().trimEnd('/'),
+            allowDebugUrlOverride = true,
+            cookieStorageFile = cookieFile,
+            preferencesStorageFile = prefsFile,
+            cookieCipher = JvmAes256GcmCookieCipher()
+        )
+        val vm = MiniBiViewModel(app, repo)
+        registerTestResourcesCleanup(vm, db, server, cookieFile, prefsFile)
+
+        // 1. Login Account A and load initial page 1 (which sets workerNextCursor = "cur-a-page-2")
+        vm.login("account_a@hrpartner.vn", "passA", rememberAccount = false)
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            !vm.loginBusy.value &&
+                vm.currentActor.value?.appUserId == "aaaa0011-2222-4333-8444-555555555555" &&
+                vm.currentActor.value?.allowedWorkerTabs == listOf("managed")
+        }
+        vm.ensureInitialWorkerTabLoaded(vm.currentActor.value!!)
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            initialLoadDone && vm.workerRows.value.size == 1 && vm.workerHasMore.value
+        }
+
+        val workerRowA = vm.workerRows.value.first()
+
+        // 2. Account A starts loadMoreWorkersOrSubmissions AND openEntryDetail / openDirectEdit (held in-flight)
+        vm.loadMoreWorkersOrSubmissions()
+        vm.openEntryDetail(entryIdA)
+        vm.openDirectEdit(workerRowA)
+        assertTrue("Expected Account A loadMore to start", loadMoreStarted.await(5, TimeUnit.SECONDS))
+        assertTrue("Expected Account A openEntryDetail/openDirectEdit to start", openDetailStarted.await(5, TimeUnit.SECONDS))
+
+        // 3. Logout Account A and login Account B before Account A responses complete
+        vm.logout()
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            vm.currentActor.value == null
+        }
+        activeAccount = "account_b"
+        vm.login("account_b@hrpartner.vn", "passB", rememberAccount = false)
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            !vm.loginBusy.value && vm.currentActor.value?.appUserId == "bbbb0011-2222-4333-8444-555555555555"
+        }
+
+        // 4. Release Account A's delayed load-more and detail responses -> Account B state must contain zero data from A
+        releaseAccountAResponses.countDown()
+        Thread.sleep(250)
+        org.robolectric.shadows.ShadowLooper.idleMainLooper()
+
+        assertEquals("bbbb0011-2222-4333-8444-555555555555", vm.currentActor.value?.appUserId)
+        assertTrue("Account B workerRows must not contain appended items from Account A", vm.workerRows.value.isEmpty())
+        assertNull("Account B selectedEntryDetail must be null", vm.selectedEntryDetail.value)
+        assertNull("Account B directEditTarget must be null", vm.directEditTarget.value)
+        assertFalse("Account B workerLoading must be false", vm.workerLoading.value)
+        assertFalse("Account B workerMutationBusy must be false", vm.workerMutationBusy.value)
+    }
+
+    @Test
+    fun `regression 12 - delayed PT409 reload for direct edit and work report from Account A never mutates Account B state`() {
+        var activeAccount = "account_a"
+        val entryIdA = "aaaaaaaa-1212-4222-8333-444444444444"
+        val obligationIdA = "dddddddd-1212-4222-8333-444444444444"
+        var holdReloads = false
+        val entryReloadStarted = java.util.concurrent.CountDownLatch(1)
+        val obligationReloadStarted = java.util.concurrent.CountDownLatch(1)
+        val releaseReloads = java.util.concurrent.CountDownLatch(1)
+
+        val server = MockWebServer()
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val path = request.path.orEmpty()
+                return when {
+                    path.startsWith("/api/auth/session") -> MockResponse()
+                        .setResponseCode(401)
+                        .setHeader("Content-Type", "application/json")
+                        .setBody("""{"ok":false,"code":"UNAUTHENTICATED","message":"Unauthenticated"}""")
+                    path.startsWith("/api/auth/login") -> {
+                        val isA = activeAccount == "account_a"
+                        val userId = if (isA) "aaaa0012-2222-4333-8444-555555555555" else "bbbb0012-2222-4333-8444-555555555555"
+                        val caps = if (isA) """["entry_read", "entry_direct_edit", "document_upload"]""" else """["entry_read"]"""
+                        MockResponse()
+                            .setResponseCode(200)
+                            .setHeader("Content-Type", "application/json")
+                            .addHeader("Set-Cookie", "mini_bi_sid=sid_$activeAccount; Path=/; HttpOnly")
+                            .setBody(
+                                """
+                                {
+                                  "ok": true,
+                                  "actor": {
+                                    "app_user_id": "$userId",
+                                    "display_name": "${if (isA) "Account A" else "Account B"}",
+                                    "capabilities": $caps,
+                                    "scopes": [{"kind": "own", "reference": "self", "valid_from": "2026-01-01", "valid_to": null}],
+                                    "self_recruiter_suggestion": null
+                                  }
+                                }
+                                """.trimIndent()
+                            )
+                    }
+                    path.startsWith("/api/direct-entry/session") -> {
+                        val isA = activeAccount == "account_a"
+                        val userId = if (isA) "aaaa0012-2222-4333-8444-555555555555" else "bbbb0012-2222-4333-8444-555555555555"
+                        val tabs = if (isA) """["managed"]""" else """[]"""
+                        MockResponse()
+                            .setResponseCode(200)
+                            .setHeader("Content-Type", "application/json")
+                            .setBody(
+                                """
+                                {
+                                  "ok": true,
+                                  "actor": {
+                                    "app_user_id": "$userId",
+                                    "allowed_worker_tabs": $tabs
+                                  }
+                                }
+                                """.trimIndent()
+                            )
+                    }
+                    path == "/api/direct-entry/entries/$entryIdA/privileged-edit" && request.method == "POST" -> MockResponse()
+                        .setResponseCode(409)
+                        .setHeader("Content-Type", "application/json")
+                        .setBody("""{"ok":false,"code":"CONFLICT","message":"Version conflict"}""")
+                    path == "/api/direct-entry/entries/$entryIdA" && request.method == "GET" -> {
+                        if (holdReloads) {
+                            entryReloadStarted.countDown()
+                            releaseReloads.await(5, TimeUnit.SECONDS)
+                        }
+                        MockResponse()
+                            .setResponseCode(200)
+                            .setHeader("Content-Type", "application/json")
+                            .setBody(
+                                """
+                                {
+                                  "ok": true,
+                                  "entry": {
+                                    "entry_id": "$entryIdA",
+                                    "submission_id": "bbbbbbbb-1212-4222-8333-444444444444",
+                                    "version": ${if (holdReloads) 9 else 3},
+                                    "project_id": "PRJ_01",
+                                    "first_work_date": "2026-10-01",
+                                    "employee_code": "hrp-1026-000101",
+                                    "recruiter_id": "cccccccc-1111-4222-8333-444444444444",
+                                    "provider_type": "hrp",
+                                    "labor_type": "TEMPORARY",
+                                    "worker_details": {"display_name": "Hồ Sơ Của A"},
+                                    "payment": {"state": "empty"},
+                                    "employment_status": {"status": "ON", "effective_date": "2026-10-01", "version": 1},
+                                    "documents": []
+                                  }
+                                }
+                                """.trimIndent()
+                            )
+                    }
+                    path == "/api/work-reports/submissions/$obligationIdA/submit" && request.method == "POST" -> MockResponse()
+                        .setResponseCode(409)
+                        .setHeader("Content-Type", "application/json")
+                        .setBody("""{"ok":false,"code":"CONFLICT","message":"Obligation conflict"}""")
+                    path == "/api/work-reports/obligations/$obligationIdA" && request.method == "GET" -> {
+                        if (holdReloads) {
+                            obligationReloadStarted.countDown()
+                            releaseReloads.await(5, TimeUnit.SECONDS)
+                        }
+                        MockResponse()
+                            .setResponseCode(200)
+                            .setHeader("Content-Type", "application/json")
+                            .setBody(
+                                """
+                                {
+                                  "ok": true,
+                                  "data": {
+                                    "obligation": {
+                                      "obligation_id": "$obligationIdA",
+                                      "template_id": "dddd1111-eeee-4222-8333-ffff44445555",
+                                      "period_type": "DAILY",
+                                      "period_key": "2026-10-30",
+                                      "period_start_date": "2026-10-30",
+                                      "period_end_date": "2026-10-30",
+                                      "due_at": "2026-12-31T17:00:00Z",
+                                      "is_mandatory": true,
+                                      "obligation_status": "ACTIVE",
+                                      "version": 5,
+                                      "is_overdue": false
+                                    },
+                                    "template": {
+                                      "template_code": "TPL_A",
+                                      "display_name": "Báo Cáo Của A",
+                                      "schema_json": {"contract_version": "work-report-schema/1.0", "sections": [], "fields": []}
+                                    },
+                                    "submission": {
+                                      "submission_id": "99991111-2222-4333-8444-555566667777",
+                                      "state": "DRAFT",
+                                      "version": 5,
+                                      "draft_payload_json": {}
+                                    },
+                                    "revisions": [],
+                                    "latest_review_event": null
+                                  }
+                                }
+                                """.trimIndent()
+                            )
+                    }
+                    else -> MockResponse()
+                        .setResponseCode(200)
+                        .setHeader("Content-Type", "application/json")
+                        .setBody("""{"ok":true,"items":[],"has_more":false,"next_cursor":null}""")
+                }
+            }
+        }
+        server.start()
+
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val db = buildTestDb(app)
+        val cookieFile = File(app.cacheDir, "reg12_cookies_${System.nanoTime()}.enc")
+        val prefsFile = File(app.cacheDir, "reg12_prefs_${System.nanoTime()}.preferences_pb")
+        val repo = MiniBiRepository(
+            context = app,
+            database = db,
+            defaultServerUrl = server.url("/").toString().trimEnd('/'),
+            allowDebugUrlOverride = true,
+            cookieStorageFile = cookieFile,
+            preferencesStorageFile = prefsFile,
+            cookieCipher = JvmAes256GcmCookieCipher()
+        )
+        val vm = MiniBiViewModel(app, repo)
+        registerTestResourcesCleanup(vm, db, server, cookieFile, prefsFile)
+
+        // 1. Login Account A and open Direct Edit + Work Report Obligation Editor
+        vm.login("account_a@hrpartner.vn", "passA", rememberAccount = false)
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            !vm.loginBusy.value && vm.currentActor.value?.appUserId == "aaaa0012-2222-4333-8444-555555555555"
+        }
+
+        val workerRow = sampleWorker(entryId = entryIdA, canView = true, canProposeChange = false, canDirectEdit = true)
+        val obligationEntityA = WorkReportObligationEntity(
+            obligationId = obligationIdA,
+            templateId = "dddd1111-eeee-4222-8333-ffff44445555",
+            templateCode = "TPL_A",
+            templateName = "Báo Cáo Của A",
+            periodType = "DAILY",
+            periodKey = "2026-10-30",
+            periodStartDate = "2026-10-30",
+            periodEndDate = "2026-10-30",
+            dueAtIso = "2026-12-31T17:00:00Z",
+            isMandatory = true,
+            obligationStatus = "ACTIVE",
+            submissionId = "99991111-2222-4333-8444-555566667777",
+            submissionState = "DRAFT",
+            submissionVersion = 1,
+            obligationVersion = 1,
+            schemaJsonRaw = "{}",
+            payloadJsonRaw = "{}",
+            latestReviewDecision = null,
+            latestReviewReason = null,
+            submittedAtIso = null
+        )
+        vm.openDirectEdit(workerRow)
+        vm.openObligationEditor(obligationEntityA)
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            vm.directEditTarget.value?.second?.version == 3 &&
+                vm.editingObligation.value?.obligationVersion == 5
+        }
+
+        // 2. Hold PT409 reload requests, then trigger submitDirectEdit and submitWorkReportFinal (both get 409 CONFLICT)
+        holdReloads = true
+        val patch = JSONObject().put("worker_details", JSONObject().put("display_name", "Sửa Bởi A"))
+        vm.submitDirectEdit(entryIdA, 3, patch, null)
+        vm.submitWorkReportFinal(obligationEntityA, JSONObject())
+
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            entryReloadStarted.count == 0L && obligationReloadStarted.count == 0L
+        }
+
+        // 3. Switch session to Account B while PT409 reload requests are still held in-flight
+        vm.logout()
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            vm.currentActor.value == null
+        }
+        activeAccount = "account_b"
+        vm.login("account_b@hrpartner.vn", "passB", rememberAccount = false)
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            !vm.loginBusy.value && vm.currentActor.value?.appUserId == "bbbb0012-2222-4333-8444-555555555555"
+        }
+        vm.clearBanner()
+
+        // 4. Release PT409 reload responses -> Account B's editor/detail/banner/error must remain untouched
+        releaseReloads.countDown()
+        Thread.sleep(250)
+        org.robolectric.shadows.ShadowLooper.idleMainLooper()
+
+        assertEquals("bbbb0012-2222-4333-8444-555555555555", vm.currentActor.value?.appUserId)
+        assertNull("Account B directEditTarget must remain null", vm.directEditTarget.value)
+        assertNull("Account B editingObligation must remain null", vm.editingObligation.value)
+        assertNull("Account B workerMutationError must remain null", vm.workerMutationError.value)
+        assertNull("Account B workReportsError must remain null", vm.workReportsError.value)
+        assertNull("Account B statusBannerMessage must remain null", vm.statusBannerMessage.value)
+    }
+
+    @Test
+    fun `regression 13 - null actor and missing capabilities fail closed with 0 network requests for retryDirectEditDocument submitDirectEdit openDirectEdit openEntryDetail and loadMore`() {
+        val recordedPaths = java.util.Collections.synchronizedList(mutableListOf<String>())
+        var currentCaps = """["entry_read", "entry_direct_edit"]"""
+
+        val server = MockWebServer()
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val path = request.path.orEmpty()
+                recordedPaths.add("${request.method} $path")
+                return when {
+                    path.startsWith("/api/auth/session") -> MockResponse()
+                        .setResponseCode(401)
+                        .setHeader("Content-Type", "application/json")
+                        .setBody("""{"ok":false,"code":"UNAUTHENTICATED","message":"Unauthenticated"}""")
+                    path.startsWith("/api/auth/login") -> MockResponse()
+                        .setResponseCode(200)
+                        .setHeader("Content-Type", "application/json")
+                        .addHeader("Set-Cookie", "mini_bi_sid=sid_reg13; Path=/; HttpOnly")
+                        .setBody(
+                            """
+                            {
+                              "ok": true,
+                              "actor": {
+                                "app_user_id": "aaaa0013-2222-4333-8444-555555555555",
+                                "display_name": "Actor No Doc Upload",
+                                "capabilities": $currentCaps,
+                                "scopes": [{"kind": "own", "reference": "self", "valid_from": "2026-01-01", "valid_to": null}],
+                                "self_recruiter_suggestion": null
+                              }
+                            }
+                            """.trimIndent()
+                        )
+                    path.startsWith("/api/direct-entry/session") -> MockResponse()
+                        .setResponseCode(200)
+                        .setHeader("Content-Type", "application/json")
+                        .setBody(
+                            """
+                            {
+                              "ok": true,
+                              "actor": {
+                                "app_user_id": "aaaa0013-2222-4333-8444-555555555555",
+                                "allowed_worker_tabs": ["managed"]
+                              }
+                            }
+                            """.trimIndent()
+                        )
+                    else -> MockResponse()
+                        .setResponseCode(200)
+                        .setHeader("Content-Type", "application/json")
+                        .setBody("""{"ok":true,"items":[],"has_more":false,"next_cursor":null}""")
+                }
+            }
+        }
+        server.start()
+
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val db = buildTestDb(app)
+        val cookieFile = File(app.cacheDir, "reg13_cookies_${System.nanoTime()}.enc")
+        val prefsFile = File(app.cacheDir, "reg13_prefs_${System.nanoTime()}.preferences_pb")
+        val repo = MiniBiRepository(
+            context = app,
+            database = db,
+            defaultServerUrl = server.url("/").toString().trimEnd('/'),
+            allowDebugUrlOverride = true,
+            cookieStorageFile = cookieFile,
+            preferencesStorageFile = prefsFile,
+            cookieCipher = JvmAes256GcmCookieCipher()
+        )
+        val vm = MiniBiViewModel(app, repo)
+        registerTestResourcesCleanup(vm, db, server, cookieFile, prefsFile)
+
+        val entryId = "aaaaaaaa-1313-4222-8333-444444444444"
+        val workerRow = sampleWorker(entryId = entryId, canView = true, canProposeChange = true, canDirectEdit = true)
+        val tempFile = File(app.cacheDir, "reg13_test_doc_${System.nanoTime()}.jpg").apply {
+            writeBytes(ByteArray(128) { 1 })
+        }
+        val stagedPortrait = com.example.data.StagedDocumentRef(
+            stageId = "",
+            documentType = "WORKER_PORTRAIT",
+            fileName = "portrait.jpg",
+            mimeType = "image/jpeg",
+            sizeBytes = 128L,
+            localFilePath = tempFile.absolutePath
+        )
+
+        // Part 1: currentActor == null -> 0 network requests across all direct-edit / detail / pagination / retry operations
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            !vm.sessionBootstrapping.value
+        }
+        assertNull(vm.currentActor.value)
+        recordedPaths.clear()
+        vm.attachDirectEditStagedDocument("WORKER_PORTRAIT", stagedPortrait)
+        vm.openEntryDetail(entryId)
+        vm.openDirectEdit(workerRow)
+        vm.openProposeChange(workerRow)
+        vm.submitDirectEdit(entryId, 1, JSONObject().put("worker_details", JSONObject().put("display_name", "Test")), null)
+        vm.retryDirectEditDocument("WORKER_PORTRAIT")
+        vm.loadMoreWorkersOrSubmissions()
+        Thread.sleep(150)
+        org.robolectric.shadows.ShadowLooper.idleMainLooper()
+
+        assertTrue(
+            "When currentActor == null, privileged-edit / retry / upload / detail / loadMore must make 0 network requests, but saw: $recordedPaths",
+            recordedPaths.isEmpty()
+        )
+
+        // Part 2: Actor logged in WITHOUT document_upload capability -> retryDirectEditDocument and document-only submitDirectEdit make 0 network requests
+        vm.login("nodoc@hrpartner.vn", "pass13", rememberAccount = false)
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            !vm.loginBusy.value && vm.currentActor.value?.appUserId == "aaaa0013-2222-4333-8444-555555555555"
+        }
+        assertFalse(vm.currentActor.value!!.hasCapability("document_upload"))
+
+        val tempFile2 = File(app.cacheDir, "reg13_test_doc2_${System.nanoTime()}.jpg").apply {
+            writeBytes(ByteArray(128) { 1 })
+        }
+        val stagedPortrait2 = com.example.data.StagedDocumentRef(
+            stageId = "",
+            documentType = "WORKER_PORTRAIT",
+            fileName = "portrait2.jpg",
+            mimeType = "image/jpeg",
+            sizeBytes = 128L,
+            localFilePath = tempFile2.absolutePath
+        )
+        recordedPaths.clear()
+        vm.attachDirectEditStagedDocument("WORKER_PORTRAIT", stagedPortrait2)
+        vm.retryDirectEditDocument("WORKER_PORTRAIT")
+        vm.submitDirectEdit(entryId, 1, JSONObject(), null)
+        Thread.sleep(150)
+        org.robolectric.shadows.ShadowLooper.idleMainLooper()
+
+        val uploadOrEditRequests = recordedPaths.filter {
+            it.contains("/documents") || it.contains("/privileged-edit") || it.contains("/entries/")
+        }
+        assertTrue(
+            "Actor without document_upload must make 0 document upload / retry requests, but saw: $uploadOrEditRequests",
+            uploadOrEditRequests.isEmpty()
+        )
+        tempFile.delete()
+        tempFile2.delete()
     }
 }
