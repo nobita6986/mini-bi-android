@@ -3119,12 +3119,11 @@ final class HRPBTests: XCTestCase {
             DirectEntryBatchHistoryItem(
                 batchId: 1,
                 submissionIdUuid: batchInitialId,
-                version: 1,
-                createdAt: "2026-11-08T00:00:00Z",
+                status: "SUBMITTED",
                 totalRows: 1,
                 approvedRows: 1,
                 pendingRows: 0,
-                status: "SUBMITTED"
+                createdAt: "2026-11-08T00:00:00Z"
             )
         ]
         vm.ownSubmissionsNextCursor = "cur-old-1"
