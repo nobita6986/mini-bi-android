@@ -5350,6 +5350,10 @@ class WorkerUiAuthorizationRobolectricTest {
             override fun dispatch(request: RecordedRequest): MockResponse {
                 val path = request.path.orEmpty()
                 return when {
+                    path.startsWith("/api/auth/session") -> MockResponse()
+                        .setResponseCode(401)
+                        .setHeader("Content-Type", "application/json")
+                        .setBody("""{"ok":false,"code":"UNAUTHENTICATED","message":"Unauthenticated"}""")
                     path.startsWith("/api/auth/login") -> {
                         val isA = activeAccount == "account_a"
                         val userId = if (isA) "aaaa0001-2222-4333-8444-555555555555" else "bbbb0002-2222-4333-8444-555555555555"
@@ -5442,7 +5446,7 @@ class WorkerUiAuthorizationRobolectricTest {
         vm.login("account_a@hrpartner.vn", "passA", rememberAccount = false)
         composeTestRule.waitUntil(timeoutMillis = 5_000) {
             org.robolectric.shadows.ShadowLooper.idleMainLooper()
-            vm.currentActor.value?.appUserId == "aaaa0001-2222-4333-8444-555555555555"
+            !vm.loginBusy.value && vm.currentActor.value?.appUserId == "aaaa0001-2222-4333-8444-555555555555"
         }
         vm.loadCatalogIfNeeded(effectiveDateIso = "2026-10-30", force = true)
         assertTrue(
@@ -5849,6 +5853,10 @@ class WorkerUiAuthorizationRobolectricTest {
             override fun dispatch(request: RecordedRequest): MockResponse {
                 val path = request.path.orEmpty()
                 return when {
+                    path.startsWith("/api/auth/session") -> MockResponse()
+                        .setResponseCode(401)
+                        .setHeader("Content-Type", "application/json")
+                        .setBody("""{"ok":false,"code":"UNAUTHENTICATED","message":"Unauthenticated"}""")
                     path.startsWith("/api/auth/login") -> {
                         val isA = activeAccount == "account_a"
                         val userId = if (isA) "aaaa0011-2222-4333-8444-555555555555" else "bbbb0011-2222-4333-8444-555555555555"
