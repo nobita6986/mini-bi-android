@@ -65,6 +65,80 @@ object ActorContractParser {
         RegexOption.IGNORE_CASE
     )
     private val VALID_SCOPE_KINDS = setOf("own", "team", "all")
+    val ALLOWED_WORKER_TABS = setOf("managed", "recruited", "team", "uploader", "all")
+
+    /**
+     * Strict fail-closed parser for `allowed_worker_tabs`.
+     * Missing, null, non-array, non-string element, unknown tab key, or duplicate tab key -> `emptyList()`.
+     */
+    fun parseAllowedWorkerTabs(raw: Any?): List<String> {
+        val arr = raw as? JSONArray ?: return emptyList()
+        val result = mutableListOf<String>()
+        val seen = mutableSetOf<String>()
+        for (i in 0 until arr.length()) {
+            if (arr.isNull(i)) return emptyList()
+            val elem = arr.opt(i) as? String ?: return emptyList()
+            val trimmed = elem.trim()
+            if (trimmed != elem || trimmed !in ALLOWED_WORKER_TABS) {
+                return emptyList()
+            }
+            if (!seen.add(trimmed)) {
+                return emptyList()
+            }
+            result.add(trimmed)
+        }
+        return result
+    }
+
+    fun sanitizeAllowedWorkerTabs(tabs: List<String>): List<String> {
+        if (tabs.isEmpty()) return emptyList()
+        val result = mutableListOf<String>()
+        val seen = mutableSetOf<String>()
+        for (elem in tabs) {
+            val trimmed = elem.trim()
+            if (trimmed != elem || trimmed !in ALLOWED_WORKER_TABS) {
+                return emptyList()
+            }
+            if (!seen.add(trimmed)) {
+                return emptyList()
+            }
+            result.add(trimmed)
+        }
+        return result
+    }
+
+    /**
+     * Parses `/api/direct-entry/session` response and verifies `app_user_id` matches `expectedAppUserId`
+     * before returning canonical `allowed_worker_tabs`. Any mismatch or contract violation fails closed to `emptyList()`.
+     */
+    fun parseDirectEntrySessionAllowedWorkerTabs(
+        json: JSONObject,
+        expectedAppUserId: String
+    ): List<String> {
+        val cleanExpectedId = expectedAppUserId.trim()
+        if (!UUID_REGEX.matches(cleanExpectedId)) return emptyList()
+        if (!json.optBoolean("ok", false)) return emptyList()
+
+        val container = json.optJSONObject("actor")
+            ?: json.optJSONObject("session")
+            ?: json.optJSONObject("data")
+            ?: json
+
+        val sessionUserId = container.optString("app_user_id", "").trim()
+            .ifEmpty { json.optString("app_user_id", "").trim() }
+        if (!UUID_REGEX.matches(sessionUserId) || !sessionUserId.equals(cleanExpectedId, ignoreCase = true)) {
+            return emptyList()
+        }
+
+        val rawTabs = when {
+            container.has("allowed_worker_tabs") && !container.isNull("allowed_worker_tabs") ->
+                container.opt("allowed_worker_tabs")
+            json.has("allowed_worker_tabs") && !json.isNull("allowed_worker_tabs") ->
+                json.opt("allowed_worker_tabs")
+            else -> null
+        }
+        return parseAllowedWorkerTabs(rawTabs)
+    }
 
     fun parseEnvelopeActor(json: JSONObject, displayIdentifier: String? = null): AppActor {
         if (!json.optBoolean("ok", false)) {
@@ -185,13 +259,20 @@ object ActorContractParser {
             actorObj.optString("self_recruiter_suggestion", "").trim().ifBlank { null }
         }
 
+        val allowedWorkerTabs = if (actorObj.has("allowed_worker_tabs") && !actorObj.isNull("allowed_worker_tabs")) {
+            parseAllowedWorkerTabs(actorObj.opt("allowed_worker_tabs"))
+        } else {
+            emptyList()
+        }
+
         return AppActor(
             appUserId = appUserId,
             displayName = displayName,
             capabilities = capabilities,
             scopes = scopes,
             selfRecruiterSuggestion = suggestion,
-            displayIdentifier = displayIdentifier?.trim()?.ifBlank { null }
+            displayIdentifier = displayIdentifier?.trim()?.ifBlank { null },
+            allowedWorkerTabs = allowedWorkerTabs
         )
     }
 
@@ -216,6 +297,7 @@ object ActorContractParser {
                 }
             )
             put("self_recruiter_suggestion", actor.selfRecruiterSuggestion ?: JSONObject.NULL)
+            put("allowed_worker_tabs", JSONArray(actor.safeAllowedWorkerTabs))
             if (!actor.displayIdentifier.isNullOrBlank()) {
                 put("display_identifier", actor.displayIdentifier)
             }
@@ -487,6 +569,13 @@ class MiniBiRepository(
                 savedCredentialsStore.removeAccount(trimmedIdentifier)
             }
             _savedAccounts.value = savedCredentialsStore.loadAll()
+            val prevActorId = _activeActor.value?.appUserId
+            if (prevActorId != null && !prevActorId.equals(actor.appUserId, ignoreCase = true)) {
+                runCatching {
+                    dao.clearWorkReportsCache()
+                    dao.clearAllCachedWorkers()
+                }
+            }
             _activeActor.value = actor
             if (dao.getRetryableAttendanceOutboxForUser(actor.appUserId).isNotEmpty()) {
                 AttendanceOutboxService.enqueueDurableOutboxWork(context)
@@ -506,6 +595,32 @@ class MiniBiRepository(
                 )
             )
         }
+    }
+
+    /**
+     * Fetches canonical Direct Entry session metadata from `/api/direct-entry/session`,
+     * verifies `app_user_id` matches the active authenticated actor, and updates `allowedWorkerTabs`.
+     * Fails closed to `emptyList()` if the request fails, is malformed, or `app_user_id` mismatches.
+     */
+    suspend fun syncDirectEntrySession(actor: AppActor? = _activeActor.value): AppActor? = withContext(Dispatchers.IO) {
+        val baseActor = actor ?: return@withContext null
+        val resolvedTabs = try {
+            val json = directEntryService.fetchDirectEntrySession()
+            ActorContractParser.parseDirectEntrySessionAllowedWorkerTabs(
+                json = json,
+                expectedAppUserId = baseActor.appUserId
+            )
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
+            emptyList()
+        }
+        val current = _activeActor.value
+        if (current == null || !current.appUserId.equals(baseActor.appUserId, ignoreCase = true)) {
+            return@withContext current
+        }
+        val updated = baseActor.copy(allowedWorkerTabs = resolvedTabs)
+        _activeActor.value = updated
+        updated
     }
 
     fun removeSavedAccount(identifier: String) {

@@ -225,8 +225,11 @@ public struct MainContainerView: View {
             Divider()
 
             // Bottom Navigation Bar
+            let visibleDestinations = MiniBiNavDestination.allCases.filter { dest in
+                dest != .workers || !viewModel.visibleWorkerTabs.isEmpty
+            }
             HStack(spacing: 0) {
-                ForEach(MiniBiNavDestination.allCases) { dest in
+                ForEach(visibleDestinations) { dest in
                     let isSelected = viewModel.currentDestination == dest
                     Button {
                         KeyboardDismissal.dismiss()

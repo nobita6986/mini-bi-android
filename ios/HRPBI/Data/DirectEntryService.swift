@@ -392,7 +392,15 @@ public final class DirectEntryService: @unchecked Sendable {
             self.lastLoadedCatalog = options
             return .success(options, statusCode: response.statusCode)
         }
-        return .success(lastLoadedCatalog)
+        return .failure(
+            message: response.errorMessage ?? "Không tải được danh mục cấp mới.",
+            httpStatus: response.statusCode,
+            errorCode: response.errorCode
+        )
+    }
+
+    public func clearCatalogCache() {
+        self.lastLoadedCatalog = DirectEntryAssigneeOptions()
     }
 
     public func fetchBatchHistory() async -> MiniBiApiResult<[DirectEntryBatchHistoryItem]> {

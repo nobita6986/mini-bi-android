@@ -1499,36 +1499,45 @@ public struct WorkersScreen: View {
     @ObservedObject var viewModel: MiniBiViewModel
     @State private var exportedShareUrl: URL?
 
-    private let scopes: [(String, String)] = [
-        ("all", "Tất cả"),
-        ("managed", "Đang quản lý"),
-        ("recruited", "Đã tuyển"),
-        ("team", "Theo nhóm"),
-        ("uploader", "Đã tải lên")
-    ]
-
     public init(viewModel: MiniBiViewModel) {
         self.viewModel = viewModel
     }
 
     public var body: some View {
         let theme = viewModel.selectedTheme
+        let visibleTabs = viewModel.visibleWorkerTabs
 
         Group {
-            if viewModel.salaryAdvanceSheetOpen {
+            if visibleTabs.isEmpty {
+                VStack(spacing: 10) {
+                    Image(systemName: "lock.shield")
+                        .font(.system(size: 32, weight: .semibold))
+                        .foregroundColor(SemanticColors.textMuted)
+                    Text("Bạn không có quyền truy cập danh mục người lao động.")
+                        .font(.subheadline.weight(.bold))
+                        .foregroundColor(SemanticColors.textPrimary)
+                        .multilineTextAlignment(.center)
+                    Text("Tài khoản hiện tại không được phân quyền xem các phạm vi người lao động.")
+                        .font(.caption)
+                        .foregroundColor(SemanticColors.textSecondary)
+                        .multilineTextAlignment(.center)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .padding(24)
+            } else if viewModel.salaryAdvanceSheetOpen {
                 SalaryAdvanceWorkspaceView(viewModel: viewModel)
             } else {
                 VStack(spacing: 0) {
-                    // Scope Chips
+                    // Scope Chips (strictly from server-confirmed `allowed_worker_tabs`)
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 8) {
-                            ForEach(scopes, id: \.0) { code, label in
-                                let selected = viewModel.selectedWorkerScope == code
+                            ForEach(visibleTabs, id: \.key) { tab in
+                                let selected = viewModel.selectedWorkerScope == tab.key
                                 Button {
-                                    viewModel.selectedWorkerScope = code
+                                    viewModel.selectedWorkerScope = tab.key
                                     Task { await viewModel.loadWorkers(resetPage: true) }
                                 } label: {
-                                    Text(label)
+                                    Text(tab.label)
                                         .font(.caption.weight(selected ? .bold : .medium))
                                         .padding(.horizontal, 12)
                                         .padding(.vertical, 7)
@@ -1750,10 +1759,11 @@ public struct WorkersScreen: View {
         .background(theme.background)
         .dismissKeyboardOnTapOutside()
         .onAppear {
+            guard !viewModel.visibleWorkerTabs.isEmpty else { return }
             if viewModel.workers.isEmpty {
                 Task { await viewModel.loadWorkers(resetPage: true) }
             }
-            if viewModel.salaryAdvanceContext == nil {
+            if viewModel.currentUser?.canAttemptPmSalaryAdvanceContext == true && viewModel.salaryAdvanceContext == nil {
                 Task { await viewModel.loadSalaryAdvanceContext() }
             }
         }

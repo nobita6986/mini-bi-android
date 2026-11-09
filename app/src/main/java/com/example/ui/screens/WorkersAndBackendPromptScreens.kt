@@ -2288,20 +2288,14 @@ data class WorkerScopeTabSpec(
 )
 
 fun resolveVisibleWorkerTabs(actor: AppActor): List<WorkerScopeTabSpec> {
-    return buildList {
-        add(WorkerScopeTabSpec("managed", "DA tôi quản lý"))
-        add(WorkerScopeTabSpec("recruited", "Tôi tuyển"))
-        if (actor.hasScopeKind("team")) {
-            add(WorkerScopeTabSpec("team", "Team tôi quản lý"))
-        }
-        if (actor.hasCapability("submission_read") || actor.hasCapability("submission_create")) {
-            add(WorkerScopeTabSpec("uploader", "Tôi đã nhập"))
-        }
-        if (
-            actor.hasScopeKind("all") &&
-            (actor.hasCapability("entry_admin") || actor.hasCapability("change_review"))
-        ) {
-            add(WorkerScopeTabSpec("all", "Toàn hệ thống"))
+    return actor.safeAllowedWorkerTabs.mapNotNull { tabKey ->
+        when (tabKey) {
+            "managed" -> WorkerScopeTabSpec("managed", "DA tôi quản lý")
+            "recruited" -> WorkerScopeTabSpec("recruited", "Tôi tuyển")
+            "team" -> WorkerScopeTabSpec("team", "Team tôi quản lý")
+            "uploader" -> WorkerScopeTabSpec("uploader", "Tôi đã nhập")
+            "all" -> WorkerScopeTabSpec("all", "Toàn hệ thống")
+            else -> null
         }
     }
 }
@@ -2361,19 +2355,25 @@ fun WorkersAndDirectEntryScreen(
 
     val visibleTabs = remember(actor) { resolveVisibleWorkerTabs(actor) }
     val safeTabIdx = visibleTabs.indexOfFirst { it.key == activeTabKeyFromVm }.takeIf { it >= 0 } ?: 0
-    val activeScopeKey = visibleTabs.getOrNull(safeTabIdx)?.key ?: "managed"
-    val canShowSalaryAdvance = remember(salaryAdvanceContext) {
-        SalaryAdvanceContract.canShowPmSalaryAdvanceEntry(salaryAdvanceContext)
+    val activeScopeKey = visibleTabs.getOrNull(safeTabIdx)?.key ?: ""
+    val canShowSalaryAdvance = remember(salaryAdvanceContext, visibleTabs) {
+        visibleTabs.any { it.key == "managed" } &&
+            SalaryAdvanceContract.canShowPmSalaryAdvanceEntry(salaryAdvanceContext)
     }
 
-    var searchQuery by remember { mutableStateOf("") }
-    var selectedProjectId by remember { mutableStateOf<String?>(null) }
-    var selectedRecruiterId by remember { mutableStateOf<String?>(null) }
-    var selectedStatusCode by remember { mutableStateOf<String?>(null) }
+    var searchQuery by remember(actor.appUserId) { mutableStateOf("") }
+    var selectedProjectId by remember(actor.appUserId) { mutableStateOf<String?>(null) }
+    var selectedRecruiterId by remember(actor.appUserId) { mutableStateOf<String?>(null) }
+    var selectedStatusCode by remember(actor.appUserId) { mutableStateOf<String?>(null) }
 
-    LaunchedEffect(actor.appUserId) {
-        viewModel.loadCatalogIfNeeded()
-        viewModel.loadSalaryAdvanceContextIfNeeded(actor = actor)
+    LaunchedEffect(actor.appUserId, actor.safeAllowedWorkerTabs) {
+        if (visibleTabs.isEmpty()) {
+            viewModel.ensureInitialWorkerTabLoaded(actor)
+            return@LaunchedEffect
+        }
+        if (actor.canAttemptPmSalaryAdvanceContext()) {
+            viewModel.loadSalaryAdvanceContextIfNeeded(actor = actor)
+        }
         viewModel.ensureInitialWorkerTabLoaded(actor)
     }
 
@@ -2389,7 +2389,7 @@ fun WorkersAndDirectEntryScreen(
     val effectiveFilterChange: (String, String?, String?, String?) -> Unit = { q, proj, rec, status ->
         if (onSearchAndFilterChange != null) {
             onSearchAndFilterChange(q, proj, status)
-        } else {
+        } else if (activeScopeKey.isNotBlank()) {
             viewModel.selectWorkerTab(
                 tabKey = activeScopeKey,
                 search = q,
@@ -2422,9 +2422,12 @@ fun WorkersAndDirectEntryScreen(
         onRefresh = {
             focusManager.clearFocus()
             keyboardController?.hide()
-            viewModel.loadCatalogIfNeeded(force = true)
-            viewModel.loadSalaryAdvanceContextIfNeeded(actor = actor, force = true)
-            effectiveSelectTab(activeScopeKey)
+            if (visibleTabs.isNotEmpty() && activeScopeKey.isNotBlank()) {
+                if (actor.canAttemptPmSalaryAdvanceContext()) {
+                    viewModel.loadSalaryAdvanceContextIfNeeded(actor = actor, force = true)
+                }
+                effectiveSelectTab(activeScopeKey)
+            }
         },
         modifier = Modifier.fillMaxSize()
     ) {
@@ -2683,7 +2686,16 @@ fun WorkersAndDirectEntryScreen(
             }
         }
 
-        if (isSubmissionTab) {
+        if (visibleTabs.isEmpty()) {
+            if (workerError == null) {
+                item {
+                    EmptyWorkersCard(
+                        title = "Không có quyền truy cập",
+                        subtitle = "Tài khoản chưa được cấp quyền xem danh sách người lao động."
+                    )
+                }
+            }
+        } else if (isSubmissionTab) {
             if (ownSubmissions.isEmpty() && !workerLoading) {
                 item {
                     EmptyWorkersCard(

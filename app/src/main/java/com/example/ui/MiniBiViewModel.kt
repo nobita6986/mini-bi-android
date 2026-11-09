@@ -11,6 +11,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import coil.ImageLoader
 import com.example.BuildConfig
+import com.example.data.ActorContractParser
 import com.example.data.AppActor
 import com.example.data.AttendanceAreaTab
 import com.example.data.AttendanceEntity
@@ -252,7 +253,7 @@ class MiniBiViewModel internal constructor(
     private val _ownSubmissions = MutableStateFlow<List<OwnSubmissionItem>>(emptyList())
     val ownSubmissions: StateFlow<List<OwnSubmissionItem>> = _ownSubmissions.asStateFlow()
 
-    private val _activeWorkerTabKey = MutableStateFlow("managed")
+    private val _activeWorkerTabKey = MutableStateFlow("")
     val activeWorkerTabKey: StateFlow<String> = _activeWorkerTabKey.asStateFlow()
 
     private val _workerHasMore = MutableStateFlow(false)
@@ -637,6 +638,11 @@ class MiniBiViewModel internal constructor(
     private var salaryAdvanceDetailFetchToken: Long = 0L
     private var salaryAdvanceHistoryFetchJob: Job? = null
     private var salaryAdvanceHistoryFetchToken: Long = 0L
+    private var workforceDeepJob: Job? = null
+    private var scopedOverviewJob: Job? = null
+    private var teamReportJob: Job? = null
+    private var duplicateCccdJob: Job? = null
+    private var logoutJob: Job? = null
     private var salaryAdvanceCreateIdempotencyKey: String = SalaryAdvanceContract.newIdempotencyKey("sa-create")
     private var salaryAdvanceLastSubmittedFingerprint: String? = null
     private var salaryAdvanceMessageIdempotencyKey: String = SalaryAdvanceContract.newIdempotencyKey("sa-msg")
@@ -652,6 +658,14 @@ class MiniBiViewModel internal constructor(
         clearBanner()
         workerFetchJob?.cancel()
         workerFetchJob = null
+        workforceDeepJob?.cancel()
+        workforceDeepJob = null
+        scopedOverviewJob?.cancel()
+        scopedOverviewJob = null
+        teamReportJob?.cancel()
+        teamReportJob = null
+        duplicateCccdJob?.cancel()
+        duplicateCccdJob = null
         salaryAdvanceWorkersFetchJob?.cancel()
         salaryAdvanceWorkersFetchJob = null
         salaryAdvanceRequestsFetchJob?.cancel()
@@ -669,11 +683,17 @@ class MiniBiViewModel internal constructor(
         viewModelScope.launch {
             try {
                 val res = repository.bootstrapSession()
-                _sessionBootstrapping.value = false
-                res.onSuccess { actor ->
-                    syncAttendanceTimeAnchor(actor = actor, force = false)
-                    syncAttendanceHistoryFromServer(actor = actor)
-                    refreshDashboardData(actor)
+                if (res.isSuccess) {
+                    val baseActor = res.getOrThrow()
+                    val resolvedActor = repository.syncDirectEntrySession(baseActor)
+                        ?: baseActor.copy(allowedWorkerTabs = emptyList())
+                    _activeWorkerTabKey.value = resolveVisibleWorkerTabs(resolvedActor).firstOrNull()?.key.orEmpty()
+                    _sessionBootstrapping.value = false
+                    syncAttendanceTimeAnchor(actor = resolvedActor, force = false)
+                    syncAttendanceHistoryFromServer(actor = resolvedActor)
+                    refreshDashboardData(resolvedActor)
+                } else {
+                    _sessionBootstrapping.value = false
                 }
             } catch (e: Exception) {
                 e.rethrowIfCancelled()
@@ -686,8 +706,13 @@ class MiniBiViewModel internal constructor(
         if (_salaryAdvanceDialogOpen.value) {
             closeSalaryAdvanceDialog()
         }
+        val actor = currentActor.value
+        if (destination == MainDestination.WORKERS && actor != null && resolveVisibleWorkerTabs(actor).isEmpty()) {
+            ensureInitialWorkerTabLoaded(actor)
+            return
+        }
         _currentDestination.value = destination
-        val actor = currentActor.value ?: return
+        if (actor == null) return
         when (destination) {
             MainDestination.DASHBOARD -> {
                 if ((_generalOverview.value == null && !_generalOverviewLoading.value) ||
@@ -700,15 +725,18 @@ class MiniBiViewModel internal constructor(
                 refreshWorkReportsData(actor)
             }
             MainDestination.NEW_ENTRY -> {
-                loadCatalogIfNeeded()
+                if (actor.canLoadDirectEntryCatalog()) {
+                    loadCatalogIfNeeded()
+                }
                 if (actor.hasCapability("submission_read") || actor.hasCapability("submission_create")) {
                     refreshOwnSubmissionsForHistory()
                 }
             }
             MainDestination.WORKERS -> {
-                loadCatalogIfNeeded()
                 ensureInitialWorkerTabLoaded(actor)
-                loadSalaryAdvanceContextIfNeeded()
+                if (actor.canAttemptPmSalaryAdvanceContext()) {
+                    loadSalaryAdvanceContextIfNeeded(actor = actor)
+                }
             }
             MainDestination.ATTENDANCE -> {
                 _activeAttendanceTab.value = AttendanceAreaTab.CHECK_IN
@@ -768,17 +796,40 @@ class MiniBiViewModel internal constructor(
         _loginError.value = null
         viewModelScope.launch {
             try {
+                logoutJob?.join()
+                val previousActorId = currentActor.value?.appUserId
                 val result = repository.login(
                     rawIdentifier = identifier,
                     password = password,
                     rememberAccount = rememberAccount
                 )
                 result.onSuccess { actor ->
+                    if (previousActorId != null && !previousActorId.equals(actor.appUserId, ignoreCase = true)) {
+                        resetSessionScopedViewModelState()
+                    } else {
+                        ++workerFetchToken
+                        workerFetchJob?.cancel()
+                        workerFetchJob = null
+                        _activeWorkerTabKey.value = ""
+                        lastSearchQuery = ""
+                        lastFilterProjectId = null
+                        lastFilterRecruiterId = null
+                        lastFilterStatus = null
+                        _workerRows.value = emptyList()
+                        _ownSubmissions.value = emptyList()
+                        _workerSummary.value = null
+                        _workerError.value = null
+                        _catalog.value = null
+                        resetSalaryAdvanceAllState()
+                    }
+                    val resolvedActor = repository.syncDirectEntrySession(actor)
+                        ?: actor.copy(allowedWorkerTabs = emptyList())
+                    _activeWorkerTabKey.value = resolveVisibleWorkerTabs(resolvedActor).firstOrNull()?.key.orEmpty()
                     _loginError.value = null
-                    showBanner("Xin chào ${actor.displayName}")
-                    syncAttendanceTimeAnchor(actor = actor, force = true)
-                    syncAttendanceHistoryFromServer(actor = actor)
-                    refreshDashboardData(actor)
+                    showBanner("Xin chào ${resolvedActor.displayName}")
+                    syncAttendanceTimeAnchor(actor = resolvedActor, force = true)
+                    syncAttendanceHistoryFromServer(actor = resolvedActor)
+                    refreshDashboardData(resolvedActor)
                 }.onFailure { err ->
                     err.rethrowIfCancelled()
                     _loginError.value = (err as? BackendApiException)?.message
@@ -797,97 +848,123 @@ class MiniBiViewModel internal constructor(
         }
     }
 
-    fun logout() {
-        clearBanner()
+    private fun resetSessionScopedViewModelState() {
         ++workerFetchToken
         workerFetchJob?.cancel()
         workerFetchJob = null
-        viewModelScope.launch {
+        workforceDeepJob?.cancel()
+        workforceDeepJob = null
+        scopedOverviewJob?.cancel()
+        scopedOverviewJob = null
+        teamReportJob?.cancel()
+        teamReportJob = null
+        duplicateCccdJob?.cancel()
+        duplicateCccdJob = null
+        myExplanationsFetchJob?.cancel()
+        myExplanationsFetchJob = null
+        explanationInboxFetchJob?.cancel()
+        explanationInboxFetchJob = null
+        _currentDestination.value = MainDestination.DASHBOARD
+        _generalOverview.value = null
+        _generalOverviewLoading.value = false
+        _generalOverviewError.value = null
+        _workforceDeep.value = null
+        _workforceError.value = null
+        _teamReport.value = null
+        _teamReportError.value = null
+        _teamScopeOptions.value = emptyList()
+        _dashboardDatePreset.value = DashboardDatePreset.ALL_TIME
+        cachedAdminTeamCodeMap = null
+        cachedTeamScopeWorkers = emptyList()
+        cachedTeamTotalSummary = 0
+        _duplicateGroups.value = emptyList()
+        _duplicateError.value = null
+        _duplicatePage.value = 1
+        _duplicateHasMore.value = false
+        _duplicateManagedOnly.value = false
+        _cccdReviewPage.value = null
+        _cccdReviewLoading.value = false
+        _cccdReviewError.value = null
+        _cccdReviewStatusFilter.value = CccdReviewStatusFilter.NEEDS_REVIEW.code
+        _cccdReviewOffset.value = 0
+        _cccdReviewMutating.value = false
+        _cccdReviewMutationError.value = null
+        _catalog.value = null
+        _catalogLoading.value = false
+        _catalogError.value = null
+        _activeWorkerTabKey.value = ""
+        lastSearchQuery = ""
+        lastFilterProjectId = null
+        lastFilterRecruiterId = null
+        lastFilterStatus = null
+        _workerRows.value = emptyList()
+        _ownSubmissions.value = emptyList()
+        _workerSummary.value = null
+        _workerLoading.value = false
+        _workerError.value = null
+        _workerHasMore.value = false
+        _workerNextCursor.value = null
+        _submissionsHasMore.value = false
+        _submissionsNextCursor.value = null
+        _selectedEntryDetail.value = null
+        _proposeChangeTarget.value = null
+        _directEditTarget.value = null
+        _workerMutationError.value = null
+        _pendingDuplicateCccdSubmission.value = null
+        _failedBackgroundUploads.value = emptyList()
+        _hasFailedBackgroundUploads.value = false
+        _backgroundUploadActiveCount.value = 0
+        _profileSaveStatusMessage.value = null
+        _photoUploadStatusMessage.value = null
+        _pendingOfflineProfileDrafts.value = emptyList()
+        newWorkerDraftRows.toList()
+            .flatMap { it.allAttachments() }
+            .forEach { discardDraftAttachment(it) }
+        newWorkerDraftRows.clear()
+        _editingObligation.value = null
+        _workReportsError.value = null
+        _reviewQueue.value = emptyList()
+        _analyticsSnapshot.value = null
+        _availableReportTemplates.value = emptyList()
+        _activeAttendanceTab.value = AttendanceAreaTab.CHECK_IN
+        _leaveYear.value = LeaveContract.currentVietnamLeaveYear()
+        _myLeaveSummary.value = null
+        _myLeaveLoading.value = false
+        _myLeaveError.value = null
+        _myLeaveErrorCode.value = null
+        leaveDraftDays.clear()
+        _leaveDraftReason.value = ""
+        _leaveMutationBusy.value = false
+        _leaveMutationError.value = null
+        _leaveInboxStatusFilter.value = "PENDING"
+        _leaveInboxPage.value = 1
+        _leaveApprovalInbox.value = null
+        _leaveInboxLoading.value = false
+        _leaveInboxError.value = null
+        _explanationSelectedDate.value = AttendanceExplanationContract.todayVietnamIsoDate()
+        _myExplanationsOverview.value = null
+        _myExplanationsLoading.value = false
+        _myExplanationsError.value = null
+        _myExplanationsErrorCode.value = null
+        _explanationMutationBusy.value = false
+        _explanationMutationError.value = null
+        _explanationInboxStatusFilter.value = "PENDING"
+        _explanationInboxPage.value = 1
+        _explanationApprovalInbox.value = null
+        _explanationInboxLoading.value = false
+        _explanationInboxError.value = null
+        _explanationInboxErrorCode.value = null
+        resetSalaryAdvanceAllState()
+    }
+
+    fun logout() {
+        clearBanner()
+        resetSessionScopedViewModelState()
+        logoutJob = viewModelScope.launch {
             repository.logout()
-            _currentDestination.value = MainDestination.DASHBOARD
-            _generalOverview.value = null
-            _generalOverviewLoading.value = false
-            _generalOverviewError.value = null
-            _workforceDeep.value = null
-            _workforceError.value = null
-            _teamReport.value = null
-            _teamReportError.value = null
-            _teamScopeOptions.value = emptyList()
-            _dashboardDatePreset.value = DashboardDatePreset.ALL_TIME
-            cachedAdminTeamCodeMap = null
-            cachedTeamScopeWorkers = emptyList()
-            cachedTeamTotalSummary = 0
-            _duplicateGroups.value = emptyList()
-            _duplicateError.value = null
-            _duplicatePage.value = 1
-            _duplicateHasMore.value = false
-            _duplicateManagedOnly.value = false
-            _cccdReviewPage.value = null
-            _cccdReviewLoading.value = false
-            _cccdReviewError.value = null
-            _cccdReviewStatusFilter.value = CccdReviewStatusFilter.NEEDS_REVIEW.code
-            _cccdReviewOffset.value = 0
-            _cccdReviewMutating.value = false
-            _cccdReviewMutationError.value = null
-            _catalog.value = null
-            _workerRows.value = emptyList()
-            _ownSubmissions.value = emptyList()
-            _workerSummary.value = null
-            _workerLoading.value = false
-            _workerError.value = null
-            _workerHasMore.value = false
-            _workerNextCursor.value = null
-            _submissionsHasMore.value = false
-            _submissionsNextCursor.value = null
-            _selectedEntryDetail.value = null
-            _proposeChangeTarget.value = null
-            _directEditTarget.value = null
-            _workerMutationError.value = null
-            _pendingDuplicateCccdSubmission.value = null
-            _failedBackgroundUploads.value = emptyList()
-            _hasFailedBackgroundUploads.value = false
-            _backgroundUploadActiveCount.value = 0
-            _profileSaveStatusMessage.value = null
-            _photoUploadStatusMessage.value = null
-            _pendingOfflineProfileDrafts.value = emptyList()
-            newWorkerDraftRows.toList()
-                .flatMap { it.allAttachments() }
-                .forEach { discardDraftAttachment(it) }
-            newWorkerDraftRows.clear()
-            _editingObligation.value = null
-            _workReportsError.value = null
-            _reviewQueue.value = emptyList()
-            _analyticsSnapshot.value = null
-            _availableReportTemplates.value = emptyList()
-            _activeAttendanceTab.value = AttendanceAreaTab.CHECK_IN
-            _leaveYear.value = LeaveContract.currentVietnamLeaveYear()
-            _myLeaveSummary.value = null
-            _myLeaveLoading.value = false
-            _myLeaveError.value = null
-            _myLeaveErrorCode.value = null
-            leaveDraftDays.clear()
-            _leaveDraftReason.value = ""
-            _leaveMutationBusy.value = false
-            _leaveMutationError.value = null
-            _leaveInboxStatusFilter.value = "PENDING"
-            _leaveInboxPage.value = 1
-            _leaveApprovalInbox.value = null
-            _leaveInboxLoading.value = false
-            _leaveInboxError.value = null
-            _explanationSelectedDate.value = AttendanceExplanationContract.todayVietnamIsoDate()
-            _myExplanationsOverview.value = null
-            _myExplanationsLoading.value = false
-            _myExplanationsError.value = null
-            _myExplanationsErrorCode.value = null
-            _explanationMutationBusy.value = false
-            _explanationMutationError.value = null
-            _explanationInboxStatusFilter.value = "PENDING"
-            _explanationInboxPage.value = 1
-            _explanationApprovalInbox.value = null
-            _explanationInboxLoading.value = false
-            _explanationInboxError.value = null
-            _explanationInboxErrorCode.value = null
-            resetSalaryAdvanceAllState()
+            if (!_loginBusy.value && currentActor.value == null) {
+                resetSessionScopedViewModelState()
+            }
         }
     }
 
@@ -974,7 +1051,18 @@ class MiniBiViewModel internal constructor(
 
     fun refreshDashboardData(actor: AppActor? = currentActor.value) {
         val resolvedActor = actor ?: return
-        refreshDuplicateCccdReport(page = _duplicatePage.value, managedOnly = _duplicateManagedOnly.value)
+        if (
+            resolvedActor.hasCapability("reporting_duplicate_cccd") ||
+            resolvedActor.hasScopeKind("all") ||
+            resolvedActor.safeAllowedWorkerTabs.isNotEmpty()
+        ) {
+            refreshDuplicateCccdReport(page = _duplicatePage.value, managedOnly = _duplicateManagedOnly.value)
+        } else {
+            _duplicateGroups.value = emptyList()
+            _duplicateHasMore.value = false
+            _duplicateError.value = null
+            _duplicateLoading.value = false
+        }
         if (resolvedActor.hasScopeKind("all")) {
             refreshWorkforceDeep()
         } else {
@@ -999,7 +1087,8 @@ class MiniBiViewModel internal constructor(
         _workforceError.value = null
         _generalOverviewLoading.value = true
         _generalOverviewError.value = null
-        viewModelScope.launch {
+        workforceDeepJob?.cancel()
+        workforceDeepJob = viewModelScope.launch {
             try {
                 if (cachedAdminTeamCodeMap == null) {
                     val canProbeCatalog = actor.hasCapability("catalog_master_manage") ||
@@ -1182,20 +1271,21 @@ class MiniBiViewModel internal constructor(
             cachedTeamScopeWorkers = emptyList()
             cachedTeamTotalSummary = 0
         }
-        viewModelScope.launch {
+        scopedOverviewJob?.cancel()
+        scopedOverviewJob = viewModelScope.launch {
             try {
-                if (_catalog.value == null) {
-                    runCatching {
-                        _catalog.value = repository.directEntryService.fetchCatalog()
-                    }.onFailure { it.rethrowIfCancelled() }
-                }
+                // Never load Direct Entry catalog on login/resume/dashboard; use only already-cached catalog if any.
                 val recruiterMap = _catalog.value?.recruiters.orEmpty().associateBy { it.recruiterId }
+                val allowedWorkerScopes = actor.safeAllowedWorkerTabs
+                    .filter { it in DirectEntryContract.ALLOWED_WORKER_SCOPES }
+                    .toSet()
 
                 var firstError: Exception? = null
                 suspend fun fetchAllScopePagesOrNull(
                     scopeName: String,
                     maxPages: Int = 10
                 ): PaginatedScopeWorkers? {
+                    if (scopeName !in allowedWorkerScopes) return null
                     return try {
                         val firstPage = repository.directEntryService.listWorkers(
                             scope = scopeName,
@@ -1241,9 +1331,9 @@ class MiniBiViewModel internal constructor(
                     }
                 }
 
-                val teamPage = if (isTeamActor) fetchAllScopePagesOrNull("team") else null
-                val managedPage = fetchAllScopePagesOrNull("managed")
-                val recruitedPage = fetchAllScopePagesOrNull("recruited")
+                val teamPage = if (isTeamActor && "team" in allowedWorkerScopes) fetchAllScopePagesOrNull("team") else null
+                val managedPage = if ("managed" in allowedWorkerScopes) fetchAllScopePagesOrNull("managed") else null
+                val recruitedPage = if ("recruited" in allowedWorkerScopes) fetchAllScopePagesOrNull("recruited") else null
 
                 if (teamPage == null && managedPage == null && recruitedPage == null && firstError != null) {
                     throw firstError!!
@@ -1637,7 +1727,8 @@ class MiniBiViewModel internal constructor(
 
         _teamReportLoading.value = true
         _teamReportError.value = null
-        viewModelScope.launch {
+        teamReportJob?.cancel()
+        teamReportJob = viewModelScope.launch {
             try {
                 if (cachedAdminTeamCodeMap == null &&
                     actor.hasScopeKind("all") &&
@@ -1709,7 +1800,8 @@ class MiniBiViewModel internal constructor(
         _duplicateManagedOnly.value = managedOnly
         _duplicateLoading.value = true
         _duplicateError.value = null
-        viewModelScope.launch {
+        duplicateCccdJob?.cancel()
+        duplicateCccdJob = viewModelScope.launch {
             try {
                 val report = repository.workReportsAndReportingService.fetchDuplicateCccdReport(
                     page = _duplicatePage.value,
@@ -2259,6 +2351,12 @@ class MiniBiViewModel internal constructor(
         effectiveDateIso: String = DirectEntryContract.todayIsoInHcm(),
         force: Boolean = false
     ) {
+        val actor = currentActor.value
+        if (actor != null && !actor.canLoadDirectEntryCatalog()) {
+            _catalog.value = null
+            _catalogLoading.value = false
+            return
+        }
         if (!force && (_catalogLoading.value || _catalog.value?.effectiveDate == effectiveDateIso)) {
             return
         }
@@ -2803,8 +2901,18 @@ class MiniBiViewModel internal constructor(
     fun ensureInitialWorkerTabLoaded(actor: AppActor) {
         val visibleTabs = resolveVisibleWorkerTabs(actor)
         if (visibleTabs.isEmpty()) {
+            ++workerFetchToken
+            workerFetchJob?.cancel()
+            workerFetchJob = null
+            _activeWorkerTabKey.value = ""
             _workerRows.value = emptyList()
             _ownSubmissions.value = emptyList()
+            _workerSummary.value = null
+            _workerHasMore.value = false
+            _workerNextCursor.value = null
+            _submissionsHasMore.value = false
+            _submissionsNextCursor.value = null
+            _workerLoading.value = false
             _workerError.value = "Tài khoản chưa được cấp quyền xem danh sách người lao động."
             return
         }
@@ -2823,7 +2931,7 @@ class MiniBiViewModel internal constructor(
             projectId = lastFilterProjectId,
             recruiterId = lastFilterRecruiterId,
             employmentStatus = lastFilterStatus,
-            allowFallbackFromManaged = (initialTab == "managed")
+            actorOverride = actor
         )
     }
 
@@ -2833,9 +2941,46 @@ class MiniBiViewModel internal constructor(
         projectId: String? = lastFilterProjectId,
         recruiterId: String? = lastFilterRecruiterId,
         employmentStatus: String? = lastFilterStatus,
-        allowFallbackFromManaged: Boolean = false
+        actorOverride: AppActor? = null
     ) {
-        _activeWorkerTabKey.value = tabKey
+        val cleanKey = tabKey.trim()
+        val effectiveActor = actorOverride ?: currentActor.value
+        if (effectiveActor != null) {
+            val allowedKeys = resolveVisibleWorkerTabs(effectiveActor).map { it.key }
+            if (cleanKey.isBlank() || cleanKey !in allowedKeys) {
+                ++workerFetchToken
+                workerFetchJob?.cancel()
+                workerFetchJob = null
+                _activeWorkerTabKey.value = ""
+                _workerRows.value = emptyList()
+                _ownSubmissions.value = emptyList()
+                _workerSummary.value = null
+                _workerHasMore.value = false
+                _workerNextCursor.value = null
+                _submissionsHasMore.value = false
+                _submissionsNextCursor.value = null
+                _workerLoading.value = false
+                _workerError.value = "Tài khoản chưa được cấp quyền xem danh sách người lao động."
+                return
+            }
+        } else if (cleanKey !in ActorContractParser.ALLOWED_WORKER_TABS) {
+            ++workerFetchToken
+            workerFetchJob?.cancel()
+            workerFetchJob = null
+            _activeWorkerTabKey.value = ""
+            _workerRows.value = emptyList()
+            _ownSubmissions.value = emptyList()
+            _workerSummary.value = null
+            _workerHasMore.value = false
+            _workerNextCursor.value = null
+            _submissionsHasMore.value = false
+            _submissionsNextCursor.value = null
+            _workerLoading.value = false
+            _workerError.value = "Phạm vi danh sách người lao động không hợp lệ."
+            return
+        }
+
+        _activeWorkerTabKey.value = cleanKey
         lastSearchQuery = search
         lastFilterProjectId = projectId
         lastFilterRecruiterId = recruiterId
@@ -2846,7 +2991,7 @@ class MiniBiViewModel internal constructor(
         workerFetchJob = viewModelScope.launch {
             _workerLoading.value = true
             _workerError.value = null
-            if (tabKey == "uploader") {
+            if (cleanKey == "uploader") {
                 try {
                     val page = repository.directEntryService.listOwnSubmissions(pageSize = 20, cursor = null)
                     if (workerFetchToken == fetchToken) {
@@ -2872,7 +3017,7 @@ class MiniBiViewModel internal constructor(
             } else {
                 try {
                     val page = repository.directEntryService.listWorkers(
-                        scope = tabKey,
+                        scope = cleanKey,
                         pageSize = 25,
                         cursor = null,
                         search = search,
@@ -2888,25 +3033,10 @@ class MiniBiViewModel internal constructor(
                     }
                 } catch (e: BackendApiException) {
                     if (workerFetchToken != fetchToken) return@launch
-                    if (allowFallbackFromManaged && tabKey == "managed" && e.kind == BackendFailureKind.FORBIDDEN) {
-                        val actor = currentActor.value
-                        val fallbackTab = actor?.let { resolveVisibleWorkerTabs(it) }
-                            ?.firstOrNull { it.key != "managed" }
-                        if (fallbackTab != null) {
-                            selectWorkerTab(
-                                tabKey = fallbackTab.key,
-                                search = search,
-                                projectId = projectId,
-                                recruiterId = recruiterId,
-                                employmentStatus = employmentStatus,
-                                allowFallbackFromManaged = false
-                            )
-                            return@launch
-                        }
-                    }
+                    // Do NOT probe/fallback to another scope on 403!
                     // Per App BI `relationDenialIsEmpty`: 403 on `managed` or `recruited` means the actor
                     // currently has no active project assignment or recruiter link -> render empty list, not error.
-                    if ((tabKey == "managed" || tabKey == "recruited") && e.kind == BackendFailureKind.FORBIDDEN) {
+                    if ((cleanKey == "managed" || cleanKey == "recruited") && e.kind == BackendFailureKind.FORBIDDEN) {
                         _workerRows.value = emptyList()
                         _workerSummary.value = null
                         _workerHasMore.value = false
@@ -2915,7 +3045,7 @@ class MiniBiViewModel internal constructor(
                         return@launch
                     }
                     if (e.kind == BackendFailureKind.NETWORK) {
-                        val cached = runCatching { repository.getCachedWorkersByScope(tabKey) }
+                        val cached = runCatching { repository.getCachedWorkersByScope(cleanKey) }
                             .onFailure { it.rethrowIfCancelled() }
                             .getOrDefault(emptyList())
                         if (workerFetchToken != fetchToken) return@launch
@@ -2945,7 +3075,12 @@ class MiniBiViewModel internal constructor(
 
     fun loadMoreWorkersOrSubmissions() {
         if (_workerLoading.value) return
-        val tabKey = _activeWorkerTabKey.value
+        val tabKey = _activeWorkerTabKey.value.trim()
+        if (tabKey.isBlank()) return
+        val effectiveActor = currentActor.value
+        if (effectiveActor != null && resolveVisibleWorkerTabs(effectiveActor).none { it.key == tabKey }) {
+            return
+        }
         if (tabKey == "uploader") {
             val cursor = _submissionsNextCursor.value ?: return
             if (!_submissionsHasMore.value) return
@@ -4533,6 +4668,11 @@ class MiniBiViewModel internal constructor(
     ) {
         if (_salaryAdvanceContextLoading.value) return
         val resolvedActor = actor ?: currentActor.value
+        if (resolvedActor != null && !resolvedActor.canAttemptPmSalaryAdvanceContext()) {
+            _salaryAdvanceContext.value = null
+            _salaryAdvanceContextLoading.value = false
+            return
+        }
         val existing = _salaryAdvanceContext.value
         if (!force && existing != null && (resolvedActor == null || existing.appUserId == resolvedActor.appUserId)) {
             return

@@ -303,26 +303,39 @@ class WorkerUiAuthorizationRobolectricTest {
         assertFalse(row.allowedActions.proposeChange)
         assertFalse(row.allowedActions.directEdit)
 
+        // Actor with missing/empty allowed_worker_tabs fails closed to [] even if capabilities/scopes exist
+        val ungrantedActor = AppActor(
+            appUserId = "00000000-2222-4333-8444-555555555555",
+            displayName = "Luan PT",
+            capabilities = listOf("entry_read", "submission_read"),
+            scopes = listOf(ActorScope("own", "self", "2026-01-01", null)),
+            selfRecruiterSuggestion = null,
+            allowedWorkerTabs = emptyList()
+        )
+        assertTrue(resolveVisibleWorkerTabs(ungrantedActor).isEmpty())
+
         // Own-only actor ("Admin" in displayName must NOT grant team or all tabs!)
         val ownOnlyActor = AppActor(
             appUserId = "11111111-2222-4333-8444-555555555555",
             displayName = "Admin Team Leader Fake Name",
             capabilities = listOf("entry_read", "submission_read"),
             scopes = listOf(ActorScope("own", "self", "2026-01-01", null)),
-            selfRecruiterSuggestion = null
+            selfRecruiterSuggestion = null,
+            allowedWorkerTabs = listOf("managed", "recruited", "uploader")
         )
         val tabs = resolveVisibleWorkerTabs(ownOnlyActor).map { it.key }
         assertEquals(listOf("managed", "recruited", "uploader"), tabs)
         assertFalse(tabs.contains("team"))
         assertFalse(tabs.contains("all"))
 
-        // Real backend actor without phantom "entry_read" still sees managed + recruited scopes
+        // Real backend actor with server-confirmed ["managed", "recruited"]
         val realBackendActor = AppActor(
             appUserId = "66666666-2222-4333-8444-555555555555",
             displayName = "Tuyển dụng HRP",
             capabilities = emptyList(),
             scopes = listOf(ActorScope("own", "self", "2026-01-01", null)),
-            selfRecruiterSuggestion = null
+            selfRecruiterSuggestion = null,
+            allowedWorkerTabs = listOf("managed", "recruited")
         )
         val realTabs = resolveVisibleWorkerTabs(realBackendActor)
         assertEquals(listOf("managed", "recruited"), realTabs.map { it.key })
@@ -338,7 +351,8 @@ class WorkerUiAuthorizationRobolectricTest {
                 ActorScope("team", "TEAM_NORTH", "2026-01-01", null),
                 ActorScope("all", "ALL", "2026-01-01", null)
             ),
-            selfRecruiterSuggestion = null
+            selfRecruiterSuggestion = null,
+            allowedWorkerTabs = listOf("managed", "recruited", "team", "uploader", "all")
         )
         val allTabLabels = resolveVisibleWorkerTabs(fullAdminActor).map { it.label }
         assertEquals(
@@ -370,7 +384,8 @@ class WorkerUiAuthorizationRobolectricTest {
             displayName = "Nguyễn Tuyển Dụng",
             capabilities = listOf("entry_create", "submission_create"),
             scopes = listOf(ActorScope("own", "self", "2026-01-01", null)),
-            selfRecruiterSuggestion = null
+            selfRecruiterSuggestion = null,
+            allowedWorkerTabs = listOf("managed", "recruited")
         )
 
         composeTestRule.setContent {
@@ -1001,6 +1016,20 @@ class WorkerUiAuthorizationRobolectricTest {
                             }
                             """.trimIndent()
                         )
+                    path.startsWith("/api/direct-entry/session") -> MockResponse()
+                        .setResponseCode(200)
+                        .setHeader("Content-Type", "application/json")
+                        .setBody(
+                            """
+                            {
+                              "ok": true,
+                              "actor": {
+                                "app_user_id": "11111111-2222-4333-8444-555555555555",
+                                "allowed_worker_tabs": ["managed", "recruited"]
+                              }
+                            }
+                            """.trimIndent()
+                        )
                     path.startsWith("/api/direct-entry/duplicate-cccd-report") -> MockResponse()
                         .setResponseCode(200)
                         .setHeader("Content-Type", "application/json")
@@ -1295,7 +1324,8 @@ class WorkerUiAuthorizationRobolectricTest {
                 )
             ),
             selfRecruiterSuggestion = null,
-            displayIdentifier = "vinhnt.td"
+            displayIdentifier = "vinhnt.td",
+            allowedWorkerTabs = listOf("managed", "recruited", "team", "uploader")
         )
 
         composeTestRule.setContent {
@@ -1373,6 +1403,20 @@ class WorkerUiAuthorizationRobolectricTest {
                                   }
                                 ],
                                 "self_recruiter_suggestion": null
+                              }
+                            }
+                            """.trimIndent()
+                        )
+                    path.startsWith("/api/direct-entry/session") -> MockResponse()
+                        .setResponseCode(200)
+                        .setHeader("Content-Type", "application/json")
+                        .setBody(
+                            """
+                            {
+                              "ok": true,
+                              "actor": {
+                                "app_user_id": "99999999-8888-4777-8666-555555555555",
+                                "allowed_worker_tabs": ["managed", "recruited", "team", "uploader"]
                               }
                             }
                             """.trimIndent()
@@ -1625,13 +1669,14 @@ class WorkerUiAuthorizationRobolectricTest {
         }
 
         // 2. General Overview has real paginated counts (3 total, 2 ON, 1 UNCONFIRMED), NOT 0 NLĐ!
+        // Catalog is not eagerly fetched at session resume, so fallback scope/team labels are used.
         val overview = vm.generalOverview.value!!
         assertEquals(3, overview.totalProfiles)
         assertEquals(2, overview.workingCount)
         assertEquals(1, overview.waitingCount)
         assertEquals(0, overview.leftCount)
         assertEquals(2, overview.activeHiringDays)
-        assertEquals("Nhóm Vinh Tuyển Dụng", overview.scopeDescription)
+        assertEquals("Nhóm & dự án phụ trách", overview.scopeDescription)
         composeTestRule.onNodeWithTag("general_overview_section").assertIsDisplayed()
 
         // 3. Switch to "Báo cáo theo nhóm" -> auto-displays Team Leader's own team report with ZERO manual code input!
@@ -1641,7 +1686,7 @@ class WorkerUiAuthorizationRobolectricTest {
         composeTestRule.onNodeWithText("Mã nhóm tuyển dụng").assertDoesNotExist()
         composeTestRule.onNodeWithTag("team_bucket_picker_card").assertDoesNotExist()
         composeTestRule.onNodeWithTag("team_report_detail_card").assertIsDisplayed()
-        composeTestRule.onNodeWithText("Nhóm Vinh Tuyển Dụng").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Nhóm của tôi").assertIsDisplayed()
         assertEquals(3, vm.teamReport.value!!.totalRecruited)
         assertEquals(2, vm.teamReport.value!!.activeRecruiterCount)
 
@@ -1653,7 +1698,7 @@ class WorkerUiAuthorizationRobolectricTest {
         composeTestRule.runOnIdle { vm.loadTeamReport(ownSnapshotBefore!!.bucketKey) }
         composeTestRule.waitForIdle()
         assertNull(vm.teamReportError.value)
-        assertEquals("Nhóm Vinh Tuyển Dụng", vm.teamReport.value?.bucketDisplay)
+        assertEquals("Nhóm của tôi", vm.teamReport.value?.bucketDisplay)
 
         // 4. Switch to "Cảnh báo CCCD trùng" -> compact toolbar, zero vertical button stretching / blank gap!
         composeTestRule.onNodeWithTag("dashboard_tab_2").performClick()
@@ -2565,7 +2610,8 @@ class WorkerUiAuthorizationRobolectricTest {
             displayName = "Nguyễn Tuyển Dụng",
             capabilities = listOf("entry_read", "submission_read"),
             scopes = listOf(ActorScope("own", "self", "2026-01-01", null)),
-            selfRecruiterSuggestion = null
+            selfRecruiterSuggestion = null,
+            allowedWorkerTabs = listOf("managed", "recruited", "uploader")
         )
 
         val activeScreen = androidx.compose.runtime.mutableStateOf("DASHBOARD")
@@ -3402,7 +3448,8 @@ class WorkerUiAuthorizationRobolectricTest {
                 displayName = "Kế Toán Kiểm Thử",
                 capabilities = listOf("entry_read"),
                 scopes = listOf(ActorScope("project", "PRJ_01", "2026-01-01", null)),
-                selfRecruiterSuggestion = null
+                selfRecruiterSuggestion = null,
+                allowedWorkerTabs = listOf("managed")
             )
         )
 
@@ -3427,14 +3474,16 @@ class WorkerUiAuthorizationRobolectricTest {
 
         // Switch to QLDA actor and reload context
         isPmOnServer = true
-        vm.loadSalaryAdvanceContextIfNeeded(force = true)
-        currentActorState.value = AppActor(
+        val pmActorForButton = AppActor(
             appUserId = "pm-user-01",
             displayName = "QLDA Kiểm Thử",
             capabilities = listOf("entry_read"),
             scopes = listOf(ActorScope("project", "PRJ_01", "2026-01-01", null)),
-            selfRecruiterSuggestion = null
+            selfRecruiterSuggestion = null,
+            allowedWorkerTabs = listOf("managed")
         )
+        currentActorState.value = pmActorForButton
+        vm.loadSalaryAdvanceContextIfNeeded(force = true, actor = pmActorForButton)
 
         composeTestRule.waitUntil(timeoutMillis = 5_000) {
             org.robolectric.shadows.ShadowLooper.idleMainLooper()
@@ -3797,7 +3846,8 @@ class WorkerUiAuthorizationRobolectricTest {
             displayName = "QLDA Kiểm Thử",
             capabilities = listOf("entry_read"),
             scopes = listOf(ActorScope("project", "PRJ_01", "2026-01-01", null)),
-            selfRecruiterSuggestion = null
+            selfRecruiterSuggestion = null,
+            allowedWorkerTabs = listOf("managed", "recruited")
         )
 
         composeTestRule.setContent {
@@ -4528,5 +4578,492 @@ class WorkerUiAuthorizationRobolectricTest {
         assertEquals("APPROVE", decisionJson.getString("decision"))
         assertEquals(2, decisionJson.getInt("expected_row_version"))
         assertEquals("Đã xác nhận lịch công tác", decisionJson.getString("decision_note"))
+    }
+
+    @Test
+    fun `regression 1 - allowed_worker_tabs empty yields zero tabs hides Workers nav and fires zero worker catalog or salary requests`() {
+        val requestedPaths = java.util.Collections.synchronizedList(mutableListOf<String>())
+        val server = MockWebServer()
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val path = request.path.orEmpty()
+                requestedPaths.add(path)
+                return when {
+                    path.startsWith("/api/auth/session") -> MockResponse()
+                        .setResponseCode(200)
+                        .setHeader("Content-Type", "application/json")
+                        .setBody(
+                            """
+                            {
+                              "ok": true,
+                              "actor": {
+                                "app_user_id": "22222222-3333-4444-8555-666666666666",
+                                "display_name": "Phạm Thành Luân",
+                                "capabilities": ["entry_read", "submission_read"],
+                                "scopes": [{"kind": "own", "reference": "self", "valid_from": "2026-01-01", "valid_to": null}],
+                                "self_recruiter_suggestion": null
+                              }
+                            }
+                            """.trimIndent()
+                        )
+                    path.startsWith("/api/direct-entry/session") -> MockResponse()
+                        .setResponseCode(200)
+                        .setHeader("Content-Type", "application/json")
+                        .setBody(
+                            """
+                            {
+                              "ok": true,
+                              "actor": {
+                                "app_user_id": "22222222-3333-4444-8555-666666666666",
+                                "allowed_worker_tabs": []
+                              }
+                            }
+                            """.trimIndent()
+                        )
+                    else -> MockResponse()
+                        .setResponseCode(200)
+                        .setHeader("Content-Type", "application/json")
+                        .setBody("""{"ok":true,"data":[]}""")
+                }
+            }
+        }
+        server.start()
+
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val db = buildTestDb(app)
+        val cookieFile = File(app.cacheDir, "reg1_cookies_${System.nanoTime()}.enc")
+        val prefsFile = File(app.cacheDir, "reg1_prefs_${System.nanoTime()}.preferences_pb")
+        val repo = MiniBiRepository(
+            context = app,
+            database = db,
+            defaultServerUrl = server.url("/").toString().trimEnd('/'),
+            allowDebugUrlOverride = true,
+            cookieStorageFile = cookieFile,
+            preferencesStorageFile = prefsFile,
+            cookieCipher = JvmAes256GcmCookieCipher()
+        )
+        repo.cookieJar.saveFromResponse(
+            server.url("/api/auth/session"),
+            listOf(
+                Cookie.Builder()
+                    .name("mini_bi_sid")
+                    .value("sid_luanpt")
+                    .hostOnlyDomain(server.hostName)
+                    .path("/")
+                    .expiresAt(System.currentTimeMillis() + 3_600_000L)
+                    .build()
+            )
+        )
+        val vm = MiniBiViewModel(app, repo)
+        registerTestResourcesCleanup(vm, db, server, cookieFile, prefsFile)
+
+        composeTestRule.setContent {
+            MyApplicationTheme {
+                MiniBiAppRoot(viewModel = vm)
+            }
+        }
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            !vm.sessionBootstrapping.value && vm.currentActor.value != null
+        }
+        composeTestRule.waitForIdle()
+
+        val actor = vm.currentActor.value!!
+        assertTrue(actor.safeAllowedWorkerTabs.isEmpty())
+        assertTrue(resolveVisibleWorkerTabs(actor).isEmpty())
+        assertEquals("", vm.activeWorkerTabKey.value)
+
+        // Bottom nav entry "Nhân sự" (WORKERS) is hidden when allowed_worker_tabs=[]
+        composeTestRule.onNodeWithTag("bottom_nav_workers").assertDoesNotExist()
+
+        // Attempting to navigate or load workers directly does NOT switch screen or fire worker/catalog/salary requests
+        composeTestRule.runOnIdle {
+            vm.navigateTo(com.example.ui.MainDestination.WORKERS)
+            vm.ensureInitialWorkerTabLoaded(actor)
+            vm.selectWorkerTab("managed")
+            vm.selectWorkerTab("recruited")
+            vm.loadSalaryAdvanceContextIfNeeded(force = true, actor = actor)
+        }
+        composeTestRule.waitForIdle()
+        assertEquals(com.example.ui.MainDestination.DASHBOARD, vm.currentDestination.value)
+
+        val snapshotPaths = requestedPaths.toList()
+        assertTrue(snapshotPaths.any { it.startsWith("/api/direct-entry/session") })
+        assertTrue("Must NEVER call /api/direct-entry/workers when allowed_worker_tabs=[]",
+            snapshotPaths.none { it.startsWith("/api/direct-entry/workers") })
+        assertTrue("Must NEVER call /api/direct-entry/catalog when allowed_worker_tabs=[]",
+            snapshotPaths.none { it.startsWith("/api/direct-entry/catalog") })
+        assertTrue("Must NEVER call /api/salary-advance/context when allowed_worker_tabs=[]",
+            snapshotPaths.none { it.startsWith("/api/salary-advance/context") })
+    }
+
+    @Test
+    fun `regression 2 - allowed_worker_tabs with only recruited displays only recruited tab and requests only scope recruited`() {
+        val requestedPaths = java.util.Collections.synchronizedList(mutableListOf<String>())
+        val server = MockWebServer()
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val path = request.path.orEmpty()
+                requestedPaths.add(path)
+                return when {
+                    path.startsWith("/api/direct-entry/workers") -> MockResponse()
+                        .setResponseCode(200)
+                        .setHeader("Content-Type", "application/json")
+                        .setBody(
+                            """
+                            {
+                              "ok": true,
+                              "scope": "recruited",
+                              "items": [],
+                              "summary": {"total_workers": 5, "project_count": 1, "recruiter_count": 1},
+                              "page_size": 25,
+                              "has_more": false,
+                              "next_cursor": null
+                            }
+                            """.trimIndent()
+                        )
+                    else -> MockResponse()
+                        .setResponseCode(200)
+                        .setHeader("Content-Type", "application/json")
+                        .setBody("""{"ok":true,"data":[]}""")
+                }
+            }
+        }
+        server.start()
+
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val db = buildTestDb(app)
+        val cookieFile = File(app.cacheDir, "reg2_cookies_${System.nanoTime()}.enc")
+        val prefsFile = File(app.cacheDir, "reg2_prefs_${System.nanoTime()}.preferences_pb")
+        val repo = MiniBiRepository(
+            context = app,
+            database = db,
+            defaultServerUrl = server.url("/").toString().trimEnd('/'),
+            allowDebugUrlOverride = true,
+            cookieStorageFile = cookieFile,
+            preferencesStorageFile = prefsFile,
+            cookieCipher = JvmAes256GcmCookieCipher()
+        )
+        val vm = MiniBiViewModel(app, repo)
+        registerTestResourcesCleanup(vm, db, server, cookieFile, prefsFile)
+
+        val recruitedOnlyActor = AppActor(
+            appUserId = "33333333-4444-4555-8666-777777777777",
+            displayName = "Tuyển Dụng Chỉ Recruited",
+            capabilities = listOf("entry_read"),
+            scopes = listOf(ActorScope("own", "self", "2026-01-01", null)),
+            selfRecruiterSuggestion = null,
+            allowedWorkerTabs = listOf("recruited")
+        )
+
+        composeTestRule.setContent {
+            MyApplicationTheme {
+                WorkersAndDirectEntryScreen(
+                    actor = recruitedOnlyActor,
+                    viewModel = vm,
+                    onBackToDashboard = {}
+                )
+            }
+        }
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            !vm.workerLoading.value && requestedPaths.any { it.startsWith("/api/direct-entry/workers") }
+        }
+        composeTestRule.waitForIdle()
+
+        // Only "recruited" tab is displayed
+        composeTestRule.onNodeWithTag("worker_scope_tab_recruited").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("worker_scope_tab_managed").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("worker_scope_tab_team").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("worker_scope_tab_uploader").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("worker_scope_tab_all").assertDoesNotExist()
+
+        val workerPaths = requestedPaths.filter { it.startsWith("/api/direct-entry/workers") }
+        assertTrue(workerPaths.isNotEmpty())
+        assertTrue("Only scope=recruited may be requested: $workerPaths",
+            workerPaths.all { it.contains("scope=recruited") })
+        assertTrue("Must NOT request catalog on Workers screen entry",
+            requestedPaths.none { it.startsWith("/api/direct-entry/catalog") })
+        assertTrue("Must NOT request salary-advance/context when actor does not have managed tab",
+            requestedPaths.none { it.startsWith("/api/salary-advance/context") })
+    }
+
+    @Test
+    fun `regression 3 - missing wrong-type unknown-element duplicate or mismatched app_user_id in allowed_worker_tabs fails closed to empty list`() {
+        val userId = "11111111-2222-4333-8444-555555555555"
+
+        // Missing field -> []
+        assertEquals(emptyList<String>(), com.example.data.ActorContractParser.parseAllowedWorkerTabs(null))
+        assertEquals(emptyList<String>(), com.example.data.ActorContractParser.parseAllowedWorkerTabs(JSONObject.NULL))
+
+        // Wrong type (String, Object, Number, Boolean) -> []
+        assertEquals(emptyList<String>(), com.example.data.ActorContractParser.parseAllowedWorkerTabs("managed"))
+        assertEquals(emptyList<String>(), com.example.data.ActorContractParser.parseAllowedWorkerTabs(JSONObject("""{"managed":true}""")))
+        assertEquals(emptyList<String>(), com.example.data.ActorContractParser.parseAllowedWorkerTabs(123))
+
+        // Array with non-string element -> []
+        assertEquals(emptyList<String>(), com.example.data.ActorContractParser.parseAllowedWorkerTabs(org.json.JSONArray("""["managed", 123]""")))
+
+        // Array with unknown scope -> []
+        assertEquals(emptyList<String>(), com.example.data.ActorContractParser.parseAllowedWorkerTabs(org.json.JSONArray("""["managed", "super_admin"]""")))
+
+        // Array with duplicate scope -> []
+        assertEquals(emptyList<String>(), com.example.data.ActorContractParser.parseAllowedWorkerTabs(org.json.JSONArray("""["recruited", "recruited"]""")))
+
+        // Valid canonical array -> preserved in server order
+        assertEquals(
+            listOf("managed", "recruited", "team"),
+            com.example.data.ActorContractParser.parseAllowedWorkerTabs(org.json.JSONArray("""["managed", "recruited", "team"]"""))
+        )
+
+        // Mismatched app_user_id in /api/direct-entry/session -> fails closed to []
+        val mismatchedSession = JSONObject(
+            """
+            {
+              "ok": true,
+              "actor": {
+                "app_user_id": "99999999-2222-4333-8444-555555555555",
+                "allowed_worker_tabs": ["managed", "recruited"]
+              }
+            }
+            """.trimIndent()
+        )
+        assertEquals(
+            emptyList<String>(),
+            com.example.data.ActorContractParser.parseDirectEntrySessionAllowedWorkerTabs(mismatchedSession, userId)
+        )
+
+        // Matching app_user_id in /api/direct-entry/session -> returns canonical tabs
+        val matchingSession = JSONObject(
+            """
+            {
+              "ok": true,
+              "actor": {
+                "app_user_id": "$userId",
+                "allowed_worker_tabs": ["recruited", "uploader"]
+              }
+            }
+            """.trimIndent()
+        )
+        assertEquals(
+            listOf("recruited", "uploader"),
+            com.example.data.ActorContractParser.parseDirectEntrySessionAllowedWorkerTabs(matchingSession, userId)
+        )
+    }
+
+    @Test
+    fun `regression 4 - HTTP 403 on worker scope does not trigger fallback request to next scope`() {
+        val workerRequests = java.util.Collections.synchronizedList(mutableListOf<String>())
+        val server = MockWebServer()
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val path = request.path.orEmpty()
+                if (path.startsWith("/api/direct-entry/workers")) {
+                    workerRequests.add(path)
+                    return MockResponse()
+                        .setResponseCode(403)
+                        .setHeader("Content-Type", "application/json")
+                        .setBody("""{"ok":false,"code":"WORKER_DIRECTORY_DENIED","message":"Không có quyền truy cập phạm vi này."}""")
+                }
+                return MockResponse()
+                    .setResponseCode(200)
+                    .setHeader("Content-Type", "application/json")
+                    .setBody("""{"ok":true,"data":[]}""")
+            }
+        }
+        server.start()
+
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val db = buildTestDb(app)
+        val cookieFile = File(app.cacheDir, "reg4_cookies_${System.nanoTime()}.enc")
+        val prefsFile = File(app.cacheDir, "reg4_prefs_${System.nanoTime()}.preferences_pb")
+        val repo = MiniBiRepository(
+            context = app,
+            database = db,
+            defaultServerUrl = server.url("/").toString().trimEnd('/'),
+            allowDebugUrlOverride = true,
+            cookieStorageFile = cookieFile,
+            preferencesStorageFile = prefsFile,
+            cookieCipher = JvmAes256GcmCookieCipher()
+        )
+        val vm = MiniBiViewModel(app, repo)
+        registerTestResourcesCleanup(vm, db, server, cookieFile, prefsFile)
+
+        val actor = AppActor(
+            appUserId = "44444444-5555-4666-8777-888888888888",
+            displayName = "Quản Lý Dự Án",
+            capabilities = listOf("entry_read"),
+            scopes = listOf(ActorScope("own", "self", "2026-01-01", null)),
+            selfRecruiterSuggestion = null,
+            allowedWorkerTabs = listOf("managed", "recruited")
+        )
+
+        composeTestRule.setContent {
+            MyApplicationTheme {
+                WorkersAndDirectEntryScreen(
+                    actor = actor,
+                    viewModel = vm,
+                    onBackToDashboard = {}
+                )
+            }
+        }
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            workerRequests.isNotEmpty() && !vm.workerLoading.value
+        }
+        composeTestRule.waitForIdle()
+
+        // Must have made ONLY 1 request for scope=managed, and MUST NOT fall back to scope=recruited!
+        assertEquals(1, workerRequests.size)
+        assertTrue(workerRequests.single().contains("scope=managed"))
+        assertFalse(workerRequests.any { it.contains("scope=recruited") })
+        assertEquals("managed", vm.activeWorkerTabKey.value)
+    }
+
+    @Test
+    fun `regression 5 - logout and login with a different account clears cached worker tabs selected scope and cached data of previous account`() {
+        var currentLoginAccount = "pm_account"
+        val requestedPaths = java.util.Collections.synchronizedList(mutableListOf<String>())
+        val server = MockWebServer()
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val path = request.path.orEmpty()
+                requestedPaths.add(path)
+                return when {
+                    path.startsWith("/api/auth/login") -> {
+                        val isPm = currentLoginAccount == "pm_account"
+                        val userId = if (isPm) "aaaa1111-2222-4333-8444-555555555555" else "bbbb2222-3333-4444-8555-666666666666"
+                        val name = if (isPm) "Quản Lý PM" else "Luân Không Quyền"
+                        MockResponse()
+                            .setResponseCode(200)
+                            .setHeader("Content-Type", "application/json")
+                            .addHeader("Set-Cookie", "mini_bi_sid=sid_$currentLoginAccount; Path=/; HttpOnly")
+                            .setBody(
+                                """
+                                {
+                                  "ok": true,
+                                  "actor": {
+                                    "app_user_id": "$userId",
+                                    "display_name": "$name",
+                                    "capabilities": ["entry_read"],
+                                    "scopes": [{"kind": "own", "reference": "self", "valid_from": "2026-01-01", "valid_to": null}],
+                                    "self_recruiter_suggestion": null
+                                  }
+                                }
+                                """.trimIndent()
+                            )
+                    }
+                    path.startsWith("/api/direct-entry/session") -> {
+                        val isPm = currentLoginAccount == "pm_account"
+                        val userId = if (isPm) "aaaa1111-2222-4333-8444-555555555555" else "bbbb2222-3333-4444-8555-666666666666"
+                        val tabsJson = if (isPm) """["managed", "recruited"]""" else """[]"""
+                        MockResponse()
+                            .setResponseCode(200)
+                            .setHeader("Content-Type", "application/json")
+                            .setBody(
+                                """
+                                {
+                                  "ok": true,
+                                  "actor": {
+                                    "app_user_id": "$userId",
+                                    "allowed_worker_tabs": $tabsJson
+                                  }
+                                }
+                                """.trimIndent()
+                            )
+                    }
+                    path.startsWith("/api/direct-entry/workers") -> MockResponse()
+                        .setResponseCode(200)
+                        .setHeader("Content-Type", "application/json")
+                        .setBody(
+                            """
+                            {
+                              "ok": true,
+                              "scope": "managed",
+                              "items": [
+                                {
+                                  "entry_id": "99999999-1111-4222-8333-444444444444",
+                                  "entry_version": 1,
+                                  "submission_state": "SUBMITTED",
+                                  "employee_code": "HRP888",
+                                  "display_name": "Công Nhân Của PM",
+                                  "project_id": "PRJ_PM",
+                                  "project_display": "Dự Án PM",
+                                  "first_work_date": "2026-10-10",
+                                  "labor_type": "SEASONAL",
+                                  "labor_type_display": "Thời vụ",
+                                  "employment_status": "ON",
+                                  "recruiter_id": "aaaa1111-2222-4333-8444-555555555555",
+                                  "recruiter_display": "Quản Lý PM",
+                                  "allowed_actions": {"view": true}
+                                }
+                              ],
+                              "summary": {"total_workers": 1, "project_count": 1, "recruiter_count": 1},
+                              "page_size": 25,
+                              "has_more": false,
+                              "next_cursor": null
+                            }
+                            """.trimIndent()
+                        )
+                    else -> MockResponse()
+                        .setResponseCode(200)
+                        .setHeader("Content-Type", "application/json")
+                        .setBody("""{"ok":true,"data":[]}""")
+                }
+            }
+        }
+        server.start()
+
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val db = buildTestDb(app)
+        val cookieFile = File(app.cacheDir, "reg5_cookies_${System.nanoTime()}.enc")
+        val prefsFile = File(app.cacheDir, "reg5_prefs_${System.nanoTime()}.preferences_pb")
+        val repo = MiniBiRepository(
+            context = app,
+            database = db,
+            defaultServerUrl = server.url("/").toString().trimEnd('/'),
+            allowDebugUrlOverride = true,
+            cookieStorageFile = cookieFile,
+            preferencesStorageFile = prefsFile,
+            cookieCipher = JvmAes256GcmCookieCipher()
+        )
+        val vm = MiniBiViewModel(app, repo)
+        registerTestResourcesCleanup(vm, db, server, cookieFile, prefsFile)
+
+        // 1. Login as PM account (`allowed_worker_tabs = ["managed", "recruited"]`)
+        vm.login("pm@hrpartner.vn", "secret123", rememberAccount = false)
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            !vm.loginBusy.value && vm.currentActor.value?.appUserId == "aaaa1111-2222-4333-8444-555555555555"
+        }
+        assertEquals(listOf("managed", "recruited"), vm.currentActor.value?.safeAllowedWorkerTabs)
+        assertEquals("managed", vm.activeWorkerTabKey.value)
+
+        // 2. Logout -> clears actor, allowed_worker_tabs, activeWorkerTabKey, and cached state
+        vm.logout()
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            vm.currentActor.value == null
+        }
+        assertEquals("", vm.activeWorkerTabKey.value)
+        assertNull(vm.salaryAdvanceContext.value)
+
+        // 3. Login as second account with `allowed_worker_tabs = []`
+        requestedPaths.clear()
+        currentLoginAccount = "luan_account"
+        vm.login("luanpt@hrpartner.vn", "secret456", rememberAccount = false)
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            !vm.loginBusy.value && vm.currentActor.value?.appUserId == "bbbb2222-3333-4444-8555-666666666666"
+        }
+
+        val secondActor = vm.currentActor.value!!
+        assertTrue(secondActor.safeAllowedWorkerTabs.isEmpty())
+        assertTrue(resolveVisibleWorkerTabs(secondActor).isEmpty())
+        assertEquals("", vm.activeWorkerTabKey.value)
+        assertTrue(
+            "Second account with allowed_worker_tabs=[] must never inherit previous account's worker scopes or fire worker requests",
+            requestedPaths.none { it.startsWith("/api/direct-entry/workers") }
+        )
     }
 }

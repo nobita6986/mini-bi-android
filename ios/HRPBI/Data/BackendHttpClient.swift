@@ -178,7 +178,8 @@ public final class BackendHttpClient: @unchecked Sendable {
     public init(
         baseUrl: String? = nil,
         cookieStore: KeychainCookieStore = KeychainCookieStore(),
-        enforceHttps: Bool = AppEnvironmentConfig.current.enforceHttps
+        enforceHttps: Bool = AppEnvironmentConfig.current.enforceHttps,
+        protocolClasses: [AnyClass]? = nil
     ) {
         let defaultUrl = baseUrl ?? AppEnvironmentConfig.current.defaultBaseUrl
         self.cookieStore = cookieStore
@@ -190,12 +191,18 @@ public final class BackendHttpClient: @unchecked Sendable {
         apiConfig.timeoutIntervalForRequest = 30
         apiConfig.timeoutIntervalForResource = 60
         apiConfig.httpShouldSetCookies = false
+        if let protocolClasses {
+            apiConfig.protocolClasses = protocolClasses
+        }
         self.apiSession = URLSession(configuration: apiConfig)
 
         let sseConfig = URLSessionConfiguration.ephemeral
         sseConfig.timeoutIntervalForRequest = 300
         sseConfig.timeoutIntervalForResource = 3600
         sseConfig.httpShouldSetCookies = false
+        if let protocolClasses {
+            sseConfig.protocolClasses = protocolClasses
+        }
         self.sseSession = URLSession(configuration: sseConfig)
 
         let presignedConfig = URLSessionConfiguration.ephemeral

@@ -74,7 +74,7 @@ public final class MiniBiViewModel: ObservableObject {
     @Published public var showDuplicateConfirmDialog: Bool = false
 
     // MARK: - Workers Management State
-    @Published public var selectedWorkerScope: String = "all"
+    @Published public var selectedWorkerScope: String = ""
     @Published public var workerSearchQuery: String = ""
     @Published public var workerProjectFilter: String = ""
     @Published public var workerStatusFilter: String = ""
@@ -85,6 +85,24 @@ public final class MiniBiViewModel: ObservableObject {
     @Published public var isLoadingWorkers: Bool = false
     @Published public var selectedWorkerDetail: WorkerItem?
     @Published public var isUploadingWorkerContract: Bool = false
+
+    public static func resolveVisibleWorkerTabs(for user: MiniBiUser?) -> [(key: String, label: String)] {
+        guard let user else { return [] }
+        return user.safeAllowedWorkerTabs.compactMap { rawKey in
+            switch rawKey {
+            case "managed": return ("managed", "Dự án phụ trách")
+            case "recruited": return ("recruited", "Do tôi tuyển")
+            case "team": return ("team", "Theo nhóm")
+            case "uploader": return ("uploader", "Tôi nhập hộ")
+            case "all": return ("all", "Toàn hệ thống")
+            default: return nil
+            }
+        }
+    }
+
+    public var visibleWorkerTabs: [(key: String, label: String)] {
+        Self.resolveVisibleWorkerTabs(for: currentUser)
+    }
 
     // MARK: - Direct Edit ("Sửa trực tiếp") State
     @Published public var directEditWorkerTarget: WorkerItem?
@@ -339,6 +357,9 @@ public final class MiniBiViewModel: ObservableObject {
             closeSalaryAdvanceSheet()
             return
         }
+        if destination == .workers && isAuthenticated && visibleWorkerTabs.isEmpty {
+            return
+        }
         currentDestination = destination
         if destination == .attendance {
             activeAttendanceTab = .checkIn
@@ -353,8 +374,12 @@ public final class MiniBiViewModel: ObservableObject {
             if salaryAdvanceSheetOpen {
                 closeSalaryAdvanceSheet()
             }
-            if isAuthenticated {
+            if isAuthenticated && currentUser?.canAttemptPmSalaryAdvanceContext == true {
                 Task { await loadSalaryAdvanceContext() }
+            }
+        } else if destination == .newEntry {
+            if isAuthenticated && currentUser?.canLoadDirectEntryCatalog == true && directEntryOptions.catalogProjects.isEmpty {
+                Task { await loadDirectEntryAssigneeOptions() }
             }
         }
     }
@@ -419,8 +444,45 @@ public final class MiniBiViewModel: ObservableObject {
         savedAccounts = repository.getSavedLoginAccounts()
     }
 
-    private func onAuthenticatedSessionEstablished(user: MiniBiUser) {
+    private func resetSessionScopedState(clearDraftRows: Bool) {
+        selectedWorkerScope = ""
+        workerSearchQuery = ""
+        workerProjectFilter = ""
+        workerStatusFilter = ""
+        workers = []
+        workersTotalCount = 0
+        workersPage = 1
+        workersTotalPages = 1
+        isLoadingWorkers = false
+        selectedWorkerDetail = nil
+        directEntryOptions = DirectEntryAssigneeOptions()
+        directEntryHistoryBatches = []
+        directEntryService.clearCatalogCache()
+        closeDirectEdit()
+        salaryAdvanceContext = nil
+        salaryAdvanceSelectedProjectId = nil
+        closeSalaryAdvanceSheet()
+        salaryAdvanceRequests = []
+        salaryAdvancePmBadgeCount = 0
+        generalOverview = GeneralOverviewData()
+        workforceDeepMetrics = WorkforceDeepMetricsData()
+        teamReport = TeamReportData()
+        duplicateCccdReport = DuplicateCccdReportData()
+        cccdReviewItems = []
+        cccdReviewTotal = 0
+        selectedCccdReviewItem = nil
+        if clearDraftRows {
+            newWorkerDraftRows = [NewWorkerEntryDraft()]
+        }
+    }
+
+    public func onAuthenticatedSessionEstablished(user: MiniBiUser) {
+        let previousUserId = currentUser?.id
+        if previousUserId != user.id {
+            resetSessionScopedState(clearDraftRows: previousUserId != nil)
+        }
         currentUser = user
+        selectedWorkerScope = Self.resolveVisibleWorkerTabs(for: user).first?.key ?? ""
         isAuthenticated = true
         currentDestination = .dashboard
 
@@ -454,12 +516,11 @@ public final class MiniBiViewModel: ObservableObject {
             }
         }
 
+        // Never eagerly load `/api/direct-entry/catalog` or `/api/salary-advance/context` at login/resume.
         Task {
             await syncAttendanceTimeAnchor()
             await refreshNotifications()
             await loadDashboardData()
-            await loadDirectEntryAssigneeOptions()
-            await loadSalaryAdvanceContext()
             await loadWorkReportsData()
         }
     }
@@ -468,6 +529,7 @@ public final class MiniBiViewModel: ObservableObject {
         notificationService.stopSseStream()
         attendanceOutboxService.stopNetworkAutoFlush()
         salaryAdvanceSearchTask?.cancel()
+        salaryAdvanceListSearchTask?.cancel()
         await repository.logout()
         timeAnchorManager.clearAnchor()
         attendanceTimeEvaluation = timeAnchorManager.evaluateAnchor()
@@ -475,14 +537,9 @@ public final class MiniBiViewModel: ObservableObject {
         isAuthenticated = false
         currentUser = nil
         currentDestination = .dashboard
-        // Reset Cấp mới draft rows only on logout
-        newWorkerDraftRows = [NewWorkerEntryDraft()]
+        resetSessionScopedState(clearDraftRows: true)
         selectedObligationEditor = nil
         editorFieldValues = [:]
-        selectedWorkerDetail = nil
-        closeDirectEdit()
-        salaryAdvanceContext = nil
-        closeSalaryAdvanceSheet()
         notifications = []
         unreadNotificationCount = 0
         announcedNotificationIds = []
@@ -577,6 +634,7 @@ public final class MiniBiViewModel: ObservableObject {
             currentDestination = .attendance
             activeAttendanceTab = .checkIn
         } else if typeUpper.contains("WORKER") || routeLower.contains("worker") {
+            guard !visibleWorkerTabs.isEmpty else { return }
             currentDestination = .workers
             await loadWorkers(resetPage: true)
             if let maNld = item.targetEntityId, !maNld.isEmpty {
@@ -642,6 +700,7 @@ public final class MiniBiViewModel: ObservableObject {
         let targetScope = dashboardScope
         let targetStart = filterStartDate
         let targetEnd = filterEndDate
+        let allowedScopes = currentUser?.safeAllowedWorkerTabs ?? []
 
         isLoadingDashboard = true
         dashboardErrorMessage = ""
@@ -649,15 +708,18 @@ public final class MiniBiViewModel: ObservableObject {
 
         async let overviewTask = workReportsService.fetchGeneralOverview(
             scope: targetScope,
+            allowedWorkerScopes: allowedScopes,
             startDate: targetStart,
             endDate: targetEnd
         )
         async let deepTask = workReportsService.fetchWorkforceDeepMetrics(
             scope: targetScope,
+            allowedWorkerScopes: allowedScopes,
             startDate: targetStart,
             endDate: targetEnd
         )
         async let teamTask = workReportsService.fetchTeamReport(
+            allowedWorkerScopes: allowedScopes,
             startDate: targetStart,
             endDate: targetEnd
         )
@@ -871,6 +933,11 @@ public final class MiniBiViewModel: ObservableObject {
     }
 
     public func loadDirectEntryAssigneeOptions() async {
+        if let user = currentUser, !user.canLoadDirectEntryCatalog {
+            directEntryOptions = DirectEntryAssigneeOptions()
+            directEntryService.clearCatalogCache()
+            return
+        }
         let res = await directEntryService.fetchAssigneeOptions()
         if case .success(let opts, _) = res {
             directEntryOptions = opts
@@ -994,12 +1061,38 @@ public final class MiniBiViewModel: ObservableObject {
     // MARK: - Workers Management Actions
 
     public func loadWorkers(resetPage: Bool = false) async {
+        let allowedKeys = visibleWorkerTabs.map(\.key)
+        guard !allowedKeys.isEmpty else {
+            selectedWorkerScope = ""
+            workers = []
+            workersTotalCount = 0
+            workersPage = 1
+            workersTotalPages = 1
+            isLoadingWorkers = false
+            return
+        }
+        let trimmedRequested = selectedWorkerScope.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let resolvedScope: String
+        if trimmedRequested.isEmpty {
+            resolvedScope = allowedKeys[0]
+            selectedWorkerScope = resolvedScope
+        } else if allowedKeys.contains(trimmedRequested) {
+            resolvedScope = trimmedRequested
+            selectedWorkerScope = resolvedScope
+        } else {
+            workers = []
+            workersTotalCount = 0
+            workersTotalPages = 1
+            isLoadingWorkers = false
+            return
+        }
+
         if resetPage {
             workersPage = 1
         }
         isLoadingWorkers = true
         let res = await repository.fetchWorkers(
-            scope: selectedWorkerScope,
+            scope: resolvedScope,
             search: workerSearchQuery,
             project: workerProjectFilter,
             status: workerStatusFilter,
@@ -1012,6 +1105,9 @@ public final class MiniBiViewModel: ObservableObject {
             workersTotalCount = data.total
             workersTotalPages = data.totalPages
         case .failure(let message, _, _, _):
+            workers = []
+            workersTotalCount = 0
+            workersTotalPages = 1
             showBanner(message, isError: true)
         }
     }
@@ -1284,6 +1380,11 @@ public final class MiniBiViewModel: ObservableObject {
     }
 
     public func loadSalaryAdvanceContext() async {
+        if let user = currentUser, !user.canAttemptPmSalaryAdvanceContext {
+            salaryAdvanceContext = nil
+            salaryAdvanceSelectedProjectId = nil
+            return
+        }
         let res = await salaryAdvanceService.fetchContext()
         switch res {
         case .success(let ctx, _):
@@ -1308,7 +1409,8 @@ public final class MiniBiViewModel: ObservableObject {
             }
             salaryAdvanceSelectedProjectId = resolvedProjectId
         case .failure:
-            break
+            salaryAdvanceContext = nil
+            salaryAdvanceSelectedProjectId = nil
         }
     }
 

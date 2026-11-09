@@ -150,6 +150,14 @@ public struct SavedLoginAccount: Codable, Equatable, Identifiable, Sendable {
 }
 
 public struct MiniBiUser: Codable, Equatable, Identifiable, Sendable {
+    public static let canonicalWorkerTabs: [String] = [
+        "managed",
+        "recruited",
+        "team",
+        "uploader",
+        "all"
+    ]
+
     public let id: String
     public let username: String
     public let fullName: String
@@ -159,7 +167,49 @@ public struct MiniBiUser: Codable, Equatable, Identifiable, Sendable {
     public let phone: String
     public let teamName: String
     public let permissions: [String]
-    public let allowedWorkerScopes: [String]
+    public var allowedWorkerTabs: [String]
+
+    public var allowedWorkerScopes: [String] {
+        get { allowedWorkerTabs }
+        set { allowedWorkerTabs = Self.sanitizeAllowedWorkerTabs(newValue) }
+    }
+
+    public var safeAllowedWorkerTabs: [String] {
+        Self.sanitizeAllowedWorkerTabs(allowedWorkerTabs)
+    }
+
+    public var canLoadDirectEntryCatalog: Bool {
+        if !safeAllowedWorkerTabs.isEmpty {
+            return true
+        }
+        let lowerCaps = Set(permissions.map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() })
+        return lowerCaps.contains("entry_create")
+            || lowerCaps.contains("entry_submit")
+            || lowerCaps.contains("entry_direct_edit")
+            || lowerCaps.contains("change_request_propose")
+    }
+
+    /// Server PM salary-advance predicate requires an active project manager assignment
+    /// (`managed_projects` with `is_active_assignment=true`), which is necessary for `"managed"`
+    /// to be present in `allowed_worker_tabs`. Note: `"managed"` is a necessary condition
+    /// (since full_admin/BoD also have `"managed"`), not a sufficient condition for PM salary
+    /// advance — `GET /api/salary-advance/context` remains the authoritative server check when
+    /// entering the Workers screen for actors with `"managed"`.
+    public var canAttemptPmSalaryAdvanceContext: Bool {
+        safeAllowedWorkerTabs.contains("managed")
+    }
+
+    public static func sanitizeAllowedWorkerTabs(_ rawTabs: [String]) -> [String] {
+        var seen = Set<String>()
+        var result: [String] = []
+        for item in rawTabs {
+            let clean = item.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard canonicalWorkerTabs.contains(clean), !seen.contains(clean) else { continue }
+            seen.insert(clean)
+            result.append(clean)
+        }
+        return result
+    }
 
     public init(
         id: String,
@@ -171,7 +221,8 @@ public struct MiniBiUser: Codable, Equatable, Identifiable, Sendable {
         phone: String = "",
         teamName: String = "",
         permissions: [String] = [],
-        allowedWorkerScopes: [String] = ["all", "managed", "recruited", "team", "uploader"]
+        allowedWorkerTabs: [String]? = nil,
+        allowedWorkerScopes: [String] = []
     ) {
         self.id = id
         self.username = username
@@ -182,7 +233,7 @@ public struct MiniBiUser: Codable, Equatable, Identifiable, Sendable {
         self.phone = phone
         self.teamName = teamName
         self.permissions = permissions
-        self.allowedWorkerScopes = allowedWorkerScopes
+        self.allowedWorkerTabs = Self.sanitizeAllowedWorkerTabs(allowedWorkerTabs ?? allowedWorkerScopes)
     }
 }
 

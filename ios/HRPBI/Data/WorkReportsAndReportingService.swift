@@ -1475,22 +1475,27 @@ public final class WorkReportsAndReportingService {
 
     private func fetchMergedWorkersForScopedFallback(
         preferredScope: String,
+        allowedWorkerScopes: [String] = [],
         startDate: String? = nil,
         endDate: String? = nil
     ) async -> (items: [WorkerItem], total: Int, statusCode: Int)? {
+        let allowedSet = Set(MiniBiUser.sanitizeAllowedWorkerTabs(allowedWorkerScopes))
+        guard !allowedSet.isEmpty else { return nil }
+
         let norm = preferredScope.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let scopesToTry: [String] = {
             switch norm {
-            case "", "all":
-                return ["all", "team", "managed", "recruited"]
-            case "team":
-                return ["team", "managed", "recruited"]
             case "own", "personal":
-                return ["managed", "recruited"]
+                return ["managed", "recruited"].filter { allowedSet.contains($0) }
+            case "team":
+                return allowedSet.contains("team") ? ["team"] : []
+            case "managed", "recruited", "all":
+                return allowedSet.contains(norm) ? [norm] : []
             default:
-                return [norm, "team", "managed", "recruited"]
+                return []
             }
         }()
+        guard !scopesToTry.isEmpty else { return nil }
 
         let cleanStart = (startDate ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         let cleanEnd = (endDate ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1501,17 +1506,15 @@ public final class WorkReportsAndReportingService {
         var reportedTotal = 0
         var anySuccessStatus: Int?
 
+        let repo = MiniBiRepository(httpClient: httpClient, keychain: KeychainStore.shared)
         for sc in scopesToTry {
-            let res = await MiniBiRepository.shared.fetchWorkers(scope: sc, pageSize: 100)
+            let res = await repo.fetchWorkers(scope: sc, pageSize: 100)
             if case .success(let wData, let status) = res {
                 anySuccessStatus = status
                 reportedTotal = max(reportedTotal, wData.total)
                 for item in wData.items where !seenIds.contains(item.maNld) {
                     seenIds.insert(item.maNld)
                     merged.append(item)
-                }
-                if sc == "all" || (sc == "team" && norm == "team" && !wData.items.isEmpty) {
-                    break
                 }
             }
         }
@@ -1534,6 +1537,7 @@ public final class WorkReportsAndReportingService {
 
     public func fetchGeneralOverview(
         scope: String = "all",
+        allowedWorkerScopes: [String] = [],
         startDate: String? = nil,
         endDate: String? = nil,
         projectFilter: String = "ACTIVE",
@@ -1834,6 +1838,7 @@ public final class WorkReportsAndReportingService {
         // Scoped or non-Admin fallback: aggregate from `/api/direct-entry/workers`
         if let fallbackData = await fetchMergedWorkersForScopedFallback(
             preferredScope: scope,
+            allowedWorkerScopes: allowedWorkerScopes,
             startDate: startDate,
             endDate: endDate
         ) {
@@ -1921,6 +1926,7 @@ public final class WorkReportsAndReportingService {
 
     public func fetchWorkforceDeepMetrics(
         scope: String = "all",
+        allowedWorkerScopes: [String] = [],
         startDate: String? = nil,
         endDate: String? = nil
     ) async -> MiniBiApiResult<WorkforceDeepMetricsData> {
@@ -2197,6 +2203,7 @@ public final class WorkReportsAndReportingService {
 
         if let fallbackData = await fetchMergedWorkersForScopedFallback(
             preferredScope: scope,
+            allowedWorkerScopes: allowedWorkerScopes,
             startDate: startDate,
             endDate: endDate
         ) {
@@ -2235,6 +2242,7 @@ public final class WorkReportsAndReportingService {
     }
 
     public func fetchTeamReport(
+        allowedWorkerScopes: [String] = [],
         startDate: String? = nil,
         endDate: String? = nil,
         teamCode: String? = nil
@@ -2295,6 +2303,7 @@ public final class WorkReportsAndReportingService {
         // Fallback for Team Leader / Scoped accounts: build team summary from `team` scope workers
         if let fallbackData = await fetchMergedWorkersForScopedFallback(
             preferredScope: "team",
+            allowedWorkerScopes: allowedWorkerScopes,
             startDate: startDate,
             endDate: endDate
         ), !fallbackData.items.isEmpty {

@@ -860,7 +860,21 @@ final class HRPBTests: XCTestCase {
         XCTAssertEqual(parsedUser.fullName, "Phạm Thị Sâm")
         XCTAssertEqual(parsedUser.role, "TEAM_LEADER")
         XCTAssertEqual(parsedUser.roleLabel, "Quản lý nhóm")
-        XCTAssertEqual(parsedUser.allowedWorkerScopes, ["team", "managed", "recruited"])
+        // Missing allowed_worker_tabs in /api/auth/session fails closed to []
+        XCTAssertEqual(parsedUser.allowedWorkerScopes, [])
+
+        // Merging canonical /api/direct-entry/session with matching app_user_id populates allowedWorkerTabs
+        let mergedTabs = MiniBiRepository.parseDirectEntrySessionAllowedWorkerTabs(
+            from: [
+                "ok": true,
+                "actor": [
+                    "app_user_id": "11111111-2222-4333-8444-555555555555",
+                    "allowed_worker_tabs": ["team", "managed", "recruited"]
+                ]
+            ],
+            expectedAppUserId: parsedUser.id
+        )
+        XCTAssertEqual(mergedTabs, ["team", "managed", "recruited"])
 
         let workerRowJson: [String: Any] = [
             "entry_id": "aaaa1111-2222-4333-8444-555555555555",
@@ -1826,6 +1840,317 @@ final class HRPBTests: XCTestCase {
         let vm = MiniBiViewModel(attendanceOutboxService: service)
         vm.attendanceOutboxItems = loaded
         XCTAssertEqual(vm.attendancePendingCount, 2)
+    }
+
+    // MARK: - 10. Fail-Closed Worker Tabs & Authorization Regression Tests
+
+    private final class MockURLProtocol: URLProtocol {
+        nonisolated(unsafe) static var requestHandler: ((URLRequest) throws -> (HTTPURLResponse, Data))?
+        private static let lock = NSLock()
+        nonisolated(unsafe) private static var recordedUrlsStorage: [String] = []
+
+        static func resetRecordedUrls() {
+            lock.lock()
+            recordedUrlsStorage.removeAll()
+            lock.unlock()
+        }
+
+        static func recordedUrls() -> [String] {
+            lock.lock()
+            defer { lock.unlock() }
+            return recordedUrlsStorage
+        }
+
+        override class func canInit(with request: URLRequest) -> Bool {
+            true
+        }
+
+        override class func canonicalRequest(for request: URLRequest) -> URLRequest {
+            request
+        }
+
+        override func startLoading() {
+            let fullUrl = request.url?.absoluteString ?? ""
+            Self.lock.lock()
+            Self.recordedUrlsStorage.append(fullUrl)
+            Self.lock.unlock()
+
+            guard let handler = Self.requestHandler else {
+                client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
+                return
+            }
+            do {
+                let (response, data) = try handler(request)
+                client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+                client?.urlProtocol(self, didLoad: data)
+                client?.urlProtocolDidFinishLoading(self)
+            } catch {
+                client?.urlProtocol(self, didFailWithError: error)
+            }
+        }
+
+        override func stopLoading() {}
+    }
+
+    private func makeMockHttpClient() -> BackendHttpClient {
+        let keychain = KeychainStore(serviceName: "com.aistudio.minibi.authz.\(UUID().uuidString)")
+        let cookieStore = KeychainCookieStore(keychain: keychain)
+        return BackendHttpClient(
+            baseUrl: "https://bi.hrpartner.vn",
+            cookieStore: cookieStore,
+            enforceHttps: true,
+            protocolClasses: [MockURLProtocol.self]
+        )
+    }
+
+    @MainActor
+    func testRegression1_AllowedWorkerTabsEmptyFiresZeroWorkerCatalogOrSalaryRequests() async throws {
+        MockURLProtocol.resetRecordedUrls()
+        MockURLProtocol.requestHandler = { req in
+            let url = req.url!
+            let path = url.path
+            let body: String
+            if path == "/api/auth/session" {
+                body = """
+                {"ok":true,"actor":{"app_user_id":"22222222-3333-4444-8555-666666666666","display_name":"Phạm Thành Luân","capabilities":["entry_read"],"scopes":[{"kind":"own","reference":"self"}]}}
+                """
+            } else if path == "/api/direct-entry/session" {
+                body = """
+                {"ok":true,"actor":{"app_user_id":"22222222-3333-4444-8555-666666666666","allowed_worker_tabs":[]}}
+                """
+            } else {
+                body = """
+                {"ok":true,"data":[]}
+                """
+            }
+            let resp = HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/json"])!
+            return (resp, Data(body.utf8))
+        }
+
+        let client = makeMockHttpClient()
+        let repo = MiniBiRepository(httpClient: client, keychain: KeychainStore(serviceName: "com.aistudio.minibi.repo1.\(UUID().uuidString)"))
+        let directEntry = DirectEntryService(httpClient: client)
+        let reporting = WorkReportsAndReportingService(httpClient: client)
+        let salaryAdvance = SalaryAdvanceService(httpClient: client)
+
+        let meRes = await repo.fetchCurrentUser()
+        guard case .success(let user, _) = meRes else {
+            XCTFail("Expected fetchCurrentUser to succeed")
+            return
+        }
+        XCTAssertEqual(user.safeAllowedWorkerTabs, [])
+
+        let vm = MiniBiViewModel(
+            repository: repo,
+            directEntryService: directEntry,
+            workReportsService: reporting,
+            salaryAdvanceService: salaryAdvance
+        )
+        vm.onAuthenticatedSessionEstablished(user: user)
+        XCTAssertTrue(vm.visibleWorkerTabs.isEmpty)
+        XCTAssertEqual(vm.selectedWorkerScope, "")
+
+        // Navigating to .workers or calling loadWorkers / loadSalaryAdvanceContext must be blocked and fire zero requests
+        vm.navigateTo(.workers)
+        XCTAssertEqual(vm.currentDestination, .dashboard)
+        await vm.loadWorkers(resetPage: true)
+        await vm.loadSalaryAdvanceContext()
+
+        let urls = MockURLProtocol.recordedUrls()
+        XCTAssertTrue(urls.contains(where: { $0.contains("/api/direct-entry/session") }))
+        XCTAssertFalse(urls.contains(where: { $0.contains("/api/direct-entry/workers") }))
+        XCTAssertFalse(urls.contains(where: { $0.contains("/api/direct-entry/catalog") }))
+        XCTAssertFalse(urls.contains(where: { $0.contains("/api/salary-advance/context") }))
+    }
+
+    @MainActor
+    func testRegression2_AllowedWorkerTabsOnlyRecruitedCallsOnlyRecruited() async throws {
+        MockURLProtocol.resetRecordedUrls()
+        MockURLProtocol.requestHandler = { req in
+            let url = req.url!
+            let body = """
+            {"ok":true,"scope":"recruited","items":[],"summary":{"total_workers":4}}
+            """
+            let resp = HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/json"])!
+            return (resp, Data(body.utf8))
+        }
+
+        let client = makeMockHttpClient()
+        let repo = MiniBiRepository(httpClient: client, keychain: KeychainStore(serviceName: "com.aistudio.minibi.repo2.\(UUID().uuidString)"))
+        let directEntry = DirectEntryService(httpClient: client)
+        let reporting = WorkReportsAndReportingService(httpClient: client)
+        let salaryAdvance = SalaryAdvanceService(httpClient: client)
+
+        let vm = MiniBiViewModel(
+            repository: repo,
+            directEntryService: directEntry,
+            workReportsService: reporting,
+            salaryAdvanceService: salaryAdvance
+        )
+        let recruitedUser = MiniBiUser(
+            id: "33333333-4444-4555-8666-777777777777",
+            username: "recruiter01",
+            fullName: "Tuyển Dụng Recruited",
+            permissions: ["entry_read"],
+            allowedWorkerTabs: ["recruited"]
+        )
+        vm.currentUser = recruitedUser
+        vm.isAuthenticated = true
+        vm.selectedWorkerScope = vm.visibleWorkerTabs.first?.key ?? ""
+
+        XCTAssertEqual(vm.visibleWorkerTabs.map(\.key), ["recruited"])
+        XCTAssertEqual(vm.selectedWorkerScope, "recruited")
+
+        MockURLProtocol.resetRecordedUrls()
+        await vm.loadWorkers(resetPage: true)
+        await vm.loadSalaryAdvanceContext()
+
+        let urls = MockURLProtocol.recordedUrls()
+        let workerUrls = urls.filter { $0.contains("/api/direct-entry/workers") }
+        XCTAssertEqual(workerUrls.count, 1)
+        XCTAssertTrue(workerUrls[0].contains("scope=recruited"))
+        XCTAssertFalse(urls.contains(where: { $0.contains("/api/direct-entry/catalog") }))
+        XCTAssertFalse(urls.contains(where: { $0.contains("/api/salary-advance/context") }))
+    }
+
+    func testRegression3_MissingOrMalformedAllowedWorkerTabsFailsClosedToEmpty() throws {
+        let userId = "11111111-2222-4333-8444-555555555555"
+
+        // Missing or NSNull -> []
+        XCTAssertEqual(MiniBiRepository.parseAllowedWorkerTabs(nil), [])
+        XCTAssertEqual(MiniBiRepository.parseAllowedWorkerTabs(NSNull()), [])
+
+        // Wrong type (String, Dict, Number) -> []
+        XCTAssertEqual(MiniBiRepository.parseAllowedWorkerTabs("managed"), [])
+        XCTAssertEqual(MiniBiRepository.parseAllowedWorkerTabs(["managed": true]), [])
+        XCTAssertEqual(MiniBiRepository.parseAllowedWorkerTabs(123), [])
+
+        // Non-string element, unknown scope, or duplicate element -> []
+        XCTAssertEqual(MiniBiRepository.parseAllowedWorkerTabs(["managed", 123]), [])
+        XCTAssertEqual(MiniBiRepository.parseAllowedWorkerTabs(["managed", "unknown_scope"]), [])
+        XCTAssertEqual(MiniBiRepository.parseAllowedWorkerTabs(["recruited", "recruited"]), [])
+
+        // Valid canonical list -> preserved in order
+        XCTAssertEqual(
+            MiniBiRepository.parseAllowedWorkerTabs(["managed", "recruited", "team"]),
+            ["managed", "recruited", "team"]
+        )
+
+        // Mismatched app_user_id in /api/direct-entry/session -> []
+        XCTAssertEqual(
+            MiniBiRepository.parseDirectEntrySessionAllowedWorkerTabs(
+                from: [
+                    "ok": true,
+                    "actor": [
+                        "app_user_id": "99999999-2222-4333-8444-555555555555",
+                        "allowed_worker_tabs": ["managed", "recruited"]
+                    ]
+                ],
+                expectedAppUserId: userId
+            ),
+            []
+        )
+
+        // Legacy `allowed_worker_scopes` field on user object is ignored -> fails closed to []
+        let legacyActor = MiniBiRepository.parseUser([
+            "app_user_id": userId,
+            "display_name": "Legacy Actor",
+            "allowed_worker_scopes": ["all", "team", "managed", "recruited"],
+            "scopes": [["kind": "all"]]
+        ])
+        XCTAssertEqual(legacyActor.safeAllowedWorkerTabs, [])
+    }
+
+    @MainActor
+    func testRegression4_Http403DoesNotTriggerFallbackRequestToNextScope() async throws {
+        MockURLProtocol.resetRecordedUrls()
+        MockURLProtocol.requestHandler = { req in
+            let url = req.url!
+            let body = """
+            {"ok":false,"code":"WORKER_DIRECTORY_DENIED","message":"Không có quyền truy cập phạm vi này."}
+            """
+            let resp = HTTPURLResponse(url: url, statusCode: 403, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/json"])!
+            return (resp, Data(body.utf8))
+        }
+
+        let client = makeMockHttpClient()
+        let repo = MiniBiRepository(httpClient: client, keychain: KeychainStore(serviceName: "com.aistudio.minibi.repo4.\(UUID().uuidString)"))
+
+        // Even when requesting scope="all" or "managed" that returns 403, repo.fetchWorkers must NOT probe team/managed/recruited!
+        let res = await repo.fetchWorkers(scope: "all")
+        if case .success = res {
+            XCTFail("Expected 403 failure")
+        }
+        let workerUrls = MockURLProtocol.recordedUrls().filter { $0.contains("/api/direct-entry/workers") }
+        XCTAssertEqual(workerUrls.count, 1)
+        XCTAssertTrue(workerUrls[0].contains("scope=all"))
+        XCTAssertFalse(workerUrls.contains(where: { $0.contains("scope=team") }))
+        XCTAssertFalse(workerUrls.contains(where: { $0.contains("scope=managed") }))
+        XCTAssertFalse(workerUrls.contains(where: { $0.contains("scope=recruited") }))
+    }
+
+    @MainActor
+    func testRegression5_LogoutAndLoginDifferentAccountDoesNotReuseCachedPermissions() async throws {
+        MockURLProtocol.resetRecordedUrls()
+        MockURLProtocol.requestHandler = { req in
+            let url = req.url!
+            let body = """
+            {"ok":true,"data":[]}
+            """
+            let resp = HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/json"])!
+            return (resp, Data(body.utf8))
+        }
+
+        let client = makeMockHttpClient()
+        let repo = MiniBiRepository(httpClient: client, keychain: KeychainStore(serviceName: "com.aistudio.minibi.repo5.\(UUID().uuidString)"))
+        let directEntry = DirectEntryService(httpClient: client)
+        let reporting = WorkReportsAndReportingService(httpClient: client)
+        let salaryAdvance = SalaryAdvanceService(httpClient: client)
+
+        let vm = MiniBiViewModel(
+            repository: repo,
+            directEntryService: directEntry,
+            workReportsService: reporting,
+            salaryAdvanceService: salaryAdvance
+        )
+
+        // 1. Establish session for Account A (`["managed", "recruited"]`)
+        let userA = MiniBiUser(
+            id: "aaaa1111-2222-4333-8444-555555555555",
+            username: "pm.user",
+            fullName: "Quản Lý PM",
+            permissions: ["entry_read"],
+            allowedWorkerTabs: ["managed", "recruited"]
+        )
+        vm.onAuthenticatedSessionEstablished(user: userA)
+        vm.workers = [WorkerItem(maNld: "w-1", hoTen: "Công Nhân Cũ")]
+        XCTAssertEqual(vm.visibleWorkerTabs.map(\.key), ["managed", "recruited"])
+        XCTAssertEqual(vm.selectedWorkerScope, "managed")
+
+        // 2. Logout -> clears user, visibleWorkerTabs, selectedWorkerScope, and cached workers
+        await vm.performLogout()
+        XCTAssertNil(vm.currentUser)
+        XCTAssertTrue(vm.visibleWorkerTabs.isEmpty)
+        XCTAssertEqual(vm.selectedWorkerScope, "")
+        XCTAssertTrue(vm.workers.isEmpty)
+
+        // 3. Establish session for Account B (`allowed_worker_tabs = []`)
+        MockURLProtocol.resetRecordedUrls()
+        let userB = MiniBiUser(
+            id: "bbbb2222-3333-4444-8555-666666666666",
+            username: "luanpt",
+            fullName: "Phạm Thành Luân",
+            permissions: ["entry_read"],
+            allowedWorkerTabs: []
+        )
+        vm.onAuthenticatedSessionEstablished(user: userB)
+        XCTAssertTrue(vm.visibleWorkerTabs.isEmpty)
+        XCTAssertEqual(vm.selectedWorkerScope, "")
+        XCTAssertTrue(vm.workers.isEmpty)
+
+        await vm.loadWorkers(resetPage: true)
+        let urls = MockURLProtocol.recordedUrls()
+        XCTAssertFalse(urls.contains(where: { $0.contains("/api/direct-entry/workers") }))
     }
 
     // MARK: - Helper

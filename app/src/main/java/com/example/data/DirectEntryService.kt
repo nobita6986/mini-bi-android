@@ -2905,6 +2905,14 @@ class DirectEntryService(
     val idempotencyStore: IntentIdempotencyStore = IntentIdempotencyStore()
 ) {
 
+    suspend fun fetchDirectEntrySession(): JSONObject = withContext(Dispatchers.IO) {
+        httpClient.getJson(
+            pathWithQuery = "/api/direct-entry/session",
+            requireOkTrue = true,
+            clearSessionOn401 = false
+        )
+    }
+
     suspend fun fetchCatalog(
         effectiveDateIso: String = DirectEntryContract.todayIsoInHcm()
     ): DirectEntryCatalog = withContext(Dispatchers.IO) {
