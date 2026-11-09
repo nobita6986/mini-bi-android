@@ -6462,4 +6462,220 @@ class WorkerUiAuthorizationRobolectricTest {
         tempFile.delete()
         tempFile2.delete()
     }
+
+    @Test
+    @Config(qualifiers = "w480dp-h2400dp")
+    fun `regression 14 - rapid worker switches in same session keep latest worker B for openEntryDetail openProposeChange and openDirectEdit and close invalidates pending`() {
+        val entryIdA = "aaaa1414-1111-4333-8444-555555555555"
+        val entryIdB = "bbbb1414-2222-4333-8444-555555555555"
+        val entryIdC = "cccc1414-3333-4333-8444-555555555555"
+
+        val releaseWorkerALatch = java.util.concurrent.atomic.AtomicReference(java.util.concurrent.CountDownLatch(1))
+        val releaseWorkerCLatch = java.util.concurrent.atomic.AtomicReference(java.util.concurrent.CountDownLatch(1))
+        val entryAStarted = java.util.concurrent.atomic.AtomicReference(java.util.concurrent.CountDownLatch(1))
+        val entryCStarted = java.util.concurrent.atomic.AtomicReference(java.util.concurrent.CountDownLatch(1))
+
+        fun entryJson(entryId: String, version: Int, code: String, name: String): String =
+            """
+            {
+              "ok": true,
+              "entry": {
+                "entry_id": "$entryId",
+                "submission_id": "bbbbbbbb-1414-4222-8333-444444444444",
+                "version": $version,
+                "project_id": "p1",
+                "first_work_date": "2026-10-01",
+                "employee_code": "$code",
+                "recruiter_id": "cccccccc-1111-4222-8333-444444444444",
+                "provider_type": "hrp",
+                "labor_type": "TEMPORARY",
+                "worker_details": {"display_name": "$name"},
+                "payment": {"state": "empty"},
+                "employment_status": {"status": "ON", "effective_date": "2026-10-01", "version": 1},
+                "documents": []
+              }
+            }
+            """.trimIndent()
+
+        val server = MockWebServer()
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val path = request.path.orEmpty()
+                return when {
+                    path.startsWith("/api/auth/session") -> MockResponse()
+                        .setResponseCode(401)
+                        .setHeader("Content-Type", "application/json")
+                        .setBody("""{"ok":false,"code":"UNAUTHENTICATED","message":"Unauthenticated"}""")
+                    path.startsWith("/api/auth/login") -> MockResponse()
+                        .setResponseCode(200)
+                        .setHeader("Content-Type", "application/json")
+                        .addHeader("Set-Cookie", "mini_bi_sid=sid_reg14; Path=/; HttpOnly")
+                        .setBody(
+                            """
+                            {
+                              "ok": true,
+                              "actor": {
+                                "app_user_id": "aaaa0014-2222-4333-8444-555555555555",
+                                "display_name": "Account 14",
+                                "capabilities": ["entry_read", "entry_direct_edit", "entry_propose_change", "document_upload"],
+                                "scopes": [{"kind": "own", "reference": "self", "valid_from": "2026-01-01", "valid_to": null}],
+                                "self_recruiter_suggestion": null
+                              }
+                            }
+                            """.trimIndent()
+                        )
+                    path.startsWith("/api/direct-entry/session") -> MockResponse()
+                        .setResponseCode(200)
+                        .setHeader("Content-Type", "application/json")
+                        .setBody(
+                            """
+                            {
+                              "ok": true,
+                              "actor": {
+                                "app_user_id": "aaaa0014-2222-4333-8444-555555555555",
+                                "allowed_worker_tabs": ["managed"]
+                              }
+                            }
+                            """.trimIndent()
+                        )
+                    path.startsWith("/api/direct-entry/catalog") -> MockResponse()
+                        .setResponseCode(200)
+                        .setHeader("Content-Type", "application/json")
+                        .setBody(
+                            """
+                            {
+                              "ok": true,
+                              "data": {
+                                "effective_date": "2026-11-09",
+                                "projects": [{"project_id": "p1", "code": "P1", "display_name": "Dự án 1"}],
+                                "recruiters": [],
+                                "banks": [],
+                                "labor_types": []
+                              }
+                            }
+                            """.trimIndent()
+                        )
+                    path.contains("/api/direct-entry/entries/$entryIdA") -> {
+                        entryAStarted.get().countDown()
+                        releaseWorkerALatch.get().await(5, java.util.concurrent.TimeUnit.SECONDS)
+                        MockResponse()
+                            .setResponseCode(200)
+                            .setHeader("Content-Type", "application/json")
+                            .setBody(entryJson(entryIdA, 1, "hrp-1026-000114", "Hồ Sơ Chậm A"))
+                    }
+                    path.contains("/api/direct-entry/entries/$entryIdB") -> MockResponse()
+                        .setResponseCode(200)
+                        .setHeader("Content-Type", "application/json")
+                        .setBody(entryJson(entryIdB, 2, "hrp-1026-000214", "Hồ Sơ Nhanh B"))
+                    path.contains("/api/direct-entry/entries/$entryIdC") -> {
+                        entryCStarted.get().countDown()
+                        releaseWorkerCLatch.get().await(5, java.util.concurrent.TimeUnit.SECONDS)
+                        MockResponse()
+                            .setResponseCode(200)
+                            .setHeader("Content-Type", "application/json")
+                            .setBody(entryJson(entryIdC, 3, "hrp-1026-000314", "Hồ Sơ Đã Đóng C"))
+                    }
+                    else -> MockResponse()
+                        .setResponseCode(200)
+                        .setHeader("Content-Type", "application/json")
+                        .setBody("""{"ok":true,"items":[],"has_more":false,"next_cursor":null}""")
+                }
+            }
+        }
+        server.start()
+
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val db = buildTestDb(app)
+        val cookieFile = File(app.cacheDir, "reg14_cookie_${System.nanoTime()}.enc")
+        val prefsFile = File(app.cacheDir, "reg14_prefs_${System.nanoTime()}.preferences_pb")
+        val repo = MiniBiRepository(
+            context = app,
+            database = db,
+            defaultServerUrl = server.url("/").toString().trimEnd('/'),
+            allowDebugUrlOverride = true,
+            cookieStorageFile = cookieFile,
+            preferencesStorageFile = prefsFile,
+            cookieCipher = JvmAes256GcmCookieCipher()
+        )
+        val vm = MiniBiViewModel(app, repo)
+        registerTestResourcesCleanup(vm, db, server, cookieFile, prefsFile)
+
+        vm.login("user14@hrpartner.vn", "pass14", rememberAccount = false)
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            !vm.loginBusy.value && vm.currentActor.value?.appUserId == "aaaa0014-2222-4333-8444-555555555555"
+        }
+
+        val workerA = sampleWorker(entryId = entryIdA, canView = true, canProposeChange = true, canDirectEdit = true)
+        val workerB = sampleWorker(entryId = entryIdB, canView = true, canProposeChange = true, canDirectEdit = true)
+        val workerC = sampleWorker(entryId = entryIdC, canView = true, canProposeChange = true, canDirectEdit = true)
+
+        // 1. openEntryDetail: A slow, B fast -> final state must remain B after A finishes
+        entryAStarted.set(java.util.concurrent.CountDownLatch(1))
+        releaseWorkerALatch.set(java.util.concurrent.CountDownLatch(1))
+        vm.openEntryDetail(entryIdA)
+        assertTrue("Expected openEntryDetail(A) request to start", entryAStarted.get().await(5, java.util.concurrent.TimeUnit.SECONDS))
+        vm.openEntryDetail(entryIdB)
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            vm.selectedEntryDetail.value?.entryId == entryIdB
+        }
+        releaseWorkerALatch.get().countDown()
+        Thread.sleep(200)
+        org.robolectric.shadows.ShadowLooper.idleMainLooper()
+        assertEquals("openEntryDetail must keep B and ignore late A", entryIdB, vm.selectedEntryDetail.value?.entryId)
+        assertEquals("Hồ Sơ Nhanh B", vm.selectedEntryDetail.value?.displayName)
+
+        // 2. openProposeChange: A slow, B fast -> final state must remain B after A finishes
+        entryAStarted.set(java.util.concurrent.CountDownLatch(1))
+        releaseWorkerALatch.set(java.util.concurrent.CountDownLatch(1))
+        vm.openProposeChange(workerA)
+        assertTrue("Expected openProposeChange(A) request to start", entryAStarted.get().await(5, java.util.concurrent.TimeUnit.SECONDS))
+        vm.openProposeChange(workerB)
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            vm.proposeChangeTarget.value?.first?.entryId == entryIdB &&
+                vm.proposeChangeTarget.value?.second?.entryId == entryIdB
+        }
+        releaseWorkerALatch.get().countDown()
+        Thread.sleep(200)
+        org.robolectric.shadows.ShadowLooper.idleMainLooper()
+        assertEquals("openProposeChange must keep B and ignore late A", entryIdB, vm.proposeChangeTarget.value?.first?.entryId)
+        assertEquals(entryIdB, vm.proposeChangeTarget.value?.second?.entryId)
+
+        // 3. openDirectEdit: A slow, B fast -> final state must remain B after A finishes
+        entryAStarted.set(java.util.concurrent.CountDownLatch(1))
+        releaseWorkerALatch.set(java.util.concurrent.CountDownLatch(1))
+        vm.openDirectEdit(workerA)
+        assertTrue("Expected openDirectEdit(A) request to start", entryAStarted.get().await(5, java.util.concurrent.TimeUnit.SECONDS))
+        vm.openDirectEdit(workerB)
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            vm.directEditTarget.value?.first?.entryId == entryIdB &&
+                vm.directEditTarget.value?.second?.entryId == entryIdB
+        }
+        releaseWorkerALatch.get().countDown()
+        Thread.sleep(200)
+        org.robolectric.shadows.ShadowLooper.idleMainLooper()
+        assertEquals("openDirectEdit must keep B and ignore late A", entryIdB, vm.directEditTarget.value?.first?.entryId)
+        assertEquals(entryIdB, vm.directEditTarget.value?.second?.entryId)
+        assertEquals("Hồ Sơ Nhanh B", vm.directEditTarget.value?.second?.displayName)
+
+        // 4. closeEntryDetail / closeProposeChange / closeDirectEdit must invalidate in-flight requests
+        entryCStarted.set(java.util.concurrent.CountDownLatch(3))
+        releaseWorkerCLatch.set(java.util.concurrent.CountDownLatch(1))
+        vm.openEntryDetail(entryIdC)
+        vm.openProposeChange(workerC)
+        vm.openDirectEdit(workerC)
+        assertTrue("Expected C requests to start", entryCStarted.get().await(5, java.util.concurrent.TimeUnit.SECONDS))
+        vm.closeEntryDetail()
+        vm.closeProposeChange()
+        vm.closeDirectEdit()
+        releaseWorkerCLatch.get().countDown()
+        Thread.sleep(200)
+        org.robolectric.shadows.ShadowLooper.idleMainLooper()
+        assertNull("Closed entryDetail must remain null after pending C finishes", vm.selectedEntryDetail.value)
+        assertNull("Closed proposeChangeTarget must remain null after pending C finishes", vm.proposeChangeTarget.value)
+        assertNull("Closed directEditTarget must remain null after pending C finishes", vm.directEditTarget.value)
+    }
 }

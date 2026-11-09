@@ -94,6 +94,8 @@ public final class MiniBiViewModel: ObservableObject {
     public private(set) var sessionGeneration: Int64 = 0
     private var inFlightTasks: [String: Task<Void, Never>] = [:]
     private var salaryAdvanceContextLoadedGeneration: Int64?
+    private var ownSubmissionsFetchGeneration: Int64 = 0
+    private var openDirectEditGeneration: Int64 = 0
 
     private struct SessionRequestToken: Equatable {
         let generation: Int64
@@ -546,6 +548,8 @@ public final class MiniBiViewModel: ObservableObject {
     private func resetSessionScopedState(clearDraftRows: Bool) {
         cancelAllSessionTasks()
         salaryAdvanceContextLoadedGeneration = nil
+        ownSubmissionsFetchGeneration &+= 1
+        openDirectEditGeneration &+= 1
         selectedWorkerScope = ""
         workerSearchQuery = ""
         workerProjectFilter = ""
@@ -605,6 +609,8 @@ public final class MiniBiViewModel: ObservableObject {
         } else {
             cancelAllSessionTasks()
             salaryAdvanceContextLoadedGeneration = nil
+            ownSubmissionsFetchGeneration &+= 1
+            openDirectEditGeneration &+= 1
             workers = []
             workersTotalCount = 0
             ownSubmissions = []
@@ -1158,27 +1164,47 @@ public final class MiniBiViewModel: ObservableObject {
         guard isAuthenticated,
               let user = currentUser,
               (user.canAccessNewWorkerEntry || user.safeAllowedWorkerTabs.contains("uploader") || user.hasCapability("submission_read")),
-              captureSessionToken() != nil else {
+              let token = captureSessionToken() else {
+            ownSubmissionsFetchGeneration &+= 1
+            cancelInFlightTasksWithPrefix("own_submissions:")
             ownSubmissions = []
             ownSubmissionsNextCursor = nil
             ownSubmissionsHasMore = false
             directEntryHistoryBatches = []
+            ownSubmissionsErrorMessage = nil
             isLoadingOwnSubmissions = false
             return
         }
         let targetCursor: String? = reset ? nil : ownSubmissionsNextCursor
-        if !reset && (targetCursor == nil || !ownSubmissionsHasMore) {
+        if !reset && (targetCursor == nil || !ownSubmissionsHasMore || isLoadingOwnSubmissions) {
             return
         }
-        let dedupeKey = "own_submissions:\(reset ? "first" : (targetCursor ?? ""))"
+        if reset {
+            cancelInFlightTasksWithPrefix("own_submissions:cursor:")
+        }
+        let dedupeKey = reset ? "own_submissions:first" : "own_submissions:cursor:\(targetCursor ?? "")"
+        let compositeKey = "gen:\(token.generation):uid:\(token.userId.lowercased()):\(dedupeKey)"
+        if inFlightTasks[compositeKey] == nil {
+            ownSubmissionsFetchGeneration &+= 1
+        }
+        let expectedFetchGen = ownSubmissionsFetchGeneration
         await runDeduplicatedSessionTask(key: dedupeKey) { [weak self] token in
-            guard let self, self.isSessionValid(token) else { return }
+            guard let self,
+                  self.isSessionValid(token),
+                  self.ownSubmissionsFetchGeneration == expectedFetchGen else {
+                return
+            }
             self.isLoadingOwnSubmissions = true
             if reset {
                 self.ownSubmissionsErrorMessage = nil
             }
             let res = await self.directEntryService.listOwnSubmissions(pageSize: 20, cursor: targetCursor)
-            guard !Task.isCancelled, self.isSessionValid(token) else { return }
+            guard !Task.isCancelled,
+                  self.isSessionValid(token),
+                  self.ownSubmissionsFetchGeneration == expectedFetchGen,
+                  (reset || self.ownSubmissionsNextCursor == targetCursor) else {
+                return
+            }
             self.isLoadingOwnSubmissions = false
             switch res {
             case .success(let page, _):
@@ -1201,6 +1227,7 @@ public final class MiniBiViewModel: ObservableObject {
                     self.ownSubmissions = []
                     self.ownSubmissionsNextCursor = nil
                     self.ownSubmissionsHasMore = false
+                    self.directEntryHistoryBatches = []
                 }
                 self.ownSubmissionsErrorMessage = message
             }
@@ -1459,6 +1486,8 @@ public final class MiniBiViewModel: ObservableObject {
             showBanner("Bạn không có quyền sửa trực tiếp hồ sơ này.", isError: true)
             return
         }
+        openDirectEditGeneration &+= 1
+        let expectedOpenGen = openDirectEditGeneration
         let targetEntryId = worker.maNld
         directEditWorkerTarget = worker
         directEditBaselineDetail = nil
@@ -1473,6 +1502,7 @@ public final class MiniBiViewModel: ObservableObject {
             await loadDirectEntryAssigneeOptions()
             guard !Task.isCancelled,
                   isSessionValid(token),
+                  openDirectEditGeneration == expectedOpenGen,
                   directEditWorkerTarget?.maNld == targetEntryId else {
                 return
             }
@@ -1481,6 +1511,7 @@ public final class MiniBiViewModel: ObservableObject {
         let detailRes = await directEntryService.fetchWorkerEntryDetail(entryId: targetEntryId)
         guard !Task.isCancelled,
               isSessionValid(token),
+              openDirectEditGeneration == expectedOpenGen,
               directEditWorkerTarget?.maNld == targetEntryId else {
             return
         }
@@ -1488,6 +1519,9 @@ public final class MiniBiViewModel: ObservableObject {
 
         switch detailRes {
         case .success(let detail, _):
+            guard detail.entryId.isEmpty || detail.entryId.caseInsensitiveCompare(targetEntryId) == .orderedSame else {
+                return
+            }
             directEditBaselineDetail = detail
             if !detail.canDirectEdit || currentUser?.hasCapability("entry_direct_edit") != true {
                 directEditErrorMessage = "Tài khoản hiện tại không có quyền sửa trực tiếp hồ sơ này."
@@ -1498,6 +1532,7 @@ public final class MiniBiViewModel: ObservableObject {
     }
 
     public func closeDirectEdit() {
+        openDirectEditGeneration &+= 1
         directEditWorkerTarget = nil
         directEditBaselineDetail = nil
         directEditLoadingDetail = false

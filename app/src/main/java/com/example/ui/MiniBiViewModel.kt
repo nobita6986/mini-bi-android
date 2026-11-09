@@ -644,6 +644,15 @@ class MiniBiViewModel internal constructor(
     private var duplicateCccdJob: Job? = null
     private var bootstrapJob: Job? = null
     private var logoutJob: Job? = null
+    private var openEntryDetailToken: Long = 0L
+    private var openEntryDetailExpectedEntryId: String? = null
+    private var openEntryDetailJob: Job? = null
+    private var openProposeChangeToken: Long = 0L
+    private var openProposeChangeExpectedEntryId: String? = null
+    private var openProposeChangeJob: Job? = null
+    private var openDirectEditToken: Long = 0L
+    private var openDirectEditExpectedEntryId: String? = null
+    private var openDirectEditJob: Job? = null
     private var sessionGeneration: Long = 0L
     private var lastBoundActorId: String? = null
     private var lastBoundActorFromRepo: Boolean = false
@@ -783,6 +792,18 @@ class MiniBiViewModel internal constructor(
         salaryAdvanceDetailFetchJob = null
         salaryAdvanceHistoryFetchJob?.cancel()
         salaryAdvanceHistoryFetchJob = null
+        ++openEntryDetailToken
+        openEntryDetailExpectedEntryId = null
+        openEntryDetailJob?.cancel()
+        openEntryDetailJob = null
+        ++openProposeChangeToken
+        openProposeChangeExpectedEntryId = null
+        openProposeChangeJob?.cancel()
+        openProposeChangeJob = null
+        ++openDirectEditToken
+        openDirectEditExpectedEntryId = null
+        openDirectEditJob?.cancel()
+        openDirectEditJob = null
         viewModelScope.cancel()
         repository.closeForTest()
     }
@@ -936,6 +957,18 @@ class MiniBiViewModel internal constructor(
                         ++workerFetchToken
                         workerFetchJob?.cancel()
                         workerFetchJob = null
+                        ++openEntryDetailToken
+                        openEntryDetailExpectedEntryId = null
+                        openEntryDetailJob?.cancel()
+                        openEntryDetailJob = null
+                        ++openProposeChangeToken
+                        openProposeChangeExpectedEntryId = null
+                        openProposeChangeJob?.cancel()
+                        openProposeChangeJob = null
+                        ++openDirectEditToken
+                        openDirectEditExpectedEntryId = null
+                        openDirectEditJob?.cancel()
+                        openDirectEditJob = null
                         _activeWorkerTabKey.value = ""
                         lastSearchQuery = ""
                         lastFilterProjectId = null
@@ -989,6 +1022,18 @@ class MiniBiViewModel internal constructor(
         ++workerFetchToken
         workerFetchJob?.cancel()
         workerFetchJob = null
+        ++openEntryDetailToken
+        openEntryDetailExpectedEntryId = null
+        openEntryDetailJob?.cancel()
+        openEntryDetailJob = null
+        ++openProposeChangeToken
+        openProposeChangeExpectedEntryId = null
+        openProposeChangeJob?.cancel()
+        openProposeChangeJob = null
+        ++openDirectEditToken
+        openDirectEditExpectedEntryId = null
+        openDirectEditJob?.cancel()
+        openDirectEditJob = null
         workforceDeepJob?.cancel()
         workforceDeepJob = null
         scopedOverviewJob?.cancel()
@@ -3518,18 +3563,34 @@ class MiniBiViewModel internal constructor(
         }
     }
 
-    fun openEntryDetail(entryId: String) {
-        val actor = currentActor.value ?: return
+    fun openEntryDetail(entryId: String, actorOverride: AppActor? = null) {
+        val cleanEntryId = entryId.trim()
+        if (cleanEntryId.isEmpty()) return
+        val actor = resolveSessionActor(actorOverride) ?: return
         val expectedGen = bindActorGeneration(actor)
         val expectedActorId = actor.appUserId
-        viewModelScope.launch {
+        val reqToken = ++openEntryDetailToken
+        openEntryDetailExpectedEntryId = cleanEntryId
+        openEntryDetailJob?.cancel()
+        openEntryDetailJob = viewModelScope.launch {
             try {
-                val detail = repository.directEntryService.getEntryDetail(entryId)
-                if (!isSessionValid(expectedGen, expectedActorId)) return@launch
+                val detail = repository.directEntryService.getEntryDetail(cleanEntryId)
+                if (!isSessionValid(expectedGen, expectedActorId) ||
+                    openEntryDetailToken != reqToken ||
+                    !openEntryDetailExpectedEntryId.equals(cleanEntryId, ignoreCase = true) ||
+                    (detail.entryId.isNotBlank() && !detail.entryId.equals(cleanEntryId, ignoreCase = true))
+                ) {
+                    return@launch
+                }
                 _selectedEntryDetail.value = detail
             } catch (e: Exception) {
                 e.rethrowIfCancelled()
-                if (!isSessionValid(expectedGen, expectedActorId)) return@launch
+                if (!isSessionValid(expectedGen, expectedActorId) ||
+                    openEntryDetailToken != reqToken ||
+                    !openEntryDetailExpectedEntryId.equals(cleanEntryId, ignoreCase = true)
+                ) {
+                    return@launch
+                }
                 showBanner(
                     (e as? BackendApiException)?.message ?: "Không thể tải chi tiết hồ sơ từ máy chủ.",
                     isError = true
@@ -3539,30 +3600,49 @@ class MiniBiViewModel internal constructor(
     }
 
     fun closeEntryDetail() {
+        ++openEntryDetailToken
+        openEntryDetailExpectedEntryId = null
+        openEntryDetailJob?.cancel()
+        openEntryDetailJob = null
         _selectedEntryDetail.value = null
     }
 
     fun openProposeChange(worker: WorkerProfileEntity, actorOverride: AppActor? = null) {
+        val cleanEntryId = worker.entryId.trim()
+        if (cleanEntryId.isEmpty()) return
         val actor = resolveSessionActor(actorOverride) ?: return
         if (!worker.allowedActions.proposeChange || !actor.hasCapability("entry_propose_change")) return
         val expectedGen = bindActorGeneration(actor)
         val expectedActorId = actor.appUserId
+        val reqToken = ++openProposeChangeToken
+        openProposeChangeExpectedEntryId = cleanEntryId
+        openProposeChangeJob?.cancel()
         _workerMutationError.value = null
         loadCatalogIfNeeded(actor = actor)
-        viewModelScope.launch {
+        openProposeChangeJob = viewModelScope.launch {
             val detail = if (worker.allowedActions.view) {
-                runCatching { repository.directEntryService.getEntryDetail(worker.entryId) }
+                runCatching { repository.directEntryService.getEntryDetail(cleanEntryId) }
                     .onFailure { it.rethrowIfCancelled() }
                     .getOrNull()
             } else {
                 null
             }
-            if (!isSessionValid(expectedGen, expectedActorId)) return@launch
+            if (!isSessionValid(expectedGen, expectedActorId) ||
+                openProposeChangeToken != reqToken ||
+                !openProposeChangeExpectedEntryId.equals(cleanEntryId, ignoreCase = true) ||
+                (detail != null && detail.entryId.isNotBlank() && !detail.entryId.equals(cleanEntryId, ignoreCase = true))
+            ) {
+                return@launch
+            }
             _proposeChangeTarget.value = worker to detail
         }
     }
 
     fun closeProposeChange() {
+        ++openProposeChangeToken
+        openProposeChangeExpectedEntryId = null
+        openProposeChangeJob?.cancel()
+        openProposeChangeJob = null
         _proposeChangeTarget.value = null
         _workerMutationError.value = null
     }
@@ -3591,7 +3671,7 @@ class MiniBiViewModel internal constructor(
                     reason = reason
                 )
                 if (!isSessionValid(expectedGen, expectedActorId)) return@launch
-                _proposeChangeTarget.value = null
+                closeProposeChange()
                 showBanner("Đã gửi đề xuất thay đổi (#${created.requestId.take(8)}).")
                 selectWorkerTab(_activeWorkerTabKey.value)
             } catch (e: BackendApiException) {
@@ -3600,13 +3680,17 @@ class MiniBiViewModel internal constructor(
                 if (e.kind == BackendFailureKind.CONFLICT) {
                     // Reload baseline from server on OCC conflict
                     val currentWorker = _proposeChangeTarget.value?.first
-                    if (currentWorker != null) {
+                    if (currentWorker != null && currentWorker.entryId.equals(entryId, ignoreCase = true)) {
                         val refreshed = runCatching { repository.directEntryService.getEntryDetail(entryId) }
                             .onFailure { it.rethrowIfCancelled() }
                             .getOrNull()
                         if (!isSessionValid(expectedGen, expectedActorId)) return@launch
-                        if (refreshed != null) {
-                            _proposeChangeTarget.value = currentWorker.copy(entryVersion = refreshed.version) to refreshed
+                        val latestWorker = _proposeChangeTarget.value?.first
+                        if (refreshed != null &&
+                            latestWorker != null &&
+                            latestWorker.entryId.equals(entryId, ignoreCase = true)
+                        ) {
+                            _proposeChangeTarget.value = latestWorker.copy(entryVersion = refreshed.version) to refreshed
                         }
                     }
                     selectWorkerTab(_activeWorkerTabKey.value)
@@ -3632,22 +3716,38 @@ class MiniBiViewModel internal constructor(
     }
 
     fun openDirectEdit(worker: WorkerProfileEntity, actorOverride: AppActor? = null) {
+        val cleanEntryId = worker.entryId.trim()
+        if (cleanEntryId.isEmpty()) return
         val actor = resolveSessionActor(actorOverride) ?: return
         if (!worker.allowedActions.directEdit || !actor.hasCapability("entry_direct_edit")) return
         val expectedGen = bindActorGeneration(actor)
         val expectedActorId = actor.appUserId
+        val reqToken = ++openDirectEditToken
+        openDirectEditExpectedEntryId = cleanEntryId
+        openDirectEditJob?.cancel()
         cleanupAllDirectEditStagedFiles()
         _directEditProfileSaveMessage.value = null
         _workerMutationError.value = null
         loadCatalogIfNeeded(actor = actor)
-        viewModelScope.launch {
+        openDirectEditJob = viewModelScope.launch {
             try {
-                val detail = repository.directEntryService.getEntryDetail(worker.entryId)
-                if (!isSessionValid(expectedGen, expectedActorId)) return@launch
+                val detail = repository.directEntryService.getEntryDetail(cleanEntryId)
+                if (!isSessionValid(expectedGen, expectedActorId) ||
+                    openDirectEditToken != reqToken ||
+                    !openDirectEditExpectedEntryId.equals(cleanEntryId, ignoreCase = true) ||
+                    (detail.entryId.isNotBlank() && !detail.entryId.equals(cleanEntryId, ignoreCase = true))
+                ) {
+                    return@launch
+                }
                 _directEditTarget.value = worker.copy(entryVersion = detail.version) to detail
             } catch (e: Exception) {
                 e.rethrowIfCancelled()
-                if (!isSessionValid(expectedGen, expectedActorId)) return@launch
+                if (!isSessionValid(expectedGen, expectedActorId) ||
+                    openDirectEditToken != reqToken ||
+                    !openDirectEditExpectedEntryId.equals(cleanEntryId, ignoreCase = true)
+                ) {
+                    return@launch
+                }
                 showBanner(
                     (e as? BackendApiException)?.message ?: "Không thể tải hồ sơ gốc để sửa trực tiếp.",
                     isError = true
@@ -3657,6 +3757,10 @@ class MiniBiViewModel internal constructor(
     }
 
     fun closeDirectEdit() {
+        ++openDirectEditToken
+        openDirectEditExpectedEntryId = null
+        openDirectEditJob?.cancel()
+        openDirectEditJob = null
         cleanupAllDirectEditStagedFiles()
         _directEditProfileSaveMessage.value = null
         _directEditTarget.value = null

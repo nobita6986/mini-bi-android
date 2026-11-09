@@ -1922,7 +1922,7 @@ final class HRPBTests: XCTestCase {
             Self.lock.lock()
             Self.recordedUrlsStorage.append(fullUrl)
             Self.recordedRequestsStorage.append(rec)
-            let delay = Self.pathDelaySec.first(where: { path.contains($0.key) })?.value ?? 0
+            let delay = Self.pathDelaySec.first(where: { fullUrl.contains($0.key) || path.contains($0.key) })?.value ?? 0
             Self.lock.unlock()
 
             let executeResponse = { [weak self] in
@@ -2993,6 +2993,179 @@ final class HRPBTests: XCTestCase {
             stagedFiles: [DirectEntryContract.docTypeWorkerPortrait: [attachment]]
         )
         XCTAssertTrue(MockURLProtocol.recordedUrls().isEmpty, "User without document_upload capability must make 0 document upload requests")
+    }
+
+    @MainActor
+    func testRegression14_OwnSubmissionsLoadMoreInFlightSupersededByResetAndRapidOpenDirectEditKeepsWorkerB() async throws {
+        let entryIdA = "aaaa1414-1111-4333-8444-555555555555"
+        let entryIdB = "bbbb1414-2222-4333-8444-555555555555"
+        let batchInitialId = "11111414-0000-4333-8444-555555555555"
+        let batchOldPage2Id = "22221414-0000-4333-8444-555555555555"
+        let batchFresh1Id = "33331414-0000-4333-8444-555555555555"
+
+        MockURLProtocol.resetRecordedUrls()
+        // Hold the load-more request (`cursor=cur-old-1`) and Worker A detail (`entries/<entryIdA>`)
+        MockURLProtocol.pathDelaySec = [
+            "cursor=cur-old-1": 0.4,
+            "/api/direct-entry/entries/\(entryIdA)": 0.4
+        ]
+        MockURLProtocol.requestHandler = { req in
+            let url = req.url!
+            let fullUrl = url.absoluteString
+            let path = url.path
+            let body: String
+            if path.contains("/api/direct-entry/submissions") {
+                if fullUrl.contains("cursor=cur-old-1") {
+                    body = """
+                    {
+                      "ok": true,
+                      "items": [
+                        {
+                          "submission_id": "\(batchOldPage2Id)",
+                          "state": "SUBMITTED",
+                          "version": 1,
+                          "entry_count": 3,
+                          "created_at": "2026-11-08T01:00:00Z"
+                        }
+                      ],
+                      "has_more": false,
+                      "next_cursor": "cur-old-2"
+                    }
+                    """
+                } else {
+                    body = """
+                    {
+                      "ok": true,
+                      "items": [
+                        {
+                          "submission_id": "\(batchFresh1Id)",
+                          "state": "SUBMITTED",
+                          "version": 2,
+                          "entry_count": 5,
+                          "created_at": "2026-11-09T02:00:00Z"
+                        }
+                      ],
+                      "has_more": true,
+                      "next_cursor": "cur-fresh-2"
+                    }
+                    """
+                }
+            } else if path.contains("/api/direct-entry/entries/\(entryIdA)") {
+                body = """
+                {
+                  "ok": true,
+                  "entry": {
+                    "entry_id": "\(entryIdA)",
+                    "version": 1,
+                    "employee_code": "HRP-A14",
+                    "display_name": "Hồ Sơ Chậm A",
+                    "project_id": "p1",
+                    "project_display": "Dự án 1",
+                    "employment_status": "ON",
+                    "can_direct_edit": true
+                  }
+                }
+                """
+            } else if path.contains("/api/direct-entry/entries/\(entryIdB)") {
+                body = """
+                {
+                  "ok": true,
+                  "entry": {
+                    "entry_id": "\(entryIdB)",
+                    "version": 2,
+                    "employee_code": "HRP-B14",
+                    "display_name": "Hồ Sơ Nhanh B",
+                    "project_id": "p1",
+                    "project_display": "Dự án 1",
+                    "employment_status": "ON",
+                    "can_direct_edit": true
+                  }
+                }
+                """
+            } else {
+                body = """
+                {"ok":true,"items":[]}
+                """
+            }
+            let resp = HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/json"])!
+            return (resp, Data(body.utf8))
+        }
+
+        let client = makeMockHttpClient()
+        let repo = MiniBiRepository(httpClient: client, keychain: KeychainStore(serviceName: "com.aistudio.minibi.repo14.\(UUID().uuidString)"))
+        let directEntry = DirectEntryService(httpClient: client)
+        let reporting = WorkReportsAndReportingService(httpClient: client)
+        let salaryAdvance = SalaryAdvanceService(httpClient: client)
+        let vm = MiniBiViewModel(
+            repository: repo,
+            directEntryService: directEntry,
+            workReportsService: reporting,
+            salaryAdvanceService: salaryAdvance
+        )
+        vm.currentUser = MiniBiUser(
+            id: "aaaa0014-2222-4333-8444-555555555555",
+            username: "uploader.14",
+            fullName: "Uploader 14",
+            permissions: ["entry_read", "entry_direct_edit", "submission_read"],
+            allowedWorkerTabs: ["uploader", "managed"]
+        )
+        vm.isAuthenticated = true
+        vm.directEntryOptions = DirectEntryAssigneeOptions(
+            catalogProjects: [DirectEntryCatalogProject(projectId: "p1", displayName: "Dự án 1")]
+        )
+
+        // 1. Seed initial ownSubmissions state with cursor `cur-old-1`
+        vm.ownSubmissions = [
+            DirectEntryBatchHistoryItem(
+                batchId: 1,
+                submissionIdUuid: batchInitialId,
+                version: 1,
+                createdAt: "2026-11-08T00:00:00Z",
+                totalRows: 1,
+                approvedRows: 1,
+                pendingRows: 0,
+                status: "SUBMITTED"
+            )
+        ]
+        vm.ownSubmissionsNextCursor = "cur-old-1"
+        vm.ownSubmissionsHasMore = true
+
+        // Start loadMore (`cursor=cur-old-1`, held for 0.4s)
+        let loadMoreTask = Task { await vm.loadMoreOwnSubmissions() }
+        try await Task.sleep(nanoseconds: 60_000_000)
+
+        // While loadMore is in-flight, user triggers reset ("Làm mới") -> completes immediately
+        await vm.refreshOwnSubmissions(reset: true)
+        XCTAssertEqual(vm.ownSubmissions.map(\.submissionIdUuid), [batchFresh1Id])
+        XCTAssertEqual(vm.ownSubmissionsNextCursor, "cur-fresh-2")
+        XCTAssertTrue(vm.ownSubmissionsHasMore)
+
+        // Wait for the old loadMore response to finish and verify it does NOT append old items or overwrite cursor
+        _ = await loadMoreTask.value
+        try await Task.sleep(nanoseconds: 450_000_000)
+
+        XCTAssertEqual(vm.ownSubmissions.map(\.submissionIdUuid), [batchFresh1Id], "Stale loadMore response must not append old items after reset")
+        XCTAssertEqual(vm.ownSubmissionsNextCursor, "cur-fresh-2", "Stale loadMore response must not overwrite nextCursor of reset list")
+        XCTAssertTrue(vm.ownSubmissionsHasMore)
+        XCTAssertFalse(vm.isLoadingOwnSubmissions)
+        XCTAssertNil(vm.ownSubmissionsErrorMessage)
+
+        // 2. Rapid openDirectEdit(workerA) -> openDirectEdit(workerB) in same session: result must remain workerB
+        let workerA = WorkerItem(maNld: entryIdA, hoTen: "Hồ Sơ Chậm A", canDirectEdit: true)
+        let workerB = WorkerItem(maNld: entryIdB, hoTen: "Hồ Sơ Nhanh B", canDirectEdit: true)
+        let openATask = Task { await vm.openDirectEdit(workerA) }
+        try await Task.sleep(nanoseconds: 50_000_000)
+        await vm.openDirectEdit(workerB)
+
+        XCTAssertEqual(vm.directEditWorkerTarget?.maNld, entryIdB)
+        XCTAssertEqual(vm.directEditBaselineDetail?.entryId, entryIdB)
+
+        _ = await openATask.value
+        try await Task.sleep(nanoseconds: 450_000_000)
+
+        XCTAssertEqual(vm.directEditWorkerTarget?.maNld, entryIdB)
+        XCTAssertEqual(vm.directEditBaselineDetail?.entryId, entryIdB)
+        XCTAssertEqual(vm.directEditBaselineDetail?.displayName, "Hồ Sơ Nhanh B")
     }
 
     // MARK: - Helper
