@@ -3006,8 +3006,8 @@ final class HRPBTests: XCTestCase {
         MockURLProtocol.resetRecordedUrls()
         // Hold the load-more request (`cursor=cur-old-1`) and Worker A detail (`entries/<entryIdA>`)
         MockURLProtocol.pathDelaySec = [
-            "cursor=cur-old-1": 0.4,
-            "/api/direct-entry/entries/\(entryIdA)": 0.4
+            "cursor=cur-old-1": 0.5,
+            "/api/direct-entry/entries/\(entryIdA)": 0.5
         ]
         MockURLProtocol.requestHandler = { req in
             let url = req.url!
@@ -3129,9 +3129,14 @@ final class HRPBTests: XCTestCase {
         vm.ownSubmissionsNextCursor = "cur-old-1"
         vm.ownSubmissionsHasMore = true
 
-        // Start loadMore (`cursor=cur-old-1`, held for 0.4s)
+        // Start loadMore (`cursor=cur-old-1`, held for 0.5s) and poll until request actually starts in MockURLProtocol
         let loadMoreTask = Task { await vm.loadMoreOwnSubmissions() }
-        try await Task.sleep(nanoseconds: 60_000_000)
+        try await waitForRecordedUrl(containing: "cursor=cur-old-1")
+        XCTAssertEqual(
+            vm.ownSubmissions.map(\.submissionIdUuid),
+            [batchInitialId],
+            "Old loadMore request must be in-flight and not yet completed before reset runs"
+        )
 
         // While loadMore is in-flight, user triggers reset ("Làm mới") -> completes immediately
         await vm.refreshOwnSubmissions(reset: true)
@@ -3141,7 +3146,7 @@ final class HRPBTests: XCTestCase {
 
         // Wait for the old loadMore response to finish and verify it does NOT append old items or overwrite cursor
         _ = await loadMoreTask.value
-        try await Task.sleep(nanoseconds: 450_000_000)
+        try await Task.sleep(nanoseconds: 550_000_000)
 
         XCTAssertEqual(vm.ownSubmissions.map(\.submissionIdUuid), [batchFresh1Id], "Stale loadMore response must not append old items after reset")
         XCTAssertEqual(vm.ownSubmissionsNextCursor, "cur-fresh-2", "Stale loadMore response must not overwrite nextCursor of reset list")
@@ -3153,14 +3158,18 @@ final class HRPBTests: XCTestCase {
         let workerA = WorkerItem(maNld: entryIdA, hoTen: "Hồ Sơ Chậm A", canDirectEdit: true)
         let workerB = WorkerItem(maNld: entryIdB, hoTen: "Hồ Sơ Nhanh B", canDirectEdit: true)
         let openATask = Task { await vm.openDirectEdit(workerA) }
-        try await Task.sleep(nanoseconds: 50_000_000)
+        try await waitForRecordedUrl(containing: "/api/direct-entry/entries/\(entryIdA)")
+        XCTAssertNil(
+            vm.directEditBaselineDetail,
+            "Slow Worker A detail request must be in-flight and not yet completed before opening Worker B"
+        )
         await vm.openDirectEdit(workerB)
 
         XCTAssertEqual(vm.directEditWorkerTarget?.maNld, entryIdB)
         XCTAssertEqual(vm.directEditBaselineDetail?.entryId, entryIdB)
 
         _ = await openATask.value
-        try await Task.sleep(nanoseconds: 450_000_000)
+        try await Task.sleep(nanoseconds: 550_000_000)
 
         XCTAssertEqual(vm.directEditWorkerTarget?.maNld, entryIdB)
         XCTAssertEqual(vm.directEditBaselineDetail?.entryId, entryIdB)
@@ -3168,6 +3177,19 @@ final class HRPBTests: XCTestCase {
     }
 
     // MARK: - Helper
+
+    private func waitForRecordedUrl(containing substring: String, timeoutNanoseconds: UInt64 = 2_000_000_000) async throws {
+        let pollInterval: UInt64 = 5_000_000
+        var elapsed: UInt64 = 0
+        while !MockURLProtocol.recordedUrls().contains(where: { $0.contains(substring) }) {
+            if elapsed >= timeoutNanoseconds {
+                XCTFail("Timed out waiting for request containing '\(substring)'; recorded: \(MockURLProtocol.recordedUrls())")
+                return
+            }
+            try await Task.sleep(nanoseconds: pollInterval)
+            elapsed += pollInterval
+        }
+    }
 
     private func makeSolidTestJpeg(color: UIColor, size: CGSize) throws -> Data {
         let format = UIGraphicsImageRendererFormat.default()
