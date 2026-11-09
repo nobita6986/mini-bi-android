@@ -519,7 +519,7 @@ internal fun DynamicWorkReportFormCard(
     onSaveDraft: (JSONObject) -> Unit,
     onSubmitFinal: (JSONObject) -> Unit
 ) {
-    val fieldValues = remember(obligation.obligationId, obligation.payloadJsonRaw) {
+    val fieldValues = remember(obligation.obligationId) {
         val map = mutableStateMapOf<String, String>()
         val existing = runCatching { JSONObject(obligation.payloadJsonRaw) }.getOrNull()
         sections.flatMap { it.fields }.forEach { field ->

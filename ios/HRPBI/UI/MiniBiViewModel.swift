@@ -73,8 +73,8 @@ public final class MiniBiViewModel: ObservableObject {
     @Published public var pendingDuplicateConfirmCandidates: [DirectEntryDuplicateCandidate] = []
     @Published public var showDuplicateConfirmDialog: Bool = false
 
-    // MARK: - Workers Management State
-    @Published public var selectedWorkerScope: String = "all"
+    // MARK: - Workers Management & Uploader Submissions State
+    @Published public var selectedWorkerScope: String = ""
     @Published public var workerSearchQuery: String = ""
     @Published public var workerProjectFilter: String = ""
     @Published public var workerStatusFilter: String = ""
@@ -85,6 +85,107 @@ public final class MiniBiViewModel: ObservableObject {
     @Published public var isLoadingWorkers: Bool = false
     @Published public var selectedWorkerDetail: WorkerItem?
     @Published public var isUploadingWorkerContract: Bool = false
+    @Published public var ownSubmissions: [DirectEntryBatchHistoryItem] = []
+    @Published public var ownSubmissionsNextCursor: String?
+    @Published public var ownSubmissionsHasMore: Bool = false
+    @Published public var isLoadingOwnSubmissions: Bool = false
+    @Published public var ownSubmissionsErrorMessage: String?
+
+    public private(set) var sessionGeneration: Int64 = 0
+    private var inFlightTasks: [String: Task<Void, Never>] = [:]
+    private var salaryAdvanceContextLoadedGeneration: Int64?
+    private var ownSubmissionsFetchGeneration: Int64 = 0
+    private var openDirectEditGeneration: Int64 = 0
+
+    private struct SessionRequestToken: Equatable {
+        let generation: Int64
+        let userId: String
+    }
+
+    private func captureSessionToken() -> SessionRequestToken? {
+        guard isAuthenticated,
+              let uid = currentUser?.id.trimmingCharacters(in: .whitespacesAndNewlines),
+              !uid.isEmpty else {
+            return nil
+        }
+        return SessionRequestToken(generation: sessionGeneration, userId: uid)
+    }
+
+    private func isSessionValid(_ token: SessionRequestToken?) -> Bool {
+        guard let token, isAuthenticated, sessionGeneration == token.generation else {
+            return false
+        }
+        let currentUid = currentUser?.id.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return !currentUid.isEmpty && currentUid.caseInsensitiveCompare(token.userId) == .orderedSame
+    }
+
+    private func cancelAllSessionTasks() {
+        dashboardReloadTask?.cancel()
+        dashboardReloadTask = nil
+        salaryAdvanceSearchTask?.cancel()
+        salaryAdvanceSearchTask = nil
+        salaryAdvanceListSearchTask?.cancel()
+        salaryAdvanceListSearchTask = nil
+        for (_, task) in inFlightTasks {
+            task.cancel()
+        }
+        inFlightTasks.removeAll()
+    }
+
+    private func cancelInFlightTasksWithPrefix(_ prefix: String) {
+        for (key, task) in inFlightTasks where key.contains(":\(prefix)") {
+            task.cancel()
+            inFlightTasks.removeValue(forKey: key)
+        }
+    }
+
+    private func runDeduplicatedSessionTask(
+        key: String,
+        force: Bool = false,
+        operation: @escaping (SessionRequestToken) async -> Void
+    ) async {
+        guard let token = captureSessionToken() else { return }
+        let compositeKey = "gen:\(token.generation):uid:\(token.userId.lowercased()):\(key)"
+        if let existing = inFlightTasks[compositeKey] {
+            if !force {
+                await existing.value
+                return
+            }
+            existing.cancel()
+            inFlightTasks.removeValue(forKey: compositeKey)
+        }
+        let task = Task { @MainActor [weak self] in
+            guard self != nil else { return }
+            await operation(token)
+        }
+        inFlightTasks[compositeKey] = task
+        await task.value
+        if inFlightTasks[compositeKey] == task {
+            inFlightTasks.removeValue(forKey: compositeKey)
+        }
+    }
+
+    public static func resolveVisibleWorkerTabs(for user: MiniBiUser?) -> [(key: String, label: String)] {
+        guard let user else { return [] }
+        return user.safeAllowedWorkerTabs.compactMap { rawKey in
+            switch rawKey {
+            case "managed": return ("managed", "Dự án phụ trách")
+            case "recruited": return ("recruited", "Do tôi tuyển")
+            case "team": return ("team", "Theo nhóm")
+            case "uploader": return ("uploader", "Tôi nhập hộ")
+            case "all": return ("all", "Toàn hệ thống")
+            default: return nil
+            }
+        }
+    }
+
+    public var visibleWorkerTabs: [(key: String, label: String)] {
+        Self.resolveVisibleWorkerTabs(for: currentUser)
+    }
+
+    public var canAccessNewWorkerEntry: Bool {
+        currentUser?.canAccessNewWorkerEntry == true
+    }
 
     // MARK: - Direct Edit ("Sửa trực tiếp") State
     @Published public var directEditWorkerTarget: WorkerItem?
@@ -318,6 +419,8 @@ public final class MiniBiViewModel: ObservableObject {
     }
 
     public func selectEnvironmentVariant(_ variant: AppEnvironmentVariant) {
+        sessionGeneration &+= 1
+        cancelAllSessionTasks()
         let currentEnv = AppEnvironmentConfig.current
         let nextEnv = AppEnvironmentConfig.forVariant(
             variant,
@@ -339,6 +442,12 @@ public final class MiniBiViewModel: ObservableObject {
             closeSalaryAdvanceSheet()
             return
         }
+        if destination == .workers && (!isAuthenticated || visibleWorkerTabs.isEmpty) {
+            return
+        }
+        if destination == .newEntry && (!isAuthenticated || !canAccessNewWorkerEntry) {
+            return
+        }
         currentDestination = destination
         if destination == .attendance {
             activeAttendanceTab = .checkIn
@@ -353,8 +462,16 @@ public final class MiniBiViewModel: ObservableObject {
             if salaryAdvanceSheetOpen {
                 closeSalaryAdvanceSheet()
             }
-            if isAuthenticated {
+            if isAuthenticated && currentUser?.canAttemptPmSalaryAdvanceContext == true {
                 Task { await loadSalaryAdvanceContext() }
+            }
+        } else if destination == .newEntry {
+            if isAuthenticated && currentUser?.canLoadDirectEntryCatalog == true && directEntryOptions.catalogProjects.isEmpty {
+                Task { await loadDirectEntryAssigneeOptions() }
+            }
+        } else if destination == .workReports {
+            if isAuthenticated && workReportObligations.isEmpty {
+                Task { await loadWorkReportsData() }
             }
         }
     }
@@ -366,8 +483,12 @@ public final class MiniBiViewModel: ObservableObject {
         guard repository.httpClient.cookieStore.hasSessionCookie() else {
             return
         }
+        let expectedGen = sessionGeneration
         isBootstrapping = true
         let meResult = await repository.fetchCurrentUser()
+        guard sessionGeneration == expectedGen else {
+            return
+        }
         isBootstrapping = false
 
         if case .success(let user, _) = meResult {
@@ -383,10 +504,15 @@ public final class MiniBiViewModel: ObservableObject {
             return
         }
 
+        let expectedGen = sessionGeneration
         isLoggingIn = true
         loginErrorMessage = nil
 
         let result = await repository.login(identifier: trimmedId, password: password)
+        guard sessionGeneration == expectedGen else {
+            isLoggingIn = false
+            return
+        }
         isLoggingIn = false
 
         switch result {
@@ -419,8 +545,84 @@ public final class MiniBiViewModel: ObservableObject {
         savedAccounts = repository.getSavedLoginAccounts()
     }
 
-    private func onAuthenticatedSessionEstablished(user: MiniBiUser) {
+    private func resetSessionScopedState(clearDraftRows: Bool) {
+        cancelAllSessionTasks()
+        salaryAdvanceContextLoadedGeneration = nil
+        ownSubmissionsFetchGeneration &+= 1
+        openDirectEditGeneration &+= 1
+        selectedWorkerScope = ""
+        workerSearchQuery = ""
+        workerProjectFilter = ""
+        workerStatusFilter = ""
+        workers = []
+        workersTotalCount = 0
+        workersPage = 1
+        workersTotalPages = 1
+        isLoadingWorkers = false
+        selectedWorkerDetail = nil
+        isUploadingWorkerContract = false
+        ownSubmissions = []
+        ownSubmissionsNextCursor = nil
+        ownSubmissionsHasMore = false
+        isLoadingOwnSubmissions = false
+        ownSubmissionsErrorMessage = nil
+        directEntryOptions = DirectEntryAssigneeOptions()
+        directEntryHistoryBatches = []
+        isSubmittingNewWorkers = false
+        pendingDuplicateConfirmCandidates = []
+        showDuplicateConfirmDialog = false
+        directEntryService.clearCatalogCache()
+        closeDirectEdit()
+        salaryAdvanceContext = nil
+        salaryAdvanceSelectedProjectId = nil
+        closeSalaryAdvanceSheet()
+        salaryAdvanceRequests = []
+        salaryAdvancePmBadgeCount = 0
+        generalOverview = GeneralOverviewData()
+        workforceDeepMetrics = WorkforceDeepMetricsData()
+        teamReport = TeamReportData()
+        duplicateCccdReport = DuplicateCccdReportData()
+        cccdReviewItems = []
+        cccdReviewTotal = 0
+        selectedCccdReviewItem = nil
+        workReportObligations = []
+        selectedObligationEditor = nil
+        editorFieldValues = [:]
+        isSavingWorkReport = false
+        workReportReviews = []
+        selectedReviewDetail = nil
+        workReportTemplates = []
+        workReportAnalytics = WorkReportsAnalyticsSnapshot()
+        isLoadingDashboard = false
+        isLoadingWorkReports = false
+        isLoadingCccdReview = false
+        if clearDraftRows {
+            newWorkerDraftRows = [NewWorkerEntryDraft()]
+        }
+    }
+
+    public func onAuthenticatedSessionEstablished(user: MiniBiUser) {
+        let previousUserId = currentUser?.id
+        sessionGeneration &+= 1
+        if previousUserId != user.id {
+            resetSessionScopedState(clearDraftRows: previousUserId != nil)
+        } else {
+            cancelAllSessionTasks()
+            salaryAdvanceContextLoadedGeneration = nil
+            ownSubmissionsFetchGeneration &+= 1
+            openDirectEditGeneration &+= 1
+            workers = []
+            workersTotalCount = 0
+            ownSubmissions = []
+            ownSubmissionsNextCursor = nil
+            ownSubmissionsHasMore = false
+            directEntryOptions = DirectEntryAssigneeOptions()
+            directEntryService.clearCatalogCache()
+            salaryAdvanceContext = nil
+            salaryAdvanceSelectedProjectId = nil
+        }
         currentUser = user
+        selectedWorkerScope = Self.resolveVisibleWorkerTabs(for: user).first?.key ?? ""
         isAuthenticated = true
         currentDestination = .dashboard
 
@@ -454,35 +656,33 @@ public final class MiniBiViewModel: ObservableObject {
             }
         }
 
-        Task {
-            await syncAttendanceTimeAnchor()
-            await refreshNotifications()
-            await loadDashboardData()
-            await loadDirectEntryAssigneeOptions()
-            await loadSalaryAdvanceContext()
-            await loadWorkReportsData()
+        // Never eagerly load `/api/direct-entry/catalog`, `/api/salary-advance/context`, or `/api/work-reports/*` at login/resume.
+        let token = captureSessionToken()
+        Task { [weak self] in
+            guard let self, self.isSessionValid(token) else { return }
+            await self.syncAttendanceTimeAnchor()
+            guard self.isSessionValid(token) else { return }
+            await self.refreshNotifications()
+            guard self.isSessionValid(token) else { return }
+            await self.loadDashboardData(includeCccdTabs: false)
         }
     }
 
     public func performLogout() async {
+        sessionGeneration &+= 1
+        cancelAllSessionTasks()
         notificationService.stopSseStream()
         attendanceOutboxService.stopNetworkAutoFlush()
-        salaryAdvanceSearchTask?.cancel()
+        isAuthenticated = false
+        currentUser = nil
+        currentDestination = .dashboard
+        resetSessionScopedState(clearDraftRows: true)
         await repository.logout()
         timeAnchorManager.clearAnchor()
         attendanceTimeEvaluation = timeAnchorManager.evaluateAnchor()
 
-        isAuthenticated = false
-        currentUser = nil
-        currentDestination = .dashboard
-        // Reset Cấp mới draft rows only on logout
-        newWorkerDraftRows = [NewWorkerEntryDraft()]
         selectedObligationEditor = nil
         editorFieldValues = [:]
-        selectedWorkerDetail = nil
-        closeDirectEdit()
-        salaryAdvanceContext = nil
-        closeSalaryAdvanceSheet()
         notifications = []
         unreadNotificationCount = 0
         announcedNotificationIds = []
@@ -577,6 +777,7 @@ public final class MiniBiViewModel: ObservableObject {
             currentDestination = .attendance
             activeAttendanceTab = .checkIn
         } else if typeUpper.contains("WORKER") || routeLower.contains("worker") {
+            guard !visibleWorkerTabs.isEmpty else { return }
             currentDestination = .workers
             await loadWorkers(resetPage: true)
             if let maNld = item.targetEntityId, !maNld.isEmpty {
@@ -586,6 +787,7 @@ public final class MiniBiViewModel: ObservableObject {
                 }
             }
         } else if typeUpper.contains("DIRECT_ENTRY") || routeLower.contains("direct-entry") {
+            guard canAccessNewWorkerEntry else { return }
             currentDestination = .newEntry
             await loadDirectEntryBatchHistory()
         }
@@ -632,103 +834,129 @@ public final class MiniBiViewModel: ObservableObject {
 
         if reload {
             dashboardReloadTask?.cancel()
+            cancelInFlightTasksWithPrefix("dashboard:")
             dashboardReloadTask = Task { [weak self] in
                 await self?.loadDashboardData(includeCccdTabs: false)
             }
         }
     }
 
-    public func loadDashboardData(includeCccdTabs: Bool = true) async {
+    public func loadDashboardData(includeCccdTabs: Bool = false) async {
+        guard captureSessionToken() != nil else { return }
         let targetScope = dashboardScope
         let targetStart = filterStartDate
         let targetEnd = filterEndDate
+        let allowedScopes = currentUser?.safeAllowedWorkerTabs ?? []
+        let dedupeKey = "dashboard:\(targetScope):\(targetStart):\(targetEnd):\(includeCccdTabs)"
 
-        isLoadingDashboard = true
-        dashboardErrorMessage = ""
-        defer { isLoadingDashboard = false }
+        await runDeduplicatedSessionTask(key: dedupeKey) { [weak self] token in
+            guard let self, self.isSessionValid(token) else { return }
+            self.isLoadingDashboard = true
+            self.dashboardErrorMessage = ""
+            defer {
+                if self.isSessionValid(token) {
+                    self.isLoadingDashboard = false
+                }
+            }
 
-        async let overviewTask = workReportsService.fetchGeneralOverview(
-            scope: targetScope,
-            startDate: targetStart,
-            endDate: targetEnd
-        )
-        async let deepTask = workReportsService.fetchWorkforceDeepMetrics(
-            scope: targetScope,
-            startDate: targetStart,
-            endDate: targetEnd
-        )
-        async let teamTask = workReportsService.fetchTeamReport(
-            startDate: targetStart,
-            endDate: targetEnd
-        )
-
-        let overviewRes = await overviewTask
-        let deepRes = await deepTask
-        let teamRes = await teamTask
-
-        guard !Task.isCancelled,
-              dashboardScope == targetScope,
-              filterStartDate == targetStart,
-              filterEndDate == targetEnd else {
-            return
-        }
-
-        var firstError: String?
-        switch overviewRes {
-        case .success(let ov, _):
-            generalOverview = ov
-        case .failure(let message, _, _, _):
-            firstError = message
-        }
-
-        switch deepRes {
-        case .success(let dp, _):
-            workforceDeepMetrics = dp
-        case .failure(let message, _, _, _):
-            if firstError == nil { firstError = message }
-        }
-
-        if case .success(let tm, _) = teamRes {
-            teamReport = tm
-        }
-
-        if let firstError, !firstError.isEmpty {
-            dashboardErrorMessage = firstError
-        }
-
-        if includeCccdTabs {
-            async let dupTask = workReportsService.fetchDuplicateCccdReport(search: duplicateSearchQuery)
-            async let cccdTask = directEntryService.fetchCccdReviewList(
-                status: cccdReviewFilterStatus,
-                search: cccdReviewSearchQuery
+            async let overviewTask = self.workReportsService.fetchGeneralOverview(
+                scope: targetScope,
+                allowedWorkerScopes: allowedScopes,
+                startDate: targetStart,
+                endDate: targetEnd
             )
-            if case .success(let dup, _) = await dupTask { duplicateCccdReport = dup }
-            if case .success(let cccd, _) = await cccdTask {
-                cccdReviewItems = cccd.items
-                cccdReviewTotal = cccd.total
+            async let deepTask = self.workReportsService.fetchWorkforceDeepMetrics(
+                scope: targetScope,
+                allowedWorkerScopes: allowedScopes,
+                startDate: targetStart,
+                endDate: targetEnd
+            )
+            async let teamTask = self.workReportsService.fetchTeamReport(
+                allowedWorkerScopes: allowedScopes,
+                startDate: targetStart,
+                endDate: targetEnd
+            )
+
+            let overviewRes = await overviewTask
+            let deepRes = await deepTask
+            let teamRes = await teamTask
+
+            guard !Task.isCancelled,
+                  self.isSessionValid(token),
+                  self.dashboardScope == targetScope,
+                  self.filterStartDate == targetStart,
+                  self.filterEndDate == targetEnd else {
+                return
+            }
+
+            var firstError: String?
+            switch overviewRes {
+            case .success(let ov, _):
+                self.generalOverview = ov
+            case .failure(let message, _, _, _):
+                firstError = message
+            }
+
+            switch deepRes {
+            case .success(let dp, _):
+                self.workforceDeepMetrics = dp
+            case .failure(let message, _, _, _):
+                if firstError == nil { firstError = message }
+            }
+
+            if case .success(let tm, _) = teamRes {
+                self.teamReport = tm
+            }
+
+            if let firstError, !firstError.isEmpty {
+                self.dashboardErrorMessage = firstError
+            }
+
+            if includeCccdTabs {
+                async let dupTask = self.workReportsService.fetchDuplicateCccdReport(search: self.duplicateSearchQuery)
+                async let cccdTask = self.directEntryService.fetchCccdReviewList(
+                    status: self.cccdReviewFilterStatus,
+                    search: self.cccdReviewSearchQuery
+                )
+                let dupRes = await dupTask
+                let cccdRes = await cccdTask
+                guard !Task.isCancelled, self.isSessionValid(token) else { return }
+                if case .success(let dup, _) = dupRes { self.duplicateCccdReport = dup }
+                if case .success(let cccd, _) = cccdRes {
+                    self.cccdReviewItems = cccd.items
+                    self.cccdReviewTotal = cccd.total
+                }
             }
         }
     }
 
     public func loadCccdReviewItems() async {
-        isLoadingCccdReview = true
-        let res = await directEntryService.fetchCccdReviewList(
-            status: cccdReviewFilterStatus,
-            search: cccdReviewSearchQuery
-        )
-        isLoadingCccdReview = false
-        if case .success(let data, _) = res {
-            cccdReviewItems = data.items
-            cccdReviewTotal = data.total
+        guard captureSessionToken() != nil else { return }
+        let targetStatus = cccdReviewFilterStatus
+        let targetSearch = cccdReviewSearchQuery
+        await runDeduplicatedSessionTask(key: "cccd_review:\(targetStatus):\(targetSearch)") { [weak self] token in
+            guard let self, self.isSessionValid(token) else { return }
+            self.isLoadingCccdReview = true
+            let res = await self.directEntryService.fetchCccdReviewList(
+                status: targetStatus,
+                search: targetSearch
+            )
+            guard !Task.isCancelled, self.isSessionValid(token) else { return }
+            self.isLoadingCccdReview = false
+            if case .success(let data, _) = res {
+                self.cccdReviewItems = data.items
+                self.cccdReviewTotal = data.total
+            }
         }
     }
 
+    @discardableResult
     public func resolveCccdReview(
         entryId: Int64,
         action: String,
         correctedCccd: String? = nil,
         note: String = ""
-    ) async {
+    ) async -> Bool {
         let targetUuid = selectedCccdReviewItem?.entryId == entryId
             ? selectedCccdReviewItem?.entryIdUuid ?? String(entryId)
             : (cccdReviewItems.first(where: { $0.entryId == entryId })?.entryIdUuid ?? String(entryId))
@@ -747,8 +975,22 @@ public final class MiniBiViewModel: ObservableObject {
             selectedCccdReviewItem = updated
             showBanner("Đã cập nhật duyệt CCCD thành công.")
             await loadCccdReviewItems()
-        case .failure(let message, _, _, _):
-            showBanner(message, isError: true)
+            return true
+        case .failure(let message, let httpStatus, let errorCode, _):
+            let codeUpper = (errorCode ?? "").uppercased()
+            if httpStatus == 409 || codeUpper.contains("CONFLICT") {
+                await loadCccdReviewItems()
+                if let refreshed = cccdReviewItems.first(where: { $0.entryId == entryId || $0.entryIdUuid == targetUuid }) {
+                    selectedCccdReviewItem = refreshed
+                }
+                showBanner(
+                    "Dữ liệu hồ sơ đã thay đổi trên máy chủ (phiên bản mới). Nội dung bạn đang nhập được giữ nguyên — vui lòng kiểm tra và xác nhận gửi lại.",
+                    isError: true
+                )
+            } else {
+                showBanner(message, isError: true)
+            }
+            return false
         }
     }
 
@@ -781,8 +1023,20 @@ public final class MiniBiViewModel: ObservableObject {
             if case .success(let dup, _) = dupRes {
                 duplicateCccdReport = dup
             }
-        case .failure(let message, _, _, _):
-            showBanner(message, isError: true)
+        case .failure(let message, let httpStatus, let errorCode, _):
+            let codeUpper = (errorCode ?? "").uppercased()
+            if httpStatus == 409 || codeUpper.contains("CONFLICT") {
+                let dupRes = await workReportsService.fetchDuplicateCccdReport(search: duplicateSearchQuery)
+                if case .success(let dup, _) = dupRes {
+                    duplicateCccdReport = dup
+                }
+                showBanner(
+                    "Hồ sơ đã thay đổi phiên bản trên máy chủ. Dữ liệu mới nhất đã được tải lại — vui lòng kiểm tra và xác nhận rút lại nếu cần.",
+                    isError: true
+                )
+            } else {
+                showBanner(message, isError: true)
+            }
         }
     }
 
@@ -870,20 +1124,35 @@ public final class MiniBiViewModel: ObservableObject {
         }
     }
 
-    public func loadDirectEntryAssigneeOptions() async {
-        let res = await directEntryService.fetchAssigneeOptions()
-        if case .success(let opts, _) = res {
-            directEntryOptions = opts
-            if let defaultLabor = opts.catalogLaborTypes.first(where: {
-                $0.displayName.lowercased().contains("thời vụ") ||
-                $0.laborTypeKey.uppercased() == "TEMPORARY" ||
-                $0.laborTypeKey.uppercased().contains("SEASONAL")
-            }) ?? opts.catalogLaborTypes.first {
-                for idx in newWorkerDraftRows.indices {
-                    if newWorkerDraftRows[idx].laborTypeKey.isEmpty || newWorkerDraftRows[idx].laborTypeKey == "SEASONAL" {
-                        newWorkerDraftRows[idx].laborTypeKey = defaultLabor.laborTypeKey
-                        if newWorkerDraftRows[idx].nganhNghe.isEmpty || newWorkerDraftRows[idx].nganhNghe == "Thời vụ" {
-                            newWorkerDraftRows[idx].nganhNghe = defaultLabor.displayName
+    public func loadDirectEntryAssigneeOptions(force: Bool = false) async {
+        guard isAuthenticated,
+              let user = currentUser,
+              user.canLoadDirectEntryCatalog,
+              captureSessionToken() != nil else {
+            directEntryOptions = DirectEntryAssigneeOptions()
+            directEntryService.clearCatalogCache()
+            return
+        }
+        if !force && !directEntryOptions.catalogProjects.isEmpty {
+            return
+        }
+        await runDeduplicatedSessionTask(key: "catalog", force: force) { [weak self] token in
+            guard let self, self.isSessionValid(token) else { return }
+            let res = await self.directEntryService.fetchAssigneeOptions()
+            guard !Task.isCancelled, self.isSessionValid(token) else { return }
+            if case .success(let opts, _) = res {
+                self.directEntryOptions = opts
+                if let defaultLabor = opts.catalogLaborTypes.first(where: {
+                    $0.displayName.lowercased().contains("thời vụ") ||
+                    $0.laborTypeKey.uppercased() == "TEMPORARY" ||
+                    $0.laborTypeKey.uppercased().contains("SEASONAL")
+                }) ?? opts.catalogLaborTypes.first {
+                    for idx in self.newWorkerDraftRows.indices {
+                        if self.newWorkerDraftRows[idx].laborTypeKey.isEmpty || self.newWorkerDraftRows[idx].laborTypeKey == "SEASONAL" {
+                            self.newWorkerDraftRows[idx].laborTypeKey = defaultLabor.laborTypeKey
+                            if self.newWorkerDraftRows[idx].nganhNghe.isEmpty || self.newWorkerDraftRows[idx].nganhNghe == "Thời vụ" {
+                                self.newWorkerDraftRows[idx].nganhNghe = defaultLabor.displayName
+                            }
                         }
                     }
                 }
@@ -891,16 +1160,96 @@ public final class MiniBiViewModel: ObservableObject {
         }
     }
 
-    public func loadDirectEntryBatchHistory() async {
-        let res = await directEntryService.fetchBatchHistory()
-        if case .success(let list, _) = res {
-            directEntryHistoryBatches = list
+    public func refreshOwnSubmissions(reset: Bool = true) async {
+        guard isAuthenticated,
+              let user = currentUser,
+              (user.canAccessNewWorkerEntry || user.safeAllowedWorkerTabs.contains("uploader") || user.hasCapability("submission_read")),
+              let token = captureSessionToken() else {
+            ownSubmissionsFetchGeneration &+= 1
+            cancelInFlightTasksWithPrefix("own_submissions:")
+            ownSubmissions = []
+            ownSubmissionsNextCursor = nil
+            ownSubmissionsHasMore = false
+            directEntryHistoryBatches = []
+            ownSubmissionsErrorMessage = nil
+            isLoadingOwnSubmissions = false
+            return
         }
+        let targetCursor: String? = reset ? nil : ownSubmissionsNextCursor
+        if !reset && (targetCursor == nil || !ownSubmissionsHasMore || isLoadingOwnSubmissions) {
+            return
+        }
+        if reset {
+            cancelInFlightTasksWithPrefix("own_submissions:cursor:")
+        }
+        let dedupeKey = reset ? "own_submissions:first" : "own_submissions:cursor:\(targetCursor ?? "")"
+        let compositeKey = "gen:\(token.generation):uid:\(token.userId.lowercased()):\(dedupeKey)"
+        if inFlightTasks[compositeKey] == nil {
+            ownSubmissionsFetchGeneration &+= 1
+        }
+        let expectedFetchGen = ownSubmissionsFetchGeneration
+        await runDeduplicatedSessionTask(key: dedupeKey) { [weak self] token in
+            guard let self,
+                  self.isSessionValid(token),
+                  self.ownSubmissionsFetchGeneration == expectedFetchGen else {
+                return
+            }
+            self.isLoadingOwnSubmissions = true
+            if reset {
+                self.ownSubmissionsErrorMessage = nil
+            }
+            let res = await self.directEntryService.listOwnSubmissions(pageSize: 20, cursor: targetCursor)
+            guard !Task.isCancelled,
+                  self.isSessionValid(token),
+                  self.ownSubmissionsFetchGeneration == expectedFetchGen,
+                  (reset || self.ownSubmissionsNextCursor == targetCursor) else {
+                return
+            }
+            self.isLoadingOwnSubmissions = false
+            switch res {
+            case .success(let page, _):
+                if reset {
+                    self.ownSubmissions = page.items
+                } else {
+                    let existingIds = Set(self.ownSubmissions.map { $0.submissionIdUuid.isEmpty ? String($0.batchId) : $0.submissionIdUuid })
+                    let appended = page.items.filter {
+                        let key = $0.submissionIdUuid.isEmpty ? String($0.batchId) : $0.submissionIdUuid
+                        return !existingIds.contains(key)
+                    }
+                    self.ownSubmissions.append(contentsOf: appended)
+                }
+                self.ownSubmissionsNextCursor = page.nextCursor
+                self.ownSubmissionsHasMore = page.hasMore
+                self.directEntryHistoryBatches = self.ownSubmissions
+                self.ownSubmissionsErrorMessage = nil
+            case .failure(let message, _, _, _):
+                if reset {
+                    self.ownSubmissions = []
+                    self.ownSubmissionsNextCursor = nil
+                    self.ownSubmissionsHasMore = false
+                    self.directEntryHistoryBatches = []
+                }
+                self.ownSubmissionsErrorMessage = message
+            }
+        }
+    }
+
+    public func loadMoreOwnSubmissions() async {
+        await refreshOwnSubmissions(reset: false)
+    }
+
+    public func loadDirectEntryBatchHistory() async {
+        await refreshOwnSubmissions(reset: true)
     }
 
     /// Validates, checks duplicate CCCDs, submits valid rows in `newWorkerDraftRows`, uploads their documents
     /// (automatically merging 2+ contract images into 1 PDF), and removes ONLY the rows that succeeded!
     public func submitNewWorkerDraftBatch(confirmedDuplicates: Bool = false) async {
+        guard let token = captureSessionToken(),
+              let user = currentUser,
+              user.canAccessNewWorkerEntry else {
+            return
+        }
         let validRows = newWorkerDraftRows.filter { $0.isReadyForSubmit }
         if validRows.isEmpty {
             if let firstRow = newWorkerDraftRows.first, let err = firstRow.validateAndroidContractError() {
@@ -912,10 +1261,15 @@ public final class MiniBiViewModel: ObservableObject {
         }
 
         isSubmittingNewWorkers = true
-        defer { isSubmittingNewWorkers = false }
+        defer {
+            if isSessionValid(token) {
+                isSubmittingNewWorkers = false
+            }
+        }
 
         if !confirmedDuplicates {
             let checkRes = await directEntryService.checkDuplicates(drafts: validRows)
+            guard !Task.isCancelled, isSessionValid(token) else { return }
             if case .success(let duplicates, _) = checkRes, !duplicates.isEmpty {
                 pendingDuplicateConfirmCandidates = duplicates
                 showDuplicateConfirmDialog = true
@@ -930,54 +1284,64 @@ public final class MiniBiViewModel: ObservableObject {
             drafts: validRows,
             confirmDuplicates: confirmedDuplicates
         )
+        guard !Task.isCancelled, isSessionValid(token) else { return }
 
         switch submitRes {
         case .success(let outcome, _):
+            let canUploadDocs = currentUser?.hasCapability("document_upload") == true
             // Upload staged documents (Portrait + CCCD front/back + multi-image merged PDF contract) for each created entry
-            for row in validRows {
-                let entryIdUuid = outcome.entryIdUuidByRowId[row.rowId]
-                    ?? outcome.entryIdByRowId[row.rowId].map { String($0) }
-                if let entryIdUuid, !entryIdUuid.isEmpty {
-                    var currentEntryVersion: Int = 1
-                    if let portrait = row.portraitFile {
-                        let up = await directEntryService.uploadEntryDocumentAttachmentsWithVersion(
-                            entryIdUuid: entryIdUuid,
-                            docType: DirectEntryContract.docTypeWorkerPortrait,
-                            attachments: [portrait],
-                            initialEntryVersion: currentEntryVersion
-                        )
-                        currentEntryVersion = up.nextEntryVersion
-                    }
-                    if let front = row.cccdFrontFile {
-                        let up = await directEntryService.uploadEntryDocumentAttachmentsWithVersion(
-                            entryIdUuid: entryIdUuid,
-                            docType: DirectEntryContract.docTypeCccdFront,
-                            attachments: [front],
-                            initialEntryVersion: currentEntryVersion
-                        )
-                        currentEntryVersion = up.nextEntryVersion
-                    }
-                    if let back = row.cccdBackFile {
-                        let up = await directEntryService.uploadEntryDocumentAttachmentsWithVersion(
-                            entryIdUuid: entryIdUuid,
-                            docType: DirectEntryContract.docTypeCccdBack,
-                            attachments: [back],
-                            initialEntryVersion: currentEntryVersion
-                        )
-                        currentEntryVersion = up.nextEntryVersion
-                    }
-                    if !row.contractFiles.isEmpty {
-                        let up = await directEntryService.uploadEntryDocumentAttachmentsWithVersion(
-                            entryIdUuid: entryIdUuid,
-                            docType: DirectEntryContract.docTypeEmploymentContract,
-                            attachments: row.contractFiles,
-                            initialEntryVersion: currentEntryVersion
-                        )
-                        currentEntryVersion = up.nextEntryVersion
+            if canUploadDocs {
+                for row in validRows {
+                    guard !Task.isCancelled, isSessionValid(token) else { return }
+                    let entryIdUuid = outcome.entryIdUuidByRowId[row.rowId]
+                        ?? outcome.entryIdByRowId[row.rowId].map { String($0) }
+                    if let entryIdUuid, !entryIdUuid.isEmpty {
+                        var currentEntryVersion: Int = 1
+                        if let portrait = row.portraitFile {
+                            let up = await directEntryService.uploadEntryDocumentAttachmentsWithVersion(
+                                entryIdUuid: entryIdUuid,
+                                docType: DirectEntryContract.docTypeWorkerPortrait,
+                                attachments: [portrait],
+                                initialEntryVersion: currentEntryVersion
+                            )
+                            guard !Task.isCancelled, isSessionValid(token) else { return }
+                            currentEntryVersion = up.nextEntryVersion
+                        }
+                        if let front = row.cccdFrontFile {
+                            let up = await directEntryService.uploadEntryDocumentAttachmentsWithVersion(
+                                entryIdUuid: entryIdUuid,
+                                docType: DirectEntryContract.docTypeCccdFront,
+                                attachments: [front],
+                                initialEntryVersion: currentEntryVersion
+                            )
+                            guard !Task.isCancelled, isSessionValid(token) else { return }
+                            currentEntryVersion = up.nextEntryVersion
+                        }
+                        if let back = row.cccdBackFile {
+                            let up = await directEntryService.uploadEntryDocumentAttachmentsWithVersion(
+                                entryIdUuid: entryIdUuid,
+                                docType: DirectEntryContract.docTypeCccdBack,
+                                attachments: [back],
+                                initialEntryVersion: currentEntryVersion
+                            )
+                            guard !Task.isCancelled, isSessionValid(token) else { return }
+                            currentEntryVersion = up.nextEntryVersion
+                        }
+                        if !row.contractFiles.isEmpty {
+                            let up = await directEntryService.uploadEntryDocumentAttachmentsWithVersion(
+                                entryIdUuid: entryIdUuid,
+                                docType: DirectEntryContract.docTypeEmploymentContract,
+                                attachments: row.contractFiles,
+                                initialEntryVersion: currentEntryVersion
+                            )
+                            guard !Task.isCancelled, isSessionValid(token) else { return }
+                            currentEntryVersion = up.nextEntryVersion
+                        }
                     }
                 }
             }
 
+            guard !Task.isCancelled, isSessionValid(token) else { return }
             // Preserve any unsaved/incomplete draft rows; only remove rows that were saved!
             let savedRowIdSet = Set(validRows.map { $0.rowId })
             let remainingRows = newWorkerDraftRows.filter { !savedRowIdSet.contains($0.rowId) }
@@ -994,31 +1358,105 @@ public final class MiniBiViewModel: ObservableObject {
     // MARK: - Workers Management Actions
 
     public func loadWorkers(resetPage: Bool = false) async {
+        guard captureSessionToken() != nil else {
+            selectedWorkerScope = ""
+            workers = []
+            workersTotalCount = 0
+            workersPage = 1
+            workersTotalPages = 1
+            isLoadingWorkers = false
+            return
+        }
+        let allowedKeys = visibleWorkerTabs.map(\.key)
+        guard !allowedKeys.isEmpty else {
+            selectedWorkerScope = ""
+            workers = []
+            workersTotalCount = 0
+            workersPage = 1
+            workersTotalPages = 1
+            isLoadingWorkers = false
+            return
+        }
+        let trimmedRequested = selectedWorkerScope.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let resolvedScope: String
+        if trimmedRequested.isEmpty {
+            resolvedScope = allowedKeys[0]
+            selectedWorkerScope = resolvedScope
+        } else if allowedKeys.contains(trimmedRequested) {
+            resolvedScope = trimmedRequested
+            selectedWorkerScope = resolvedScope
+        } else {
+            workers = []
+            workersTotalCount = 0
+            workersTotalPages = 1
+            isLoadingWorkers = false
+            return
+        }
+
+        // `uploader` is a submission history tab (`GET /api/direct-entry/submissions`), NOT a worker-directory scope.
+        if resolvedScope == "uploader" {
+            workers = []
+            workersTotalCount = 0
+            workersPage = 1
+            workersTotalPages = 1
+            isLoadingWorkers = false
+            await refreshOwnSubmissions(reset: resetPage)
+            return
+        }
+
         if resetPage {
             workersPage = 1
         }
-        isLoadingWorkers = true
-        let res = await repository.fetchWorkers(
-            scope: selectedWorkerScope,
-            search: workerSearchQuery,
-            project: workerProjectFilter,
-            status: workerStatusFilter,
-            page: workersPage
-        )
-        isLoadingWorkers = false
-        switch res {
-        case .success(let data, _):
-            workers = data.items
-            workersTotalCount = data.total
-            workersTotalPages = data.totalPages
-        case .failure(let message, _, _, _):
-            showBanner(message, isError: true)
+        let targetPage = workersPage
+        let targetSearch = workerSearchQuery
+        let targetProject = workerProjectFilter
+        let targetStatus = workerStatusFilter
+        let dedupeKey = "workers:\(resolvedScope):\(targetSearch):\(targetProject):\(targetStatus):\(targetPage)"
+
+        await runDeduplicatedSessionTask(key: dedupeKey) { [weak self] token in
+            guard let self, self.isSessionValid(token) else { return }
+            self.isLoadingWorkers = true
+            let res = await self.repository.fetchWorkers(
+                scope: resolvedScope,
+                search: targetSearch,
+                project: targetProject,
+                status: targetStatus,
+                page: targetPage
+            )
+            guard !Task.isCancelled,
+                  self.isSessionValid(token),
+                  self.selectedWorkerScope == resolvedScope,
+                  self.workersPage == targetPage,
+                  self.workerSearchQuery == targetSearch,
+                  self.workerProjectFilter == targetProject,
+                  self.workerStatusFilter == targetStatus else {
+                return
+            }
+            self.isLoadingWorkers = false
+            switch res {
+            case .success(let data, _):
+                self.workers = data.items
+                self.workersTotalCount = data.total
+                self.workersTotalPages = data.totalPages
+            case .failure(let message, _, _, _):
+                self.workers = []
+                self.workersTotalCount = 0
+                self.workersTotalPages = 1
+                self.showBanner(message, isError: true)
+            }
         }
     }
 
     public func uploadWorkerContract(maNld: String, attachments: [LocalAttachmentItem]) async -> Bool {
+        guard let token = captureSessionToken(),
+              let user = currentUser,
+              user.hasCapability("document_upload"),
+              !attachments.isEmpty else {
+            return false
+        }
         isUploadingWorkerContract = true
         let res = await repository.uploadWorkerContractAttachments(maNld: maNld, attachments: attachments)
+        guard !Task.isCancelled, isSessionValid(token) else { return false }
         isUploadingWorkerContract = false
         switch res {
         case .success(let fileUrl, _):
@@ -1043,10 +1481,14 @@ public final class MiniBiViewModel: ObservableObject {
     // MARK: - Direct Edit ("Sửa trực tiếp hồ sơ NLĐ") Actions
 
     public func openDirectEdit(_ worker: WorkerItem) async {
-        guard worker.canDirectEdit else {
+        guard let token = captureSessionToken(), let user = currentUser else { return }
+        guard user.hasCapability("entry_direct_edit") && worker.canDirectEdit else {
             showBanner("Bạn không có quyền sửa trực tiếp hồ sơ này.", isError: true)
             return
         }
+        openDirectEditGeneration &+= 1
+        let expectedOpenGen = openDirectEditGeneration
+        let targetEntryId = worker.maNld
         directEditWorkerTarget = worker
         directEditBaselineDetail = nil
         directEditLoadingDetail = true
@@ -1056,18 +1498,32 @@ public final class MiniBiViewModel: ObservableObject {
         directEditProfileSavedMessage = nil
         directEditFileStatuses = [:]
 
-        if directEntryOptions.projects.isEmpty && directEntryOptions.catalogLaborTypes.isEmpty {
+        if directEntryOptions.catalogProjects.isEmpty {
             await loadDirectEntryAssigneeOptions()
+            guard !Task.isCancelled,
+                  isSessionValid(token),
+                  openDirectEditGeneration == expectedOpenGen,
+                  directEditWorkerTarget?.maNld == targetEntryId else {
+                return
+            }
         }
 
-        let targetEntryId = worker.maNld
         let detailRes = await directEntryService.fetchWorkerEntryDetail(entryId: targetEntryId)
+        guard !Task.isCancelled,
+              isSessionValid(token),
+              openDirectEditGeneration == expectedOpenGen,
+              directEditWorkerTarget?.maNld == targetEntryId else {
+            return
+        }
         directEditLoadingDetail = false
 
         switch detailRes {
         case .success(let detail, _):
+            guard detail.entryId.isEmpty || detail.entryId.caseInsensitiveCompare(targetEntryId) == .orderedSame else {
+                return
+            }
             directEditBaselineDetail = detail
-            if !detail.canDirectEdit {
+            if !detail.canDirectEdit || currentUser?.hasCapability("entry_direct_edit") != true {
                 directEditErrorMessage = "Tài khoản hiện tại không có quyền sửa trực tiếp hồ sơ này."
             }
         case .failure(let message, _, _, _):
@@ -1076,6 +1532,7 @@ public final class MiniBiViewModel: ObservableObject {
     }
 
     public func closeDirectEdit() {
+        openDirectEditGeneration &+= 1
         directEditWorkerTarget = nil
         directEditBaselineDetail = nil
         directEditLoadingDetail = false
@@ -1092,7 +1549,11 @@ public final class MiniBiViewModel: ObservableObject {
         onAllComplete: (() -> Void)? = nil
     ) async {
         guard !directEditSavingProfile else { return }
-        guard let baseline = directEditBaselineDetail else { return }
+        guard let token = captureSessionToken(),
+              let user = currentUser,
+              let baseline = directEditBaselineDetail else {
+            return
+        }
 
         directEditErrorMessage = nil
         directEditFieldErrors = [:]
@@ -1108,7 +1569,20 @@ public final class MiniBiViewModel: ObservableObject {
         }
 
         let patch = DirectEntryService.buildDirectEditPatch(baseline: baseline, input: form)
-        let nonEmptyStaged = stagedFiles.filter { !$0.value.isEmpty }
+        let requestedStaged = stagedFiles.filter { !$0.value.isEmpty }
+        let canDirectEdit = user.hasCapability("entry_direct_edit") && baseline.canDirectEdit
+        let canUploadDocs = user.hasCapability("document_upload")
+
+        if !patch.isEmpty && !canDirectEdit {
+            directEditErrorMessage = "Tài khoản hiện tại không có quyền sửa trực tiếp hồ sơ này."
+            return
+        }
+        if patch.isEmpty && !requestedStaged.isEmpty && !canUploadDocs {
+            directEditErrorMessage = "Tài khoản hiện tại không có quyền tải tệp đính kèm."
+            return
+        }
+
+        let nonEmptyStaged = canUploadDocs ? requestedStaged : [:]
 
         if patch.isEmpty && nonEmptyStaged.isEmpty {
             directEditErrorMessage = "Chưa có thay đổi thông tin hoặc tệp đính kèm nào để lưu."
@@ -1126,6 +1600,7 @@ public final class MiniBiViewModel: ObservableObject {
                 expectedEntryVersion: currentVersion,
                 patch: patch
             )
+            guard !Task.isCancelled, isSessionValid(token) else { return }
             directEditSavingProfile = false
 
             switch editRes {
@@ -1134,18 +1609,24 @@ public final class MiniBiViewModel: ObservableObject {
                 directEditBaselineDetail = updatedDetail
                 directEditProfileSavedMessage = "Đã lưu thông tin hồ sơ (v\(currentVersion))."
                 // Refresh baseline so subsequent retries don't re-submit already saved profile changes
-                if case .success(let refreshed, _) = await directEntryService.fetchWorkerEntryDetail(entryId: targetEntryId) {
+                let refreshRes = await directEntryService.fetchWorkerEntryDetail(entryId: targetEntryId)
+                guard !Task.isCancelled, isSessionValid(token) else { return }
+                if case .success(let refreshed, _) = refreshRes {
                     directEditBaselineDetail = refreshed
                     currentVersion = refreshed.entryVersion
                 }
 
             case .failure(let message, let httpStatus, let errorCode, _):
-                directEditErrorMessage = message
                 let codeUpper = (errorCode ?? "").uppercased()
-                if httpStatus == 409 && codeUpper == "OCC_CONFLICT" {
-                    if case .success(let refreshed, _) = await directEntryService.fetchWorkerEntryDetail(entryId: targetEntryId) {
+                if httpStatus == 409 || codeUpper.contains("CONFLICT") {
+                    let refreshRes = await directEntryService.fetchWorkerEntryDetail(entryId: targetEntryId)
+                    guard !Task.isCancelled, isSessionValid(token) else { return }
+                    if case .success(let refreshed, _) = refreshRes {
                         directEditBaselineDetail = refreshed
                     }
+                    directEditErrorMessage = "Hồ sơ đã được cập nhật ở phiên bản mới trên máy chủ. Nội dung bạn vừa chỉnh sửa vẫn được giữ nguyên — vui lòng kiểm tra và bấm Lưu lại để xác nhận."
+                } else {
+                    directEditErrorMessage = message
                 }
                 return
             }
@@ -1161,6 +1642,7 @@ public final class MiniBiViewModel: ObservableObject {
                 DirectEntryContract.docTypeEmploymentContract,
             ]
             for docType in orderedDocTypes {
+                guard !Task.isCancelled, isSessionValid(token) else { return }
                 guard let files = nonEmptyStaged[docType], !files.isEmpty else { continue }
                 let displayName = files.count >= 2
                     ? "\(files.count) tệp ảnh (ghép PDF)"
@@ -1177,6 +1659,7 @@ public final class MiniBiViewModel: ObservableObject {
                     attachments: files,
                     initialEntryVersion: currentVersion
                 )
+                guard !Task.isCancelled, isSessionValid(token) else { return }
                 currentVersion = upRes.nextEntryVersion
                 if var cur = directEditBaselineDetail {
                     cur.entryVersion = currentVersion
@@ -1190,8 +1673,17 @@ public final class MiniBiViewModel: ObservableObject {
                         status: .success,
                         message: "Đã tải tệp thành công."
                     )
-                case .failure(let errMsg, _, _, _):
+                case .failure(let errMsg, let httpStatus, let errorCode, _):
                     anyFileFailed = true
+                    let codeUpper = (errorCode ?? "").uppercased()
+                    if httpStatus == 409 || codeUpper.contains("CONFLICT") {
+                        let conflictRefresh = await directEntryService.fetchWorkerEntryDetail(entryId: targetEntryId)
+                        guard !Task.isCancelled, isSessionValid(token) else { return }
+                        if case .success(let refreshed, _) = conflictRefresh {
+                            directEditBaselineDetail = refreshed
+                            currentVersion = refreshed.entryVersion
+                        }
+                    }
                     directEditFileStatuses[docType] = DirectEditFileStatus(
                         docType: docType,
                         fileName: displayName,
@@ -1201,12 +1693,16 @@ public final class MiniBiViewModel: ObservableObject {
                 }
             }
 
-            if case .success(let refreshed, _) = await directEntryService.fetchWorkerEntryDetail(entryId: targetEntryId) {
+            let finalRefresh = await directEntryService.fetchWorkerEntryDetail(entryId: targetEntryId)
+            guard !Task.isCancelled, isSessionValid(token) else { return }
+            if case .success(let refreshed, _) = finalRefresh {
                 directEditBaselineDetail = refreshed
             }
         }
 
+        guard !Task.isCancelled, isSessionValid(token) else { return }
         await loadWorkers(resetPage: false)
+        guard !Task.isCancelled, isSessionValid(token) else { return }
 
         if anyFileFailed {
             directEditErrorMessage = "Một số tệp đính kèm tải lên chưa thành công. Thông tin hồ sơ đã được bảo toàn, bạn có thể bấm Thử lại trên từng tệp lỗi."
@@ -1222,7 +1718,13 @@ public final class MiniBiViewModel: ObservableObject {
         attachments: [LocalAttachmentItem],
         onComplete: (() -> Void)? = nil
     ) async {
-        guard let baseline = directEditBaselineDetail, !attachments.isEmpty else { return }
+        guard let token = captureSessionToken(),
+              let user = currentUser,
+              user.hasCapability("document_upload"),
+              let baseline = directEditBaselineDetail,
+              !attachments.isEmpty else {
+            return
+        }
         let targetEntryId = baseline.entryId
         let displayName = attachments.count >= 2
             ? "\(attachments.count) tệp ảnh (ghép PDF)"
@@ -1241,8 +1743,11 @@ public final class MiniBiViewModel: ObservableObject {
             attachments: attachments,
             initialEntryVersion: baseline.entryVersion
         )
+        guard !Task.isCancelled, isSessionValid(token) else { return }
 
-        if case .success(let refreshed, _) = await directEntryService.fetchWorkerEntryDetail(entryId: targetEntryId) {
+        let refreshRes = await directEntryService.fetchWorkerEntryDetail(entryId: targetEntryId)
+        guard !Task.isCancelled, isSessionValid(token) else { return }
+        if case .success(let refreshed, _) = refreshRes {
             directEditBaselineDetail = refreshed
         } else if var cur = directEditBaselineDetail {
             cur.entryVersion = upRes.nextEntryVersion
@@ -1261,14 +1766,19 @@ public final class MiniBiViewModel: ObservableObject {
                 directEditErrorMessage = nil
             }
             await loadWorkers(resetPage: false)
+            guard !Task.isCancelled, isSessionValid(token) else { return }
             onComplete?()
-        case .failure(let errMsg, _, _, _):
+        case .failure(let errMsg, let httpStatus, let errorCode, _):
             directEditFileStatuses[docType] = DirectEditFileStatus(
                 docType: docType,
                 fileName: displayName,
                 status: .error,
                 message: errMsg
             )
+            let codeUpper = (errorCode ?? "").uppercased()
+            if httpStatus == 409 || codeUpper.contains("CONFLICT") {
+                directEditErrorMessage = "Hồ sơ đã được cập nhật ở phiên bản mới trên máy chủ. Dữ liệu mới nhất đã được tải lại — vui lòng kiểm tra và bấm Thử lại để xác nhận."
+            }
         }
     }
 
@@ -1283,32 +1793,58 @@ public final class MiniBiViewModel: ObservableObject {
         return salaryAdvanceWorkers.first(where: { $0.workerEntryId == selectedId })
     }
 
-    public func loadSalaryAdvanceContext() async {
-        let res = await salaryAdvanceService.fetchContext()
-        switch res {
-        case .success(let ctx, _):
-            let activeProjects = ctx.activeManagedProjects
-            salaryAdvanceContext = SalaryAdvanceActorContext(
-                appUserId: ctx.appUserId,
-                displayName: ctx.displayName,
-                authorizationDate: ctx.authorizationDate,
-                isFullAdmin: ctx.isFullAdmin,
-                isBod: ctx.isBod,
-                isProjectManager: ctx.isProjectManager,
-                isProjectAccountant: ctx.isProjectAccountant,
-                isSupervisoryViewer: ctx.isSupervisoryViewer,
-                managedProjects: activeProjects
-            )
-            let currentProjectId = salaryAdvanceSelectedProjectId
-            let resolvedProjectId: String?
-            if let currentProjectId, activeProjects.contains(where: { $0.projectId == currentProjectId }) {
-                resolvedProjectId = currentProjectId
-            } else {
-                resolvedProjectId = activeProjects.first?.projectId
+    public func loadSalaryAdvanceContext(force: Bool = false) async {
+        guard isAuthenticated,
+              let user = currentUser,
+              user.canAttemptPmSalaryAdvanceContext,
+              captureSessionToken() != nil else {
+            salaryAdvanceContext = nil
+            salaryAdvanceSelectedProjectId = nil
+            salaryAdvanceContextLoadedGeneration = nil
+            return
+        }
+        if !force && salaryAdvanceContextLoadedGeneration == sessionGeneration && salaryAdvanceContext != nil {
+            return
+        }
+        await runDeduplicatedSessionTask(key: "salary_advance_context", force: force) { [weak self] token in
+            guard let self, self.isSessionValid(token) else { return }
+            let res = await self.salaryAdvanceService.fetchContext()
+            guard !Task.isCancelled, self.isSessionValid(token) else { return }
+            switch res {
+            case .success(let ctx, _):
+                let ctxUserId = ctx.appUserId.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !ctxUserId.isEmpty && ctxUserId.caseInsensitiveCompare(token.userId) != .orderedSame {
+                    self.salaryAdvanceContext = nil
+                    self.salaryAdvanceSelectedProjectId = nil
+                    self.salaryAdvanceContextLoadedGeneration = nil
+                    return
+                }
+                let activeProjects = ctx.activeManagedProjects
+                self.salaryAdvanceContext = SalaryAdvanceActorContext(
+                    appUserId: ctx.appUserId,
+                    displayName: ctx.displayName,
+                    authorizationDate: ctx.authorizationDate,
+                    isFullAdmin: ctx.isFullAdmin,
+                    isBod: ctx.isBod,
+                    isProjectManager: ctx.isProjectManager,
+                    isProjectAccountant: ctx.isProjectAccountant,
+                    isSupervisoryViewer: ctx.isSupervisoryViewer,
+                    managedProjects: activeProjects
+                )
+                self.salaryAdvanceContextLoadedGeneration = token.generation
+                let currentProjectId = self.salaryAdvanceSelectedProjectId
+                let resolvedProjectId: String?
+                if let currentProjectId, activeProjects.contains(where: { $0.projectId == currentProjectId }) {
+                    resolvedProjectId = currentProjectId
+                } else {
+                    resolvedProjectId = activeProjects.first?.projectId
+                }
+                self.salaryAdvanceSelectedProjectId = resolvedProjectId
+            case .failure:
+                self.salaryAdvanceContext = nil
+                self.salaryAdvanceSelectedProjectId = nil
+                self.salaryAdvanceContextLoadedGeneration = token.generation
             }
-            salaryAdvanceSelectedProjectId = resolvedProjectId
-        case .failure:
-            break
         }
     }
 
@@ -2275,18 +2811,24 @@ public final class MiniBiViewModel: ObservableObject {
     }
 
     public func syncAttendanceTimeAnchor() async {
-        _ = await timeAnchorManager.syncTimeAnchor()
-        attendanceTimeEvaluation = timeAnchorManager.evaluateAnchor()
-        if let username = currentUser?.username, !username.isEmpty {
-            if attendanceOutboxService.pendingCountForUser(userKey: username) > 0 {
-                _ = await attendanceOutboxService.flushRetryableOutbox(userKey: username)
-            }
-            let histRes = await attendanceOutboxService.syncServerHistoryForUser(userKey: username)
-            if case .success(let data, _) = histRes {
-                attendanceOutboxItems = data.items
-                todayServerAttendanceCount = data.todayCount
-            } else {
-                attendanceOutboxItems = attendanceOutboxService.listItemsForUser(userKey: username)
+        guard captureSessionToken() != nil else { return }
+        await runDeduplicatedSessionTask(key: "attendance_time_anchor") { [weak self] token in
+            guard let self, self.isSessionValid(token) else { return }
+            _ = await self.timeAnchorManager.syncTimeAnchor()
+            guard !Task.isCancelled, self.isSessionValid(token) else { return }
+            self.attendanceTimeEvaluation = self.timeAnchorManager.evaluateAnchor()
+            if let username = self.currentUser?.username, !username.isEmpty {
+                if self.attendanceOutboxService.pendingCountForUser(userKey: username) > 0 {
+                    _ = await self.attendanceOutboxService.flushRetryableOutbox(userKey: username)
+                }
+                let histRes = await self.attendanceOutboxService.syncServerHistoryForUser(userKey: username)
+                guard !Task.isCancelled, self.isSessionValid(token) else { return }
+                if case .success(let data, _) = histRes {
+                    self.attendanceOutboxItems = data.items
+                    self.todayServerAttendanceCount = data.todayCount
+                } else {
+                    self.attendanceOutboxItems = self.attendanceOutboxService.listItemsForUser(userKey: username)
+                }
             }
         }
     }
@@ -2553,40 +3095,45 @@ public final class MiniBiViewModel: ObservableObject {
     }
 
     public func refreshMyLeaveSummary(year: Int? = nil) async {
+        guard captureSessionToken() != nil else { return }
         let targetYear = year ?? leaveYear
-        isLoadingMyLeave = true
-        myLeaveError = nil
-        myLeaveErrorCode = nil
-        let result = await leaveService.fetchMyLeaveSummary(leaveYear: targetYear)
-        isLoadingMyLeave = false
+        await runDeduplicatedSessionTask(key: "leave_me:\(targetYear)") { [weak self] token in
+            guard let self, self.isSessionValid(token) else { return }
+            self.isLoadingMyLeave = true
+            self.myLeaveError = nil
+            self.myLeaveErrorCode = nil
+            let result = await self.leaveService.fetchMyLeaveSummary(leaveYear: targetYear)
+            guard !Task.isCancelled, self.isSessionValid(token) else { return }
+            self.isLoadingMyLeave = false
 
-        switch result {
-        case .success(let summary, _):
-            myLeaveSummary = summary
-            leaveYear = summary.leaveYear
-            myLeaveError = nil
-            myLeaveErrorCode = nil
-            ensureInitialLeaveDraftDay()
+            switch result {
+            case .success(let summary, _):
+                self.myLeaveSummary = summary
+                self.leaveYear = summary.leaveYear
+                self.myLeaveError = nil
+                self.myLeaveErrorCode = nil
+                self.ensureInitialLeaveDraftDay()
 
-            let visibleTabs = resolveVisibleAttendanceTabs()
-            if !visibleTabs.contains(activeAttendanceTab) {
-                activeAttendanceTab = .checkIn
-            }
-            if summary.authority.canApproveRequests &&
-                !summary.authority.isSharedNonEmployee &&
-                (activeAttendanceTab == .leaveApproval || leaveApprovalInbox != nil) {
-                await refreshLeaveApprovalInbox(
-                    statusFilter: leaveInboxStatusFilter,
-                    page: leaveInboxPage
-                )
-            }
+                let visibleTabs = self.resolveVisibleAttendanceTabs()
+                if !visibleTabs.contains(self.activeAttendanceTab) {
+                    self.activeAttendanceTab = .checkIn
+                }
+                if summary.authority.canApproveRequests &&
+                    !summary.authority.isSharedNonEmployee &&
+                    (self.activeAttendanceTab == .leaveApproval || self.leaveApprovalInbox != nil) {
+                    await self.refreshLeaveApprovalInbox(
+                        statusFilter: self.leaveInboxStatusFilter,
+                        page: self.leaveInboxPage
+                    )
+                }
 
-        case .failure(let message, _, let errorCode, _):
-            myLeaveError = message
-            myLeaveErrorCode = errorCode
-            if errorCode?.uppercased() == "LEAVE_SHARED_ACCOUNT_FORBIDDEN" {
-                myLeaveSummary = nil
-                activeAttendanceTab = .checkIn
+            case .failure(let message, _, let errorCode, _):
+                self.myLeaveError = message
+                self.myLeaveErrorCode = errorCode
+                if errorCode?.uppercased() == "LEAVE_SHARED_ACCOUNT_FORBIDDEN" {
+                    self.myLeaveSummary = nil
+                    self.activeAttendanceTab = .checkIn
+                }
             }
         }
     }
@@ -2873,51 +3420,56 @@ public final class MiniBiViewModel: ObservableObject {
     }
 
     public func refreshMyAttendanceExplanations(businessDate: String? = nil) async {
+        guard captureSessionToken() != nil else { return }
         let targetDate: String? = {
             let candidate = businessDate ?? explanationSelectedDate
             let clean = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
             return AttendanceExplanationContract.isValidIsoDate(clean) ? clean : nil
         }()
-        isLoadingMyExplanations = true
-        myExplanationsError = nil
-        myExplanationsErrorCode = nil
-        let result = await attendanceExplanationService.fetchMyExplanationsOverview(
-            businessDate: targetDate,
-            limit: Self.leaveInboxPageSize,
-            offset: 0
-        )
-        isLoadingMyExplanations = false
+        await runDeduplicatedSessionTask(key: "explanations_me:\(targetDate ?? "")") { [weak self] token in
+            guard let self, self.isSessionValid(token) else { return }
+            self.isLoadingMyExplanations = true
+            self.myExplanationsError = nil
+            self.myExplanationsErrorCode = nil
+            let result = await self.attendanceExplanationService.fetchMyExplanationsOverview(
+                businessDate: targetDate,
+                limit: Self.leaveInboxPageSize,
+                offset: 0
+            )
+            guard !Task.isCancelled, self.isSessionValid(token) else { return }
+            self.isLoadingMyExplanations = false
 
-        switch result {
-        case .success(let overview, _):
-            myExplanationsOverview = overview
-            explanationSelectedDate = overview.selectedDate
-            myExplanationsError = nil
-            myExplanationsErrorCode = nil
+            switch result {
+            case .success(let overview, _):
+                self.myExplanationsOverview = overview
+                self.explanationSelectedDate = overview.selectedDate
+                self.myExplanationsError = nil
+                self.myExplanationsErrorCode = nil
 
-            let visibleTabs = resolveVisibleAttendanceTabs()
-            if !visibleTabs.contains(activeAttendanceTab) {
-                activeAttendanceTab = .checkIn
-            }
-            if overview.viewer.canApproveExplanations &&
-                !overview.viewer.isSharedNonEmployee &&
-                (activeAttendanceTab == .explanationApproval || explanationApprovalInbox != nil) {
-                await refreshExplanationApprovalInbox(
-                    statusFilter: explanationInboxStatusFilter,
-                    page: explanationInboxPage
-                )
-            }
+                let visibleTabs = self.resolveVisibleAttendanceTabs()
+                if !visibleTabs.contains(self.activeAttendanceTab) {
+                    self.activeAttendanceTab = .checkIn
+                }
+                if overview.viewer.canApproveExplanations &&
+                    !overview.viewer.isSharedNonEmployee &&
+                    (self.activeAttendanceTab == .explanationApproval || self.explanationApprovalInbox != nil) {
+                    await self.refreshExplanationApprovalInbox(
+                        statusFilter: self.explanationInboxStatusFilter,
+                        page: self.explanationInboxPage
+                    )
+                }
 
-        case .failure(let message, _, let errorCode, _):
-            myExplanationsError = message
-            myExplanationsErrorCode = errorCode
-            let codeUpper = (errorCode ?? "").uppercased()
-            if codeUpper == "ATTENDANCE_EXPLANATION_ACCESS_DENIED" ||
-                codeUpper == "LEAVE_SHARED_ACCOUNT_FORBIDDEN" {
-                myExplanationsOverview = nil
-                let visibleTabs = resolveVisibleAttendanceTabs()
-                if !visibleTabs.contains(activeAttendanceTab) {
-                    activeAttendanceTab = .checkIn
+            case .failure(let message, _, let errorCode, _):
+                self.myExplanationsError = message
+                self.myExplanationsErrorCode = errorCode
+                let codeUpper = (errorCode ?? "").uppercased()
+                if codeUpper == "ATTENDANCE_EXPLANATION_ACCESS_DENIED" ||
+                    codeUpper == "LEAVE_SHARED_ACCOUNT_FORBIDDEN" {
+                    self.myExplanationsOverview = nil
+                    let visibleTabs = self.resolveVisibleAttendanceTabs()
+                    if !visibleTabs.contains(self.activeAttendanceTab) {
+                        self.activeAttendanceTab = .checkIn
+                    }
                 }
             }
         }
@@ -3105,25 +3657,41 @@ public final class MiniBiViewModel: ObservableObject {
     // MARK: - Work Reports Actions (Including `is_overdue` & `WORK_REPORT_DEADLINE_PASSED` Contract)
 
     public func loadWorkReportsData() async {
-        isLoadingWorkReports = true
-        defer { isLoadingWorkReports = false }
+        guard captureSessionToken() != nil else { return }
+        await runDeduplicatedSessionTask(key: "work_reports") { [weak self] token in
+            guard let self, self.isSessionValid(token) else { return }
+            self.isLoadingWorkReports = true
+            defer {
+                if self.isSessionValid(token) {
+                    self.isLoadingWorkReports = false
+                }
+            }
 
-        await loadWorkReportObligations()
+            await self.loadWorkReportObligations()
+            guard !Task.isCancelled, self.isSessionValid(token) else { return }
 
-        async let reviewsTask = workReportsService.fetchPendingReviews()
-        async let templatesTask = workReportsService.fetchSelectableTemplates()
-        async let analyticsTask = workReportsService.fetchAnalyticsSnapshot()
+            async let reviewsTask = self.workReportsService.fetchPendingReviews()
+            async let templatesTask = self.workReportsService.fetchSelectableTemplates()
+            async let analyticsTask = self.workReportsService.fetchAnalyticsSnapshot()
 
-        if case .success(let revs, _) = await reviewsTask { workReportReviews = revs }
-        if case .success(let tpls, _) = await templatesTask { workReportTemplates = tpls }
-        if case .success(let ana, _) = await analyticsTask { workReportAnalytics = ana }
+            let revRes = await reviewsTask
+            let tplRes = await templatesTask
+            let anaRes = await analyticsTask
+            guard !Task.isCancelled, self.isSessionValid(token) else { return }
+
+            if case .success(let revs, _) = revRes { self.workReportReviews = revs }
+            if case .success(let tpls, _) = tplRes { self.workReportTemplates = tpls }
+            if case .success(let ana, _) = anaRes { self.workReportAnalytics = ana }
+        }
     }
 
     public func loadWorkReportObligations() async {
+        guard let token = captureSessionToken() else { return }
         let res = await workReportsService.fetchMyObligations()
+        guard !Task.isCancelled, isSessionValid(token) else { return }
         if case .success(let list, _) = res {
             workReportObligations = list
-            // Keep open editor synchronized if present
+            // Keep open editor synchronized if present (without wiping unsaved editorFieldValues!)
             if let currentEditor = selectedObligationEditor,
                let refreshed = list.first(where: {
                    (!currentEditor.obligationIdUuid.isEmpty && $0.obligationIdUuid == currentEditor.obligationIdUuid)
@@ -3162,6 +3730,7 @@ public final class MiniBiViewModel: ObservableObject {
     }
 
     public func openObligationEditor(_ obligation: WorkReportObligationItem) async {
+        guard let token = captureSessionToken() else { return }
         selectedObligationEditor = obligation
         editorFieldValues = Self.seedDefaultFieldValues(base: obligation.formPayload, sections: obligation.sections)
 
@@ -3170,6 +3739,7 @@ public final class MiniBiViewModel: ObservableObject {
             obligationIdUuid: obligation.obligationIdUuid,
             fallback: obligation
         )
+        guard !Task.isCancelled, isSessionValid(token) else { return }
         if case .success(let detail, _) = detailRes {
             selectedObligationEditor = detail
             editorFieldValues = Self.seedDefaultFieldValues(base: detail.formPayload, sections: detail.sections)
@@ -3188,7 +3758,10 @@ public final class MiniBiViewModel: ObservableObject {
     }
 
     public func saveWorkReportDraft() async {
-        guard let editor = selectedObligationEditor else { return }
+        guard let token = captureSessionToken(),
+              let editor = selectedObligationEditor else {
+            return
+        }
         guard WorkReportsContract.isEditableObligation(editor) else {
             let isInactive = editor.obligationStatus.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() != WorkReportsContract.obligationStatusActive
             showBanner(isInactive ? WorkReportsContract.obligationInactiveMessageVi : WorkReportsContract.deadlinePassedMessageVi, isError: true)
@@ -3203,13 +3776,17 @@ public final class MiniBiViewModel: ObservableObject {
             sections: editor.sections,
             fallback: editor
         )
+        guard !Task.isCancelled, isSessionValid(token) else { return }
         isSavingWorkReport = false
 
-        await handleWorkReportMutationResult(result, currentEditor: editor, isFinalSubmit: false)
+        await handleWorkReportMutationResult(result, currentEditor: editor, isFinalSubmit: false, token: token)
     }
 
     public func submitWorkReportFinal() async {
-        guard let editor = selectedObligationEditor else { return }
+        guard let token = captureSessionToken(),
+              let editor = selectedObligationEditor else {
+            return
+        }
         guard WorkReportsContract.isEditableObligation(editor) else {
             let isInactive = editor.obligationStatus.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() != WorkReportsContract.obligationStatusActive
             showBanner(isInactive ? WorkReportsContract.obligationInactiveMessageVi : WorkReportsContract.deadlinePassedMessageVi, isError: true)
@@ -3233,16 +3810,19 @@ public final class MiniBiViewModel: ObservableObject {
             sections: editor.sections,
             fallback: editor
         )
+        guard !Task.isCancelled, isSessionValid(token) else { return }
         isSavingWorkReport = false
 
-        await handleWorkReportMutationResult(result, currentEditor: editor, isFinalSubmit: true)
+        await handleWorkReportMutationResult(result, currentEditor: editor, isFinalSubmit: true, token: token)
     }
 
     private func handleWorkReportMutationResult(
         _ result: MiniBiApiResult<WorkReportObligationItem>,
         currentEditor: WorkReportObligationItem,
-        isFinalSubmit: Bool
+        isFinalSubmit: Bool,
+        token: SessionRequestToken
     ) async {
+        guard !Task.isCancelled, isSessionValid(token) else { return }
         switch result {
         case .success(let updated, _):
             var merged = updated
@@ -3284,25 +3864,38 @@ public final class MiniBiViewModel: ObservableObject {
                 }
                 await loadWorkReportObligations()
             } else if httpStatus == 409 {
-                // Version conflict (NOT deadline passed): reload latest version without locking as overdue
-                showBanner(message, isError: true)
+                // Version conflict (NOT deadline passed): reload latest version from server,
+                // preserve the user's unsaved draft (`editorFieldValues`), and prompt confirmation to re-submit.
                 let detailRes = await workReportsService.fetchObligationDetail(
                     obligationIdUuid: currentEditor.obligationIdUuid,
                     fallback: currentEditor
                 )
+                guard !Task.isCancelled, isSessionValid(token) else { return }
                 if case .success(let refreshed, _) = detailRes {
-                    selectedObligationEditor = refreshed
-                    editorFieldValues = Self.seedDefaultFieldValues(base: refreshed.formPayload, sections: refreshed.sections)
+                    var updatedEditor = refreshed
+                    if updatedEditor.sections.isEmpty {
+                        updatedEditor.sections = currentEditor.sections
+                    }
+                    selectedObligationEditor = updatedEditor
+                    // Seed only missing default keys if any new schema fields appeared; NEVER overwrite user's edited `editorFieldValues`!
+                    for (k, v) in Self.seedDefaultFieldValues(base: refreshed.formPayload, sections: updatedEditor.sections) where editorFieldValues[k] == nil {
+                        editorFieldValues[k] = v
+                    }
                     if let idx = workReportObligations.firstIndex(where: {
                         (!refreshed.obligationIdUuid.isEmpty && $0.obligationIdUuid == refreshed.obligationIdUuid)
                         || ($0.id != 0 && $0.id == refreshed.id)
                     }) {
-                        workReportObligations[idx] = refreshed
+                        workReportObligations[idx] = updatedEditor
                     }
                 }
+                showBanner(
+                    "Dữ liệu báo cáo đã thay đổi trên hệ thống (phiên bản mới). Nội dung bạn đang nhập được giữ nguyên — vui lòng kiểm tra lại và xác nhận lưu/gửi lại.",
+                    isError: true
+                )
             } else if httpStatus == 403 {
                 showBanner(message, isError: true)
                 await loadWorkReportObligations()
+                guard !Task.isCancelled, isSessionValid(token) else { return }
                 if let refreshed = workReportObligations.first(where: {
                     (!currentEditor.obligationIdUuid.isEmpty && $0.obligationIdUuid == currentEditor.obligationIdUuid)
                     || ($0.id != 0 && $0.id == currentEditor.id)
@@ -3320,6 +3913,7 @@ public final class MiniBiViewModel: ObservableObject {
         decision: String,
         comment: String
     ) async {
+        guard let token = captureSessionToken() else { return }
         let targetObligationId = review.obligationIdUuid.isEmpty ? review.submissionIdUuid : review.obligationIdUuid
         let res = await workReportsService.decideReview(
             submissionIdUuid: targetObligationId,
@@ -3327,13 +3921,30 @@ public final class MiniBiViewModel: ObservableObject {
             comment: comment,
             expectedVersion: review.version
         )
+        guard !Task.isCancelled, isSessionValid(token) else { return }
         switch res {
         case .success:
             selectedReviewDetail = nil
             showBanner(decision == WorkReportsContract.decisionApprove ? "Đã phê duyệt báo cáo." : "Đã từ chối báo cáo.")
             await loadWorkReportsData()
-        case .failure(let message, _, _, _):
-            showBanner(message, isError: true)
+        case .failure(let message, let httpStatus, let errorCode, _):
+            let codeUpper = (errorCode ?? "").uppercased()
+            if httpStatus == 409 || codeUpper.contains("CONFLICT") {
+                await loadWorkReportsData()
+                guard !Task.isCancelled, isSessionValid(token) else { return }
+                if let refreshed = workReportReviews.first(where: {
+                    $0.id == review.id
+                    || (!review.obligationIdUuid.isEmpty && $0.obligationIdUuid == review.obligationIdUuid)
+                }) {
+                    selectedReviewDetail = refreshed
+                }
+                showBanner(
+                    "Báo cáo đã thay đổi phiên bản trên máy chủ. Dữ liệu mới nhất đã được tải lại và ghi chú của bạn được giữ nguyên — vui lòng kiểm tra rồi xác nhận lại.",
+                    isError: true
+                )
+            } else {
+                showBanner(message, isError: true)
+            }
         }
     }
 }

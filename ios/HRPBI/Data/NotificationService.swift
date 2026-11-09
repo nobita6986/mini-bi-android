@@ -337,7 +337,8 @@ public final class MiniBiRepository {
 
         let user = Self.parseUser(userObj, fallbackRoot: root, fallbackIdentifier: trimmedId)
         if !user.username.isEmpty || !user.fullName.isEmpty || !user.id.isEmpty {
-            return .success(user, statusCode: response.statusCode)
+            let syncedUser = await syncDirectEntrySession(for: user)
+            return .success(syncedUser, statusCode: response.statusCode)
         }
 
         return await fetchCurrentUser()
@@ -358,7 +359,34 @@ public final class MiniBiRepository {
             ?? (root["data"] as? [String: Any])
             ?? root
         let user = Self.parseUser(userObj, fallbackRoot: root)
-        return .success(user, statusCode: response.statusCode)
+        let syncedUser = await syncDirectEntrySession(for: user)
+        return .success(syncedUser, statusCode: response.statusCode)
+    }
+
+    /// Fetches canonical Direct Entry session metadata (`GET /api/direct-entry/session`)
+    /// and merges `allowed_worker_tabs` only when `actor.app_user_id` matches `user.id`.
+    /// Fails closed (`allowedWorkerTabs = []`) on any network error, HTTP error, user mismatch,
+    /// or malformed payload.
+    public func syncDirectEntrySession(for user: MiniBiUser) async -> MiniBiUser {
+        let cleanUserId = user.id.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanUserId.isEmpty else {
+            var copy = user
+            copy.allowedWorkerTabs = []
+            return copy
+        }
+        let response = await httpClient.request(method: "GET", path: "/api/direct-entry/session")
+        guard response.isSuccess, let root = response.jsonObject else {
+            var copy = user
+            copy.allowedWorkerTabs = []
+            return copy
+        }
+        let resolvedTabs = Self.parseDirectEntrySessionAllowedWorkerTabs(
+            from: root,
+            expectedAppUserId: cleanUserId
+        )
+        var copy = user
+        copy.allowedWorkerTabs = resolvedTabs
+        return copy
     }
 
     public func logout() async {
@@ -369,7 +397,7 @@ public final class MiniBiRepository {
     // MARK: - Workers Management APIs
 
     public func fetchWorkers(
-        scope: String = "all",
+        scope: String = "",
         search: String = "",
         project: String = "",
         status: String = "",
@@ -378,67 +406,55 @@ public final class MiniBiRepository {
         page: Int = 1,
         pageSize: Int = 30
     ) async -> MiniBiApiResult<(items: [WorkerItem], total: Int, totalPages: Int)> {
-        let normalizedScope: String = {
-            let s = scope.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            switch s {
-            case "recruited", "managed", "team", "all": return s
-            default: return "all"
-            }
-        }()
-
-        // Try requested scope first; if "all" returns 403 WORKER_DIRECTORY_DENIED, fallback to narrower allowed scopes
-        let candidateScopes: [String] = normalizedScope == "all"
-            ? ["all", "team", "managed", "recruited"]
-            : [normalizedScope]
-
-        var lastResponse: BackendHttpResponse?
-        for candidateScope in candidateScopes {
-            var queryItems: [URLQueryItem] = [
-                URLQueryItem(name: "scope", value: candidateScope),
-                URLQueryItem(name: "page_size", value: String(min(max(pageSize, 1), 100)))
-            ]
-            let cleanSearch = search.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !cleanSearch.isEmpty {
-                queryItems.append(URLQueryItem(name: "search", value: cleanSearch))
-            }
-            let cleanProject = project.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !cleanProject.isEmpty {
-                queryItems.append(URLQueryItem(name: "project_id", value: cleanProject))
-            }
-            let cleanStatus = status.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
-            if ["ON", "OFF", "UNCONFIRMED"].contains(cleanStatus) {
-                queryItems.append(URLQueryItem(name: "employment_status", value: cleanStatus))
-            }
-
-            let response = await httpClient.request(
-                method: "GET",
-                path: "/api/direct-entry/workers",
-                queryItems: queryItems
+        let normalizedScope = scope.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard MiniBiUser.canonicalWorkerDirectoryScopes.contains(normalizedScope) else {
+            return .failure(
+                message: "Tài khoản không có quyền truy cập phạm vi người lao động này.",
+                httpStatus: 403,
+                errorCode: "WORKER_DIRECTORY_DENIED"
             )
-            lastResponse = response
-            if response.isSuccess {
-                let root = response.jsonObject ?? [:]
-                let dataObj = (root["data"] as? [String: Any]) ?? root
-                let rawList = dataObj.optObjectArray("items")
-                    .ifEmpty(dataObj.optObjectArray("workers"))
-
-                let items = rawList.map { Self.parseWorkerItem($0) }
-                let summaryObj = dataObj["summary"] as? [String: Any]
-                let total = summaryObj?.optInt("total_workers", defaultValue: items.count)
-                    ?? dataObj.optInt("total", "total_count", defaultValue: items.count)
-                let totalPages = max(1, dataObj.optInt("total_pages", defaultValue: (total + pageSize - 1) / max(1, pageSize)))
-                return .success((items: items, total: total, totalPages: totalPages), statusCode: response.statusCode)
-            }
-            if response.statusCode != 403 {
-                break
-            }
         }
 
-        let failedResponse = lastResponse
+        var queryItems: [URLQueryItem] = [
+            URLQueryItem(name: "scope", value: normalizedScope),
+            URLQueryItem(name: "page_size", value: String(min(max(pageSize, 1), 100)))
+        ]
+        let cleanSearch = search.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !cleanSearch.isEmpty {
+            queryItems.append(URLQueryItem(name: "search", value: cleanSearch))
+        }
+        let cleanProject = project.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !cleanProject.isEmpty {
+            queryItems.append(URLQueryItem(name: "project_id", value: cleanProject))
+        }
+        let cleanStatus = status.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        if ["ON", "OFF", "UNCONFIRMED"].contains(cleanStatus) {
+            queryItems.append(URLQueryItem(name: "employment_status", value: cleanStatus))
+        }
+
+        let response = await httpClient.request(
+            method: "GET",
+            path: "/api/direct-entry/workers",
+            queryItems: queryItems
+        )
+        if response.isSuccess {
+            let root = response.jsonObject ?? [:]
+            let dataObj = (root["data"] as? [String: Any]) ?? root
+            let rawList = dataObj.optObjectArray("items")
+                .ifEmpty(dataObj.optObjectArray("workers"))
+
+            let items = rawList.map { Self.parseWorkerItem($0) }
+            let summaryObj = dataObj["summary"] as? [String: Any]
+            let total = summaryObj?.optInt("total_workers", defaultValue: items.count)
+                ?? dataObj.optInt("total", "total_count", defaultValue: items.count)
+            let totalPages = max(1, dataObj.optInt("total_pages", defaultValue: (total + pageSize - 1) / max(1, pageSize)))
+            return .success((items: items, total: total, totalPages: totalPages), statusCode: response.statusCode)
+        }
+
         return .failure(
-            message: failedResponse?.errorMessage ?? "Không tải được danh sách người lao động.",
-            httpStatus: failedResponse?.statusCode,
-            errorCode: failedResponse?.errorCode
+            message: response.errorMessage ?? "Không tải được danh sách người lao động.",
+            httpStatus: response.statusCode,
+            errorCode: response.errorCode
         )
     }
 
@@ -527,11 +543,15 @@ public final class MiniBiRepository {
         return .success(Self.parseWorkerItem(obj), statusCode: response.statusCode)
     }
 
-    public func exportWorkersExcel(scope: String = "all", search: String = "", project: String = "") async -> MiniBiApiResult<URL> {
-        let validScope: String = {
-            let s = scope.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            return ["recruited", "managed", "team", "all"].contains(s) ? s : "all"
-        }()
+    public func exportWorkersExcel(scope: String = "", search: String = "", project: String = "") async -> MiniBiApiResult<URL> {
+        let validScope = scope.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard MiniBiUser.canonicalWorkerDirectoryScopes.contains(validScope) else {
+            return .failure(
+                message: "Phạm vi này không hỗ trợ xuất danh sách người lao động.",
+                httpStatus: 403,
+                errorCode: "WORKER_EXPORT_SCOPE_DENIED"
+            )
+        }
         let cleanProject = project.trimmingCharacters(in: .whitespacesAndNewlines)
         let body: [String: Any] = [
             "scope": validScope,
@@ -566,6 +586,58 @@ public final class MiniBiRepository {
 
     // MARK: - Parsers
 
+    /// Fail-closed parser for `allowed_worker_tabs`.
+    /// Missing, wrong type, non-string element, unknown tab key, or duplicate element
+    /// fails closed to `[]`.
+    public static func parseAllowedWorkerTabs(_ raw: Any?) -> [String] {
+        guard let raw, !(raw is NSNull), let rawArray = raw as? [Any] else {
+            return []
+        }
+        var seen = Set<String>()
+        var result: [String] = []
+        for element in rawArray {
+            guard let str = element as? String else {
+                return []
+            }
+            let normalized = str.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard MiniBiUser.canonicalWorkerTabs.contains(normalized) else {
+                return []
+            }
+            if seen.contains(normalized) {
+                return []
+            }
+            seen.insert(normalized)
+            result.append(normalized)
+        }
+        return result
+    }
+
+    /// Parses `allowed_worker_tabs` from `/api/direct-entry/session` and verifies
+    /// `actor.app_user_id == expectedAppUserId` before accepting. Fails closed to `[]`
+    /// on any mismatch or malformed response.
+    public static func parseDirectEntrySessionAllowedWorkerTabs(
+        from root: [String: Any],
+        expectedAppUserId: String
+    ) -> [String] {
+        let cleanExpected = expectedAppUserId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanExpected.isEmpty else {
+            return []
+        }
+        let okFlag = (root["ok"] as? Bool) ?? ((root["ok"] as? NSNumber)?.boolValue ?? false)
+        guard okFlag else {
+            return []
+        }
+        guard let actorObj = root["actor"] as? [String: Any] else {
+            return []
+        }
+        let sessionUserId = actorObj.optString("app_user_id").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !sessionUserId.isEmpty,
+              sessionUserId.caseInsensitiveCompare(cleanExpected) == .orderedSame else {
+            return []
+        }
+        return parseAllowedWorkerTabs(actorObj["allowed_worker_tabs"])
+    }
+
     public static func parseUser(
         _ obj: [String: Any],
         fallbackRoot: [String: Any]? = nil,
@@ -597,18 +669,9 @@ public final class MiniBiRepository {
             rawScopeKinds = obj.optStringArray("scopes").map { $0.lowercased() }
         }
 
-        var allowedWorkerScopes = obj.optStringArray("allowed_worker_scopes")
-        if allowedWorkerScopes.isEmpty {
-            if rawScopeKinds.contains("all") {
-                allowedWorkerScopes = ["all", "team", "managed", "recruited"]
-            } else if rawScopeKinds.contains("team") {
-                allowedWorkerScopes = ["team", "managed", "recruited"]
-            } else if !rawScopeKinds.isEmpty {
-                allowedWorkerScopes = ["managed", "recruited"]
-            } else {
-                allowedWorkerScopes = ["managed", "recruited", "team", "all"]
-            }
-        }
+        // Fail-closed: only read canonical `allowed_worker_tabs`; never read `allowed_worker_scopes`
+        // and never infer worker tabs from `scopes` or `capabilities`.
+        let allowedWorkerTabs = parseAllowedWorkerTabs(obj["allowed_worker_tabs"])
 
         let derivedRole: String = {
             let explicit = obj.optString("role", "role_code")
@@ -646,7 +709,7 @@ public final class MiniBiRepository {
             phone: phone,
             teamName: teamName,
             permissions: capabilities,
-            allowedWorkerScopes: allowedWorkerScopes
+            allowedWorkerTabs: allowedWorkerTabs
         )
     }
 

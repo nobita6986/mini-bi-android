@@ -161,7 +161,11 @@ public struct MainContainerView: View {
                     case .dashboard:
                         DashboardScreen(viewModel: viewModel)
                     case .newEntry:
-                        DirectEntryNewWorkersScreen(viewModel: viewModel)
+                        if viewModel.canAccessNewWorkerEntry {
+                            DirectEntryNewWorkersScreen(viewModel: viewModel)
+                        } else {
+                            DashboardScreen(viewModel: viewModel)
+                        }
                     case .workers:
                         WorkersScreen(viewModel: viewModel)
                     case .attendance:
@@ -225,8 +229,18 @@ public struct MainContainerView: View {
             Divider()
 
             // Bottom Navigation Bar
+            let visibleDestinations = MiniBiNavDestination.allCases.filter { dest in
+                switch dest {
+                case .workers:
+                    return !viewModel.visibleWorkerTabs.isEmpty
+                case .newEntry:
+                    return viewModel.canAccessNewWorkerEntry
+                default:
+                    return true
+                }
+            }
             HStack(spacing: 0) {
-                ForEach(MiniBiNavDestination.allCases) { dest in
+                ForEach(visibleDestinations) { dest in
                     let isSelected = viewModel.currentDestination == dest
                     Button {
                         KeyboardDismissal.dismiss()

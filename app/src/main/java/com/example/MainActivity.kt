@@ -107,6 +107,7 @@ import com.example.ui.screens.DirectEntryNewWorkersScreen
 import com.example.ui.screens.LoginScreen
 import com.example.ui.screens.WorkReportsScreen
 import com.example.ui.screens.WorkersAndDirectEntryScreen
+import com.example.ui.screens.resolveVisibleWorkerTabs
 import com.example.ui.theme.LocalMiniBiPalette
 import com.example.ui.theme.MiniBiThemes
 import com.example.ui.theme.MyApplicationTheme
@@ -258,12 +259,15 @@ fun MiniBiAppRoot(viewModel: MiniBiViewModel) {
 
     val canCreateEntry = authenticatedActor.hasCapability("entry_create") &&
         authenticatedActor.hasCapability("submission_create")
+    val hasWorkerTabs = resolveVisibleWorkerTabs(authenticatedActor).isNotEmpty()
 
     val navDestinations = buildList {
         add(Triple(MainDestination.DASHBOARD, Icons.Default.Analytics, Icons.Outlined.Analytics))
         add(Triple(MainDestination.WORK_REPORTS, Icons.AutoMirrored.Filled.Assignment, Icons.AutoMirrored.Outlined.Assignment))
         add(Triple(MainDestination.ATTENDANCE, Icons.Default.CameraAlt, Icons.Outlined.CameraAlt))
-        add(Triple(MainDestination.WORKERS, Icons.Default.Groups, Icons.Outlined.Groups))
+        if (hasWorkerTabs) {
+            add(Triple(MainDestination.WORKERS, Icons.Default.Groups, Icons.Outlined.Groups))
+        }
         if (canCreateEntry) {
             add(Triple(MainDestination.NEW_ENTRY, Icons.Default.PersonAdd, Icons.Outlined.PersonAdd))
         }
@@ -771,14 +775,20 @@ fun MiniBiAppRoot(viewModel: MiniBiViewModel) {
                         }
 
                         MainDestination.NEW_ENTRY -> {
-                            DirectEntryNewWorkersScreen(
-                                actor = authenticatedActor,
-                                viewModel = viewModel,
-                                onNavigateToWorkersList = {
-                                    viewModel.navigateTo(MainDestination.WORKERS)
-                                },
-                                onBackToDashboard = { viewModel.navigateTo(MainDestination.DASHBOARD) }
-                            )
+                            if (canCreateEntry) {
+                                DirectEntryNewWorkersScreen(
+                                    actor = authenticatedActor,
+                                    viewModel = viewModel,
+                                    onNavigateToWorkersList = {
+                                        viewModel.navigateTo(MainDestination.WORKERS)
+                                    },
+                                    onBackToDashboard = { viewModel.navigateTo(MainDestination.DASHBOARD) }
+                                )
+                            } else {
+                                LaunchedEffect(authenticatedActor.appUserId) {
+                                    viewModel.navigateTo(MainDestination.DASHBOARD)
+                                }
+                            }
                         }
                     }
                 }

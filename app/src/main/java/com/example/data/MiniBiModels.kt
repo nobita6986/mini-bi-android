@@ -28,11 +28,32 @@ data class AppActor(
     val capabilities: List<String>,
     val scopes: List<ActorScope>,
     val selfRecruiterSuggestion: String?,
-    val displayIdentifier: String? = null // Non-authoritative display-only login identifier
+    val displayIdentifier: String? = null, // Non-authoritative display-only login identifier
+    val allowedWorkerTabs: List<String> = emptyList()
 ) {
+    val safeAllowedWorkerTabs: List<String>
+        get() = ActorContractParser.sanitizeAllowedWorkerTabs(allowedWorkerTabs)
+
     fun hasCapability(capability: String): Boolean = capabilities.contains(capability)
 
     fun hasScopeKind(kind: String): Boolean = scopes.any { it.kind == kind }
+
+    fun canLoadDirectEntryCatalog(): Boolean {
+        return hasCapability("entry_create") || hasCapability("entry_own")
+    }
+
+    fun canAccessNewEntryScreen(): Boolean {
+        return hasCapability("entry_create") && hasCapability("submission_create")
+    }
+
+    /**
+     * PM Salary Advance on mobile is restricted to active Project Managers (QLDA), whose canonical
+     * `allowed_worker_tabs` from `/api/direct-entry/session` always includes `"managed"`.
+     * Note: Repo `mini-bi` `/api/auth/session` and `/api/direct-entry/session` do not yet project
+     * `is_project_manager` / `can_request_salary_advance`, so `"managed" in safeAllowedWorkerTabs`
+     * is the fail-closed pre-check before calling `/api/salary-advance/context` on the Workers screen.
+     */
+    fun canAttemptPmSalaryAdvanceContext(): Boolean = "managed" in safeAllowedWorkerTabs
 }
 
 // 2. Reporting & Duplicate CCCD Projection Models (Backend authority only)

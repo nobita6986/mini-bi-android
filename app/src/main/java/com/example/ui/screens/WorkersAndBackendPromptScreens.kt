@@ -239,6 +239,32 @@ fun DirectEntryNewWorkersScreen(
 ) {
     BackHandler(onBack = onBackToDashboard)
 
+    if (!actor.canAccessNewEntryScreen()) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(24.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(
+                    text = "Bạn không có quyền truy cập chức năng Cấp mới hồ sơ NLĐ.",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = "Tài khoản hiện tại không được phân quyền tạo mới và gửi hồ sơ người lao động.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+        return
+    }
+
     val context = LocalContext.current
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
@@ -270,9 +296,9 @@ fun DirectEntryNewWorkersScreen(
     }
 
     LaunchedEffect(actor.appUserId) {
-        viewModel.loadCatalogIfNeeded()
+        viewModel.loadCatalogIfNeeded(actor = actor)
         if (actor.hasCapability("submission_read") || actor.hasCapability("submission_create")) {
-            viewModel.refreshOwnSubmissionsForHistory()
+            viewModel.refreshOwnSubmissionsForHistory(actor = actor)
         }
     }
 
@@ -652,7 +678,7 @@ fun DirectEntryNewWorkersScreen(
                     draftRows[index] = updated
                     runCatching { DirectEntryContract.uiDateToIsoDate(updated.firstWorkDateUi) }
                         .getOrNull()
-                        ?.let { iso -> viewModel.loadCatalogIfNeeded(iso) }
+                        ?.let { iso -> viewModel.loadCatalogIfNeeded(iso, actor = actor) }
                 },
                 onRemove = {
                     row.allAttachments().forEach { ref -> effectiveDiscardRef(ref) }
@@ -2288,20 +2314,14 @@ data class WorkerScopeTabSpec(
 )
 
 fun resolveVisibleWorkerTabs(actor: AppActor): List<WorkerScopeTabSpec> {
-    return buildList {
-        add(WorkerScopeTabSpec("managed", "DA tôi quản lý"))
-        add(WorkerScopeTabSpec("recruited", "Tôi tuyển"))
-        if (actor.hasScopeKind("team")) {
-            add(WorkerScopeTabSpec("team", "Team tôi quản lý"))
-        }
-        if (actor.hasCapability("submission_read") || actor.hasCapability("submission_create")) {
-            add(WorkerScopeTabSpec("uploader", "Tôi đã nhập"))
-        }
-        if (
-            actor.hasScopeKind("all") &&
-            (actor.hasCapability("entry_admin") || actor.hasCapability("change_review"))
-        ) {
-            add(WorkerScopeTabSpec("all", "Toàn hệ thống"))
+    return actor.safeAllowedWorkerTabs.mapNotNull { tabKey ->
+        when (tabKey) {
+            "managed" -> WorkerScopeTabSpec("managed", "DA tôi quản lý")
+            "recruited" -> WorkerScopeTabSpec("recruited", "Tôi tuyển")
+            "team" -> WorkerScopeTabSpec("team", "Team tôi quản lý")
+            "uploader" -> WorkerScopeTabSpec("uploader", "Tôi đã nhập")
+            "all" -> WorkerScopeTabSpec("all", "Toàn hệ thống")
+            else -> null
         }
     }
 }
@@ -2361,19 +2381,25 @@ fun WorkersAndDirectEntryScreen(
 
     val visibleTabs = remember(actor) { resolveVisibleWorkerTabs(actor) }
     val safeTabIdx = visibleTabs.indexOfFirst { it.key == activeTabKeyFromVm }.takeIf { it >= 0 } ?: 0
-    val activeScopeKey = visibleTabs.getOrNull(safeTabIdx)?.key ?: "managed"
-    val canShowSalaryAdvance = remember(salaryAdvanceContext) {
-        SalaryAdvanceContract.canShowPmSalaryAdvanceEntry(salaryAdvanceContext)
+    val activeScopeKey = visibleTabs.getOrNull(safeTabIdx)?.key ?: ""
+    val canShowSalaryAdvance = remember(salaryAdvanceContext, visibleTabs) {
+        visibleTabs.any { it.key == "managed" } &&
+            SalaryAdvanceContract.canShowPmSalaryAdvanceEntry(salaryAdvanceContext)
     }
 
-    var searchQuery by remember { mutableStateOf("") }
-    var selectedProjectId by remember { mutableStateOf<String?>(null) }
-    var selectedRecruiterId by remember { mutableStateOf<String?>(null) }
-    var selectedStatusCode by remember { mutableStateOf<String?>(null) }
+    var searchQuery by remember(actor.appUserId) { mutableStateOf("") }
+    var selectedProjectId by remember(actor.appUserId) { mutableStateOf<String?>(null) }
+    var selectedRecruiterId by remember(actor.appUserId) { mutableStateOf<String?>(null) }
+    var selectedStatusCode by remember(actor.appUserId) { mutableStateOf<String?>(null) }
 
-    LaunchedEffect(actor.appUserId) {
-        viewModel.loadCatalogIfNeeded()
-        viewModel.loadSalaryAdvanceContextIfNeeded(actor = actor)
+    LaunchedEffect(actor.appUserId, actor.safeAllowedWorkerTabs) {
+        if (visibleTabs.isEmpty()) {
+            viewModel.ensureInitialWorkerTabLoaded(actor)
+            return@LaunchedEffect
+        }
+        if (actor.canAttemptPmSalaryAdvanceContext()) {
+            viewModel.loadSalaryAdvanceContextIfNeeded(actor = actor)
+        }
         viewModel.ensureInitialWorkerTabLoaded(actor)
     }
 
@@ -2383,26 +2409,28 @@ fun WorkersAndDirectEntryScreen(
             search = searchQuery,
             projectId = selectedProjectId,
             recruiterId = selectedRecruiterId,
-            employmentStatus = selectedStatusCode
+            employmentStatus = selectedStatusCode,
+            actorOverride = actor
         )
     }
     val effectiveFilterChange: (String, String?, String?, String?) -> Unit = { q, proj, rec, status ->
         if (onSearchAndFilterChange != null) {
             onSearchAndFilterChange(q, proj, status)
-        } else {
+        } else if (activeScopeKey.isNotBlank()) {
             viewModel.selectWorkerTab(
                 tabKey = activeScopeKey,
                 search = q,
                 projectId = proj,
                 recruiterId = rec,
-                employmentStatus = status
+                employmentStatus = status,
+                actorOverride = actor
             )
         }
     }
-    val effectiveOpenDetail: (String) -> Unit = onOpenEntryDetail ?: { viewModel.openEntryDetail(it) }
+    val effectiveOpenDetail: (String) -> Unit = onOpenEntryDetail ?: { viewModel.openEntryDetail(it, actorOverride = actor) }
     val effectiveCloseDetail: () -> Unit = onCloseEntryDetail ?: { viewModel.closeEntryDetail() }
-    val effectiveOpenPropose: (WorkerProfileEntity) -> Unit = onOpenProposeChange ?: { viewModel.openProposeChange(it) }
-    val effectiveOpenDirectEdit: (WorkerProfileEntity) -> Unit = onOpenDirectEdit ?: { viewModel.openDirectEdit(it) }
+    val effectiveOpenPropose: (WorkerProfileEntity) -> Unit = onOpenProposeChange ?: { viewModel.openProposeChange(it, actorOverride = actor) }
+    val effectiveOpenDirectEdit: (WorkerProfileEntity) -> Unit = onOpenDirectEdit ?: { viewModel.openDirectEdit(it, actorOverride = actor) }
     val effectiveOpenSalaryAdvance: () -> Unit = onOpenSalaryAdvance ?: { viewModel.openSalaryAdvanceDialog() }
 
     val focusManager = LocalFocusManager.current
@@ -2422,9 +2450,12 @@ fun WorkersAndDirectEntryScreen(
         onRefresh = {
             focusManager.clearFocus()
             keyboardController?.hide()
-            viewModel.loadCatalogIfNeeded(force = true)
-            viewModel.loadSalaryAdvanceContextIfNeeded(actor = actor, force = true)
-            effectiveSelectTab(activeScopeKey)
+            if (visibleTabs.isNotEmpty() && activeScopeKey.isNotBlank()) {
+                if (actor.canAttemptPmSalaryAdvanceContext()) {
+                    viewModel.loadSalaryAdvanceContextIfNeeded(actor = actor, force = true)
+                }
+                effectiveSelectTab(activeScopeKey)
+            }
         },
         modifier = Modifier.fillMaxSize()
     ) {
@@ -2683,7 +2714,16 @@ fun WorkersAndDirectEntryScreen(
             }
         }
 
-        if (isSubmissionTab) {
+        if (visibleTabs.isEmpty()) {
+            if (workerError == null) {
+                item {
+                    EmptyWorkersCard(
+                        title = "Không có quyền truy cập",
+                        subtitle = "Tài khoản chưa được cấp quyền xem danh sách người lao động."
+                    )
+                }
+            }
+        } else if (isSubmissionTab) {
             if (ownSubmissions.isEmpty() && !workerLoading) {
                 item {
                     EmptyWorkersCard(
@@ -3317,32 +3357,48 @@ internal fun WorkerProposeChangeDialog(
     val expectedVersion = baselineDetail?.version ?: worker.entryVersion
     var selectedTargetKind by remember { mutableStateOf("ENTRY_FIELD") }
 
-    // ENTRY_FIELD fields
-    var projectId by remember(baselineDetail, worker) {
+    // ENTRY_FIELD fields (keyed on worker.entryId so 409 baseline reload preserves user draft edits)
+    var projectId by remember(worker.entryId) {
         mutableStateOf(baselineDetail?.projectId ?: worker.projectId)
     }
-    var firstWorkDateUi by remember(baselineDetail, worker) {
+    var firstWorkDateUi by remember(worker.entryId) {
         mutableStateOf(DirectEntryContract.isoDateToUiDate(baselineDetail?.firstWorkDate ?: worker.firstWorkDate))
     }
-    var laborTypeKey by remember(baselineDetail, worker) {
+    var laborTypeKey by remember(worker.entryId) {
         mutableStateOf(baselineDetail?.laborType ?: worker.laborType)
     }
-    var displayName by remember(baselineDetail, worker) {
+    var displayName by remember(worker.entryId) {
         mutableStateOf(baselineDetail?.displayName ?: worker.displayName)
     }
-    var phone by remember(baselineDetail) {
+    var phone by remember(worker.entryId) {
         mutableStateOf(baselineDetail?.phone.orEmpty())
     }
 
     // PAYMENT fields
-    var bankId by remember(baselineDetail, catalog) {
+    var bankId by remember(worker.entryId) {
         mutableStateOf(baselineDetail?.bankId ?: catalog?.banks?.firstOrNull()?.bankId.orEmpty())
     }
-    var accountNumber by remember(baselineDetail) {
+    var accountNumber by remember(worker.entryId) {
         mutableStateOf(baselineDetail?.accountNumber.orEmpty())
     }
-    var accountHolderName by remember(baselineDetail, worker) {
+    var accountHolderName by remember(worker.entryId) {
         mutableStateOf(baselineDetail?.accountHolderName ?: worker.displayName)
+    }
+    var hydratedInitialDetail by remember(worker.entryId) {
+        mutableStateOf(baselineDetail != null)
+    }
+    LaunchedEffect(worker.entryId, baselineDetail != null) {
+        if (!hydratedInitialDetail && baselineDetail != null) {
+            hydratedInitialDetail = true
+            projectId = baselineDetail.projectId
+            firstWorkDateUi = DirectEntryContract.isoDateToUiDate(baselineDetail.firstWorkDate)
+            laborTypeKey = baselineDetail.laborType
+            displayName = baselineDetail.displayName
+            phone = baselineDetail.phone.orEmpty()
+            bankId = baselineDetail.bankId ?: catalog?.banks?.firstOrNull()?.bankId.orEmpty()
+            accountNumber = baselineDetail.accountNumber.orEmpty()
+            accountHolderName = baselineDetail.accountHolderName ?: worker.displayName
+        }
     }
 
     // WORK_STATUS fields
@@ -3676,7 +3732,7 @@ internal fun WorkerPrivilegedEditDialog(
     val mergedBanks = remember(catalogBanks) {
         DirectEntryContract.mergeVietQrBankCatalog(catalogBanks)
     }
-    var form by remember(baselineDetail) {
+    var form by remember(baselineDetail.entryId) {
         mutableStateOf(DirectEntryContract.createInitialDirectEditFormInput(baselineDetail, catalogBanks))
     }
     val selectableStatusCodes = remember(baselineDetail.employmentStatus) {

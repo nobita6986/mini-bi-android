@@ -2905,6 +2905,14 @@ class DirectEntryService(
     val idempotencyStore: IntentIdempotencyStore = IntentIdempotencyStore()
 ) {
 
+    suspend fun fetchDirectEntrySession(): JSONObject = withContext(Dispatchers.IO) {
+        httpClient.getJson(
+            pathWithQuery = "/api/direct-entry/session",
+            requireOkTrue = true,
+            clearSessionOn401 = false
+        )
+    }
+
     suspend fun fetchCatalog(
         effectiveDateIso: String = DirectEntryContract.todayIsoInHcm()
     ): DirectEntryCatalog = withContext(Dispatchers.IO) {
@@ -3397,25 +3405,12 @@ class DirectEntryService(
 
         val initialVersion = initialEntryVersion?.takeIf { it >= 1 } ?: getEntryDetail(cleanEntryId).version
         val reservePath = "/api/direct-entry/entries/$cleanEntryId/documents"
-        val reserveJson = try {
-            httpClient.postJson(
-                path = reservePath,
-                bodyJson = buildReserveBody(initialVersion),
-                idempotencyKey = "$idempotencyBaseKey:reserve",
-                requireOkTrue = true
-            )
-        } catch (conflictErr: BackendApiException) {
-            if (conflictErr.kind != BackendFailureKind.CONFLICT) {
-                throw conflictErr
-            }
-            val latestVersion = getEntryDetail(cleanEntryId).version
-            httpClient.postJson(
-                path = reservePath,
-                bodyJson = buildReserveBody(latestVersion),
-                idempotencyKey = "$idempotencyBaseKey:reserve:r1",
-                requireOkTrue = true
-            )
-        }
+        val reserveJson = httpClient.postJson(
+            path = reservePath,
+            bodyJson = buildReserveBody(initialVersion),
+            idempotencyKey = "$idempotencyBaseKey:reserve",
+            requireOkTrue = true
+        )
 
         val documentId = reserveJson.optString("document_id", "").trim()
         val reservedEntryVersion = reserveJson.optInt("entry_version", 0)
@@ -3926,10 +3921,14 @@ class DirectEntryService(
                 requireOkTrue = true
             )
         } catch (e: BackendApiException) {
-            val code = e.backendCode?.trim().orEmpty()
+            val code = e.backendCode?.trim().orEmpty().ifEmpty {
+                if (e.kind == BackendFailureKind.CONFLICT || e.statusCode == 409) "CONFLICT" else ""
+            }
             val nextEntryVersion = if (e.statusCode == 422) reservedEntryVersion + 1 else reservedEntryVersion
-            val msg = if (code.isNotEmpty()) {
+            val msg = if (code.isNotEmpty() && code != "CONFLICT") {
                 DirectEntryContract.directEditDocumentErrorMessage(documentType, code)
+            } else if (e.kind == BackendFailureKind.CONFLICT || e.statusCode == 409) {
+                "$label: Hồ sơ đã thay đổi phiên bản trên máy chủ. Dữ liệu mới nhất đã được tải lại — vui lòng kiểm tra và bấm Thử lại tệp này."
             } else if (e.kind == BackendFailureKind.NETWORK) {
                 "$label: Không xác nhận được tệp sau khi tải lên. Vui lòng bấm Thử lại tệp này."
             } else {
