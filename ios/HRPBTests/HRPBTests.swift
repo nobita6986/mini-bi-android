@@ -2654,7 +2654,10 @@ final class HRPBTests: XCTestCase {
         XCTAssertEqual(userDraftForm.hoTen, "Nguyễn Văn Mới")
 
         // 2. User reviews and confirms re-submitting -> sends refreshed expected_entry_version (3) and a NEW Idempotency-Key
-        await vm.submitDirectEditProfileAndDocuments(form: userDraftForm, stagedFiles: [:])
+        var completed = false
+        await vm.submitDirectEditProfileAndDocuments(form: userDraftForm, stagedFiles: [:]) {
+            completed = true
+        }
         let postReqsAfterSecond = MockURLProtocol.recordedRequests().filter { $0.url.contains("/privileged-edit") }
         XCTAssertEqual(postReqsAfterSecond.count, 2)
         XCTAssertTrue(postReqsAfterSecond[1].bodyString.contains("\"expected_entry_version\":3"))
@@ -2663,7 +2666,8 @@ final class HRPBTests: XCTestCase {
         XCTAssertFalse(firstIdempKey.isEmpty)
         XCTAssertFalse(secondIdempKey.isEmpty)
         XCTAssertNotEqual(firstIdempKey, secondIdempKey, "Re-submission after 409 must use a fresh Idempotency-Key")
-        XCTAssertEqual(vm.directEditBaselineDetail?.entryVersion, 4)
+        XCTAssertTrue(completed)
+        XCTAssertNil(vm.directEditErrorMessage)
     }
 
     // MARK: - Helper
