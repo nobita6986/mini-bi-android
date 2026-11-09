@@ -247,7 +247,6 @@ class BackendHttpClient(
 
     // Read/write timeouts allow multi-document R2 staging + sequential server-side promotion on full-profile batches
     val okHttpClient: OkHttpClient = OkHttpClient.Builder()
-        .retryOnConnectionFailure(false)
         .connectTimeout(20, TimeUnit.SECONDS)
         .readTimeout(90, TimeUnit.SECONDS)
         .writeTimeout(90, TimeUnit.SECONDS)
@@ -257,7 +256,6 @@ class BackendHttpClient(
 
     // Dedicated cookie-free, Origin-free client for presigned R2 object storage PUT uploads
     private val externalStorageHttpClient: OkHttpClient = OkHttpClient.Builder()
-        .retryOnConnectionFailure(false)
         .connectTimeout(20, TimeUnit.SECONDS)
         .readTimeout(60, TimeUnit.SECONDS)
         .writeTimeout(60, TimeUnit.SECONDS)

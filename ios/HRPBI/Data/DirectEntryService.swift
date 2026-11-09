@@ -470,8 +470,8 @@ public final class DirectEntryService: @unchecked Sendable {
         switch res {
         case .success(let page, let code):
             return .success(page.items, statusCode: code)
-        case .failure(let msg, let code, let errCode):
-            return .failure(message: msg, httpStatus: code, errorCode: errCode)
+        case .failure(let msg, let code, let errCode, let rawBody):
+            return .failure(message: msg, httpStatus: code, errorCode: errCode, rawBody: rawBody)
         }
     }
 

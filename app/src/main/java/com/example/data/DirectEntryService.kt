@@ -3924,6 +3924,7 @@ class DirectEntryService(
             val code = e.backendCode?.trim().orEmpty().ifEmpty {
                 if (e.kind == BackendFailureKind.CONFLICT || e.statusCode == 409) "CONFLICT" else ""
             }
+            val nextEntryVersion = if (e.statusCode == 422) reservedEntryVersion + 1 else reservedEntryVersion
             val msg = if (code.isNotEmpty() && code != "CONFLICT") {
                 DirectEntryContract.directEditDocumentErrorMessage(documentType, code)
             } else if (e.kind == BackendFailureKind.CONFLICT || e.statusCode == 409) {
@@ -3935,7 +3936,7 @@ class DirectEntryService(
             }
             return@withContext DirectEditSingleDocumentUploadResult(
                 ok = false,
-                entryVersion = reservedEntryVersion,
+                entryVersion = nextEntryVersion,
                 message = msg,
                 code = code.ifEmpty { null }
             )
