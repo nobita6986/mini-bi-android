@@ -153,7 +153,7 @@ public final class MiniBiViewModel: ObservableObject {
             inFlightTasks.removeValue(forKey: compositeKey)
         }
         let task = Task { @MainActor [weak self] in
-            guard let self else { return }
+            guard self != nil else { return }
             await operation(token)
         }
         inFlightTasks[compositeKey] = task
@@ -580,7 +580,7 @@ public final class MiniBiViewModel: ObservableObject {
         workReportObligations = []
         workReportReviews = []
         workReportTemplates = []
-        workReportAnalytics = WorkReportAnalyticsData()
+        workReportAnalytics = WorkReportsAnalyticsSnapshot()
         isLoadingDashboard = false
         isLoadingWorkReports = false
         isLoadingCccdReview = false
