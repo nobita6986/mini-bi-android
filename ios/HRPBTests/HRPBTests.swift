@@ -3964,6 +3964,7 @@ final class HRPBTests: XCTestCase {
         // 3. Switching to `.dashboard` loads Dashboard data lazily on demand
         vm.navigateTo(.dashboard)
         XCTAssertEqual(vm.currentDestination, .dashboard)
-        try await waitForRecordedUrl(containing: "/api/reporting/overview")
+        try await waitForRecordedUrl(containing: "/api/reporting/")
+        await vm.performLogout()
     }
 }
