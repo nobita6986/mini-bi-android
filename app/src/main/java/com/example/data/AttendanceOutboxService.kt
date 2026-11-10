@@ -838,10 +838,13 @@ class AttendanceOutboxService(
             java.util.Collections.synchronizedSet(HashSet<Long>())
 
         private val enqueuedWorkHistoryLock = Any()
+        @Volatile
+        private var recordEnqueuedWorkHistoryForTest: Boolean = false
         private val enqueuedWorkHistory = mutableListOf<EnqueuedOutboxWorkRecord>()
 
-        internal fun clearEnqueuedWorkHistoryForTest() {
+        internal fun clearEnqueuedWorkHistoryForTest(enableRecording: Boolean = true) {
             synchronized(enqueuedWorkHistoryLock) {
+                recordEnqueuedWorkHistoryForTest = enableRecording
                 enqueuedWorkHistory.clear()
             }
         }
@@ -906,8 +909,12 @@ class AttendanceOutboxService(
                 backoffDelayMillis = TimeUnit.SECONDS.toMillis(AttendanceContract.BACKOFF_INITIAL_DELAY_SECONDS),
                 appUserId = appUserId?.trim()?.takeIf { it.isNotEmpty() }
             )
-            synchronized(enqueuedWorkHistoryLock) {
-                enqueuedWorkHistory.add(record)
+            if (recordEnqueuedWorkHistoryForTest) {
+                synchronized(enqueuedWorkHistoryLock) {
+                    if (recordEnqueuedWorkHistoryForTest) {
+                        enqueuedWorkHistory.add(record)
+                    }
+                }
             }
             runCatching {
                 WorkManager.getInstance(context.applicationContext).enqueueUniqueWork(

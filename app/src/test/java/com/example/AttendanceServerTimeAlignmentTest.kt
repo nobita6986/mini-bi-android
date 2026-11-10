@@ -24,6 +24,9 @@ import com.example.data.TimeAnchorInvalidReason
 import com.example.ui.MainDestination
 import com.example.ui.MiniBiViewModel
 import com.example.ui.resolveDefaultLandingDestination
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
@@ -40,6 +43,7 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import java.io.File
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 
@@ -791,7 +795,7 @@ class AttendanceServerTimeAlignmentTest {
             assertEquals("/api/attendance/check-in", workerReq.path)
         } finally {
             MiniBiRepository.testSharedInstanceOverride = null
-            AttendanceOutboxService.clearEnqueuedWorkHistoryForTest()
+            AttendanceOutboxService.clearEnqueuedWorkHistoryForTest(enableRecording = false)
         }
     }
 
@@ -918,6 +922,98 @@ class AttendanceServerTimeAlignmentTest {
             )
         } finally {
             vm.cancelScopeForTest()
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // 9. Single-flight bootstrapSession coalesces concurrent (false, true)
+    //    into a single GET /api/auth/session and still enqueues outbox work
+    // -------------------------------------------------------------------------
+    @Test
+    fun `concurrent bootstrapSession false and true coalesces into a single auth session request and still schedules outbox work`() = runBlocking {
+        AttendanceOutboxService.clearEnqueuedWorkHistoryForTest(enableRecording = true)
+        val repo = createRepository()
+        try {
+            // Seed a retryable outbox record for actorA while offline
+            val offlineService = AttendanceOutboxService(
+                context = context,
+                httpClient = repo.httpClient,
+                dao = database.miniBiDao(),
+                timeAnchorManager = repo.attendanceTimeAnchorManager,
+                isNetworkAvailable = { false },
+                outboxWorkScheduler = {}
+            )
+            val queued = offlineService.submitCheckIn(
+                actor = actorA,
+                latitude = 21.0285,
+                longitude = 105.8542,
+                accuracyMeters = 8.0f,
+                addressHint = "Hà Nội",
+                sourcePhotoFile = createPhotoFile("singleflight_outbox.jpg"),
+                sourcePhotoUri = null,
+                note = "Offline queued for bootstrap single-flight"
+            )
+            assertEquals(AttendanceOutboxStatus.QUEUED, queued.record.syncStatus)
+            assertNull(repo.currentActorFlow.value)
+
+            AttendanceOutboxService.clearEnqueuedWorkHistoryForTest(enableRecording = true)
+            val reqCountBefore = server.requestCount
+            server.enqueue(
+                MockResponse()
+                    .setBodyDelay(150, TimeUnit.MILLISECONDS)
+                    .setResponseCode(200)
+                    .setBody(
+                        """
+                        {
+                          "ok": true,
+                          "actor": {
+                            "app_user_id": "${actorA.appUserId}",
+                            "display_name": "${actorA.displayName}",
+                            "capabilities": ["entry_read", "entry_create", "submission_create"],
+                            "scopes": [{"kind": "own", "reference": "${actorA.appUserId}", "valid_from": "2026-01-01", "valid_to": null}],
+                            "allowed_worker_tabs": ["uploader"]
+                          }
+                        }
+                        """.trimIndent()
+                    )
+            )
+
+            // Worker starts bootstrapSession(scheduleOutboxWork = false) first, ViewModel joins with bootstrapSession(scheduleOutboxWork = true)
+            val workerBootstrap = async(Dispatchers.IO) {
+                repo.bootstrapSession(scheduleOutboxWork = false)
+            }
+            delay(25)
+            val viewModelBootstrap = async(Dispatchers.IO) {
+                repo.bootstrapSession(scheduleOutboxWork = true)
+            }
+
+            val workerRes = workerBootstrap.await()
+            val viewModelRes = viewModelBootstrap.await()
+
+            assertTrue("Worker bootstrapSession must succeed", workerRes.isSuccess)
+            assertTrue("ViewModel bootstrapSession must succeed", viewModelRes.isSuccess)
+            assertEquals(actorA.appUserId, workerRes.getOrThrow().appUserId)
+            assertEquals(actorA.appUserId, viewModelRes.getOrThrow().appUserId)
+            assertEquals(actorA.appUserId, repo.currentActorFlow.value?.appUserId)
+
+            assertEquals(
+                "Concurrent bootstrapSession(false) and bootstrapSession(true) must coalesce into exactly 1 GET /api/auth/session request",
+                1,
+                server.requestCount - reqCountBefore
+            )
+            val authReq = server.takeRequest()
+            assertEquals("/api/auth/session", authReq.path)
+
+            val enqueued = AttendanceOutboxService.getEnqueuedWorkHistoryForTest()
+            assertEquals(
+                "Even when bootstrapSession(false) started first, joining with bootstrapSession(true) must still enqueue durable outbox work once",
+                1,
+                enqueued.size
+            )
+            assertEquals(AttendanceContract.buildUniqueOutboxWorkName(actorA.appUserId), enqueued.single().uniqueWorkName)
+            assertEquals(ExistingWorkPolicy.KEEP, enqueued.single().existingWorkPolicy)
+        } finally {
+            AttendanceOutboxService.clearEnqueuedWorkHistoryForTest(enableRecording = false)
         }
     }
 }

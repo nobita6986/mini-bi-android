@@ -156,7 +156,7 @@ jobs:
       # ========================================================================
       - name: Check if Apple Developer Secrets are configured (Release Mode)
         id: check_secrets
-        if: github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request' || startsWith(github.ref, 'refs/tags/V1.0.') || github.ref == 'refs/heads/main'
+        if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/V1.0.')
         run: |
           if [ -n "$APPLE_CERTIFICATE_BASE64" ] && \
              [ -n "$APPLE_CERTIFICATE_PASSWORD" ] && \
@@ -181,7 +181,8 @@ jobs:
             RAW_TAG="${GITHUB_REF#refs/tags/}"
           else
             TODAY=$(TZ=Asia/Ho_Chi_Minh date +"%d%m%Y")
-            RAW_TAG="V1.0.9.${TODAY}"
+            PROJECT_MARKETING_VER=$(awk -F'"' '/MARKETING_VERSION:/ {print $2; exit}' ios/project.yml)
+            RAW_TAG="V${PROJECT_MARKETING_VER:-1.0.9}.${TODAY}"
           fi
 
           FULL_VER="${RAW_TAG#V}"
@@ -325,7 +326,7 @@ jobs:
           fi
 
       - name: Upload .ipa to TestFlight (App Store Connect)
-        if: steps.check_secrets.outputs.configured == 'true' && github.event_name != 'pull_request' && inputs.upload_to_testflight != 'false'
+        if: steps.check_secrets.outputs.configured == 'true' && inputs.upload_to_testflight != 'false' && (github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/V1.0.'))
         run: |
           mkdir -p "$HOME/.appstoreconnect/private_keys"
           KEY_FILE="$HOME/.appstoreconnect/private_keys/AuthKey_${APP_STORE_CONNECT_API_KEY_ID}.p8"
