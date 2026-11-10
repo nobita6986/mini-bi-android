@@ -3598,11 +3598,11 @@ final class HRPBTests: XCTestCase {
 
     @MainActor
     func testMustFix0_RecruitmentPostsContractLocksPageSize10AndNeverEmitsPageSize20() async throws {
-        XCTAssertEqual(RecruitmentPostService.defaultPageSize, 10)
-        XCTAssertEqual(RecruitmentPostService.maxPageSize, 10)
-        XCTAssertEqual(RecruitmentPostService.buildListPath(), "/api/recruitment-posts?page_size=10")
-        XCTAssertEqual(RecruitmentPostService.buildListPath(pageSize: 20), "/api/recruitment-posts?page_size=10")
-        XCTAssertFalse(RecruitmentPostService.buildListPath(pageSize: 20).contains("page_size=20"))
+        XCTAssertEqual(RecruitmentPostContract.defaultPageSize, 10)
+        XCTAssertEqual(RecruitmentPostContract.maxPageSize, 10)
+        XCTAssertEqual(RecruitmentPostContract.buildListPath(), "/api/recruitment-posts?page_size=10")
+        XCTAssertEqual(RecruitmentPostContract.buildListPath(pageSize: 20), "/api/recruitment-posts?page_size=10")
+        XCTAssertFalse(RecruitmentPostContract.buildListPath(pageSize: 20).contains("page_size=20"))
 
         MockURLProtocol.resetRecordedUrls()
         let firstPostJson = Self.makeRecruitmentPostJson(
