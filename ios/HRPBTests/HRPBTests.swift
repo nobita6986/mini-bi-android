@@ -3585,6 +3585,17 @@ final class HRPBTests: XCTestCase {
 
     // MARK: - 14. Round 1 Emergency Hotfix Regression Tests (Must Fix 0, 1, 3)
 
+    private static func makeJsonResponse(_ req: URLRequest, statusCode: Int, json: String) -> (HTTPURLResponse, Data) {
+        let url = req.url ?? URL(string: "https://bi.hrpartner.vn")!
+        let resp = HTTPURLResponse(
+            url: url,
+            statusCode: statusCode,
+            httpVersion: "HTTP/1.1",
+            headerFields: ["Content-Type": "application/json"]
+        )!
+        return (resp, Data(json.utf8))
+    }
+
     @MainActor
     func testMustFix0_RecruitmentPostsContractLocksPageSize10AndNeverEmitsPageSize20() async throws {
         XCTAssertEqual(RecruitmentPostService.defaultPageSize, 10)
@@ -3594,20 +3605,22 @@ final class HRPBTests: XCTestCase {
         XCTAssertFalse(RecruitmentPostService.buildListPath(pageSize: 20).contains("page_size=20"))
 
         MockURLProtocol.resetRecordedUrls()
-        let firstPostJson = sampleRecruitmentPostJson(
+        let firstPostJson = Self.makeRecruitmentPostJson(
             briefId: "11111111-2222-4333-8444-555555555551",
-            customerName: "Công ty TNHH Điện tử A",
-            version: 1
+            projectName: "Công ty TNHH Điện tử A",
+            creatorName: "Người Tạo A",
+            managerName: "Quản Lý A"
         )
-        let secondPostJson = sampleRecruitmentPostJson(
+        let secondPostJson = Self.makeRecruitmentPostJson(
             briefId: "22222222-2222-4333-8444-555555555552",
-            customerName: "Công ty TNHH Điện tử B",
-            version: 1
+            projectName: "Công ty TNHH Điện tử B",
+            creatorName: "Người Tạo B",
+            managerName: "Quản Lý B"
         )
         MockURLProtocol.requestHandler = { req in
             let urlStr = req.url?.absoluteString ?? ""
             if urlStr.contains("/api/recruitment-posts") && urlStr.contains("cursor=cursor-p2") {
-                return MockURLProtocol.jsonResponse(
+                return Self.makeJsonResponse(
                     req,
                     statusCode: 200,
                     json: """
@@ -3616,7 +3629,7 @@ final class HRPBTests: XCTestCase {
                 )
             }
             if urlStr.contains("/api/recruitment-posts") {
-                return MockURLProtocol.jsonResponse(
+                return Self.makeJsonResponse(
                     req,
                     statusCode: 200,
                     json: """
@@ -3624,10 +3637,10 @@ final class HRPBTests: XCTestCase {
                     """
                 )
             }
-            return MockURLProtocol.jsonResponse(req, statusCode: 200, json: #"{"ok":true,"data":{}}"#)
+            return Self.makeJsonResponse(req, statusCode: 200, json: #"{"ok":true,"data":{}}"#)
         }
 
-        let client = makeMockBackendClient()
+        let client = makeMockHttpClient()
         let vm = MiniBiViewModel(
             repository: MiniBiRepository(httpClient: client, keychain: KeychainStore(serviceName: "com.aistudio.minibi.mf0.\(UUID().uuidString)")),
             recruitmentPostService: RecruitmentPostService(httpClient: client)
@@ -3636,15 +3649,13 @@ final class HRPBTests: XCTestCase {
             id: "11111111-1111-4111-8111-111111111111",
             username: "recruiter.01",
             fullName: "Tuyển dụng 01",
-            role: "TD",
-            roleLabel: "Tuyển dụng",
-            capabilities: ["entry_read"],
+            permissions: ["entry_read"],
             allowedWorkerTabs: ["recruited"]
         )
         vm.isAuthenticated = true
 
         await vm.loadRecruitmentPosts(reset: true)
-        await vm.loadMoreRecruitmentPostsIfNeeded(currentItem: vm.recruitmentPosts.last)
+        await vm.loadMoreRecruitmentPosts()
 
         let recruitmentUrls = MockURLProtocol.recordedUrls().filter { $0.contains("/api/recruitment-posts") }
         XCTAssertEqual(recruitmentUrls.count, 2)
@@ -3678,7 +3689,7 @@ final class HRPBTests: XCTestCase {
         }
 
         let fakeClock = FakeClock()
-        let client = makeMockBackendClient()
+        let client = makeMockHttpClient()
         let keychain = KeychainStore(serviceName: "com.aistudio.minibi.mf1.backoff.\(UUID().uuidString)")
         let anchorManager = AttendanceTimeAnchorManager(httpClient: client, keychain: keychain, clock: fakeClock)
         let vm = MiniBiViewModel(
@@ -3690,9 +3701,7 @@ final class HRPBTests: XCTestCase {
             id: "11111111-1111-4111-8111-111111111111",
             username: "worker.backoff",
             fullName: "Nhân sự Backoff",
-            role: "TD",
-            roleLabel: "Tuyển dụng",
-            capabilities: ["entry_read"],
+            permissions: ["entry_read"],
             allowedWorkerTabs: ["recruited"]
         )
         vm.isAuthenticated = true
@@ -3703,15 +3712,15 @@ final class HRPBTests: XCTestCase {
             let url = req.url?.absoluteString ?? ""
             if url.contains("/api/attendance/time") {
                 if shouldReturn504 {
-                    return MockURLProtocol.jsonResponse(req, statusCode: 504, json: #"{"ok":false,"code":"GATEWAY_TIMEOUT"}"#)
+                    return Self.makeJsonResponse(req, statusCode: 504, json: #"{"ok":false,"code":"GATEWAY_TIMEOUT"}"#)
                 }
-                return MockURLProtocol.jsonResponse(
+                return Self.makeJsonResponse(
                     req,
                     statusCode: 200,
                     json: #"{"ok":true,"data":{"server_epoch_ms":1762700000000,"server_now":"2026-11-10T08:00:00.000+07:00","time_token":"tok-ok","expires_at_epoch_ms":1762743200000}}"#
                 )
             }
-            return MockURLProtocol.jsonResponse(req, statusCode: 200, json: #"{"ok":true,"data":{}}"#)
+            return Self.makeJsonResponse(req, statusCode: 200, json: #"{"ok":true,"data":{}}"#)
         }
 
         // Failure #1 -> 30,000ms backoff
@@ -3766,7 +3775,7 @@ final class HRPBTests: XCTestCase {
         }
 
         let fakeClock = FakeClock()
-        let client = makeMockBackendClient()
+        let client = makeMockHttpClient()
         let keychain = KeychainStore(serviceName: "com.aistudio.minibi.mf1.split.\(UUID().uuidString)")
         let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("outbox_mf1_\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: tempDir) }
@@ -3787,9 +3796,7 @@ final class HRPBTests: XCTestCase {
             id: "11111111-1111-4111-8111-111111111111",
             username: "worker.split",
             fullName: "Nhân sự Split",
-            role: "TD",
-            roleLabel: "Tuyển dụng",
-            capabilities: ["entry_read"],
+            permissions: ["entry_read"],
             allowedWorkerTabs: ["recruited"]
         )
         vm.isAuthenticated = true
@@ -3800,12 +3807,12 @@ final class HRPBTests: XCTestCase {
         MockURLProtocol.requestHandler = { req in
             let url = req.url?.absoluteString ?? ""
             if url.contains("/api/attendance/check-in") {
-                return MockURLProtocol.jsonResponse(req, statusCode: 504, json: #"{"ok":false,"code":"GATEWAY_TIMEOUT"}"#)
+                return Self.makeJsonResponse(req, statusCode: 504, json: #"{"ok":false,"code":"GATEWAY_TIMEOUT"}"#)
             }
             if url.contains("/api/attendance/time") {
-                return MockURLProtocol.jsonResponse(req, statusCode: 504, json: #"{"ok":false,"code":"GATEWAY_TIMEOUT"}"#)
+                return Self.makeJsonResponse(req, statusCode: 504, json: #"{"ok":false,"code":"GATEWAY_TIMEOUT"}"#)
             }
-            return MockURLProtocol.jsonResponse(req, statusCode: 200, json: #"{"ok":true,"data":{}}"#)
+            return Self.makeJsonResponse(req, statusCode: 200, json: #"{"ok":true,"data":{}}"#)
         }
 
         let testPhoto = try makeSolidTestJpeg(color: .systemRed, size: CGSize(width: 320, height: 320))
@@ -3869,7 +3876,7 @@ final class HRPBTests: XCTestCase {
         MockURLProtocol.requestHandler = { req in
             let url = req.url?.absoluteString ?? ""
             if url.contains("/api/auth/session") || url.contains("/api/direct-entry/session") {
-                return MockURLProtocol.jsonResponse(
+                return Self.makeJsonResponse(
                     req,
                     statusCode: 200,
                     json: """
@@ -3887,19 +3894,19 @@ final class HRPBTests: XCTestCase {
                 )
             }
             if url.contains("/api/attendance/time") {
-                return MockURLProtocol.jsonResponse(
+                return Self.makeJsonResponse(
                     req,
                     statusCode: 200,
                     json: #"{"ok":true,"data":{"server_epoch_ms":1762700000000,"server_now":"2026-11-10T08:00:00.000+07:00","time_token":"tok-init","expires_at_epoch_ms":1762743200000}}"#
                 )
             }
             if url.contains("/api/attendance/history") {
-                return MockURLProtocol.jsonResponse(req, statusCode: 200, json: #"{"ok":true,"data":{"items":[],"total":0}}"#)
+                return Self.makeJsonResponse(req, statusCode: 200, json: #"{"ok":true,"data":{"items":[],"total":0}}"#)
             }
-            return MockURLProtocol.jsonResponse(req, statusCode: 200, json: #"{"ok":true,"data":{}}"#)
+            return Self.makeJsonResponse(req, statusCode: 200, json: #"{"ok":true,"data":{}}"#)
         }
 
-        let client = makeMockBackendClient()
+        let client = makeMockHttpClient()
         let keychain = KeychainStore(serviceName: "com.aistudio.minibi.mf3.\(UUID().uuidString)")
         let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("outbox_mf3_\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: tempDir) }
@@ -3929,9 +3936,7 @@ final class HRPBTests: XCTestCase {
             id: "11111111-1111-4111-8111-111111111111",
             username: "worker.default",
             fullName: "Nhân sự Mặc Định",
-            role: "TD",
-            roleLabel: "Tuyển dụng",
-            capabilities: ["entry_read", "entry_create", "submission_create"],
+            permissions: ["entry_read", "entry_create", "submission_create"],
             allowedWorkerTabs: ["uploader", "recruited"]
         )
         vm.onAuthenticatedSessionEstablished(user: user)
