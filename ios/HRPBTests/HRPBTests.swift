@@ -3295,6 +3295,7 @@ final class HRPBTests: XCTestCase {
         MockURLProtocol.pathDelaySec = [
             "/api/recruitment-posts/\(briefSlow)": 0.4
         ]
+        defer { MockURLProtocol.pathDelaySec = [:] }
         MockURLProtocol.requestHandler = { req in
             let url = try XCTUnwrap(req.url)
             let fullUrl = url.absoluteString

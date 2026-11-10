@@ -40,7 +40,7 @@ public struct RecruitmentPostsScreen: View {
                     .foregroundColor(theme.primary)
                     .padding(.horizontal, 10)
                     .padding(.vertical, 6)
-                    .background(theme.primarySoft)
+                    .background(theme.primaryLight)
                     .clipShape(RoundedRectangle(cornerRadius: 8))
                 }
                 .disabled(viewModel.recruitmentPostsLoading || viewModel.recruitmentPostsLoadingMore)
@@ -129,7 +129,7 @@ public struct RecruitmentPostsScreen: View {
                                 .foregroundColor(theme.primary)
                             }
                             .padding(12)
-                            .background(SemanticColors.dangerSoft)
+                            .background(SemanticColors.dangerBg)
                             .clipShape(RoundedRectangle(cornerRadius: 10))
                         }
 
@@ -179,7 +179,7 @@ public struct RecruitmentPostsScreen: View {
                 }
             }
         }
-        .background(SemanticColors.pageBackground)
+        .background(theme.background)
         .task {
             if viewModel.recruitmentPosts.isEmpty
                 && !viewModel.recruitmentPostsLoading
@@ -284,7 +284,7 @@ private struct RecruitmentPostSummaryCardView: View {
                         .foregroundColor(theme.primary)
                         .padding(.horizontal, 12)
                         .padding(.vertical, 7)
-                        .background(theme.primarySoft)
+                        .background(theme.primaryLight)
                         .clipShape(RoundedRectangle(cornerRadius: 8))
                 }
                 .accessibilityIdentifier("recruitment_post_detail_btn_\(card.briefId)")
@@ -328,7 +328,9 @@ private struct RecruitmentPostDetailSheet: View {
         }
 
         NavigationStack {
-            Group {
+            ZStack {
+                theme.background.ignoresSafeArea()
+
                 if viewModel.recruitmentPostDetailLoading {
                     VStack(spacing: 12) {
                         ProgressView()
@@ -352,89 +354,103 @@ private struct RecruitmentPostDetailSheet: View {
                         }
                     )
                 } else if let detail {
+                    let s1 = detail.section1General
+                    let s2 = detail.section2CandidateRequirements
+                    let s3 = detail.section3CompensationBenefits
+                    let s4 = detail.section4ApplicationDocuments
+
                     ScrollView {
                         VStack(alignment: .leading, spacing: 14) {
-                            RecruitmentDetailSectionView(title: "1. Thông tin chung dự án", theme: theme) {
-                                let s1 = detail.section1General
-                                RecruitmentPostMetaRow(label: "Tên dự án", value: s1.projectName)
-                                RecruitmentPostMetaRow(label: "Tên khách hàng", value: s1.customerNameDisplay)
-                                RecruitmentPostMetaRow(label: "Tỉnh/Thành", value: s1.provinceName)
-                                RecruitmentPostMetaRow(label: "Khu công nghiệp", value: s1.industrialParkName)
-                                RecruitmentPostMetaRow(label: "Vốn đầu tư", value: s1.investmentOriginDisplay)
-                                RecruitmentPostMetaRow(label: "Ngành nghề sản xuất", value: s1.manufacturingIndustryDisplay)
-                                RecruitmentPostMetaRow(label: "Hình thức tuyển dụng", value: s1.laborTypesDisplay)
-                                RecruitmentPostMetaRow(label: "Công việc", value: s1.jobDescriptionDisplay)
-                                RecruitmentPostMetaRow(label: "Môi trường làm việc", value: s1.environmentTypesDisplay)
-                                RecruitmentPostMetaRow(label: "Tư thế làm việc", value: s1.workPosturesDisplay)
-                                RecruitmentPostMetaRow(label: "Thời gian/ca làm", value: s1.shiftPatternDisplay)
-                                RecruitmentPostMetaRow(label: "Chi tiết ca làm", value: s1.shiftDetailsDisplay)
-                                RecruitmentPostMetaRow(label: "Lịch cung ứng", value: s1.supplyScheduleTextDisplay)
-                                RecruitmentPostMetaRow(label: "Số lượng dự kiến", value: s1.expectedHeadcountDisplay)
-                                RecruitmentPostMetaRow(label: "Người phụ trách", value: s1.contactPersonDisplay)
-                                RecruitmentPostMetaRow(label: "Số điện thoại", value: s1.contactPhoneDisplay)
-                            }
+                            RecruitmentDetailSectionView(
+                                title: "1. Thông tin chung dự án",
+                                theme: theme,
+                                rows: [
+                                    ("Tên dự án", s1.projectName),
+                                    ("Tên khách hàng", s1.customerNameDisplay),
+                                    ("Tỉnh/Thành", s1.provinceName),
+                                    ("Khu công nghiệp", s1.industrialParkName),
+                                    ("Vốn đầu tư", s1.investmentOriginDisplay),
+                                    ("Ngành nghề sản xuất", s1.manufacturingIndustryDisplay),
+                                    ("Hình thức tuyển dụng", s1.laborTypesDisplay),
+                                    ("Công việc", s1.jobDescriptionDisplay),
+                                    ("Môi trường làm việc", s1.environmentTypesDisplay),
+                                    ("Tư thế làm việc", s1.workPosturesDisplay),
+                                    ("Thời gian/ca làm", s1.shiftPatternDisplay),
+                                    ("Chi tiết ca làm", s1.shiftDetailsDisplay),
+                                    ("Lịch cung ứng", s1.supplyScheduleTextDisplay),
+                                    ("Số lượng dự kiến", s1.expectedHeadcountDisplay),
+                                    ("Người phụ trách", s1.contactPersonDisplay),
+                                    ("Số điện thoại", s1.contactPhoneDisplay)
+                                ]
+                            )
 
-                            RecruitmentDetailSectionView(title: "2. Yêu cầu ứng viên", theme: theme) {
-                                let s2 = detail.section2CandidateRequirements
-                                RecruitmentPostMetaRow(label: "Độ tuổi", value: s2.ageRangeDisplay)
-                                RecruitmentPostMetaRow(label: "Tuổi tối thiểu", value: s2.ageFromDisplay)
-                                RecruitmentPostMetaRow(label: "Tuổi tối đa", value: s2.ageToDisplay)
-                                RecruitmentPostMetaRow(label: "Giới tính", value: s2.genderDisplay)
-                                RecruitmentPostMetaRow(label: "Trình độ học vấn", value: s2.minimumEducationDisplay)
-                                RecruitmentPostMetaRow(label: "Yêu cầu kinh nghiệm", value: s2.experienceRequiredDisplay)
-                                RecruitmentPostMetaRow(label: "Chi tiết kinh nghiệm", value: s2.experienceDetailsDisplay)
-                                RecruitmentPostMetaRow(label: "Nhận NLĐ cũ", value: s2.acceptsFormerWorkersDisplay)
-                                RecruitmentPostMetaRow(label: "Kiểm tra đầu vào", value: s2.entryTestFormatDisplay)
-                                RecruitmentPostMetaRow(label: "Yêu cầu khác", value: s2.otherRequirementsDisplay)
-                            }
+                            RecruitmentDetailSectionView(
+                                title: "2. Yêu cầu ứng viên",
+                                theme: theme,
+                                rows: [
+                                    ("Độ tuổi", s2.ageRangeDisplay),
+                                    ("Tuổi tối thiểu", s2.ageFromDisplay),
+                                    ("Tuổi tối đa", s2.ageToDisplay),
+                                    ("Giới tính", s2.genderDisplay),
+                                    ("Trình độ học vấn", s2.minimumEducationDisplay),
+                                    ("Yêu cầu kinh nghiệm", s2.experienceRequiredDisplay),
+                                    ("Chi tiết kinh nghiệm", s2.experienceDetailsDisplay),
+                                    ("Nhận NLĐ cũ", s2.acceptsFormerWorkersDisplay),
+                                    ("Kiểm tra đầu vào", s2.entryTestFormatDisplay),
+                                    ("Yêu cầu khác", s2.otherRequirementsDisplay)
+                                ]
+                            )
 
-                            RecruitmentDetailSectionView(title: "3. Lương, thưởng và phúc lợi", theme: theme) {
-                                let s3 = detail.section3CompensationBenefits
-                                RecruitmentPostMetaRow(label: "Lương cơ bản", value: s3.baseSalaryVndDisplay)
-                                RecruitmentPostMetaRow(label: "Điều kiện lương cơ bản", value: s3.baseSalaryConditionsDisplay)
-                                RecruitmentPostMetaRow(label: "Thưởng chuyên cần", value: s3.attendanceBonusVndDisplay)
-                                RecruitmentPostMetaRow(label: "Điều kiện chuyên cần", value: s3.attendanceBonusConditionsDisplay)
-                                RecruitmentPostMetaRow(label: "Phụ cấp đời sống", value: s3.livingAllowanceVndDisplay)
-                                RecruitmentPostMetaRow(label: "Điều kiện PC đời sống", value: s3.livingAllowanceConditionsDisplay)
-                                RecruitmentPostMetaRow(label: "Phụ cấp thâm niên", value: s3.seniorityAllowanceVndDisplay)
-                                RecruitmentPostMetaRow(label: "Điều kiện PC thâm niên", value: s3.seniorityAllowanceConditionsDisplay)
-                                RecruitmentPostMetaRow(label: "Phụ cấp độc hại/KHV", value: s3.eyesightAllowanceVndDisplay)
-                                RecruitmentPostMetaRow(label: "Điều kiện PC độc hại/KHV", value: s3.eyesightAllowanceConditionsDisplay)
-                                RecruitmentPostMetaRow(label: "Phụ cấp khác", value: s3.otherAllowanceTextDisplay)
-                                RecruitmentPostMetaRow(label: "Thu nhập dự kiến", value: s3.incomeRangeDisplay)
-                                RecruitmentPostMetaRow(label: "Ngày thanh toán lương", value: s3.salaryPaymentScheduleDisplay)
-                                RecruitmentPostMetaRow(label: "Ứng lương", value: s3.salaryAdvanceAvailableDisplay)
-                                RecruitmentPostMetaRow(label: "Mức ứng lương", value: s3.salaryAdvanceAmountVndDisplay)
-                                RecruitmentPostMetaRow(label: "Lịch ứng lương", value: s3.salaryAdvanceScheduleDisplay)
-                                RecruitmentPostMetaRow(label: "Lương tuần", value: s3.weeklySalaryAvailableDisplay)
-                                RecruitmentPostMetaRow(label: "Lịch trả lương tuần", value: s3.weeklySalaryPaymentScheduleDisplay)
-                                RecruitmentPostMetaRow(label: "Ca ngày 8h", value: s3.dayShift8hVndDisplay)
-                                RecruitmentPostMetaRow(label: "Ca ngày 11h", value: s3.dayShift11hVndDisplay)
-                                RecruitmentPostMetaRow(label: "Ca đêm 8h", value: s3.nightShift8hVndDisplay)
-                                RecruitmentPostMetaRow(label: "Ca đêm 11h", value: s3.nightShift11hVndDisplay)
-                                RecruitmentPostMetaRow(label: "Chủ nhật ca ngày 11h", value: s3.sundayDay11hVndDisplay)
-                                RecruitmentPostMetaRow(label: "Chủ nhật ca đêm 11h", value: s3.sundayNight11hVndDisplay)
-                                RecruitmentPostMetaRow(label: "Ngày lễ ca ngày 11h", value: s3.holidayDay11hVndDisplay)
-                                RecruitmentPostMetaRow(label: "Ngày lễ ca đêm 11h", value: s3.holidayNight11hVndDisplay)
-                                RecruitmentPostMetaRow(label: "Đồng phục/bảo hộ", value: s3.ppeProvidedDisplay)
-                                RecruitmentPostMetaRow(label: "Chi tiết bảo hộ", value: s3.ppeDetailsDisplay)
-                                RecruitmentPostMetaRow(label: "Phúc lợi khác", value: s3.otherBenefitsDisplay)
-                            }
+                            RecruitmentDetailSectionView(
+                                title: "3. Lương, thưởng và phúc lợi",
+                                theme: theme,
+                                rows: [
+                                    ("Lương cơ bản", s3.baseSalaryVndDisplay),
+                                    ("Điều kiện lương cơ bản", s3.baseSalaryConditionsDisplay),
+                                    ("Thưởng chuyên cần", s3.attendanceBonusVndDisplay),
+                                    ("Điều kiện chuyên cần", s3.attendanceBonusConditionsDisplay),
+                                    ("Phụ cấp đời sống", s3.livingAllowanceVndDisplay),
+                                    ("Điều kiện PC đời sống", s3.livingAllowanceConditionsDisplay),
+                                    ("Phụ cấp thâm niên", s3.seniorityAllowanceVndDisplay),
+                                    ("Điều kiện PC thâm niên", s3.seniorityAllowanceConditionsDisplay),
+                                    ("Phụ cấp độc hại/KHV", s3.eyesightAllowanceVndDisplay),
+                                    ("Điều kiện PC độc hại/KHV", s3.eyesightAllowanceConditionsDisplay),
+                                    ("Phụ cấp khác", s3.otherAllowanceTextDisplay),
+                                    ("Thu nhập dự kiến", s3.incomeRangeDisplay),
+                                    ("Ngày thanh toán lương", s3.salaryPaymentScheduleDisplay),
+                                    ("Ứng lương", s3.salaryAdvanceAvailableDisplay),
+                                    ("Mức ứng lương", s3.salaryAdvanceAmountVndDisplay),
+                                    ("Lịch ứng lương", s3.salaryAdvanceScheduleDisplay),
+                                    ("Lương tuần", s3.weeklySalaryAvailableDisplay),
+                                    ("Lịch trả lương tuần", s3.weeklySalaryPaymentScheduleDisplay),
+                                    ("Ca ngày 8h", s3.dayShift8hVndDisplay),
+                                    ("Ca ngày 11h", s3.dayShift11hVndDisplay),
+                                    ("Ca đêm 8h", s3.nightShift8hVndDisplay),
+                                    ("Ca đêm 11h", s3.nightShift11hVndDisplay),
+                                    ("Chủ nhật ca ngày 11h", s3.sundayDay11hVndDisplay),
+                                    ("Chủ nhật ca đêm 11h", s3.sundayNight11hVndDisplay),
+                                    ("Ngày lễ ca ngày 11h", s3.holidayDay11hVndDisplay),
+                                    ("Ngày lễ ca đêm 11h", s3.holidayNight11hVndDisplay),
+                                    ("Đồng phục/bảo hộ", s3.ppeProvidedDisplay),
+                                    ("Chi tiết bảo hộ", s3.ppeDetailsDisplay),
+                                    ("Phúc lợi khác", s3.otherBenefitsDisplay)
+                                ]
+                            )
 
-                            RecruitmentDetailSectionView(title: "4. Hồ sơ ứng viên cần chuẩn bị", theme: theme) {
-                                let s4 = detail.section4ApplicationDocuments
-                                RecruitmentPostMetaRow(label: "CCCD gốc & bản sao", value: s4.requireOriginalCccdAndCopyDisplay)
-                                RecruitmentPostMetaRow(label: "Sơ yếu lý lịch công chứng", value: s4.requireCertifiedResumeDisplay)
-                                RecruitmentPostMetaRow(
-                                    label: "Giấy khám sức khỏe (6 tháng)",
-                                    value: s4.requireHealthCertificateWithin6MonthsDisplay
-                                )
-                                RecruitmentPostMetaRow(label: "Ảnh 3x4", value: s4.requirePhoto3x4Display)
-                                RecruitmentPostMetaRow(label: "Bằng cấp/chứng chỉ", value: s4.requireDegreeOrCertificateDisplay)
-                                RecruitmentPostMetaRow(label: "Sổ BHXH", value: s4.requireSocialInsuranceBookDisplay)
-                                RecruitmentPostMetaRow(label: "Giấy tờ khác", value: s4.requireOtherDocumentsDisplay)
-                                RecruitmentPostMetaRow(label: "Chi tiết giấy tờ khác", value: s4.otherDocumentsTextDisplay)
-                            }
+                            RecruitmentDetailSectionView(
+                                title: "4. Hồ sơ ứng viên cần chuẩn bị",
+                                theme: theme,
+                                rows: [
+                                    ("CCCD gốc & bản sao", s4.requireOriginalCccdAndCopyDisplay),
+                                    ("Sơ yếu lý lịch công chứng", s4.requireCertifiedResumeDisplay),
+                                    ("Giấy khám sức khỏe (6 tháng)", s4.requireHealthCertificateWithin6MonthsDisplay),
+                                    ("Ảnh 3x4", s4.requirePhoto3x4Display),
+                                    ("Bằng cấp/chứng chỉ", s4.requireDegreeOrCertificateDisplay),
+                                    ("Sổ BHXH", s4.requireSocialInsuranceBookDisplay),
+                                    ("Giấy tờ khác", s4.requireOtherDocumentsDisplay),
+                                    ("Chi tiết giấy tờ khác", s4.otherDocumentsTextDisplay)
+                                ]
+                            )
 
                             VStack(alignment: .leading, spacing: 4) {
                                 Text("Người đăng: \(detail.createdByDisplayName) · \(detail.publishedAtDisplay)")
@@ -455,7 +471,6 @@ private struct RecruitmentPostDetailSheet: View {
                         }
                         .padding(14)
                     }
-                    .background(SemanticColors.pageBackground)
                 }
             }
             .navigationTitle(detail?.section1General.projectName ?? "Chi tiết tin tuyển dụng")
@@ -471,10 +486,10 @@ private struct RecruitmentPostDetailSheet: View {
     }
 }
 
-private struct RecruitmentDetailSectionView<Content: View>: View {
+private struct RecruitmentDetailSectionView: View {
     let title: String
     let theme: MiniBiThemePalette
-    @ViewBuilder let content: () -> Content
+    let rows: [(String, String)]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -482,7 +497,9 @@ private struct RecruitmentDetailSectionView<Content: View>: View {
                 .font(.subheadline.weight(.bold))
                 .foregroundColor(theme.primary)
             Divider()
-            content()
+            ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+                RecruitmentPostMetaRow(label: row.0, value: row.1)
+            }
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
