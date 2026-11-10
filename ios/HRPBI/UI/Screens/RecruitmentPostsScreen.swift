@@ -17,14 +17,9 @@ public struct RecruitmentPostsScreen: View {
                     .font(.system(size: 16, weight: .semibold))
                     .foregroundColor(theme.primary)
 
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Tin tuyển dụng")
-                        .font(.subheadline.weight(.bold))
-                        .foregroundColor(SemanticColors.textPrimary)
-                    Text("Danh sách tin tuyển dụng đang hiệu lực (chỉ đọc)")
-                        .font(.caption2)
-                        .foregroundColor(SemanticColors.textSecondary)
-                }
+                Text("Tin tuyển dụng")
+                    .font(.subheadline.weight(.bold))
+                    .foregroundColor(SemanticColors.textPrimary)
 
                 Spacer()
 

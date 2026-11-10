@@ -99,18 +99,11 @@ fun RecruitmentPostsScreen(
                         contentDescription = null,
                         tint = MaterialTheme.colorScheme.primary
                     )
-                    Column {
-                        Text(
-                            text = "Tin tuyển dụng",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold
-                        )
-                        Text(
-                            text = "Danh sách tin tuyển dụng đang hiệu lực (chỉ đọc)",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
+                    Text(
+                        text = "Tin tuyển dụng",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
                 }
                 OutlinedButton(
                     onClick = { viewModel.loadRecruitmentPosts(reset = true) },

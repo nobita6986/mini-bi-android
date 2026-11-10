@@ -1580,9 +1580,9 @@ public struct WorkersScreen: View {
                                     Task { await viewModel.loadWorkers(resetPage: true) }
                                 } label: {
                                     Text(tab.label)
-                                        .font(.caption.weight(selected ? .bold : .medium))
-                                        .padding(.horizontal, 12)
-                                        .padding(.vertical, 7)
+                                        .font(.caption.weight(selected ? .bold : .semibold))
+                                        .padding(.horizontal, 14)
+                                        .padding(.vertical, 9)
                                         .background(selected ? theme.primary : Color(hex: 0xF1F5F9))
                                         .foregroundColor(selected ? .white : SemanticColors.textSecondary)
                                         .clipShape(Capsule())
@@ -1595,103 +1595,66 @@ public struct WorkersScreen: View {
                     }
                     .background(Color.white)
 
-                    // QLDA Salary Advance Entry Button (Right below scope chips, right above search input)
-                    if viewModel.canShowPmSalaryAdvanceButton {
-                        HStack {
-                            Button {
-                                KeyboardDismissal.dismiss()
-                                Task { await viewModel.openSalaryAdvanceSheet() }
-                            } label: {
-                                HStack(spacing: 6) {
-                                    Image(systemName: "banknote.fill")
-                                    Text("Ứng lương")
-                                        .font(.caption.weight(.bold))
-                                    if viewModel.salaryAdvancePmBadgeCount > 0 {
-                                        Text("\(viewModel.salaryAdvancePmBadgeCount) cần xử lý")
-                                            .font(.caption2.weight(.bold))
-                                            .padding(.horizontal, 7)
-                                            .padding(.vertical, 2)
-                                            .background(Color.white.opacity(0.22))
-                                            .foregroundColor(.white)
-                                            .clipShape(Capsule())
+                    // Side-by-side 50/50 row for "Ứng lương" and "Cấp mới" with taller touch target
+                    if viewModel.canShowPmSalaryAdvanceButton || viewModel.canAccessNewWorkerEntry {
+                        HStack(spacing: 10) {
+                            if viewModel.canShowPmSalaryAdvanceButton {
+                                Button {
+                                    KeyboardDismissal.dismiss()
+                                    Task { await viewModel.openSalaryAdvanceSheet() }
+                                } label: {
+                                    HStack(spacing: 6) {
+                                        Image(systemName: "banknote.fill")
+                                            .font(.system(size: 14, weight: .semibold))
+                                        Text("Ứng lương")
+                                            .font(.subheadline.weight(.bold))
+                                            .lineLimit(1)
+                                        if viewModel.salaryAdvancePmBadgeCount > 0 {
+                                            Text("\(viewModel.salaryAdvancePmBadgeCount)")
+                                                .font(.caption2.weight(.bold))
+                                                .padding(.horizontal, 6)
+                                                .padding(.vertical, 2)
+                                                .background(Color.white.opacity(0.24))
+                                                .foregroundColor(.white)
+                                                .clipShape(Capsule())
+                                        }
                                     }
-                                    Spacer()
-                                    Text("Tạo đề nghị & quản lý ứng lương")
-                                        .font(.caption2)
-                                        .opacity(0.9)
-                                        .lineLimit(1)
-                                    Image(systemName: "chevron.right")
-                                        .font(.caption2.weight(.bold))
+                                    .frame(maxWidth: .infinity, minHeight: 46)
+                                    .background(theme.primary)
+                                    .foregroundColor(.white)
+                                    .cornerRadius(12)
                                 }
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 9)
-                                .background(theme.primary)
-                                .foregroundColor(.white)
-                                .cornerRadius(8)
+                                .buttonStyle(.plain)
+                                .accessibilityIdentifier("salary_advance_open_button")
                             }
-                            .buttonStyle(.plain)
-                        }
-                        .padding(.horizontal, 14)
-                        .padding(.bottom, 8)
-                        .background(Color.white)
-                    }
 
-                    if viewModel.selectedWorkerScope == "uploader" {
-                        HStack {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("Lịch sử lô hồ sơ tôi nhập hộ")
-                                    .font(.caption.weight(.bold))
-                                    .foregroundColor(SemanticColors.textPrimary)
-                                Text("Hiển thị các lô cấp mới hồ sơ NLĐ do tài khoản của bạn gửi")
-                                    .font(.caption2)
-                                    .foregroundColor(SemanticColors.textSecondary)
-                            }
-                            Spacer()
-                            Button {
-                                Task { await viewModel.refreshOwnSubmissions(reset: true) }
-                            } label: {
-                                HStack(spacing: 4) {
-                                    Image(systemName: "arrow.clockwise")
-                                    Text("Làm mới")
-                                }
-                                .font(.caption.weight(.bold))
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 7)
-                                .background(theme.primaryLight)
-                                .foregroundColor(theme.primary)
-                                .cornerRadius(8)
-                            }
-                            .buttonStyle(.plain)
-                        }
-                        .padding(.horizontal, 14)
-                        .padding(.bottom, 10)
-                        .background(Color.white)
-
-                        if viewModel.canAccessNewWorkerEntry {
-                            HStack {
+                            if viewModel.canAccessNewWorkerEntry {
                                 Button {
                                     KeyboardDismissal.dismiss()
                                     viewModel.navigateTo(.newEntry)
                                 } label: {
                                     HStack(spacing: 6) {
                                         Image(systemName: "person.badge.plus")
+                                            .font(.system(size: 14, weight: .semibold))
                                         Text("Cấp mới")
+                                            .font(.subheadline.weight(.bold))
+                                            .lineLimit(1)
                                     }
-                                    .font(.caption.weight(.bold))
-                                    .frame(maxWidth: .infinity)
-                                    .padding(.vertical, 9)
+                                    .frame(maxWidth: .infinity, minHeight: 46)
                                     .background(theme.primary)
                                     .foregroundColor(.white)
-                                    .cornerRadius(8)
+                                    .cornerRadius(12)
                                 }
                                 .buttonStyle(.plain)
                                 .accessibilityIdentifier("go_to_new_entry_from_workers")
                             }
-                            .padding(.horizontal, 14)
-                            .padding(.bottom, 10)
-                            .background(Color.white)
                         }
+                        .padding(.horizontal, 14)
+                        .padding(.bottom, 10)
+                        .background(Color.white)
+                    }
 
+                    if viewModel.selectedWorkerScope == "uploader" {
                         Divider()
 
                         ScrollView {
@@ -1835,31 +1798,6 @@ public struct WorkersScreen: View {
                         .padding(.horizontal, 14)
                         .padding(.bottom, 10)
                         .background(Color.white)
-
-                        if viewModel.canAccessNewWorkerEntry {
-                            HStack {
-                                Button {
-                                    KeyboardDismissal.dismiss()
-                                    viewModel.navigateTo(.newEntry)
-                                } label: {
-                                    HStack(spacing: 6) {
-                                        Image(systemName: "person.badge.plus")
-                                        Text("Cấp mới")
-                                    }
-                                    .font(.caption.weight(.bold))
-                                    .frame(maxWidth: .infinity)
-                                    .padding(.vertical, 9)
-                                    .background(theme.primary)
-                                    .foregroundColor(.white)
-                                    .cornerRadius(8)
-                                }
-                                .buttonStyle(.plain)
-                                .accessibilityIdentifier("go_to_new_entry_from_workers")
-                            }
-                            .padding(.horizontal, 14)
-                            .padding(.bottom, 10)
-                            .background(Color.white)
-                        }
 
                         Divider()
 

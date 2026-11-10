@@ -2555,24 +2555,63 @@ fun WorkersAndDirectEntryScreen(
                             }
                         }
 
-                        if (canShowSalaryAdvance) {
-                            Button(
-                                onClick = {
-                                    focusManager.clearFocus()
-                                    keyboardController?.hide()
-                                    effectiveOpenSalaryAdvance()
-                                },
-                                shape = RoundedCornerShape(12.dp),
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(44.dp)
-                                    .testTag("salary_advance_open_button")
+                        val canCreateNewEntry = actor.canAccessNewEntryScreen()
+                        if (canShowSalaryAdvance || canCreateNewEntry) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Text(
-                                    text = "Ứng lương",
-                                    style = MaterialTheme.typography.labelLarge,
-                                    fontWeight = FontWeight.Bold
-                                )
+                                if (canShowSalaryAdvance) {
+                                    Button(
+                                        onClick = {
+                                            focusManager.clearFocus()
+                                            keyboardController?.hide()
+                                            effectiveOpenSalaryAdvance()
+                                        },
+                                        shape = RoundedCornerShape(12.dp),
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .height(46.dp)
+                                            .testTag("salary_advance_open_button")
+                                    ) {
+                                        Text(
+                                            text = "Ứng lương",
+                                            style = MaterialTheme.typography.labelLarge,
+                                            fontWeight = FontWeight.Bold,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+                                }
+                                if (canCreateNewEntry) {
+                                    Button(
+                                        onClick = {
+                                            focusManager.clearFocus()
+                                            keyboardController?.hide()
+                                            onOpenNewEntryScreen()
+                                        },
+                                        shape = RoundedCornerShape(12.dp),
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .height(46.dp)
+                                            .testTag("go_to_new_entry_from_workers")
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Add,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text(
+                                            text = "Cấp mới",
+                                            style = MaterialTheme.typography.labelLarge,
+                                            fontWeight = FontWeight.Bold,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+                                }
                             }
                         }
 
@@ -2675,35 +2714,6 @@ fun WorkersAndDirectEntryScreen(
                             }
                         }
                     }
-                }
-            }
-        }
-
-        if (visibleTabs.isNotEmpty() && actor.canAccessNewEntryScreen()) {
-            item(key = "go_to_new_entry_action") {
-                Button(
-                    onClick = {
-                        focusManager.clearFocus()
-                        keyboardController?.hide()
-                        onOpenNewEntryScreen()
-                    },
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(44.dp)
-                        .testTag("go_to_new_entry_from_workers")
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Add,
-                        contentDescription = null,
-                        modifier = Modifier.size(18.dp)
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(
-                        text = "Cấp mới",
-                        style = MaterialTheme.typography.labelLarge,
-                        fontWeight = FontWeight.Bold
-                    )
                 }
             }
         }
