@@ -3291,7 +3291,10 @@ final class HRPBTests: XCTestCase {
         var detailNotFoundMode = false
         var listResponseMode = "NORMAL"
 
-        MockURLProtocol.reset()
+        MockURLProtocol.resetRecordedUrls()
+        MockURLProtocol.pathDelaySec = [
+            "/api/recruitment-posts/\(briefSlow)": 0.4
+        ]
         MockURLProtocol.requestHandler = { req in
             let url = try XCTUnwrap(req.url)
             let fullUrl = url.absoluteString
@@ -3346,7 +3349,6 @@ final class HRPBTests: XCTestCase {
                     """
                 }
             } else if fullUrl.contains("/api/recruitment-posts/\(briefSlow)") {
-                try await Task.sleep(nanoseconds: 400_000_000)
                 body = """
                 {"ok":true,"data":{"post":\(Self.makeRecruitmentPostJson(briefId: briefSlow, projectName: "Dự Án Chậm", creatorName: "Người Tạo Chậm", managerName: "Quản Lý"))}}
                 """
@@ -3432,7 +3434,7 @@ final class HRPBTests: XCTestCase {
 
         listResponseMode = "UNAVAILABLE_503"
         await vm.loadRecruitmentPosts(reset: true)
-        XCTAssertNotNil(vm.recruitmentPostsErrorMessage)
+        XCTAssertNotNil(vm.recruitmentPostsError)
         XCTAssertTrue(vm.isAuthenticated)
 
         // 13. Session reset / logout purges all recruitment state
