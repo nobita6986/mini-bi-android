@@ -421,8 +421,6 @@ public enum RecruitmentPostContract {
         "weekly_salary_available",
         "weekly_salary_payment_schedule",
         "day_shift_8h_vnd",
-        "dayShift11hVnd_placeholder_removed"
-    ].subtracting(["dayShift11hVnd_placeholder_removed"]).union([
         "day_shift_11h_vnd",
         "night_shift_8h_vnd",
         "night_shift_11h_vnd",
@@ -433,7 +431,7 @@ public enum RecruitmentPostContract {
         "ppe_provided",
         "ppe_details",
         "other_benefits"
-    ])
+    ]
 
     private static let documentsKeys: Set<String> = [
         "require_original_cccd_and_copy",
