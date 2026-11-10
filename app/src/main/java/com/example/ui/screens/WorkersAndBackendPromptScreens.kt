@@ -146,6 +146,7 @@ import com.example.data.SalaryAdvanceWorkerOption
 import com.example.data.StagedDocumentRef
 import com.example.data.WorkerEntryDetail
 import com.example.data.WorkerProfileEntity
+import com.example.ui.MainDestination
 import com.example.ui.MiniBiViewModel
 import com.example.ui.theme.JetBrainsMono
 import com.example.ui.theme.SemanticColors
@@ -2343,7 +2344,7 @@ private fun shareOrViewCachedFile(context: android.content.Context, file: File, 
 fun WorkersAndDirectEntryScreen(
     actor: AppActor,
     viewModel: MiniBiViewModel,
-    onOpenNewEntryScreen: () -> Unit = {},
+    onOpenNewEntryScreen: () -> Unit = { viewModel.navigateTo(MainDestination.NEW_ENTRY) },
     onBackToDashboard: () -> Unit,
     onSelectScopeTab: ((scopeKey: String) -> Unit)? = null,
     onSearchAndFilterChange: ((search: String, projectId: String?, status: String?) -> Unit)? = null,
@@ -2674,6 +2675,35 @@ fun WorkersAndDirectEntryScreen(
                             }
                         }
                     }
+                }
+            }
+        }
+
+        if (visibleTabs.isNotEmpty() && actor.canAccessNewEntryScreen()) {
+            item(key = "go_to_new_entry_action") {
+                Button(
+                    onClick = {
+                        focusManager.clearFocus()
+                        keyboardController?.hide()
+                        onOpenNewEntryScreen()
+                    },
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(44.dp)
+                        .testTag("go_to_new_entry_from_workers")
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Add,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = "Cấp mới",
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.Bold
+                    )
                 }
             }
         }

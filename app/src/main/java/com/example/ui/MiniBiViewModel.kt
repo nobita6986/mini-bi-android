@@ -45,6 +45,8 @@ import com.example.data.NewWorkerEntryDraft
 import com.example.data.OwnSubmissionItem
 import com.example.data.PendingDuplicateCccdSubmission
 import com.example.data.PendingEntryAttachmentTask
+import com.example.data.RecruitmentPostContract
+import com.example.data.RecruitmentPostItem
 import com.example.data.CreateSalaryAdvanceValidationResult
 import com.example.data.SalaryAdvanceActorContext
 import com.example.data.SalaryAdvanceContract
@@ -98,7 +100,21 @@ enum class MainDestination(val route: String, val label: String) {
     WORK_REPORTS("work_reports", "Báo cáo"),
     ATTENDANCE("attendance", "Chấm công"),
     WORKERS("workers", "Nhân sự"),
+    RECRUITMENT("recruitment", "Tuyển dụng"),
     NEW_ENTRY("new_entry", "Cấp mới")
+}
+
+fun resolveMainNavigationDestinations(actor: AppActor?): List<MainDestination> {
+    if (actor == null) return emptyList()
+    return buildList {
+        add(MainDestination.DASHBOARD)
+        add(MainDestination.WORK_REPORTS)
+        add(MainDestination.ATTENDANCE)
+        if (resolveVisibleWorkerTabs(actor).isNotEmpty()) {
+            add(MainDestination.WORKERS)
+        }
+        add(MainDestination.RECRUITMENT)
+    }
 }
 
 data class GpsSnapshot(
@@ -630,6 +646,53 @@ class MiniBiViewModel internal constructor(
 
     private val _salaryAdvanceHistoryNextCursor = MutableStateFlow<String?>(null)
 
+    private val _recruitmentPosts = MutableStateFlow<List<RecruitmentPostItem>>(emptyList())
+    val recruitmentPosts: StateFlow<List<RecruitmentPostItem>> = _recruitmentPosts.asStateFlow()
+
+    private val _recruitmentPostsLoading = MutableStateFlow(false)
+    val recruitmentPostsLoading: StateFlow<Boolean> = _recruitmentPostsLoading.asStateFlow()
+
+    private val _recruitmentPostsLoadingMore = MutableStateFlow(false)
+    val recruitmentPostsLoadingMore: StateFlow<Boolean> = _recruitmentPostsLoadingMore.asStateFlow()
+
+    private val _recruitmentPostsError = MutableStateFlow<String?>(null)
+    val recruitmentPostsError: StateFlow<String?> = _recruitmentPostsError.asStateFlow()
+
+    private val _recruitmentPostsErrorCode = MutableStateFlow<String?>(null)
+    val recruitmentPostsErrorCode: StateFlow<String?> = _recruitmentPostsErrorCode.asStateFlow()
+
+    private val _recruitmentPostsHasMore = MutableStateFlow(false)
+    val recruitmentPostsHasMore: StateFlow<Boolean> = _recruitmentPostsHasMore.asStateFlow()
+
+    private val _recruitmentPostsNextCursor = MutableStateFlow<String?>(null)
+    val recruitmentPostsNextCursor: StateFlow<String?> = _recruitmentPostsNextCursor.asStateFlow()
+
+    private val _recruitmentPostsSnapshotToken = MutableStateFlow<String?>(null)
+    val recruitmentPostsSnapshotToken: StateFlow<String?> = _recruitmentPostsSnapshotToken.asStateFlow()
+
+    private val _recruitmentPostsAccessDenied = MutableStateFlow(false)
+    val recruitmentPostsAccessDenied: StateFlow<Boolean> = _recruitmentPostsAccessDenied.asStateFlow()
+
+    private val _recruitmentPostsFeatureUnavailable = MutableStateFlow(false)
+    val recruitmentPostsFeatureUnavailable: StateFlow<Boolean> = _recruitmentPostsFeatureUnavailable.asStateFlow()
+
+    private val _selectedRecruitmentPostDetail = MutableStateFlow<RecruitmentPostItem?>(null)
+    val selectedRecruitmentPostDetail: StateFlow<RecruitmentPostItem?> = _selectedRecruitmentPostDetail.asStateFlow()
+
+    private val _recruitmentPostDetailLoading = MutableStateFlow(false)
+    val recruitmentPostDetailLoading: StateFlow<Boolean> = _recruitmentPostDetailLoading.asStateFlow()
+
+    private val _recruitmentPostDetailError = MutableStateFlow<String?>(null)
+    val recruitmentPostDetailError: StateFlow<String?> = _recruitmentPostDetailError.asStateFlow()
+
+    private val _recruitmentPostDetailBriefId = MutableStateFlow<String?>(null)
+    val recruitmentPostDetailBriefId: StateFlow<String?> = _recruitmentPostDetailBriefId.asStateFlow()
+
+    private var recruitmentPostsFetchJob: Job? = null
+    private var recruitmentPostsFetchToken: Long = 0L
+    private var recruitmentPostDetailFetchJob: Job? = null
+    private var recruitmentPostDetailFetchToken: Long = 0L
+
     private var salaryAdvanceWorkersFetchJob: Job? = null
     private var salaryAdvanceWorkersFetchToken: Long = 0L
     private var salaryAdvanceRequestsFetchJob: Job? = null
@@ -792,6 +855,12 @@ class MiniBiViewModel internal constructor(
         salaryAdvanceDetailFetchJob = null
         salaryAdvanceHistoryFetchJob?.cancel()
         salaryAdvanceHistoryFetchJob = null
+        ++recruitmentPostsFetchToken
+        recruitmentPostsFetchJob?.cancel()
+        recruitmentPostsFetchJob = null
+        ++recruitmentPostDetailFetchToken
+        recruitmentPostDetailFetchJob?.cancel()
+        recruitmentPostDetailFetchJob = null
         ++openEntryDetailToken
         openEntryDetailExpectedEntryId = null
         openEntryDetailJob?.cancel()
@@ -844,6 +913,7 @@ class MiniBiViewModel internal constructor(
         if (_salaryAdvanceDialogOpen.value) {
             closeSalaryAdvanceDialog()
         }
+        val previousDestination = _currentDestination.value
         val actor = currentActor.value
         if (destination == MainDestination.WORKERS && (actor == null || resolveVisibleWorkerTabs(actor).isEmpty())) {
             if (actor != null) {
@@ -853,6 +923,10 @@ class MiniBiViewModel internal constructor(
         }
         if (destination == MainDestination.NEW_ENTRY && (actor == null || !actor.canAccessNewEntryScreen())) {
             return
+        }
+        if (previousDestination == MainDestination.RECRUITMENT && destination != MainDestination.RECRUITMENT) {
+            cancelInFlightRecruitmentPostRequests()
+            closeRecruitmentPostDetail()
         }
         _currentDestination.value = destination
         if (actor == null) return
@@ -877,6 +951,16 @@ class MiniBiViewModel internal constructor(
                 ensureInitialWorkerTabLoaded(actor)
                 if (actor.canAttemptPmSalaryAdvanceContext()) {
                     loadSalaryAdvanceContextIfNeeded(actor = actor)
+                }
+            }
+            MainDestination.RECRUITMENT -> {
+                if (
+                    _recruitmentPosts.value.isEmpty() &&
+                    !_recruitmentPostsLoading.value &&
+                    !_recruitmentPostsAccessDenied.value &&
+                    !_recruitmentPostsFeatureUnavailable.value
+                ) {
+                    loadRecruitmentPosts(reset = true, actorOverride = actor)
                 }
             }
             MainDestination.ATTENDANCE -> {
@@ -980,6 +1064,7 @@ class MiniBiViewModel internal constructor(
                         _workerError.value = null
                         _catalog.value = null
                         resetSalaryAdvanceAllState()
+                        resetRecruitmentPostsState()
                     }
                     val postResetGen = sessionGeneration
                     val resolvedActor = repository.syncDirectEntrySession(actor)
@@ -1142,6 +1227,7 @@ class MiniBiViewModel internal constructor(
         _explanationInboxError.value = null
         _explanationInboxErrorCode.value = null
         resetSalaryAdvanceAllState()
+        resetRecruitmentPostsState()
     }
 
     fun logout() {
@@ -6454,6 +6540,324 @@ class MiniBiViewModel internal constructor(
                 }
             }
         }
+    }
+
+    // =========================================================================
+    // Recruitment Posts (Read-Only Feed & Detail)
+    // =========================================================================
+
+    fun cancelInFlightRecruitmentPostRequests() {
+        ++recruitmentPostsFetchToken
+        recruitmentPostsFetchJob?.cancel()
+        recruitmentPostsFetchJob = null
+        _recruitmentPostsLoading.value = false
+        _recruitmentPostsLoadingMore.value = false
+        ++recruitmentPostDetailFetchToken
+        recruitmentPostDetailFetchJob?.cancel()
+        recruitmentPostDetailFetchJob = null
+        _recruitmentPostDetailLoading.value = false
+    }
+
+    fun resetRecruitmentPostsState() {
+        cancelInFlightRecruitmentPostRequests()
+        _recruitmentPosts.value = emptyList()
+        _recruitmentPostsError.value = null
+        _recruitmentPostsErrorCode.value = null
+        _recruitmentPostsHasMore.value = false
+        _recruitmentPostsNextCursor.value = null
+        _recruitmentPostsSnapshotToken.value = null
+        _recruitmentPostsAccessDenied.value = false
+        _recruitmentPostsFeatureUnavailable.value = false
+        _selectedRecruitmentPostDetail.value = null
+        _recruitmentPostDetailError.value = null
+        _recruitmentPostDetailBriefId.value = null
+    }
+
+    fun loadRecruitmentPosts(
+        reset: Boolean = true,
+        actorOverride: AppActor? = null
+    ) {
+        loadRecruitmentPostsInternal(
+            reset = reset,
+            actorOverride = actorOverride,
+            isSnapshotInvalidRetry = false
+        )
+    }
+
+    fun loadMoreRecruitmentPosts(actorOverride: AppActor? = null) {
+        if (
+            _recruitmentPostsLoading.value ||
+            _recruitmentPostsLoadingMore.value ||
+            !_recruitmentPostsHasMore.value ||
+            _recruitmentPostsAccessDenied.value ||
+            _recruitmentPostsFeatureUnavailable.value
+        ) {
+            return
+        }
+        val cursor = _recruitmentPostsNextCursor.value?.trim().orEmpty()
+        val snapshotToken = _recruitmentPostsSnapshotToken.value?.trim().orEmpty()
+        if (cursor.isEmpty() || snapshotToken.isEmpty()) {
+            return
+        }
+        loadRecruitmentPostsInternal(
+            reset = false,
+            actorOverride = actorOverride,
+            isSnapshotInvalidRetry = false
+        )
+    }
+
+    private fun loadRecruitmentPostsInternal(
+        reset: Boolean,
+        actorOverride: AppActor? = null,
+        isSnapshotInvalidRetry: Boolean
+    ) {
+        val actor = resolveSessionActor(actorOverride) ?: return
+        val expectedGen = bindActorGeneration(actor)
+        val expectedUserId = actor.appUserId
+        if (!reset && (_recruitmentPostsLoading.value || _recruitmentPostsLoadingMore.value)) {
+            return
+        }
+
+        val expectedCursor = if (reset) null else _recruitmentPostsNextCursor.value?.trim()?.takeIf { it.isNotEmpty() }
+        val expectedSnapshot = if (reset) null else _recruitmentPostsSnapshotToken.value?.trim()?.takeIf { it.isNotEmpty() }
+        if (!reset && (expectedCursor == null || expectedSnapshot == null)) {
+            return
+        }
+
+        val token = ++recruitmentPostsFetchToken
+        recruitmentPostsFetchJob?.cancel()
+        if (reset) {
+            _recruitmentPostsLoading.value = true
+            _recruitmentPostsLoadingMore.value = false
+            _recruitmentPostsError.value = null
+            _recruitmentPostsErrorCode.value = null
+            _recruitmentPostsAccessDenied.value = false
+            _recruitmentPostsFeatureUnavailable.value = false
+            _recruitmentPostsNextCursor.value = null
+            _recruitmentPostsSnapshotToken.value = null
+            _recruitmentPostsHasMore.value = false
+        } else {
+            _recruitmentPostsLoadingMore.value = true
+            _recruitmentPostsError.value = null
+            _recruitmentPostsErrorCode.value = null
+        }
+
+        recruitmentPostsFetchJob = viewModelScope.launch {
+            var retryingSnapshot = false
+            try {
+                val res = repository.recruitmentPostService.listRecruitmentPosts(
+                    pageSize = RecruitmentPostContract.DEFAULT_PAGE_SIZE,
+                    cursor = expectedCursor,
+                    snapshotToken = expectedSnapshot
+                )
+                if (token != recruitmentPostsFetchToken || !isSessionValid(expectedGen, expectedUserId)) {
+                    return@launch
+                }
+                if (!reset) {
+                    if (
+                        _recruitmentPostsNextCursor.value != expectedCursor ||
+                        _recruitmentPostsSnapshotToken.value != expectedSnapshot
+                    ) {
+                        return@launch
+                    }
+                    _recruitmentPosts.value = RecruitmentPostContract.mergeUniqueItems(
+                        current = _recruitmentPosts.value,
+                        incoming = res.items
+                    )
+                    _recruitmentPostsSnapshotToken.value = expectedSnapshot
+                } else {
+                    _recruitmentPosts.value = RecruitmentPostContract.mergeUniqueItems(
+                        current = emptyList(),
+                        incoming = res.items
+                    )
+                    _recruitmentPostsSnapshotToken.value = res.snapshotToken
+                }
+                _recruitmentPostsHasMore.value = res.hasMore
+                _recruitmentPostsNextCursor.value = res.nextCursor
+                _recruitmentPostsError.value = null
+                _recruitmentPostsErrorCode.value = null
+                _recruitmentPostsAccessDenied.value = false
+                _recruitmentPostsFeatureUnavailable.value = false
+            } catch (e: BackendApiException) {
+                if (token != recruitmentPostsFetchToken) {
+                    return@launch
+                }
+                val code = e.backendCode?.trim()?.uppercase(Locale.ROOT)
+                if (e.kind == BackendFailureKind.UNAUTHENTICATED || e.statusCode == 401 || code == "UNAUTHENTICATED") {
+                    resetRecruitmentPostsState()
+                    return@launch
+                }
+                if (!isSessionValid(expectedGen, expectedUserId)) {
+                    return@launch
+                }
+                if (
+                    e.kind == BackendFailureKind.FORBIDDEN ||
+                    e.statusCode == 403 ||
+                    code == "ACTOR_NOT_AVAILABLE" ||
+                    code == "RECRUITMENT_POST_ACCESS_DENIED"
+                ) {
+                    val deniedCode = code ?: "RECRUITMENT_POST_ACCESS_DENIED"
+                    resetRecruitmentPostsState()
+                    _recruitmentPostsAccessDenied.value = true
+                    _recruitmentPostsErrorCode.value = deniedCode
+                    _recruitmentPostsError.value = RecruitmentPostContract.errorMessageForCode(deniedCode)
+                    return@launch
+                }
+                if (code == "RECRUITMENT_POST_SNAPSHOT_INVALID" || (e.statusCode == 400 && !reset)) {
+                    if (!isSnapshotInvalidRetry && code == "RECRUITMENT_POST_SNAPSHOT_INVALID") {
+                        retryingSnapshot = true
+                        _recruitmentPostsLoading.value = false
+                        _recruitmentPostsLoadingMore.value = false
+                        loadRecruitmentPostsInternal(
+                            reset = true,
+                            actorOverride = actor,
+                            isSnapshotInvalidRetry = true
+                        )
+                        return@launch
+                    }
+                    _recruitmentPostsErrorCode.value = code ?: "RECRUITMENT_POST_SNAPSHOT_INVALID"
+                    _recruitmentPostsError.value =
+                        RecruitmentPostContract.errorMessageForCode("RECRUITMENT_POST_UNAVAILABLE")
+                    return@launch
+                }
+                if (e.statusCode == 404 || e.kind == BackendFailureKind.NOT_FOUND) {
+                    _recruitmentPosts.value = emptyList()
+                    _recruitmentPostsHasMore.value = false
+                    _recruitmentPostsNextCursor.value = null
+                    _recruitmentPostsSnapshotToken.value = null
+                    _recruitmentPostsFeatureUnavailable.value = true
+                    _recruitmentPostsErrorCode.value = code ?: "NOT_FOUND"
+                    _recruitmentPostsError.value = "Tính năng Tin tuyển dụng hiện tạm thời không khả dụng."
+                    return@launch
+                }
+                _recruitmentPostsErrorCode.value = code ?: "RECRUITMENT_POST_UNAVAILABLE"
+                _recruitmentPostsError.value = e.message.ifBlank {
+                    RecruitmentPostContract.errorMessageForCode(code)
+                }
+            } catch (e: Exception) {
+                e.rethrowIfCancelled()
+                if (token != recruitmentPostsFetchToken || !isSessionValid(expectedGen, expectedUserId)) {
+                    return@launch
+                }
+                _recruitmentPostsErrorCode.value = "RECRUITMENT_POST_UNAVAILABLE"
+                _recruitmentPostsError.value =
+                    RecruitmentPostContract.errorMessageForCode("RECRUITMENT_POST_UNAVAILABLE")
+            } finally {
+                if (!retryingSnapshot && token == recruitmentPostsFetchToken && isSessionValid(expectedGen, expectedUserId)) {
+                    _recruitmentPostsLoading.value = false
+                    _recruitmentPostsLoadingMore.value = false
+                }
+            }
+        }
+    }
+
+    fun openRecruitmentPostDetail(
+        briefId: String,
+        actorOverride: AppActor? = null
+    ) {
+        val actor = resolveSessionActor(actorOverride) ?: return
+        val cleanBriefId = briefId.trim()
+        if (cleanBriefId.isEmpty()) return
+        val expectedGen = bindActorGeneration(actor)
+        val expectedUserId = actor.appUserId
+        val token = ++recruitmentPostDetailFetchToken
+        recruitmentPostDetailFetchJob?.cancel()
+
+        _recruitmentPostDetailBriefId.value = cleanBriefId
+        _selectedRecruitmentPostDetail.value = null
+        _recruitmentPostDetailError.value = null
+        _recruitmentPostDetailLoading.value = true
+
+        recruitmentPostDetailFetchJob = viewModelScope.launch {
+            try {
+                val item = repository.recruitmentPostService.getRecruitmentPostDetail(cleanBriefId)
+                if (
+                    token != recruitmentPostDetailFetchToken ||
+                    _recruitmentPostDetailBriefId.value != cleanBriefId ||
+                    !isSessionValid(expectedGen, expectedUserId)
+                ) {
+                    return@launch
+                }
+                _selectedRecruitmentPostDetail.value = item
+                _recruitmentPostDetailError.value = null
+                val currentList = _recruitmentPosts.value
+                if (currentList.any { it.briefId == item.briefId }) {
+                    _recruitmentPosts.value = currentList.map { existing ->
+                        if (existing.briefId == item.briefId) item else existing
+                    }
+                }
+            } catch (e: BackendApiException) {
+                if (token != recruitmentPostDetailFetchToken) {
+                    return@launch
+                }
+                val code = e.backendCode?.trim()?.uppercase(Locale.ROOT)
+                if (e.kind == BackendFailureKind.UNAUTHENTICATED || e.statusCode == 401 || code == "UNAUTHENTICATED") {
+                    resetRecruitmentPostsState()
+                    return@launch
+                }
+                if (
+                    _recruitmentPostDetailBriefId.value != cleanBriefId ||
+                    !isSessionValid(expectedGen, expectedUserId)
+                ) {
+                    return@launch
+                }
+                if (
+                    e.kind == BackendFailureKind.FORBIDDEN ||
+                    e.statusCode == 403 ||
+                    code == "ACTOR_NOT_AVAILABLE" ||
+                    code == "RECRUITMENT_POST_ACCESS_DENIED"
+                ) {
+                    val deniedCode = code ?: "RECRUITMENT_POST_ACCESS_DENIED"
+                    resetRecruitmentPostsState()
+                    _recruitmentPostsAccessDenied.value = true
+                    _recruitmentPostsErrorCode.value = deniedCode
+                    _recruitmentPostsError.value = RecruitmentPostContract.errorMessageForCode(deniedCode)
+                    return@launch
+                }
+                if (
+                    e.statusCode == 404 ||
+                    e.kind == BackendFailureKind.NOT_FOUND ||
+                    code == "RECRUITMENT_POST_NOT_FOUND"
+                ) {
+                    closeRecruitmentPostDetail()
+                    _recruitmentPosts.value = _recruitmentPosts.value.filterNot { it.briefId == cleanBriefId }
+                    showBanner("Tin tuyển dụng không còn hiệu lực.", isError = true)
+                    return@launch
+                }
+                _recruitmentPostDetailError.value = e.message.ifBlank {
+                    RecruitmentPostContract.errorMessageForCode(code)
+                }
+            } catch (e: Exception) {
+                e.rethrowIfCancelled()
+                if (
+                    token != recruitmentPostDetailFetchToken ||
+                    _recruitmentPostDetailBriefId.value != cleanBriefId ||
+                    !isSessionValid(expectedGen, expectedUserId)
+                ) {
+                    return@launch
+                }
+                _recruitmentPostDetailError.value =
+                    RecruitmentPostContract.errorMessageForCode("RECRUITMENT_POST_UNAVAILABLE")
+            } finally {
+                if (
+                    token == recruitmentPostDetailFetchToken &&
+                    _recruitmentPostDetailBriefId.value == cleanBriefId &&
+                    isSessionValid(expectedGen, expectedUserId)
+                ) {
+                    _recruitmentPostDetailLoading.value = false
+                }
+            }
+        }
+    }
+
+    fun closeRecruitmentPostDetail() {
+        ++recruitmentPostDetailFetchToken
+        recruitmentPostDetailFetchJob?.cancel()
+        recruitmentPostDetailFetchJob = null
+        _recruitmentPostDetailLoading.value = false
+        _recruitmentPostDetailError.value = null
+        _selectedRecruitmentPostDetail.value = null
+        _recruitmentPostDetailBriefId.value = null
     }
 
     companion object {

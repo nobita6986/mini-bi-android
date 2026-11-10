@@ -409,6 +409,10 @@ class MiniBiRepository(
         httpClient = httpClient
     )
 
+    val recruitmentPostService = RecruitmentPostService(
+        httpClient = httpClient
+    )
+
     val attendanceTimeAnchorManager = AttendanceTimeAnchorManager(
         context = context,
         httpClient = httpClient,

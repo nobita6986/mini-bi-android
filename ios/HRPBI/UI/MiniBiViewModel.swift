@@ -16,6 +16,7 @@ public final class MiniBiViewModel: ObservableObject {
     public let leaveService: LeaveService
     public let attendanceExplanationService: AttendanceExplanationService
     public let salaryAdvanceService: SalaryAdvanceService
+    public let recruitmentPostService: RecruitmentPostService
 
     // MARK: - Environment & Theme
     @Published public var environmentConfig: AppEnvironmentConfig = .current
@@ -183,9 +184,32 @@ public final class MiniBiViewModel: ObservableObject {
         Self.resolveVisibleWorkerTabs(for: currentUser)
     }
 
+    public var visibleMainDestinations: [MiniBiNavDestination] {
+        guard isAuthenticated else { return [] }
+        return MiniBiNavDestination.resolveMainNavigationDestinations(for: currentUser)
+    }
+
     public var canAccessNewWorkerEntry: Bool {
         currentUser?.canAccessNewWorkerEntry == true
     }
+
+    // MARK: - Recruitment Posts ("Tin tuyển dụng" — Read-Only) State
+    @Published public var recruitmentPosts: [RecruitmentPostItem] = []
+    @Published public var recruitmentPostsLoading: Bool = false
+    @Published public var recruitmentPostsLoadingMore: Bool = false
+    @Published public var recruitmentPostsError: String?
+    @Published public var recruitmentPostsErrorCode: String?
+    @Published public var recruitmentPostsHasMore: Bool = false
+    @Published public var recruitmentPostsNextCursor: String?
+    @Published public var recruitmentPostsSnapshotToken: String?
+    @Published public var recruitmentPostsAccessDenied: Bool = false
+    @Published public var recruitmentPostsFeatureUnavailable: Bool = false
+    @Published public var selectedRecruitmentPostDetail: RecruitmentPostItem?
+    @Published public var recruitmentPostDetailLoading: Bool = false
+    @Published public var recruitmentPostDetailError: String?
+    @Published public var recruitmentPostDetailBriefId: String?
+    private var recruitmentPostsFetchGeneration: Int64 = 0
+    private var recruitmentPostDetailFetchGeneration: Int64 = 0
 
     // MARK: - Direct Edit ("Sửa trực tiếp") State
     @Published public var directEditWorkerTarget: WorkerItem?
@@ -328,7 +352,8 @@ public final class MiniBiViewModel: ObservableObject {
         notificationService: NotificationService = .shared,
         leaveService: LeaveService = .shared,
         attendanceExplanationService: AttendanceExplanationService = .shared,
-        salaryAdvanceService: SalaryAdvanceService = .shared
+        salaryAdvanceService: SalaryAdvanceService = .shared,
+        recruitmentPostService: RecruitmentPostService = .shared
     ) {
         self.repository = repository
         self.directEntryService = directEntryService
@@ -339,6 +364,7 @@ public final class MiniBiViewModel: ObservableObject {
         self.leaveService = leaveService
         self.attendanceExplanationService = attendanceExplanationService
         self.salaryAdvanceService = salaryAdvanceService
+        self.recruitmentPostService = recruitmentPostService
         self.attendanceTimeEvaluation = timeAnchorManager.evaluateAnchor()
 
         let bundleEnv = AppEnvironmentConfig.current
@@ -448,6 +474,11 @@ public final class MiniBiViewModel: ObservableObject {
         if destination == .newEntry && (!isAuthenticated || !canAccessNewWorkerEntry) {
             return
         }
+        let previousDestination = currentDestination
+        if previousDestination == .recruitment && destination != .recruitment {
+            cancelInFlightRecruitmentPostRequests()
+            closeRecruitmentPostDetail()
+        }
         currentDestination = destination
         if destination == .attendance {
             activeAttendanceTab = .checkIn
@@ -464,6 +495,14 @@ public final class MiniBiViewModel: ObservableObject {
             }
             if isAuthenticated && currentUser?.canAttemptPmSalaryAdvanceContext == true {
                 Task { await loadSalaryAdvanceContext() }
+            }
+        } else if destination == .recruitment {
+            if isAuthenticated
+                && recruitmentPosts.isEmpty
+                && !recruitmentPostsLoading
+                && !recruitmentPostsAccessDenied
+                && !recruitmentPostsFeatureUnavailable {
+                Task { await loadRecruitmentPosts(reset: true) }
             }
         } else if destination == .newEntry {
             if isAuthenticated && currentUser?.canLoadDirectEntryCatalog == true && directEntryOptions.catalogProjects.isEmpty {
@@ -596,6 +635,7 @@ public final class MiniBiViewModel: ObservableObject {
         isLoadingDashboard = false
         isLoadingWorkReports = false
         isLoadingCccdReview = false
+        resetRecruitmentPostsState()
         if clearDraftRows {
             newWorkerDraftRows = [NewWorkerEntryDraft()]
         }
@@ -620,6 +660,7 @@ public final class MiniBiViewModel: ObservableObject {
             directEntryService.clearCatalogCache()
             salaryAdvanceContext = nil
             salaryAdvanceSelectedProjectId = nil
+            resetRecruitmentPostsState()
         }
         currentUser = user
         selectedWorkerScope = Self.resolveVisibleWorkerTabs(for: user).first?.key ?? ""
@@ -3946,5 +3987,250 @@ public final class MiniBiViewModel: ObservableObject {
                 showBanner(message, isError: true)
             }
         }
+    }
+
+    // MARK: - Recruitment Posts ("Tin tuyển dụng" — Read-Only Feed & Detail)
+
+    public func cancelInFlightRecruitmentPostRequests() {
+        recruitmentPostsFetchGeneration &+= 1
+        cancelInFlightTasksWithPrefix("recruitment_posts:")
+        recruitmentPostsLoading = false
+        recruitmentPostsLoadingMore = false
+        recruitmentPostDetailFetchGeneration &+= 1
+        cancelInFlightTasksWithPrefix("recruitment_post_detail:")
+        recruitmentPostDetailLoading = false
+    }
+
+    public func resetRecruitmentPostsState() {
+        cancelInFlightRecruitmentPostRequests()
+        recruitmentPosts = []
+        recruitmentPostsError = nil
+        recruitmentPostsErrorCode = nil
+        recruitmentPostsHasMore = false
+        recruitmentPostsNextCursor = nil
+        recruitmentPostsSnapshotToken = nil
+        recruitmentPostsAccessDenied = false
+        recruitmentPostsFeatureUnavailable = false
+        selectedRecruitmentPostDetail = nil
+        recruitmentPostDetailError = nil
+        recruitmentPostDetailBriefId = nil
+    }
+
+    public func loadRecruitmentPosts(reset: Bool = true) async {
+        await loadRecruitmentPostsInternal(reset: reset, isSnapshotInvalidRetry: false)
+    }
+
+    public func loadMoreRecruitmentPosts() async {
+        guard !recruitmentPostsLoading,
+              !recruitmentPostsLoadingMore,
+              recruitmentPostsHasMore,
+              !recruitmentPostsAccessDenied,
+              !recruitmentPostsFeatureUnavailable else {
+            return
+        }
+        let cursor = recruitmentPostsNextCursor?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let snapshot = recruitmentPostsSnapshotToken?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !cursor.isEmpty, !snapshot.isEmpty else {
+            return
+        }
+        await loadRecruitmentPostsInternal(reset: false, isSnapshotInvalidRetry: false)
+    }
+
+    private func loadRecruitmentPostsInternal(
+        reset: Bool,
+        isSnapshotInvalidRetry: Bool
+    ) async {
+        guard let token = captureSessionToken() else {
+            resetRecruitmentPostsState()
+            return
+        }
+        if !reset && (recruitmentPostsLoading || recruitmentPostsLoadingMore) {
+            return
+        }
+
+        let expectedCursor: String? = reset
+            ? nil
+            : recruitmentPostsNextCursor?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let expectedSnapshot: String? = reset
+            ? nil
+            : recruitmentPostsSnapshotToken?.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if !reset && ((expectedCursor?.isEmpty ?? true) || (expectedSnapshot?.isEmpty ?? true)) {
+            return
+        }
+
+        if reset {
+            cancelInFlightTasksWithPrefix("recruitment_posts:")
+            recruitmentPostsFetchGeneration &+= 1
+            recruitmentPostsLoading = true
+            recruitmentPostsLoadingMore = false
+            recruitmentPostsError = nil
+            recruitmentPostsErrorCode = nil
+            recruitmentPostsAccessDenied = false
+            recruitmentPostsFeatureUnavailable = false
+            recruitmentPostsNextCursor = nil
+            recruitmentPostsSnapshotToken = nil
+            recruitmentPostsHasMore = false
+        } else {
+            recruitmentPostsFetchGeneration &+= 1
+            recruitmentPostsLoadingMore = true
+            recruitmentPostsError = nil
+            recruitmentPostsErrorCode = nil
+        }
+
+        let expectedFetchGen = recruitmentPostsFetchGeneration
+        let res = await recruitmentPostService.listRecruitmentPosts(
+            pageSize: RecruitmentPostContract.defaultPageSize,
+            cursor: expectedCursor,
+            snapshotToken: expectedSnapshot
+        )
+        guard !Task.isCancelled,
+              isSessionValid(token),
+              recruitmentPostsFetchGeneration == expectedFetchGen else {
+            return
+        }
+
+        switch res {
+        case .success(let page, _):
+            if !reset {
+                guard recruitmentPostsNextCursor == expectedCursor,
+                      recruitmentPostsSnapshotToken == expectedSnapshot else {
+                    recruitmentPostsLoading = false
+                    recruitmentPostsLoadingMore = false
+                    return
+                }
+                recruitmentPosts = RecruitmentPostContract.mergeUniqueItems(
+                    current: recruitmentPosts,
+                    incoming: page.items
+                )
+                recruitmentPostsSnapshotToken = expectedSnapshot
+            } else {
+                recruitmentPosts = RecruitmentPostContract.mergeUniqueItems(
+                    current: [],
+                    incoming: page.items
+                )
+                recruitmentPostsSnapshotToken = page.snapshotToken
+            }
+            recruitmentPostsHasMore = page.hasMore
+            recruitmentPostsNextCursor = page.nextCursor
+            recruitmentPostsError = nil
+            recruitmentPostsErrorCode = nil
+            recruitmentPostsAccessDenied = false
+            recruitmentPostsFeatureUnavailable = false
+            recruitmentPostsLoading = false
+            recruitmentPostsLoadingMore = false
+
+        case .failure(let message, let httpStatus, let errorCode, _):
+            let code = errorCode?.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+            if httpStatus == 401 || code == "UNAUTHENTICATED" {
+                resetRecruitmentPostsState()
+                return
+            }
+            if httpStatus == 403 || code == "ACTOR_NOT_AVAILABLE" || code == "RECRUITMENT_POST_ACCESS_DENIED" {
+                let deniedCode = code ?? "RECRUITMENT_POST_ACCESS_DENIED"
+                resetRecruitmentPostsState()
+                recruitmentPostsAccessDenied = true
+                recruitmentPostsErrorCode = deniedCode
+                recruitmentPostsError = RecruitmentPostContract.errorMessageForCode(deniedCode)
+                return
+            }
+            if code == "RECRUITMENT_POST_SNAPSHOT_INVALID" {
+                if !isSnapshotInvalidRetry {
+                    recruitmentPostsLoading = false
+                    recruitmentPostsLoadingMore = false
+                    await loadRecruitmentPostsInternal(reset: true, isSnapshotInvalidRetry: true)
+                    return
+                }
+                recruitmentPostsLoading = false
+                recruitmentPostsLoadingMore = false
+                recruitmentPostsErrorCode = "RECRUITMENT_POST_SNAPSHOT_INVALID"
+                recruitmentPostsError = RecruitmentPostContract.errorMessageForCode("RECRUITMENT_POST_UNAVAILABLE")
+                return
+            }
+            if httpStatus == 404 {
+                recruitmentPosts = []
+                recruitmentPostsHasMore = false
+                recruitmentPostsNextCursor = nil
+                recruitmentPostsSnapshotToken = nil
+                recruitmentPostsFeatureUnavailable = true
+                recruitmentPostsErrorCode = code ?? "NOT_FOUND"
+                recruitmentPostsError = "Tính năng Tin tuyển dụng hiện tạm thời không khả dụng."
+                recruitmentPostsLoading = false
+                recruitmentPostsLoadingMore = false
+                return
+            }
+            recruitmentPostsErrorCode = code ?? "RECRUITMENT_POST_UNAVAILABLE"
+            recruitmentPostsError = message.isEmpty
+                ? RecruitmentPostContract.errorMessageForCode(code)
+                : message
+            recruitmentPostsLoading = false
+            recruitmentPostsLoadingMore = false
+        }
+    }
+
+    public func openRecruitmentPostDetail(briefId: String) async {
+        guard let token = captureSessionToken() else {
+            return
+        }
+        let cleanBriefId = briefId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanBriefId.isEmpty else { return }
+
+        recruitmentPostDetailFetchGeneration &+= 1
+        let expectedDetailGen = recruitmentPostDetailFetchGeneration
+        recruitmentPostDetailBriefId = cleanBriefId
+        selectedRecruitmentPostDetail = nil
+        recruitmentPostDetailError = nil
+        recruitmentPostDetailLoading = true
+
+        let res = await recruitmentPostService.getRecruitmentPostDetail(briefId: cleanBriefId)
+        guard !Task.isCancelled,
+              isSessionValid(token),
+              recruitmentPostDetailFetchGeneration == expectedDetailGen,
+              recruitmentPostDetailBriefId == cleanBriefId else {
+            return
+        }
+
+        switch res {
+        case .success(let item, _):
+            selectedRecruitmentPostDetail = item
+            recruitmentPostDetailError = nil
+            recruitmentPostDetailLoading = false
+            if let idx = recruitmentPosts.firstIndex(where: { $0.briefId == item.briefId }) {
+                recruitmentPosts[idx] = item
+            }
+
+        case .failure(let message, let httpStatus, let errorCode, _):
+            let code = errorCode?.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+            if httpStatus == 401 || code == "UNAUTHENTICATED" {
+                resetRecruitmentPostsState()
+                return
+            }
+            if httpStatus == 403 || code == "ACTOR_NOT_AVAILABLE" || code == "RECRUITMENT_POST_ACCESS_DENIED" {
+                let deniedCode = code ?? "RECRUITMENT_POST_ACCESS_DENIED"
+                resetRecruitmentPostsState()
+                recruitmentPostsAccessDenied = true
+                recruitmentPostsErrorCode = deniedCode
+                recruitmentPostsError = RecruitmentPostContract.errorMessageForCode(deniedCode)
+                return
+            }
+            if httpStatus == 404 || code == "RECRUITMENT_POST_NOT_FOUND" {
+                closeRecruitmentPostDetail()
+                recruitmentPosts.removeAll(where: { $0.briefId == cleanBriefId })
+                showBanner("Tin tuyển dụng không còn hiệu lực.", isError: true)
+                return
+            }
+            recruitmentPostDetailLoading = false
+            recruitmentPostDetailError = message.isEmpty
+                ? RecruitmentPostContract.errorMessageForCode(code)
+                : message
+        }
+    }
+
+    public func closeRecruitmentPostDetail() {
+        recruitmentPostDetailFetchGeneration &+= 1
+        recruitmentPostDetailLoading = false
+        recruitmentPostDetailError = nil
+        selectedRecruitmentPostDetail = nil
+        recruitmentPostDetailBriefId = nil
     }
 }

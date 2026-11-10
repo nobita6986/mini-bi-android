@@ -65,7 +65,7 @@ public struct MainContainerView: View {
                             if let user = viewModel.currentUser {
                                 let activeTitle = (viewModel.currentDestination == .workers && viewModel.salaryAdvanceSheetOpen)
                                     ? "Ứng lương"
-                                    : viewModel.currentDestination.titleVi
+                                    : viewModel.currentDestination.screenTitleVi
                                 Text("\(activeTitle) · \(user.fullName)")
                                     .font(.caption)
                                     .foregroundColor(SemanticColors.textMuted)
@@ -168,6 +168,8 @@ public struct MainContainerView: View {
                         }
                     case .workers:
                         WorkersScreen(viewModel: viewModel)
+                    case .recruitment:
+                        RecruitmentPostsScreen(viewModel: viewModel)
                     case .attendance:
                         AttendanceScreen(viewModel: viewModel)
                     case .workReports:
@@ -229,16 +231,7 @@ public struct MainContainerView: View {
             Divider()
 
             // Bottom Navigation Bar
-            let visibleDestinations = MiniBiNavDestination.allCases.filter { dest in
-                switch dest {
-                case .workers:
-                    return !viewModel.visibleWorkerTabs.isEmpty
-                case .newEntry:
-                    return viewModel.canAccessNewWorkerEntry
-                default:
-                    return true
-                }
-            }
+            let visibleDestinations = viewModel.visibleMainDestinations
             HStack(spacing: 0) {
                 ForEach(visibleDestinations) { dest in
                     let isSelected = viewModel.currentDestination == dest

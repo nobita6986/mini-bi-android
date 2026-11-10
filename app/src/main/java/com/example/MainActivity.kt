@@ -46,12 +46,14 @@ import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.automirrored.outlined.Assignment
 import androidx.compose.material.icons.filled.Analytics
 import androidx.compose.material.icons.filled.CameraAlt
+import androidx.compose.material.icons.filled.Campaign
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.PersonAdd
 import androidx.compose.material.icons.outlined.Analytics
 import androidx.compose.material.icons.outlined.CameraAlt
+import androidx.compose.material.icons.outlined.Campaign
 import androidx.compose.material.icons.outlined.Groups
 import androidx.compose.material.icons.outlined.PersonAdd
 import androidx.compose.material3.ButtonDefaults
@@ -101,10 +103,12 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.Coil
 import com.example.ui.MainDestination
 import com.example.ui.MiniBiViewModel
+import com.example.ui.resolveMainNavigationDestinations
 import com.example.ui.screens.AttendanceScreen
 import com.example.ui.screens.DashboardScreen
 import com.example.ui.screens.DirectEntryNewWorkersScreen
 import com.example.ui.screens.LoginScreen
+import com.example.ui.screens.RecruitmentPostsScreen
 import com.example.ui.screens.WorkReportsScreen
 import com.example.ui.screens.WorkersAndDirectEntryScreen
 import com.example.ui.screens.resolveVisibleWorkerTabs
@@ -259,17 +263,15 @@ fun MiniBiAppRoot(viewModel: MiniBiViewModel) {
 
     val canCreateEntry = authenticatedActor.hasCapability("entry_create") &&
         authenticatedActor.hasCapability("submission_create")
-    val hasWorkerTabs = resolveVisibleWorkerTabs(authenticatedActor).isNotEmpty()
 
-    val navDestinations = buildList {
-        add(Triple(MainDestination.DASHBOARD, Icons.Default.Analytics, Icons.Outlined.Analytics))
-        add(Triple(MainDestination.WORK_REPORTS, Icons.AutoMirrored.Filled.Assignment, Icons.AutoMirrored.Outlined.Assignment))
-        add(Triple(MainDestination.ATTENDANCE, Icons.Default.CameraAlt, Icons.Outlined.CameraAlt))
-        if (hasWorkerTabs) {
-            add(Triple(MainDestination.WORKERS, Icons.Default.Groups, Icons.Outlined.Groups))
-        }
-        if (canCreateEntry) {
-            add(Triple(MainDestination.NEW_ENTRY, Icons.Default.PersonAdd, Icons.Outlined.PersonAdd))
+    val navDestinations = resolveMainNavigationDestinations(authenticatedActor).map { dest ->
+        when (dest) {
+            MainDestination.DASHBOARD -> Triple(dest, Icons.Default.Analytics, Icons.Outlined.Analytics)
+            MainDestination.WORK_REPORTS -> Triple(dest, Icons.AutoMirrored.Filled.Assignment, Icons.AutoMirrored.Outlined.Assignment)
+            MainDestination.ATTENDANCE -> Triple(dest, Icons.Default.CameraAlt, Icons.Outlined.CameraAlt)
+            MainDestination.WORKERS -> Triple(dest, Icons.Default.Groups, Icons.Outlined.Groups)
+            MainDestination.RECRUITMENT -> Triple(dest, Icons.Default.Campaign, Icons.Outlined.Campaign)
+            MainDestination.NEW_ENTRY -> Triple(dest, Icons.Default.PersonAdd, Icons.Outlined.PersonAdd)
         }
     }
 
@@ -575,12 +577,13 @@ fun MiniBiAppRoot(viewModel: MiniBiViewModel) {
                                         )
                                     }
                                 }
-                                val topBarSubtitleLabel = if (
-                                    currentDestination == MainDestination.WORKERS && salaryAdvanceDialogOpen
-                                ) {
-                                    "Ứng lương"
-                                } else {
-                                    currentDestination.label
+                                val topBarSubtitleLabel = when {
+                                    currentDestination == MainDestination.WORKERS && salaryAdvanceDialogOpen ->
+                                        "Ứng lương"
+                                    currentDestination == MainDestination.RECRUITMENT ->
+                                        "Tin tuyển dụng"
+                                    else ->
+                                        currentDestination.label
                                 }
                                 Text(
                                     text = "$topBarSubtitleLabel · ${authenticatedActor.displayName}",
@@ -770,7 +773,14 @@ fun MiniBiAppRoot(viewModel: MiniBiViewModel) {
                             WorkersAndDirectEntryScreen(
                                 actor = authenticatedActor,
                                 viewModel = viewModel,
+                                onOpenNewEntryScreen = { viewModel.navigateTo(MainDestination.NEW_ENTRY) },
                                 onBackToDashboard = { viewModel.navigateTo(MainDestination.DASHBOARD) }
+                            )
+                        }
+
+                        MainDestination.RECRUITMENT -> {
+                            RecruitmentPostsScreen(
+                                viewModel = viewModel
                             )
                         }
 

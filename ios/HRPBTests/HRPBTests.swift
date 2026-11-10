@@ -1093,15 +1093,18 @@ final class HRPBTests: XCTestCase {
             URLQueryItem(name: "to", value: "2026-10-27")
         ])
 
-        // Navigation menu order: Tổng quan - Báo cáo - Chấm công - Nhân sự - Cấp mới
+        // Navigation menu order: Tổng quan - Báo cáo - Chấm công - Nhân sự - Tuyển dụng (Cấp mới moved inside Nhân sự)
         XCTAssertEqual(
-            MiniBiNavDestination.allCases,
-            [.dashboard, .workReports, .attendance, .workers, .newEntry]
+            MiniBiNavDestination.mainMenuDestinations,
+            [.dashboard, .workReports, .attendance, .workers, .recruitment]
         )
         XCTAssertEqual(
-            MiniBiNavDestination.allCases.map(\.titleVi),
-            ["Tổng quan", "Báo cáo", "Chấm công", "Nhân sự", "Cấp mới"]
+            MiniBiNavDestination.mainMenuDestinations.map(\.titleVi),
+            ["Tổng quan", "Báo cáo", "Chấm công", "Nhân sự", "Tuyển dụng"]
         )
+        XCTAssertFalse(MiniBiNavDestination.mainMenuDestinations.contains(.newEntry))
+        XCTAssertTrue(MiniBiNavDestination.allCases.contains(.newEntry))
+        XCTAssertEqual(MiniBiNavDestination.recruitment.screenTitleVi, "Tin tuyển dụng")
 
         // DirectEntry worker-profile/1.2 row payload contract
         var draftRow = NewWorkerEntryDraft()
@@ -3174,6 +3177,380 @@ final class HRPBTests: XCTestCase {
         XCTAssertEqual(vm.directEditWorkerTarget?.maNld, entryIdB)
         XCTAssertEqual(vm.directEditBaselineDetail?.entryId, entryIdB)
         XCTAssertEqual(vm.directEditBaselineDetail?.displayName, "Hồ Sơ Nhanh B")
+    }
+
+    // MARK: - 23. Recruitment Posts Contract, Navigation & Fail-Closed Lifecycle (Section 9)
+
+    func testRecruitmentPostsContractAndNavigationGate() throws {
+        // 1-4. Main menu navigation & Cấp mới permission gate
+        let fullUser = MiniBiUser(
+            id: "aaaa0023-2222-4333-8444-555555555501",
+            username: "full.user",
+            fullName: "Full User",
+            permissions: ["entry_create", "submission_create", "entry_read"],
+            allowedWorkerTabs: ["managed", "recruited"]
+        )
+        let limitedUser = MiniBiUser(
+            id: "aaaa0023-2222-4333-8444-555555555502",
+            username: "limited.user",
+            fullName: "Limited User",
+            permissions: ["entry_read"],
+            allowedWorkerTabs: []
+        )
+        XCTAssertEqual(
+            MiniBiNavDestination.resolveMainNavigationDestinations(for: fullUser),
+            [.dashboard, .workReports, .attendance, .workers, .recruitment]
+        )
+        XCTAssertEqual(
+            MiniBiNavDestination.resolveMainNavigationDestinations(for: limitedUser),
+            [.dashboard, .workReports, .attendance, .recruitment]
+        )
+        XCTAssertFalse(MiniBiNavDestination.resolveMainNavigationDestinations(for: fullUser).contains(.newEntry))
+        XCTAssertTrue(fullUser.canAccessNewWorkerEntry)
+        XCTAssertFalse(limitedUser.canAccessNewWorkerEntry)
+
+        // 6 & 10. Contract parser, integer VND string formatting, created_by_display_name contact, and fail-closed validation
+        let samplePostJson = Self.makeRecruitmentPostJson(
+            briefId: "11111111-2222-4333-8444-555555555501",
+            projectName: "Luxshare Bắc Giang",
+            creatorName: "Nguyễn Người Tạo Tin",
+            managerName: "Lê Quản Lý Cấm Hiển Thị"
+        )
+        let listBody = """
+        {
+          "ok": true,
+          "data": {
+            "items": [\(samplePostJson)],
+            "page_size": 10,
+            "has_more": true,
+            "next_cursor": "cur-page-2",
+            "snapshot_token": "snap-1"
+          }
+        }
+        """
+        let listObj = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(listBody.utf8)) as? [String: Any])
+        let parsedList = try RecruitmentPostContract.parseListEnvelope(listObj)
+        XCTAssertEqual(parsedList.items.count, 1)
+        XCTAssertEqual(parsedList.pageSize, 10)
+        XCTAssertTrue(parsedList.hasMore)
+        XCTAssertEqual(parsedList.nextCursor, "cur-page-2")
+        XCTAssertEqual(parsedList.snapshotToken, "snap-1")
+
+        let card = RecruitmentPostContract.toCardViewModel(parsedList.items[0])
+        XCTAssertEqual(card.contactPersonDisplay, "Nguyễn Người Tạo Tin")
+        XCTAssertFalse(card.contactDisplay.contains("Lê Quản Lý Cấm Hiển Thị"))
+        XCTAssertEqual(card.contactPhoneDisplay, "0988111222")
+        XCTAssertEqual(card.incomeRangeDisplay, "9.500.000 đ – 14.500.000 đ")
+        XCTAssertEqual(card.locationDisplay, "Bắc Giang · KCN Quang Châu")
+
+        let detailBody = """
+        {"ok":true,"data":{"post":\(samplePostJson)}}
+        """
+        let detailObj = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(detailBody.utf8)) as? [String: Any])
+        let parsedDetail = try RecruitmentPostContract.parseDetailEnvelope(detailObj)
+        let detailVm = RecruitmentPostContract.toDetailViewModel(parsedDetail)
+        XCTAssertEqual(detailVm.section1General.contactPersonDisplay, "Nguyễn Người Tạo Tin")
+        XCTAssertEqual(detailVm.section3CompensationBenefits.baseSalaryVndDisplay, "8.500.000 đ")
+        XCTAssertEqual(detailVm.section3CompensationBenefits.seniorityAllowanceVndDisplay, "Chưa cung cấp")
+
+        // Fail-closed: extra key, WITHDRAWN status in feed, or float money string must throw
+        var extraKeyItem = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(samplePostJson.utf8)) as? [String: Any])
+        extraKeyItem["unexpected_key"] = "boom"
+        XCTAssertThrowsError(try RecruitmentPostContract.parseDetailEnvelope(["ok": true, "data": ["post": extraKeyItem]]))
+
+        var withdrawnItem = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(samplePostJson.utf8)) as? [String: Any])
+        withdrawnItem["status"] = "WITHDRAWN"
+        withdrawnItem["withdrawn_at"] = "2026-11-10T09:00:00Z"
+        withdrawnItem["withdrawn_by_display_name"] = "Admin"
+        XCTAssertThrowsError(
+            try RecruitmentPostContract.parseListEnvelope([
+                "ok": true,
+                "data": [
+                    "items": [withdrawnItem],
+                    "page_size": 10,
+                    "has_more": false,
+                    "next_cursor": NSNull(),
+                    "snapshot_token": "snap-1"
+                ]
+            ])
+        )
+
+        var floatCompItem = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(samplePostJson.utf8)) as? [String: Any])
+        var compDict = try XCTUnwrap(floatCompItem["compensation"] as? [String: Any])
+        compDict["base_salary_vnd"] = "8500000.5"
+        floatCompItem["compensation"] = compDict
+        XCTAssertThrowsError(try RecruitmentPostContract.parseDetailEnvelope(["ok": true, "data": ["post": floatCompItem]]))
+    }
+
+    @MainActor
+    func testRecruitmentPostsPaginationRefreshSnapshotRetry404AndSessionPurge() async throws {
+        let brief1 = "11111111-2222-4333-8444-555555555501"
+        let brief2 = "11111111-2222-4333-8444-555555555502"
+        let briefSlow = "11111111-2222-4333-8444-555555555599"
+        var snapshotInvalidMode = false
+        var detailNotFoundMode = false
+        var listResponseMode = "NORMAL"
+
+        MockURLProtocol.reset()
+        MockURLProtocol.requestHandler = { req in
+            let url = try XCTUnwrap(req.url)
+            let fullUrl = url.absoluteString
+            let body: String
+            var statusCode = 200
+
+            if fullUrl.contains("/api/recruitment-posts?") {
+                if listResponseMode == "FORBIDDEN" {
+                    statusCode = 403
+                    body = #"{"ok":false,"error":{"code":"ACTOR_NOT_AVAILABLE","message":"Forbidden"}}"#
+                } else if listResponseMode == "NOT_FOUND_LIST" {
+                    statusCode = 404
+                    body = #"{"ok":false,"error":{"code":"NOT_FOUND","message":"Not found"}}"#
+                } else if listResponseMode == "UNAVAILABLE_503" {
+                    statusCode = 503
+                    body = #"{"ok":false,"error":{"code":"RECRUITMENT_POST_UNAVAILABLE","message":"Unavailable"}}"#
+                } else if fullUrl.contains("cursor=cur-p2") {
+                    if snapshotInvalidMode {
+                        statusCode = 400
+                        body = #"{"ok":false,"error":{"code":"RECRUITMENT_POST_SNAPSHOT_INVALID","message":"Snapshot invalid"}}"#
+                    } else {
+                        body = """
+                        {
+                          "ok": true,
+                          "data": {
+                            "items": [
+                              \(Self.makeRecruitmentPostJson(briefId: brief1, projectName: "Dự Án 1 Trùng", creatorName: "Người Tạo 1", managerName: "Quản Lý")),
+                              \(Self.makeRecruitmentPostJson(briefId: brief2, projectName: "Dự Án 2 Mới", creatorName: "Người Tạo 2", managerName: "Quản Lý"))
+                            ],
+                            "page_size": 10,
+                            "has_more": false,
+                            "next_cursor": null,
+                            "snapshot_token": "snap-p1"
+                          }
+                        }
+                        """
+                    }
+                } else {
+                    body = """
+                    {
+                      "ok": true,
+                      "data": {
+                        "items": [
+                          \(Self.makeRecruitmentPostJson(briefId: brief1, projectName: "Dự Án 1", creatorName: "Người Tạo 1", managerName: "Quản Lý"))
+                        ],
+                        "page_size": 10,
+                        "has_more": true,
+                        "next_cursor": "cur-p2",
+                        "snapshot_token": "snap-p1"
+                      }
+                    }
+                    """
+                }
+            } else if fullUrl.contains("/api/recruitment-posts/\(briefSlow)") {
+                try await Task.sleep(nanoseconds: 400_000_000)
+                body = """
+                {"ok":true,"data":{"post":\(Self.makeRecruitmentPostJson(briefId: briefSlow, projectName: "Dự Án Chậm", creatorName: "Người Tạo Chậm", managerName: "Quản Lý"))}}
+                """
+            } else if fullUrl.contains("/api/recruitment-posts/\(brief1)") {
+                if detailNotFoundMode {
+                    statusCode = 404
+                    body = #"{"ok":false,"error":{"code":"RECRUITMENT_POST_NOT_FOUND","message":"Not found"}}"#
+                } else {
+                    body = """
+                    {"ok":true,"data":{"post":\(Self.makeRecruitmentPostJson(briefId: brief1, projectName: "Dự Án 1", creatorName: "Người Tạo 1", managerName: "Quản Lý"))}}
+                    """
+                }
+            } else {
+                body = #"{"ok":true,"items":[]}"#
+            }
+
+            let resp = HTTPURLResponse(url: url, statusCode: statusCode, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/json"])!
+            return (resp, Data(body.utf8))
+        }
+
+        let client = makeMockHttpClient()
+        let repo = MiniBiRepository(httpClient: client, keychain: KeychainStore(serviceName: "com.aistudio.minibi.rec23.\(UUID().uuidString)"))
+        let vm = MiniBiViewModel(
+            repository: repo,
+            directEntryService: DirectEntryService(httpClient: client),
+            workReportsService: WorkReportsAndReportingService(httpClient: client),
+            salaryAdvanceService: SalaryAdvanceService(httpClient: client),
+            recruitmentPostService: RecruitmentPostService(httpClient: client)
+        )
+        vm.currentUser = MiniBiUser(
+            id: "aaaa0023-2222-4333-8444-555555555599",
+            username: "rec.23",
+            fullName: "Recruiter 23",
+            permissions: ["entry_create", "submission_create"],
+            allowedWorkerTabs: ["managed"]
+        )
+        vm.isAuthenticated = true
+
+        // 5. Draft preservation when navigating to .newEntry from .workers
+        vm.newWorkerDraftRows[0].hoTen = "Nháp Giữ Nguyên"
+        vm.navigateTo(.newEntry)
+        XCTAssertEqual(vm.currentDestination, .newEntry)
+        XCTAssertEqual(vm.newWorkerDraftRows[0].hoTen, "Nháp Giữ Nguyên")
+
+        // 7-8. Load page 1 and loadMore with snapshot_token + deduplication by brief_id
+        await vm.loadRecruitmentPosts(reset: true)
+        XCTAssertEqual(vm.recruitmentPosts.map(\.briefId), [brief1])
+        XCTAssertTrue(vm.recruitmentPostsHasMore)
+        XCTAssertFalse(MockURLProtocol.recordedUrls().contains(where: { $0.contains("/api/recruitment-posts/context") }))
+
+        await vm.loadMoreRecruitmentPosts()
+        XCTAssertEqual(vm.recruitmentPosts.map(\.briefId), [brief1, brief2])
+        XCTAssertTrue(MockURLProtocol.recordedUrls().contains(where: { $0.contains("cursor=cur-p2") && $0.contains("snapshot_token=snap-p1") }))
+
+        // 9. Slow detail request closed before completion does not commit state
+        let slowDetailTask = Task { await vm.openRecruitmentPostDetail(briefId: briefSlow) }
+        try await waitForRecordedUrl(containing: "/api/recruitment-posts/\(briefSlow)")
+        vm.closeRecruitmentPostDetail()
+        _ = await slowDetailTask.value
+        XCTAssertNil(vm.selectedRecruitmentPostDetail)
+
+        // 12a. 400 RECRUITMENT_POST_SNAPSHOT_INVALID resets and reloads page 1 at most once
+        await vm.loadRecruitmentPosts(reset: true)
+        snapshotInvalidMode = true
+        await vm.loadMoreRecruitmentPosts()
+        XCTAssertEqual(vm.recruitmentPosts.map(\.briefId), [brief1])
+
+        // 12b. 404 RECRUITMENT_POST_NOT_FOUND on detail removes item and shows banner
+        detailNotFoundMode = true
+        await vm.openRecruitmentPostDetail(briefId: brief1)
+        XCTAssertTrue(vm.recruitmentPosts.isEmpty)
+        XCTAssertNil(vm.selectedRecruitmentPostDetail)
+        XCTAssertEqual(vm.bannerMessage, "Tin tuyển dụng không còn hiệu lực.")
+
+        // 12c. 403 access denied, 404 list feature unavailable, 503 retryable error
+        listResponseMode = "FORBIDDEN"
+        await vm.loadRecruitmentPosts(reset: true)
+        XCTAssertTrue(vm.recruitmentPostsAccessDenied)
+
+        listResponseMode = "NOT_FOUND_LIST"
+        await vm.loadRecruitmentPosts(reset: true)
+        XCTAssertTrue(vm.recruitmentPostsFeatureUnavailable)
+
+        listResponseMode = "UNAVAILABLE_503"
+        await vm.loadRecruitmentPosts(reset: true)
+        XCTAssertNotNil(vm.recruitmentPostsErrorMessage)
+        XCTAssertTrue(vm.isAuthenticated)
+
+        // 13. Session reset / logout purges all recruitment state
+        await vm.performLogout()
+        XCTAssertTrue(vm.recruitmentPosts.isEmpty)
+        XCTAssertNil(vm.selectedRecruitmentPostDetail)
+        XCTAssertFalse(vm.recruitmentPostsHasMore)
+    }
+
+    private static func makeRecruitmentPostJson(
+        briefId: String,
+        projectName: String,
+        creatorName: String,
+        managerName: String
+    ) -> String {
+        """
+        {
+          "brief_id": "\(briefId)",
+          "version": 3,
+          "status": "PUBLISHED",
+          "project": {
+            "project_id": "aaaaaaaa-1111-4222-8333-444444444401",
+            "display_name": "\(projectName)"
+          },
+          "industrial_park": {
+            "industrial_park_id": "aaaaaaaa-1111-4222-8333-444444444402",
+            "industrial_park_code": "KCN_QUANG_CHAU",
+            "display_name": "KCN Quang Châu",
+            "active": true
+          },
+          "province": {
+            "province_id": "aaaaaaaa-1111-4222-8333-444444444403",
+            "province_code": "BAC_GIANG",
+            "display_name": "Bắc Giang"
+          },
+          "published_at": "2026-11-10T08:30:00Z",
+          "updated_at": "2026-11-10T08:30:00Z",
+          "withdrawn_at": null,
+          "created_by_display_name": "\(creatorName)",
+          "updated_by_display_name": "\(creatorName)",
+          "withdrawn_by_display_name": null,
+          "general": {
+            "customer_name": "Công ty TNHH Luxshare ICT",
+            "investment_origin": "Trung Quốc",
+            "manufacturing_industry": "Sản xuất linh kiện điện tử",
+            "job_description": "Lắp ráp và kiểm tra linh kiện",
+            "environment_types": ["CLEAN_ROOM", "NORMAL_ROOM"],
+            "work_postures": ["SITTING", "STANDING"],
+            "shift_pattern": "TWO_SHIFTS",
+            "shift_details": "Ca ngày 08:00-20:00, ca đêm 20:00-08:00",
+            "manager_name": "\(managerName)",
+            "manager_phone": "0988111222",
+            "labor_types": [
+              {"labor_type_key": "thoi_vu", "display_name": "Thời vụ"},
+              {"labor_type_key": "chinh_thuc", "display_name": "Chính thức"}
+            ],
+            "supply_schedule_text": "Tuyển liên tục",
+            "expected_headcount": 150
+          },
+          "candidate": {
+            "age_min": 18,
+            "age_max": 40,
+            "gender_requirement": "ANY",
+            "education_requirement": "SECONDARY",
+            "experience_required": false,
+            "experience_details": null,
+            "accept_former_customer_workers": true,
+            "entry_assessment_text": "Test bảng chữ cái",
+            "other_requirements_text": "Sức khỏe tốt"
+          },
+          "compensation": {
+            "base_salary_vnd": "8500000",
+            "base_salary_conditions": "Làm đủ 26 công",
+            "attendance_bonus_vnd": "500000",
+            "attendance_bonus_conditions": "Không nghỉ buổi nào",
+            "living_allowance_vnd": "300000",
+            "living_allowance_conditions": "Hỗ trợ nhà ở",
+            "seniority_allowance_vnd": null,
+            "seniority_allowance_conditions": null,
+            "eyesight_allowance_vnd": "200000",
+            "eyesight_allowance_conditions": "Bộ phận kính hiển vi",
+            "other_allowance_text": "Phụ cấp phòng sạch 300.000 đ",
+            "average_income_min_vnd": "9500000",
+            "average_income_max_vnd": "14500000",
+            "salary_payment_schedule": "Ngày 15 hàng tháng",
+            "salary_advance_available": true,
+            "salary_advance_amount_vnd": "1000000",
+            "salary_advance_schedule": "Thứ 6 hàng tuần",
+            "weekly_salary_available": false,
+            "weekly_salary_payment_schedule": null,
+            "day_shift_8h_vnd": "280000",
+            "day_shift_11h_vnd": "410000",
+            "night_shift_8h_vnd": "340000",
+            "night_shift_11h_vnd": "490000",
+            "sunday_day_11h_vnd": "580000",
+            "sunday_night_11h_vnd": "660000",
+            "holiday_day_11h_vnd": "850000",
+            "holiday_night_11h_vnd": "950000",
+            "ppe_provided": true,
+            "ppe_details": "Cấp phát áo tĩnh điện và giày",
+            "other_benefits": "Thưởng lễ tết đầy đủ"
+          },
+          "documents": {
+            "require_original_cccd_and_copy": true,
+            "require_certified_resume": false,
+            "require_health_certificate_within_6_months": true,
+            "require_photo_3x4": true,
+            "require_degree_or_certificate": false,
+            "require_social_insurance_book": false,
+            "require_other_documents": true,
+            "other_documents_text": "Mang bút bi xanh khi phỏng vấn"
+          },
+          "allowed_actions": {
+            "can_edit": true,
+            "can_withdraw": true
+          }
+        }
+        """
     }
 
     // MARK: - Helper

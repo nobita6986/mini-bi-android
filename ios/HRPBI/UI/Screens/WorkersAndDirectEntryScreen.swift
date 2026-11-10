@@ -39,6 +39,26 @@ public struct DirectEntryNewWorkersScreen: View {
                 VStack(spacing: 0) {
                     // Top Action Bar
                     HStack(spacing: 10) {
+                        if !viewModel.visibleWorkerTabs.isEmpty {
+                            Button {
+                                KeyboardDismissal.dismiss()
+                                viewModel.navigateTo(.workers)
+                            } label: {
+                                HStack(spacing: 4) {
+                                    Image(systemName: "chevron.left")
+                                    Text("Nhân sự")
+                                }
+                                .font(.caption.weight(.bold))
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 8)
+                                .background(Color(hex: 0xF1F5F9))
+                                .foregroundColor(SemanticColors.textPrimary)
+                                .cornerRadius(8)
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityIdentifier("back_to_workers_from_new_entry")
+                        }
+
                         VStack(alignment: .leading, spacing: 2) {
                             Text("Cấp mới hồ sơ NLĐ (\(viewModel.newWorkerDraftRows.count) dòng)")
                                 .font(.subheadline.weight(.bold))
@@ -1647,6 +1667,31 @@ public struct WorkersScreen: View {
                         .padding(.bottom, 10)
                         .background(Color.white)
 
+                        if viewModel.canAccessNewWorkerEntry {
+                            HStack {
+                                Button {
+                                    KeyboardDismissal.dismiss()
+                                    viewModel.navigateTo(.newEntry)
+                                } label: {
+                                    HStack(spacing: 6) {
+                                        Image(systemName: "person.badge.plus")
+                                        Text("Cấp mới")
+                                    }
+                                    .font(.caption.weight(.bold))
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 9)
+                                    .background(theme.primary)
+                                    .foregroundColor(.white)
+                                    .cornerRadius(8)
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityIdentifier("go_to_new_entry_from_workers")
+                            }
+                            .padding(.horizontal, 14)
+                            .padding(.bottom, 10)
+                            .background(Color.white)
+                        }
+
                         Divider()
 
                         ScrollView {
@@ -1790,6 +1835,31 @@ public struct WorkersScreen: View {
                         .padding(.horizontal, 14)
                         .padding(.bottom, 10)
                         .background(Color.white)
+
+                        if viewModel.canAccessNewWorkerEntry {
+                            HStack {
+                                Button {
+                                    KeyboardDismissal.dismiss()
+                                    viewModel.navigateTo(.newEntry)
+                                } label: {
+                                    HStack(spacing: 6) {
+                                        Image(systemName: "person.badge.plus")
+                                        Text("Cấp mới")
+                                    }
+                                    .font(.caption.weight(.bold))
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 9)
+                                    .background(theme.primary)
+                                    .foregroundColor(.white)
+                                    .cornerRadius(8)
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityIdentifier("go_to_new_entry_from_workers")
+                            }
+                            .padding(.horizontal, 14)
+                            .padding(.bottom, 10)
+                            .background(Color.white)
+                        }
 
                         Divider()
 
