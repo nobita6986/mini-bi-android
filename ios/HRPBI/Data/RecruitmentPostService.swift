@@ -303,11 +303,17 @@ public enum RecruitmentPostContract {
     private static let uuidRegex = try! NSRegularExpression(
         pattern: "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
     )
+    private static let projectIdRegex = try! NSRegularExpression(
+        pattern: "^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$"
+    )
     private static let vndStringRegex = try! NSRegularExpression(pattern: "^(0|[1-9][0-9]*)$")
-    private static let laborTypeKeyRegex = try! NSRegularExpression(pattern: "^[a-z0-9_]{2,32}$")
-    private static let locationCodeRegex = try! NSRegularExpression(pattern: "^[A-Z0-9_-]{2,32}$")
+    private static let laborTypeKeyRegex = try! NSRegularExpression(pattern: "^[A-Za-z0-9][A-Za-z0-9_]{0,63}$")
+    private static let locationCodeRegex = try! NSRegularExpression(pattern: "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
     private static let isoTimestampRegex = try! NSRegularExpression(
-        pattern: "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,6})?(?:Z|[+-]\\d{2}:\\d{2})$"
+        pattern: "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,9})?(?:Z|[+-]\\d{2}:\\d{2})$"
+    )
+    private static let isoFractionRegex = try! NSRegularExpression(
+        pattern: "\\.(\\d{1,9})(?=Z|[+-])"
     )
     private static let maxSafeVndString = "9007199254740991"
 
@@ -586,8 +592,24 @@ public enum RecruitmentPostContract {
     public static func formatTimestampVi(_ isoUtc: String?) -> String {
         let trimmed = isoUtc?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard !trimmed.isEmpty else { return unprovidedLabel }
-        let formatted = SalaryAdvanceContract.formatDateTimeVi(trimmed)
+        let normalized = normalizeIsoFractionToMillis(trimmed)
+        let formatted = SalaryAdvanceContract.formatDateTimeVi(normalized)
         return (formatted == "—" || formatted.isEmpty) ? unprovidedLabel : formatted
+    }
+
+    private static func normalizeIsoFractionToMillis(_ iso: String) -> String {
+        let nsRange = NSRange(iso.startIndex..<iso.endIndex, in: iso)
+        guard let match = isoFractionRegex.firstMatch(in: iso, options: [], range: nsRange),
+              let digitsRange = Range(match.range(at: 1), in: iso),
+              let fullMatchRange = Range(match.range(at: 0), in: iso) else {
+            return iso
+        }
+        let digits = String(iso[digitsRange])
+        let prefix3 = String(digits.prefix(3))
+        let padded3 = prefix3.padding(toLength: 3, withPad: "0", startingAt: 0)
+        var copy = iso
+        copy.replaceSubrange(fullMatchRange, with: ".\(padded3)")
+        return copy
     }
 
     public static func toCardViewModel(_ item: RecruitmentPostItem) -> RecruitmentPostCardViewModel {
@@ -846,7 +868,7 @@ public enum RecruitmentPostContract {
         }
         try requireExactKeys(projectObj, projectKeys, label: "project")
         let project = RecruitmentPostProjectSummary(
-            projectId: try requireUuid(projectObj, "project_id"),
+            projectId: try requireProjectId(projectObj, "project_id"),
             displayName: try requireNonEmptyString(projectObj, "display_name")
         )
 
@@ -1226,9 +1248,17 @@ public enum RecruitmentPostContract {
         }
         let trimmed = str.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty {
-            throw RecruitmentPostContractError.invalidContract("Trường \(key) khi khác null không được rỗng.")
+            return nil
         }
         return trimmed
+    }
+
+    private static func requireProjectId(_ obj: [String: Any], _ key: String) throws -> String {
+        let value = try requireNonEmptyString(obj, key)
+        guard matchesRegex(value, projectIdRegex) else {
+            throw RecruitmentPostContractError.invalidContract("Trường \(key) không đúng định dạng project_id.")
+        }
+        return value
     }
 
     private static func requireUuid(_ obj: [String: Any], _ key: String) throws -> String {

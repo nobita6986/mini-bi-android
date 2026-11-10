@@ -268,11 +268,12 @@ object RecruitmentPostContract {
     private val UUID_PATTERN = Regex(
         "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
     )
+    private val PROJECT_ID_PATTERN = Regex("^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$")
     private val VND_STRING_PATTERN = Regex("^(0|[1-9][0-9]*)$")
-    private val LABOR_TYPE_KEY_PATTERN = Regex("^[a-z0-9_]{2,32}$")
-    private val LOCATION_CODE_PATTERN = Regex("^[A-Z0-9_-]{2,32}$")
+    private val LABOR_TYPE_KEY_PATTERN = Regex("^[A-Za-z0-9][A-Za-z0-9_]{0,63}$")
+    private val LOCATION_CODE_PATTERN = Regex("^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
     private val ISO_TIMESTAMP_PATTERN = Regex(
-        "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,6})?(?:Z|[+-]\\d{2}:\\d{2})$"
+        "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,9})?(?:Z|[+-]\\d{2}:\\d{2})$"
     )
     private val MAX_SAFE_VND = BigInteger.valueOf(9_007_199_254_740_991L)
 
@@ -538,7 +539,10 @@ object RecruitmentPostContract {
     fun formatTimestampVi(isoUtc: String?): String {
         val trimmed = isoUtc?.trim().orEmpty()
         if (trimmed.isEmpty()) return UNPROVIDED_LABEL
-        val formatted = SalaryAdvanceContract.formatDateTimeVi(trimmed)
+        val normalized = trimmed.replace(Regex("\\.(\\d{1,9})(?=Z|[+-])")) { match ->
+            "." + match.groupValues[1].take(3).padEnd(3, '0')
+        }
+        val formatted = SalaryAdvanceContract.formatDateTimeVi(normalized)
         return if (formatted == "—" || formatted.isBlank()) UNPROVIDED_LABEL else formatted
     }
 
@@ -820,7 +824,7 @@ object RecruitmentPostContract {
             ?: throw contractInvalid("Thiếu project.")
         requireExactKeys(projectObj, PROJECT_KEYS, "project")
         val project = RecruitmentPostProjectSummary(
-            projectId = requireUuid(projectObj, "project_id"),
+            projectId = requireProjectId(projectObj, "project_id"),
             displayName = requireNonEmptyString(projectObj, "display_name")
         )
 
@@ -1194,9 +1198,17 @@ object RecruitmentPostContract {
         }
         val trimmed = raw.trim()
         if (trimmed.isEmpty()) {
-            throw contractInvalid("Trường $key khi khác null không được rỗng.")
+            return null
         }
         return trimmed
+    }
+
+    private fun requireProjectId(obj: JSONObject, key: String): String {
+        val value = requireNonEmptyString(obj, key)
+        if (!PROJECT_ID_PATTERN.matches(value)) {
+            throw contractInvalid("Trường $key không đúng định dạng project_id.")
+        }
+        return value
     }
 
     private fun requireUuid(obj: JSONObject, key: String): String {

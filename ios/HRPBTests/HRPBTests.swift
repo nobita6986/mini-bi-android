@@ -3457,7 +3457,7 @@ final class HRPBTests: XCTestCase {
           "version": 3,
           "status": "PUBLISHED",
           "project": {
-            "project_id": "aaaaaaaa-1111-4222-8333-444444444401",
+            "project_id": "PROJ_A",
             "display_name": "\(projectName)"
           },
           "industrial_park": {
@@ -3471,8 +3471,8 @@ final class HRPBTests: XCTestCase {
             "province_code": "BAC_GIANG",
             "display_name": "Bắc Giang"
           },
-          "published_at": "2026-11-10T08:30:00Z",
-          "updated_at": "2026-11-10T08:30:00Z",
+          "published_at": "2026-11-10T08:30:00.123456Z",
+          "updated_at": "2026-11-10T08:30:00.123456Z",
           "withdrawn_at": null,
           "created_by_display_name": "\(creatorName)",
           "updated_by_display_name": "\(creatorName)",
@@ -3489,8 +3489,8 @@ final class HRPBTests: XCTestCase {
             "manager_name": "\(managerName)",
             "manager_phone": "0988111222",
             "labor_types": [
-              {"labor_type_key": "thoi_vu", "display_name": "Thời vụ"},
-              {"labor_type_key": "chinh_thuc", "display_name": "Chính thức"}
+              {"labor_type_key": "THOI_VU", "display_name": "Thời vụ"},
+              {"labor_type_key": "CHINH_THUC", "display_name": "Chính thức"}
             ],
             "supply_schedule_text": "Tuyển liên tục",
             "expected_headcount": 150

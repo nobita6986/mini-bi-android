@@ -6731,8 +6731,14 @@ class MiniBiViewModel internal constructor(
                     return@launch
                 }
                 _recruitmentPostsErrorCode.value = code ?: "RECRUITMENT_POST_UNAVAILABLE"
-                _recruitmentPostsError.value = e.message.ifBlank {
+                _recruitmentPostsError.value = if (
+                    (code != null && code.startsWith("RECRUITMENT_POST_")) || e.statusCode == 503
+                ) {
                     RecruitmentPostContract.errorMessageForCode(code)
+                } else {
+                    e.message.ifBlank {
+                        RecruitmentPostContract.errorMessageForCode(code)
+                    }
                 }
             } catch (e: Exception) {
                 e.rethrowIfCancelled()
@@ -6824,8 +6830,14 @@ class MiniBiViewModel internal constructor(
                     showBanner("Tin tuyển dụng không còn hiệu lực.", isError = true)
                     return@launch
                 }
-                _recruitmentPostDetailError.value = e.message.ifBlank {
+                _recruitmentPostDetailError.value = if (
+                    (code != null && code.startsWith("RECRUITMENT_POST_")) || e.statusCode == 503
+                ) {
                     RecruitmentPostContract.errorMessageForCode(code)
+                } else {
+                    e.message.ifBlank {
+                        RecruitmentPostContract.errorMessageForCode(code)
+                    }
                 }
             } catch (e: Exception) {
                 e.rethrowIfCancelled()

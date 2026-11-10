@@ -29,8 +29,8 @@ android {
     applicationId = "vn.hrpartner.bi"
     minSdk = 24
     targetSdk = 36
-    versionCode = 22
-    versionName = "1.0.1.10112026"
+    versionCode = 24
+    versionName = "1.0.3.10112026"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
