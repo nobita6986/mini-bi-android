@@ -112,9 +112,7 @@ public struct DashboardScreen: View {
         .onAppear {
             if viewModel.isAuthenticated
                 && !viewModel.isLoadingDashboard
-                && viewModel.generalOverview.kpis.totalHeadcount == 0
-                && viewModel.workforceDeepMetrics.byProject.isEmpty
-                && viewModel.teamReport.members.isEmpty {
+                && !viewModel.hasLoadedDashboardInSession {
                 Task { await viewModel.loadDashboardData(includeCccdTabs: false) }
             }
         }

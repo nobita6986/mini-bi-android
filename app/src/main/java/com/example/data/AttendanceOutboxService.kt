@@ -890,17 +890,20 @@ class AttendanceOutboxService(
             appUserId: String? = null,
             initialDelaySeconds: Long = AttendanceContract.MIN_INITIAL_OUTBOX_WORK_DELAY_SECONDS
         ): EnqueuedOutboxWorkRecord {
+            val safeInitialDelaySeconds = initialDelaySeconds.coerceAtLeast(
+                AttendanceContract.MIN_INITIAL_OUTBOX_WORK_DELAY_SECONDS
+            )
             val uniqueWorkName = AttendanceContract.buildUniqueOutboxWorkName(appUserId)
             val workRequest = buildDurableOutboxWorkRequest(
                 appUserId = appUserId,
-                initialDelaySeconds = initialDelaySeconds
+                initialDelaySeconds = safeInitialDelaySeconds
             )
             val record = EnqueuedOutboxWorkRecord(
                 uniqueWorkName = uniqueWorkName,
                 existingWorkPolicy = ExistingWorkPolicy.KEEP,
-                initialDelayMillis = workRequest.workSpec.initialDelay,
-                backoffPolicy = workRequest.workSpec.backoffPolicy,
-                backoffDelayMillis = workRequest.workSpec.backoffDelayDuration,
+                initialDelayMillis = TimeUnit.SECONDS.toMillis(safeInitialDelaySeconds),
+                backoffPolicy = BackoffPolicy.EXPONENTIAL,
+                backoffDelayMillis = TimeUnit.SECONDS.toMillis(AttendanceContract.BACKOFF_INITIAL_DELAY_SECONDS),
                 appUserId = appUserId?.trim()?.takeIf { it.isNotEmpty() }
             )
             synchronized(enqueuedWorkHistoryLock) {

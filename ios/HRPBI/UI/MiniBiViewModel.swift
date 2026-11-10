@@ -74,6 +74,7 @@ public final class MiniBiViewModel: ObservableObject {
     @Published public var cccdReviewTotal: Int = 0
     @Published public var selectedCccdReviewItem: CccdReviewItem?
     @Published public var isLoadingCccdReview: Bool = false
+    @Published public private(set) var hasLoadedDashboardInSession: Bool = false
 
     // MARK: - Direct Entry ("Cấp mới") State — Preserved Across Menu/Tab Switches!
     @Published public var newWorkerDraftRows: [NewWorkerEntryDraft] = [NewWorkerEntryDraft()]
@@ -506,9 +507,7 @@ public final class MiniBiViewModel: ObservableObject {
         } else if destination == .dashboard {
             if isAuthenticated
                 && !isLoadingDashboard
-                && generalOverview.kpis.totalHeadcount == 0
-                && workforceDeepMetrics.byProject.isEmpty
-                && teamReport.members.isEmpty {
+                && !hasLoadedDashboardInSession {
                 Task { await loadDashboardData(includeCccdTabs: false) }
             }
         } else if destination == .workers {
@@ -611,6 +610,7 @@ public final class MiniBiViewModel: ObservableObject {
         salaryAdvanceContextLoadedGeneration = nil
         initialAttendanceLoadedGeneration = nil
         hasLoadedAttendanceHistoryInSession = false
+        hasLoadedDashboardInSession = false
         isSyncingTimeAnchor = false
         isSyncingAttendance = false
         isSubmittingAttendance = false
@@ -974,6 +974,7 @@ public final class MiniBiViewModel: ObservableObject {
         await runDeduplicatedSessionTask(key: dedupeKey) { [weak self] token in
             guard let self, self.isSessionValid(token) else { return }
             self.isLoadingDashboard = true
+            self.hasLoadedDashboardInSession = true
             self.dashboardErrorMessage = ""
             defer {
                 if self.isSessionValid(token) {

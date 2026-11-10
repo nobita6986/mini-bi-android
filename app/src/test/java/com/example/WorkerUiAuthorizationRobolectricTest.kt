@@ -1135,6 +1135,7 @@ class WorkerUiAuthorizationRobolectricTest {
             )
         )
         val vm = MiniBiViewModel(app, repo)
+        vm.navigateTo(com.example.ui.MainDestination.DASHBOARD)
         registerTestResourcesCleanup(vm, db, server, cookieFile, savedCredsFile, prefsFile)
 
         composeTestRule.setContent {
@@ -1650,6 +1651,7 @@ class WorkerUiAuthorizationRobolectricTest {
             )
         )
         val vm = MiniBiViewModel(app, repo)
+        vm.navigateTo(com.example.ui.MainDestination.DASHBOARD)
         registerTestResourcesCleanup(vm, db, server, cookieFile, savedCredsFile, anchorFile, prefsFile)
 
         composeTestRule.setContent {
@@ -2094,6 +2096,7 @@ class WorkerUiAuthorizationRobolectricTest {
             )
         )
         val vm = MiniBiViewModel(app, repo)
+        vm.navigateTo(com.example.ui.MainDestination.DASHBOARD)
         registerTestResourcesCleanup(vm, db, server, cookieFile, savedCredsFile, anchorFile, prefsFile)
 
         composeTestRule.setContent {
@@ -4693,7 +4696,7 @@ class WorkerUiAuthorizationRobolectricTest {
             vm.loadSalaryAdvanceContextIfNeeded(force = true, actor = actor)
         }
         composeTestRule.waitForIdle()
-        assertEquals(com.example.ui.MainDestination.DASHBOARD, vm.currentDestination.value)
+        assertEquals(com.example.ui.MainDestination.ATTENDANCE, vm.currentDestination.value)
 
         val snapshotPaths = requestedPaths.toList()
         assertTrue(snapshotPaths.any { it.startsWith("/api/direct-entry/session") })
