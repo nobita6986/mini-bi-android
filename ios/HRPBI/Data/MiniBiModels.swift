@@ -258,7 +258,34 @@ public enum MiniBiNavDestination: String, CaseIterable, Identifiable, Equatable,
     case workReports = "work_reports"
     case attendance = "attendance"
     case workers = "workers"
+    case recruitment = "recruitment"
     case newEntry = "new_entry"
+
+    public static let mainMenuDestinations: [MiniBiNavDestination] = [
+        .dashboard,
+        .workReports,
+        .attendance,
+        .workers,
+        .recruitment
+    ]
+
+    public static func resolveMainNavigationDestinations(for user: MiniBiUser?) -> [MiniBiNavDestination] {
+        guard let user else { return [] }
+        return mainMenuDestinations.filter { dest in
+            if dest == .workers {
+                return !user.safeAllowedWorkerTabs.isEmpty
+            }
+            return true
+        }
+    }
+
+    public static func resolveDefaultDestination(for user: MiniBiUser?) -> MiniBiNavDestination {
+        let allowed = resolveMainNavigationDestinations(for: user)
+        if allowed.contains(.attendance) {
+            return .attendance
+        }
+        return allowed.first ?? .dashboard
+    }
 
     public var id: String { rawValue }
 
@@ -272,8 +299,19 @@ public enum MiniBiNavDestination: String, CaseIterable, Identifiable, Equatable,
             return "Chấm công"
         case .workers:
             return "Nhân sự"
+        case .recruitment:
+            return "Tuyển dụng"
         case .newEntry:
             return "Cấp mới"
+        }
+    }
+
+    public var screenTitleVi: String {
+        switch self {
+        case .recruitment:
+            return "Tin tuyển dụng"
+        default:
+            return titleVi
         }
     }
 
@@ -287,6 +325,8 @@ public enum MiniBiNavDestination: String, CaseIterable, Identifiable, Equatable,
             return "camera.viewfinder"
         case .workers:
             return "person.3.fill"
+        case .recruitment:
+            return "megaphone.fill"
         case .newEntry:
             return "person.badge.plus"
         }

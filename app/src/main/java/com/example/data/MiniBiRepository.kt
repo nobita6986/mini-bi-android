@@ -348,6 +348,23 @@ class MiniBiRepository(
         private val KEY_DEBUG_SERVER_URL = stringPreferencesKey("debug_server_url")
         private val KEY_THEME_ID = stringPreferencesKey("theme_id")
 
+        @Volatile
+        private var sharedInstance: MiniBiRepository? = null
+
+        @Volatile
+        internal var testSharedInstanceOverride: MiniBiRepository? = null
+
+        fun getSharedInstance(context: Context): MiniBiRepository {
+            testSharedInstanceOverride?.let { return it }
+            val existing = sharedInstance
+            if (existing != null) return existing
+            return synchronized(this) {
+                testSharedInstanceOverride
+                    ?: sharedInstance
+                    ?: MiniBiRepository(context.applicationContext).also { sharedInstance = it }
+            }
+        }
+
         fun computeSha256HexStrict(file: File): String {
             if (!file.exists() || !file.isFile || file.length() <= 0L) {
                 throw IOException("Tệp hình ảnh không tồn tại hoặc rỗng.")
@@ -406,6 +423,10 @@ class MiniBiRepository(
     )
 
     val salaryAdvanceService = SalaryAdvanceService(
+        httpClient = httpClient
+    )
+
+    val recruitmentPostService = RecruitmentPostService(
         httpClient = httpClient
     )
 
@@ -490,7 +511,7 @@ class MiniBiRepository(
         }
     }
 
-    suspend fun bootstrapSession(): Result<AppActor> = withContext(Dispatchers.IO) {
+    suspend fun bootstrapSession(scheduleOutboxWork: Boolean = true): Result<AppActor> = withContext(Dispatchers.IO) {
         val startEpoch = authSessionEpoch.get()
         try {
             val displayHint = safePrefsFlow.first()[KEY_DISPLAY_IDENTIFIER]
@@ -511,8 +532,8 @@ class MiniBiRepository(
             }
             val actor = ActorContractParser.parseEnvelopeActor(json, displayHint)
             _activeActor.value = actor
-            if (dao.getRetryableAttendanceOutboxForUser(actor.appUserId).isNotEmpty()) {
-                AttendanceOutboxService.enqueueDurableOutboxWork(context)
+            if (scheduleOutboxWork && dao.getRetryableAttendanceOutboxForUser(actor.appUserId).isNotEmpty()) {
+                AttendanceOutboxService.enqueueDurableOutboxWork(context, actor.appUserId)
             }
             Result.success(actor)
         } catch (e: BackendApiException) {
@@ -605,7 +626,7 @@ class MiniBiRepository(
             }
             _activeActor.value = actor
             if (dao.getRetryableAttendanceOutboxForUser(actor.appUserId).isNotEmpty()) {
-                AttendanceOutboxService.enqueueDurableOutboxWork(context)
+                AttendanceOutboxService.enqueueDurableOutboxWork(context, actor.appUserId)
             }
             Result.success(actor)
         } catch (e: BackendApiException) {
@@ -680,6 +701,14 @@ class MiniBiRepository(
     }
 
     internal fun closeForTest() {
+        synchronized(Companion) {
+            if (sharedInstance === this) {
+                sharedInstance = null
+            }
+            if (testSharedInstanceOverride === this) {
+                testSharedInstanceOverride = null
+            }
+        }
         customDataStoreScope?.cancel()
     }
 

@@ -244,10 +244,7 @@ fun AttendanceScreen(
 
     // 1. Refresh server time anchor, server attendance history & leave/explanation authority whenever Attendance screen is opened, and fetch GPS if granted
     LaunchedEffect(actor.appUserId) {
-        viewModel.syncAttendanceTimeAnchor(actor = actor, force = false)
-        viewModel.syncAttendanceHistoryFromServer(actor = actor)
-        viewModel.refreshMyLeaveSummary(actor = actor)
-        viewModel.refreshMyAttendanceExplanations(actor = actor)
+        viewModel.ensureAttendanceInitialLoaded(actor = actor, forceTimeAnchor = false)
         val hasFine = ContextCompat.checkSelfPermission(
             context,
             Manifest.permission.ACCESS_FINE_LOCATION

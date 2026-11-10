@@ -92,6 +92,31 @@ public protocol MonotonicClockProviding {
     func bootSessionId() -> String
 }
 
+public enum AttendanceRetryBackoffPolicy {
+    public static let baseScheduleMs: [Int64] = [30_000, 60_000, 120_000, 300_000]
+    public static let maxBackoffMs: Int64 = 300_000
+    public static let maxJitterRatio: Double = 0.15
+
+    /// Pure deterministic exponential backoff calculator (`30s -> 60s -> 120s -> max 300s` with bounded jitter).
+    /// `jitterSample` in `[0.0, 1.0]` adds up to 15% positive jitter capped at `300_000ms`.
+    public static func computeDelayMs(attempt: Int, jitterSample: Double = 0.0) -> Int64 {
+        guard attempt > 0 else { return 0 }
+        let index = min(attempt - 1, baseScheduleMs.count - 1)
+        let baseMs = baseScheduleMs[index]
+        let clampedSample = min(max(jitterSample, 0.0), 1.0)
+        let jitterMs = Int64((Double(baseMs) * maxJitterRatio * clampedSample).rounded())
+        return min(maxBackoffMs, baseMs + jitterMs)
+    }
+
+    public static func isRetryableFailure(httpStatus: Int?) -> Bool {
+        guard let status = httpStatus else { return true }
+        if status == 0 || status == 408 || status == 429 || status == 502 || status == 503 || status == 504 {
+            return true
+        }
+        return status >= 500
+    }
+}
+
 public struct SystemMonotonicClockProvider: MonotonicClockProviding {
     private static let cachedBootSessionId: String = {
         var mib: [Int32] = [CTL_KERN, KERN_BOOTTIME]
@@ -128,7 +153,7 @@ public final class AttendanceTimeAnchorManager {
 
     private let httpClient: BackendHttpClient
     private let keychain: KeychainStore
-    private let clock: MonotonicClockProviding
+    public let clock: MonotonicClockProviding
     private let lock = NSLock()
     private var cachedAnchor: ServerTimeAnchor?
 

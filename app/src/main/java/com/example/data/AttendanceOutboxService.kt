@@ -14,9 +14,11 @@ import androidx.work.Constraints
 import androidx.work.CoroutineWorker
 import androidx.work.ExistingWorkPolicy
 import androidx.work.NetworkType
+import androidx.work.OneTimeWorkRequest
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
+import androidx.work.workDataOf
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
@@ -84,6 +86,18 @@ object AttendanceContract {
     const val ENDPOINT_ATTENDANCE_HISTORY = "/api/attendance/history"
     const val ENDPOINT_ADMIN_ATTENDANCE_REPORT = "/api/admin/attendance/report"
     const val UNIQUE_OUTBOX_WORK_NAME = "mini_bi_attendance_outbox_sync"
+    const val KEY_WORK_APP_USER_ID = "app_user_id"
+    const val MIN_INITIAL_OUTBOX_WORK_DELAY_SECONDS = 30L
+    const val BACKOFF_INITIAL_DELAY_SECONDS = 30L
+
+    fun buildUniqueOutboxWorkName(appUserId: String? = null): String {
+        val cleanId = appUserId?.trim()?.lowercase(Locale.ROOT).orEmpty()
+        return if (cleanId.isEmpty()) {
+            UNIQUE_OUTBOX_WORK_NAME
+        } else {
+            "${UNIQUE_OUTBOX_WORK_NAME}_$cleanId"
+        }
+    }
 
     const val MSG_SYNCED = "Đã chấm công"
     const val MSG_QUEUED_OFFLINE = "Đã lưu trên thiết bị, đang chờ đồng bộ"
@@ -798,12 +812,45 @@ class AttendanceOutboxService(
     private val timeAnchorManager: AttendanceTimeAnchorManager,
     private val isNetworkAvailable: () -> Boolean = { isDeviceNetworkConnected(context) },
     private val idempotencyKeyGenerator: () -> String = { UUID.randomUUID().toString() },
-    private val outboxWorkScheduler: () -> Unit = { enqueueDurableOutboxWork(context) }
+    private val outboxWorkScheduler: (() -> Unit)? = null
 ) {
+
+    data class EnqueuedOutboxWorkRecord(
+        val uniqueWorkName: String,
+        val existingWorkPolicy: ExistingWorkPolicy,
+        val initialDelayMillis: Long,
+        val backoffPolicy: BackoffPolicy,
+        val backoffDelayMillis: Long,
+        val appUserId: String?
+    )
+
+    private fun scheduleDurableOutboxWork(appUserId: String?) {
+        val customScheduler = outboxWorkScheduler
+        if (customScheduler != null) {
+            customScheduler()
+        } else {
+            enqueueDurableOutboxWork(context, appUserId)
+        }
+    }
 
     companion object {
         private val inFlightRecordIds: MutableSet<Long> =
             java.util.Collections.synchronizedSet(HashSet<Long>())
+
+        private val enqueuedWorkHistoryLock = Any()
+        private val enqueuedWorkHistory = mutableListOf<EnqueuedOutboxWorkRecord>()
+
+        internal fun clearEnqueuedWorkHistoryForTest() {
+            synchronized(enqueuedWorkHistoryLock) {
+                enqueuedWorkHistory.clear()
+            }
+        }
+
+        internal fun getEnqueuedWorkHistoryForTest(): List<EnqueuedOutboxWorkRecord> {
+            synchronized(enqueuedWorkHistoryLock) {
+                return enqueuedWorkHistory.toList()
+            }
+        }
 
         fun isDeviceNetworkConnected(context: Context): Boolean {
             val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
@@ -813,25 +860,63 @@ class AttendanceOutboxService(
             return capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
         }
 
-        fun enqueueDurableOutboxWork(context: Context) {
+        fun buildDurableOutboxWorkRequest(
+            appUserId: String? = null,
+            initialDelaySeconds: Long = AttendanceContract.MIN_INITIAL_OUTBOX_WORK_DELAY_SECONDS
+        ): OneTimeWorkRequest {
+            val safeInitialDelaySeconds = initialDelaySeconds.coerceAtLeast(
+                AttendanceContract.MIN_INITIAL_OUTBOX_WORK_DELAY_SECONDS
+            )
             val constraints = Constraints.Builder()
                 .setRequiredNetworkType(NetworkType.CONNECTED)
                 .build()
-            val workRequest = OneTimeWorkRequestBuilder<AttendanceSyncWorker>()
+            val builder = OneTimeWorkRequestBuilder<AttendanceSyncWorker>()
                 .setConstraints(constraints)
+                .setInitialDelay(safeInitialDelaySeconds, TimeUnit.SECONDS)
                 .setBackoffCriteria(
                     BackoffPolicy.EXPONENTIAL,
-                    30,
+                    AttendanceContract.BACKOFF_INITIAL_DELAY_SECONDS,
                     TimeUnit.SECONDS
                 )
-                .build()
+            val cleanUserId = appUserId?.trim()?.takeIf { it.isNotEmpty() }
+            if (cleanUserId != null) {
+                builder.setInputData(workDataOf(AttendanceContract.KEY_WORK_APP_USER_ID to cleanUserId))
+            }
+            return builder.build()
+        }
+
+        fun enqueueDurableOutboxWork(
+            context: Context,
+            appUserId: String? = null,
+            initialDelaySeconds: Long = AttendanceContract.MIN_INITIAL_OUTBOX_WORK_DELAY_SECONDS
+        ): EnqueuedOutboxWorkRecord {
+            val safeInitialDelaySeconds = initialDelaySeconds.coerceAtLeast(
+                AttendanceContract.MIN_INITIAL_OUTBOX_WORK_DELAY_SECONDS
+            )
+            val uniqueWorkName = AttendanceContract.buildUniqueOutboxWorkName(appUserId)
+            val workRequest = buildDurableOutboxWorkRequest(
+                appUserId = appUserId,
+                initialDelaySeconds = safeInitialDelaySeconds
+            )
+            val record = EnqueuedOutboxWorkRecord(
+                uniqueWorkName = uniqueWorkName,
+                existingWorkPolicy = ExistingWorkPolicy.KEEP,
+                initialDelayMillis = TimeUnit.SECONDS.toMillis(safeInitialDelaySeconds),
+                backoffPolicy = BackoffPolicy.EXPONENTIAL,
+                backoffDelayMillis = TimeUnit.SECONDS.toMillis(AttendanceContract.BACKOFF_INITIAL_DELAY_SECONDS),
+                appUserId = appUserId?.trim()?.takeIf { it.isNotEmpty() }
+            )
+            synchronized(enqueuedWorkHistoryLock) {
+                enqueuedWorkHistory.add(record)
+            }
             runCatching {
                 WorkManager.getInstance(context.applicationContext).enqueueUniqueWork(
-                    AttendanceContract.UNIQUE_OUTBOX_WORK_NAME,
-                    ExistingWorkPolicy.APPEND_OR_REPLACE,
+                    uniqueWorkName,
+                    ExistingWorkPolicy.KEEP,
                     workRequest
                 )
             }
+            return record
         }
     }
 
@@ -930,7 +1015,7 @@ class AttendanceOutboxService(
         val storedRecord = initialEntity.copy(id = insertedId)
 
         if (!onlineNow) {
-            outboxWorkScheduler()
+            scheduleDurableOutboxWork(actor.appUserId)
             return@withContext AttendanceSubmissionOutcome(
                 record = storedRecord,
                 isSynced = false,
@@ -1149,7 +1234,7 @@ class AttendanceOutboxService(
 
         if (!isNetworkAvailable()) {
             if (scheduleWorkOnFailure) {
-                outboxWorkScheduler()
+                scheduleDurableOutboxWork(cleanActorId)
             }
             return@withContext AttendanceOutboxFlushSummary(
                 processedCount = 0,
@@ -1163,7 +1248,7 @@ class AttendanceOutboxService(
         var remainingRetryableCount = 0
         var terminalFailureCount = 0
 
-        for (item in pending) {
+        for ((index, item) in pending.withIndex()) {
             val outcome = syncExistingRecord(
                 record = item,
                 currentActorId = cleanActorId,
@@ -1172,13 +1257,16 @@ class AttendanceOutboxService(
             when (outcome.record.syncStatus) {
                 AttendanceOutboxStatus.SYNCED -> syncedCount++
                 AttendanceOutboxStatus.QUEUED,
-                AttendanceOutboxStatus.RETRYABLE_ERROR -> remainingRetryableCount++
+                AttendanceOutboxStatus.RETRYABLE_ERROR -> {
+                    remainingRetryableCount += (pending.size - index)
+                    break
+                }
                 else -> terminalFailureCount++
             }
         }
 
         if (remainingRetryableCount > 0 && scheduleWorkOnFailure) {
-            outboxWorkScheduler()
+            scheduleDurableOutboxWork(cleanActorId)
         }
 
         AttendanceOutboxFlushSummary(
@@ -1315,7 +1403,7 @@ class AttendanceOutboxService(
                     )
                     dao.updateAttendance(interrupted)
                     if (scheduleWorkOnFailure) {
-                        outboxWorkScheduler()
+                        scheduleDurableOutboxWork(currentActorId)
                     }
                 }
                 throw e
@@ -1330,7 +1418,7 @@ class AttendanceOutboxService(
                 )
                 dao.updateAttendance(updated)
                 if (classified.shouldAutoRetry && scheduleWorkOnFailure) {
-                    outboxWorkScheduler()
+                    scheduleDurableOutboxWork(currentActorId)
                 }
                 AttendanceSubmissionOutcome(
                     record = updated,
@@ -1423,29 +1511,54 @@ class AttendanceSyncWorker(
 ) : CoroutineWorker(appContext, workerParams) {
 
     override suspend fun doWork(): Result {
-        val repository = MiniBiRepository(applicationContext)
-        // Require a valid server session before attempting authenticated outbox sync
-        val sessionRes = repository.bootstrapSession()
-        if (sessionRes.isFailure) {
-            val err = sessionRes.exceptionOrNull() as? BackendApiException
-            return if (err != null &&
-                (err.kind == BackendFailureKind.NETWORK ||
-                    err.kind == BackendFailureKind.RATE_LIMITED ||
-                    err.kind == BackendFailureKind.SERVER_UNAVAILABLE)
-            ) {
-                Result.retry()
-            } else {
-                Result.success()
+        val repository = MiniBiRepository.getSharedInstance(applicationContext)
+        val existingActor = repository.currentActorFlow.value
+        val actor: AppActor = if (existingActor != null) {
+            existingActor
+        } else {
+            // Require a valid server session before attempting authenticated outbox sync,
+            // without re-enqueuing a new OneTimeWorkRequest inside the Worker.
+            val sessionRes = repository.bootstrapSession(scheduleOutboxWork = false)
+            if (sessionRes.isFailure) {
+                val err = sessionRes.exceptionOrNull() as? BackendApiException
+                return if (err != null &&
+                    (err.kind == BackendFailureKind.NETWORK ||
+                        err.kind == BackendFailureKind.RATE_LIMITED ||
+                        err.kind == BackendFailureKind.SERVER_UNAVAILABLE)
+                ) {
+                    Result.retry()
+                } else {
+                    Result.success()
+                }
             }
+            sessionRes.getOrNull() ?: return Result.success()
         }
 
-        val actor = sessionRes.getOrNull() ?: return Result.success()
+        val requestedUserId = inputData.getString(AttendanceContract.KEY_WORK_APP_USER_ID)
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
+        if (requestedUserId != null && !requestedUserId.equals(actor.appUserId, ignoreCase = true)) {
+            return Result.success()
+        }
+
         // Notice: We intentionally do NOT call `/api/attendance/time` to mutate queued items;
         // each queued item preserves its original captured time & idempotency key.
         val summary = repository.attendanceOutboxService.flushRetryableOutbox(
             appUserId = actor.appUserId,
             scheduleWorkOnFailure = false
         )
+        if (summary.syncedCount > 0 && WorkReportsContract.isUuid(actor.appUserId)) {
+            runCatching {
+                val eval = repository.attendanceTimeAnchorManager.evaluateAnchor(actor.appUserId)
+                val todayIso = eval.estimatedServerNowEpochMs?.let {
+                    AttendanceTimeContract.formatEpochMillisInHcmIso(it).take(10)
+                } ?: DirectEntryContract.todayIsoInHcm()
+                repository.attendanceOutboxService.syncServerHistoryForUser(
+                    actor = actor,
+                    referenceTodayIso = todayIso
+                )
+            }
+        }
         return if (summary.remainingRetryableCount > 0) {
             Result.retry()
         } else {

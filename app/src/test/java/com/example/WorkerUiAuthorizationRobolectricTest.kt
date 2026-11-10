@@ -400,7 +400,7 @@ class WorkerUiAuthorizationRobolectricTest {
         }
 
         composeTestRule.onNodeWithText("Người lao động").assertDoesNotExist()
-        composeTestRule.onNodeWithTag("go_to_new_entry_from_workers").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("go_to_new_entry_from_workers").assertIsDisplayed()
         composeTestRule.onNodeWithTag("export_workers_excel_button").assertDoesNotExist()
         composeTestRule.onNodeWithText("Xuất Excel").assertDoesNotExist()
         composeTestRule.onNodeWithTag("worker_scope_tab_managed").assertIsDisplayed()
@@ -1135,6 +1135,7 @@ class WorkerUiAuthorizationRobolectricTest {
             )
         )
         val vm = MiniBiViewModel(app, repo)
+        vm.navigateTo(com.example.ui.MainDestination.DASHBOARD)
         registerTestResourcesCleanup(vm, db, server, cookieFile, savedCredsFile, prefsFile)
 
         composeTestRule.setContent {
@@ -1650,6 +1651,7 @@ class WorkerUiAuthorizationRobolectricTest {
             )
         )
         val vm = MiniBiViewModel(app, repo)
+        vm.navigateTo(com.example.ui.MainDestination.DASHBOARD)
         registerTestResourcesCleanup(vm, db, server, cookieFile, savedCredsFile, anchorFile, prefsFile)
 
         composeTestRule.setContent {
@@ -2094,6 +2096,7 @@ class WorkerUiAuthorizationRobolectricTest {
             )
         )
         val vm = MiniBiViewModel(app, repo)
+        vm.navigateTo(com.example.ui.MainDestination.DASHBOARD)
         registerTestResourcesCleanup(vm, db, server, cookieFile, savedCredsFile, anchorFile, prefsFile)
 
         composeTestRule.setContent {
@@ -4693,7 +4696,7 @@ class WorkerUiAuthorizationRobolectricTest {
             vm.loadSalaryAdvanceContextIfNeeded(force = true, actor = actor)
         }
         composeTestRule.waitForIdle()
-        assertEquals(com.example.ui.MainDestination.DASHBOARD, vm.currentDestination.value)
+        assertEquals(com.example.ui.MainDestination.ATTENDANCE, vm.currentDestination.value)
 
         val snapshotPaths = requestedPaths.toList()
         assertTrue(snapshotPaths.any { it.startsWith("/api/direct-entry/session") })
@@ -6685,5 +6688,736 @@ class WorkerUiAuthorizationRobolectricTest {
         assertNull("Closed entryDetail must remain null after pending C finishes", vm.selectedEntryDetail.value)
         assertNull("Closed proposeChangeTarget must remain null after pending C finishes", vm.proposeChangeTarget.value)
         assertNull("Closed directEditTarget must remain null after pending C finishes", vm.directEditTarget.value)
+    }
+
+    @Test
+    @Config(qualifiers = "w480dp-h1800dp")
+    fun `regression 15 - main menu replaces Cap moi with Tuyen dung and Workers screen gates Cap moi button by entry_create and submission_create while preserving draft`() {
+        val fullActor = AppActor(
+            appUserId = "aaaa0015-2222-4333-8444-555555555551",
+            displayName = "Tuyển Dụng Đủ Quyền",
+            capabilities = listOf("entry_create", "submission_create", "entry_read"),
+            scopes = listOf(ActorScope("own", "self", "2026-01-01", null)),
+            selfRecruiterSuggestion = null,
+            allowedWorkerTabs = listOf("managed", "uploader")
+        )
+        val noNewEntryActor = AppActor(
+            appUserId = "aaaa0015-2222-4333-8444-555555555552",
+            displayName = "Không Quyền Cấp Mới",
+            capabilities = listOf("entry_read"),
+            scopes = listOf(ActorScope("own", "self", "2026-01-01", null)),
+            selfRecruiterSuggestion = null,
+            allowedWorkerTabs = listOf("recruited")
+        )
+        val noWorkerTabsActor = AppActor(
+            appUserId = "aaaa0015-2222-4333-8444-555555555553",
+            displayName = "Không Tab Nhân Sự",
+            capabilities = emptyList(),
+            scopes = emptyList(),
+            selfRecruiterSuggestion = null,
+            allowedWorkerTabs = emptyList()
+        )
+
+        // 1-3. Main menu no longer contains NEW_ENTRY; RECRUITMENT replaces it for all authenticated users
+        assertEquals(
+            listOf(
+                com.example.ui.MainDestination.DASHBOARD,
+                com.example.ui.MainDestination.WORK_REPORTS,
+                com.example.ui.MainDestination.ATTENDANCE,
+                com.example.ui.MainDestination.WORKERS,
+                com.example.ui.MainDestination.RECRUITMENT
+            ),
+            com.example.ui.resolveMainNavigationDestinations(fullActor)
+        )
+        assertEquals(
+            listOf(
+                com.example.ui.MainDestination.DASHBOARD,
+                com.example.ui.MainDestination.WORK_REPORTS,
+                com.example.ui.MainDestination.ATTENDANCE,
+                com.example.ui.MainDestination.WORKERS,
+                com.example.ui.MainDestination.RECRUITMENT
+            ),
+            com.example.ui.resolveMainNavigationDestinations(noNewEntryActor)
+        )
+        assertEquals(
+            listOf(
+                com.example.ui.MainDestination.DASHBOARD,
+                com.example.ui.MainDestination.WORK_REPORTS,
+                com.example.ui.MainDestination.ATTENDANCE,
+                com.example.ui.MainDestination.RECRUITMENT
+            ),
+            com.example.ui.resolveMainNavigationDestinations(noWorkerTabsActor)
+        )
+        assertFalse(com.example.ui.resolveMainNavigationDestinations(fullActor).contains(com.example.ui.MainDestination.NEW_ENTRY))
+
+        // 4-5. Workers screen button gating & draft preservation when opening NEW_ENTRY from Workers
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val db = buildTestDb(app)
+        val cookieFile = File(app.cacheDir, "reg15_cookie_${System.nanoTime()}.enc")
+        val prefsFile = File(app.cacheDir, "reg15_prefs_${System.nanoTime()}.preferences_pb")
+        val repo = MiniBiRepository(
+            context = app,
+            database = db,
+            defaultServerUrl = "http://127.0.0.1:1",
+            allowDebugUrlOverride = true,
+            cookieStorageFile = cookieFile,
+            preferencesStorageFile = prefsFile,
+            cookieCipher = JvmAes256GcmCookieCipher()
+        )
+        val vm = MiniBiViewModel(app, repo)
+        registerTestResourcesCleanup(vm, db, null, cookieFile, prefsFile)
+
+        val currentActorState = androidx.compose.runtime.mutableStateOf(noNewEntryActor)
+        val showNewEntryScreen = androidx.compose.runtime.mutableStateOf(false)
+        composeTestRule.setContent {
+            MyApplicationTheme {
+                val actor = currentActorState.value
+                if (showNewEntryScreen.value) {
+                    DirectEntryNewWorkersScreen(
+                        actor = actor,
+                        viewModel = vm,
+                        onNavigateToWorkersList = {
+                            vm.navigateTo(com.example.ui.MainDestination.WORKERS)
+                            showNewEntryScreen.value = false
+                        },
+                        onBackToDashboard = {
+                            vm.navigateTo(com.example.ui.MainDestination.DASHBOARD)
+                            showNewEntryScreen.value = false
+                        }
+                    )
+                } else {
+                    WorkersAndDirectEntryScreen(
+                        actor = actor,
+                        viewModel = vm,
+                        onBackToDashboard = {},
+                        onSelectScopeTab = {},
+                        onOpenNewEntryScreen = {
+                            vm.navigateTo(com.example.ui.MainDestination.NEW_ENTRY)
+                            showNewEntryScreen.value = true
+                        }
+                    )
+                }
+            }
+        }
+
+        // Without entry_create && submission_create -> button does not exist
+        composeTestRule.onNodeWithTag("go_to_new_entry_from_workers").assertDoesNotExist()
+
+        // With entry_create && submission_create -> button exists, and tapping it navigates to NEW_ENTRY while preserving draft
+        vm.ensureInitialNewWorkerDraftRow()
+        vm.newWorkerDraftRows[0] = vm.newWorkerDraftRows[0].copy(fullName = "Hồ Sơ Nháp Đang Giữ")
+        composeTestRule.runOnIdle {
+            currentActorState.value = fullActor
+            vm.navigateTo(com.example.ui.MainDestination.WORKERS)
+        }
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("go_to_new_entry_from_workers").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("go_to_new_entry_from_workers").performClick()
+        composeTestRule.waitForIdle()
+        assertTrue(showNewEntryScreen.value)
+        assertEquals("Hồ Sơ Nháp Đang Giữ", vm.newWorkerDraftRows.first().fullName)
+    }
+
+    @Test
+    @Config(qualifiers = "w480dp-h2200dp")
+    fun `regression 16 - recruitment posts pagination, snapshot retry once, stale response guard, 404 detail removal, read-only UI, and session purge`() {
+        val brief1 = "11111111-2222-4333-8444-555555555501"
+        val brief2 = "11111111-2222-4333-8444-555555555502"
+        val briefSlow = "11111111-2222-4333-8444-555555555599"
+        val slowDetailStarted = java.util.concurrent.atomic.AtomicReference(java.util.concurrent.CountDownLatch(1))
+        val releaseSlowDetail = java.util.concurrent.atomic.AtomicReference(java.util.concurrent.CountDownLatch(1))
+        val snapshotInvalidMode = java.util.concurrent.atomic.AtomicBoolean(false)
+        val notFoundDetailMode = java.util.concurrent.atomic.AtomicBoolean(false)
+        val recordedPaths = java.util.Collections.synchronizedList(mutableListOf<String>())
+
+        fun buildPostJson(briefId: String, projectName: String, creatorName: String): String = """
+            {
+              "brief_id": "$briefId",
+              "version": 1,
+              "status": "PUBLISHED",
+              "project": {
+                "project_id": "aaaaaaaa-1111-4222-8333-444444444401",
+                "display_name": "$projectName"
+              },
+              "industrial_park": {
+                "industrial_park_id": "aaaaaaaa-1111-4222-8333-444444444402",
+                "industrial_park_code": "KCN_YEN_PHONG",
+                "display_name": "KCN Yên Phong",
+                "active": true
+              },
+              "province": {
+                "province_id": "aaaaaaaa-1111-4222-8333-444444444403",
+                "province_code": "BAC_NINH",
+                "display_name": "Bắc Ninh"
+              },
+              "published_at": "2026-11-10T08:00:00Z",
+              "updated_at": "2026-11-10T08:00:00Z",
+              "withdrawn_at": null,
+              "created_by_display_name": "$creatorName",
+              "updated_by_display_name": "$creatorName",
+              "withdrawn_by_display_name": null,
+              "general": {
+                "customer_name": "Công ty Điện tử A",
+                "investment_origin": null,
+                "manufacturing_industry": "Điện tử",
+                "job_description": "Vận hành máy",
+                "environment_types": ["CLEAN_ROOM"],
+                "work_postures": ["SITTING"],
+                "shift_pattern": "TWO_SHIFTS",
+                "shift_details": "Ca 12h",
+                "manager_name": "Tên Quản Lý Cấm Hiển Thị",
+                "manager_phone": "0912345678",
+                "labor_types": [{"labor_type_key": "thoi_vu", "display_name": "Thời vụ"}],
+                "supply_schedule_text": null,
+                "expected_headcount": 100
+              },
+              "candidate": {
+                "age_min": 18,
+                "age_max": 38,
+                "gender_requirement": "ANY",
+                "education_requirement": "NONE",
+                "experience_required": false,
+                "experience_details": null,
+                "accept_former_customer_workers": true,
+                "entry_assessment_text": null,
+                "other_requirements_text": null
+              },
+              "compensation": {
+                "base_salary_vnd": "8500000",
+                "base_salary_conditions": null,
+                "attendance_bonus_vnd": null,
+                "attendance_bonus_conditions": null,
+                "living_allowance_vnd": null,
+                "living_allowance_conditions": null,
+                "seniority_allowance_vnd": null,
+                "seniority_allowance_conditions": null,
+                "eyesight_allowance_vnd": null,
+                "eyesight_allowance_conditions": null,
+                "other_allowance_text": null,
+                "average_income_min_vnd": "9000000",
+                "average_income_max_vnd": "13000000",
+                "salary_payment_schedule": "Ngày 15",
+                "salary_advance_available": true,
+                "salary_advance_amount_vnd": "1000000",
+                "salary_advance_schedule": "Thứ 6",
+                "weekly_salary_available": false,
+                "weekly_salary_payment_schedule": null,
+                "day_shift_8h_vnd": null,
+                "day_shift_11h_vnd": null,
+                "night_shift_8h_vnd": null,
+                "night_shift_11h_vnd": null,
+                "sunday_day_11h_vnd": null,
+                "sunday_night_11h_vnd": null,
+                "holiday_day_11h_vnd": null,
+                "holiday_night_11h_vnd": null,
+                "ppe_provided": false,
+                "ppe_details": null,
+                "other_benefits": null
+              },
+              "documents": {
+                "require_original_cccd_and_copy": true,
+                "require_certified_resume": false,
+                "require_health_certificate_within_6_months": false,
+                "require_photo_3x4": true,
+                "require_degree_or_certificate": false,
+                "require_social_insurance_book": false,
+                "require_other_documents": false,
+                "other_documents_text": null
+              },
+              "allowed_actions": {
+                "can_edit": true,
+                "can_withdraw": true
+              }
+            }
+        """.trimIndent()
+
+        val server = MockWebServer()
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val path = request.path.orEmpty()
+                recordedPaths.add(path)
+                return when {
+                    path.startsWith("/api/auth/session") -> MockResponse()
+                        .setResponseCode(401)
+                        .setHeader("Content-Type", "application/json")
+                        .setBody("""{"ok":false,"code":"UNAUTHENTICATED","message":"Unauthenticated"}""")
+                    path.startsWith("/api/auth/login") -> MockResponse()
+                        .setResponseCode(200)
+                        .setHeader("Set-Cookie", "mini_bi_session=sess-16; Path=/; HttpOnly")
+                        .setHeader("Content-Type", "application/json")
+                        .setBody(
+                            """
+                            {
+                              "ok": true,
+                              "user": {"id": "aaaa0016-2222-4333-8444-555555555555", "username": "rec.16", "fullName": "Recruiter 16", "role": "STAFF"},
+                              "actor": {
+                                "app_user_id": "aaaa0016-2222-4333-8444-555555555555",
+                                "display_name": "Recruiter 16",
+                                "capabilities": [],
+                                "scopes": [],
+                                "self_recruiter_suggestion": null,
+                                "allowed_worker_tabs": []
+                              }
+                            }
+                            """.trimIndent()
+                        )
+                    path.startsWith("/api/recruitment-posts?") -> {
+                        if (path.contains("cursor=cur-p2")) {
+                            if (snapshotInvalidMode.get()) {
+                                MockResponse()
+                                    .setResponseCode(400)
+                                    .setHeader("Content-Type", "application/json")
+                                    .setBody("""{"ok":false,"error":{"code":"RECRUITMENT_POST_SNAPSHOT_INVALID","message":"Snapshot expired"}}""")
+                            } else {
+                                MockResponse()
+                                    .setResponseCode(200)
+                                    .setHeader("Content-Type", "application/json")
+                                    .setBody(
+                                        """
+                                        {
+                                          "ok": true,
+                                          "data": {
+                                            "items": [
+                                              ${buildPostJson(brief1, "Dự Án 1 Trùng", "Người Tạo 1")},
+                                              ${buildPostJson(brief2, "Dự Án 2 Mới", "Người Tạo 2")}
+                                            ],
+                                            "page_size": 10,
+                                            "has_more": false,
+                                            "next_cursor": null,
+                                            "snapshot_token": "snap-p1"
+                                          }
+                                        }
+                                        """.trimIndent()
+                                    )
+                            }
+                        } else {
+                            MockResponse()
+                                .setResponseCode(200)
+                                .setHeader("Content-Type", "application/json")
+                                .setBody(
+                                    """
+                                    {
+                                      "ok": true,
+                                      "data": {
+                                        "items": [${buildPostJson(brief1, "Dự Án 1", "Người Tạo Chính Xác")}],
+                                        "page_size": 10,
+                                        "has_more": true,
+                                        "next_cursor": "cur-p2",
+                                        "snapshot_token": "snap-p1"
+                                      }
+                                    }
+                                    """.trimIndent()
+                                )
+                        }
+                    }
+                    path.contains("/api/recruitment-posts/$briefSlow") -> {
+                        slowDetailStarted.get().countDown()
+                        releaseSlowDetail.get().await(5, java.util.concurrent.TimeUnit.SECONDS)
+                        MockResponse()
+                            .setResponseCode(200)
+                            .setHeader("Content-Type", "application/json")
+                            .setBody("""{"ok":true,"data":{"post":${buildPostJson(briefSlow, "Dự Án Chậm", "Người Tạo Chậm")}}}""")
+                    }
+                    path.contains("/api/recruitment-posts/$brief1") -> {
+                        if (notFoundDetailMode.get()) {
+                            MockResponse()
+                                .setResponseCode(404)
+                                .setHeader("Content-Type", "application/json")
+                                .setBody("""{"ok":false,"error":{"code":"RECRUITMENT_POST_NOT_FOUND","message":"Not found"}}""")
+                        } else {
+                            MockResponse()
+                                .setResponseCode(200)
+                                .setHeader("Content-Type", "application/json")
+                                .setBody("""{"ok":true,"data":{"post":${buildPostJson(brief1, "Dự Án 1", "Người Tạo Chính Xác")}}}""")
+                        }
+                    }
+                    else -> MockResponse()
+                        .setResponseCode(200)
+                        .setHeader("Content-Type", "application/json")
+                        .setBody("""{"ok":true,"items":[]}""")
+                }
+            }
+        }
+        server.start()
+
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val db = buildTestDb(app)
+        val cookieFile = File(app.cacheDir, "reg16_cookie_${System.nanoTime()}.enc")
+        val prefsFile = File(app.cacheDir, "reg16_prefs_${System.nanoTime()}.preferences_pb")
+        val repo = MiniBiRepository(
+            context = app,
+            database = db,
+            defaultServerUrl = server.url("/").toString().trimEnd('/'),
+            allowDebugUrlOverride = true,
+            cookieStorageFile = cookieFile,
+            preferencesStorageFile = prefsFile,
+            cookieCipher = JvmAes256GcmCookieCipher()
+        )
+        val vm = MiniBiViewModel(app, repo)
+        registerTestResourcesCleanup(vm, db, server, cookieFile, prefsFile)
+
+        vm.login("rec16@hrpartner.vn", "pass16", rememberAccount = false)
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            !vm.loginBusy.value && vm.currentActor.value?.appUserId == "aaaa0016-2222-4333-8444-555555555555"
+        }
+
+        composeTestRule.setContent {
+            MyApplicationTheme {
+                com.example.ui.screens.RecruitmentPostsScreen(viewModel = vm)
+            }
+        }
+
+        // Navigate to RECRUITMENT -> loads page 1 with page_size=10 and no cursor/snapshot_token
+        vm.navigateTo(com.example.ui.MainDestination.RECRUITMENT)
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            vm.recruitmentPosts.value.size == 1 && !vm.recruitmentPostsLoading.value
+        }
+        composeTestRule.waitForIdle()
+
+        assertTrue(recordedPaths.contains("/api/recruitment-posts?page_size=10"))
+        assertFalse(recordedPaths.any { it.contains("/api/recruitment-posts/context") })
+
+        // Card displays created_by_display_name, NEVER manager_name, and has no edit/withdraw/create buttons
+        composeTestRule.onNodeWithText("Người Tạo Chính Xác", substring = true).assertIsDisplayed()
+        composeTestRule.onNodeWithText("Tên Quản Lý Cấm Hiển Thị", substring = true).assertDoesNotExist()
+        composeTestRule.onNodeWithText("Đăng tin").assertDoesNotExist()
+        composeTestRule.onNodeWithText("Chỉnh sửa").assertDoesNotExist()
+        composeTestRule.onNodeWithText("Thu hồi").assertDoesNotExist()
+
+        // Load more sends snapshot_token from page 1 + cursor, and deduplicates brief1
+        vm.loadMoreRecruitmentPosts()
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            vm.recruitmentPosts.value.size == 2 && !vm.recruitmentPostsLoadingMore.value
+        }
+        assertTrue(recordedPaths.any { it.contains("cursor=cur-p2") && it.contains("snapshot_token=snap-p1") })
+        assertEquals(listOf(brief1, brief2), vm.recruitmentPosts.value.map { it.briefId })
+
+        // Open detail for brief1 -> renders 4 sections and created_by_display_name, then close
+        vm.openRecruitmentPostDetail(brief1)
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            vm.selectedRecruitmentPostDetail.value?.briefId == brief1
+        }
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("recruitment_post_detail_dialog").assertIsDisplayed()
+        composeTestRule.onNodeWithText("1. Thông tin chung dự án").assertIsDisplayed()
+        composeTestRule.onNodeWithText("2. Yêu cầu ứng viên").assertIsDisplayed()
+        composeTestRule.onNodeWithText("3. Lương, thưởng và phúc lợi").assertIsDisplayed()
+        composeTestRule.onNodeWithText("4. Hồ sơ ứng viên cần chuẩn bị").performScrollTo().assertIsDisplayed()
+        vm.closeRecruitmentPostDetail()
+        composeTestRule.waitForIdle()
+        assertNull(vm.selectedRecruitmentPostDetail.value)
+
+        // Slow detail request closed before completion must not commit state
+        vm.openRecruitmentPostDetail(briefSlow)
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            slowDetailStarted.get().count == 0L
+        }
+        vm.closeRecruitmentPostDetail()
+        releaseSlowDetail.get().countDown()
+        Thread.sleep(150)
+        org.robolectric.shadows.ShadowLooper.idleMainLooper()
+        assertNull(vm.selectedRecruitmentPostDetail.value)
+
+        // 400 RECRUITMENT_POST_SNAPSHOT_INVALID on loadMore resets and reloads page 1 at most once
+        vm.loadRecruitmentPosts(reset = true)
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            vm.recruitmentPosts.value.size == 1 && !vm.recruitmentPostsLoading.value
+        }
+        snapshotInvalidMode.set(true)
+        val countBeforeInvalid = recordedPaths.size
+        vm.loadMoreRecruitmentPosts()
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            recordedPaths.size >= countBeforeInvalid + 2 && !vm.recruitmentPostsLoading.value
+        }
+        assertEquals(1, vm.recruitmentPosts.value.size)
+
+        // 404 RECRUITMENT_POST_NOT_FOUND on detail removes item from list and shows banner
+        notFoundDetailMode.set(true)
+        vm.openRecruitmentPostDetail(brief1)
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            vm.recruitmentPosts.value.none { it.briefId == brief1 }
+        }
+        assertNull(vm.selectedRecruitmentPostDetail.value)
+        assertEquals("Tin tuyển dụng không còn hiệu lực.", vm.statusBannerMessage.value)
+
+        // Logout / session reset purges all recruitment state
+        vm.logout()
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            vm.currentActor.value == null
+        }
+        assertTrue(vm.recruitmentPosts.value.isEmpty())
+        assertNull(vm.selectedRecruitmentPostDetail.value)
+        assertFalse(vm.recruitmentPostsHasMore.value)
+    }
+
+    @Test
+    fun `regression 17 - recruitment posts 403 access denied, 404 list feature unavailable, 503 retryable error, and cross-session stale response isolation`() {
+        val userAId = "aaaa0017-2222-4333-8444-555555555501"
+        val userBId = "bbbb0017-2222-4333-8444-555555555502"
+        val briefA = "11111111-2222-4333-8444-555555555571"
+        val responseMode = java.util.concurrent.atomic.AtomicReference("HOLD_USER_A")
+        val listAStarted = java.util.concurrent.atomic.AtomicReference(java.util.concurrent.CountDownLatch(1))
+        val releaseListA = java.util.concurrent.atomic.AtomicReference(java.util.concurrent.CountDownLatch(1))
+
+        val samplePostJson = """
+            {
+              "brief_id": "$briefA",
+              "version": 1,
+              "status": "PUBLISHED",
+              "project": {
+                "project_id": "aaaaaaaa-1111-4222-8333-444444444401",
+                "display_name": "Dự Án Của A"
+              },
+              "industrial_park": {
+                "industrial_park_id": "aaaaaaaa-1111-4222-8333-444444444402",
+                "industrial_park_code": "KCN_A",
+                "display_name": "KCN A",
+                "active": true
+              },
+              "province": {
+                "province_id": "aaaaaaaa-1111-4222-8333-444444444403",
+                "province_code": "BAC_NINH",
+                "display_name": "Bắc Ninh"
+              },
+              "published_at": "2026-11-10T08:00:00Z",
+              "updated_at": "2026-11-10T08:00:00Z",
+              "withdrawn_at": null,
+              "created_by_display_name": "Người Tạo A",
+              "updated_by_display_name": "Người Tạo A",
+              "withdrawn_by_display_name": null,
+              "general": {
+                "customer_name": "Công ty A",
+                "investment_origin": null,
+                "manufacturing_industry": "Điện tử",
+                "job_description": "Sản xuất",
+                "environment_types": ["CLEAN_ROOM"],
+                "work_postures": ["SITTING"],
+                "shift_pattern": "TWO_SHIFTS",
+                "shift_details": "Ca 12h",
+                "manager_name": "Quản Lý A",
+                "manager_phone": "0900111222",
+                "labor_types": [{"labor_type_key": "thoi_vu", "display_name": "Thời vụ"}],
+                "supply_schedule_text": null,
+                "expected_headcount": 50
+              },
+              "candidate": {
+                "age_min": 18,
+                "age_max": 35,
+                "gender_requirement": "ANY",
+                "education_requirement": "NONE",
+                "experience_required": false,
+                "experience_details": null,
+                "accept_former_customer_workers": false,
+                "entry_assessment_text": null,
+                "other_requirements_text": null
+              },
+              "compensation": {
+                "base_salary_vnd": "8000000",
+                "base_salary_conditions": null,
+                "attendance_bonus_vnd": null,
+                "attendance_bonus_conditions": null,
+                "living_allowance_vnd": null,
+                "living_allowance_conditions": null,
+                "seniority_allowance_vnd": null,
+                "seniority_allowance_conditions": null,
+                "eyesight_allowance_vnd": null,
+                "eyesight_allowance_conditions": null,
+                "other_allowance_text": null,
+                "average_income_min_vnd": "8000000",
+                "average_income_max_vnd": "12000000",
+                "salary_payment_schedule": "Ngày 10",
+                "salary_advance_available": false,
+                "salary_advance_amount_vnd": null,
+                "salary_advance_schedule": null,
+                "weekly_salary_available": false,
+                "weekly_salary_payment_schedule": null,
+                "day_shift_8h_vnd": null,
+                "day_shift_11h_vnd": null,
+                "night_shift_8h_vnd": null,
+                "night_shift_11h_vnd": null,
+                "sunday_day_11h_vnd": null,
+                "sunday_night_11h_vnd": null,
+                "holiday_day_11h_vnd": null,
+                "holiday_night_11h_vnd": null,
+                "ppe_provided": false,
+                "ppe_details": null,
+                "other_benefits": null
+              },
+              "documents": {
+                "require_original_cccd_and_copy": true,
+                "require_certified_resume": false,
+                "require_health_certificate_within_6_months": false,
+                "require_photo_3x4": false,
+                "require_degree_or_certificate": false,
+                "require_social_insurance_book": false,
+                "require_other_documents": false,
+                "other_documents_text": null
+              },
+              "allowed_actions": {
+                "can_edit": false,
+                "can_withdraw": false
+              }
+            }
+        """.trimIndent()
+
+        val server = MockWebServer()
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val path = request.path.orEmpty()
+                return when {
+                    path.startsWith("/api/auth/session") -> MockResponse()
+                        .setResponseCode(401)
+                        .setHeader("Content-Type", "application/json")
+                        .setBody("""{"ok":false,"code":"UNAUTHENTICATED","message":"Unauthenticated"}""")
+                    path.startsWith("/api/auth/login") -> {
+                        val bodyStr = request.body.readUtf8()
+                        val isUserB = bodyStr.contains("userB")
+                        val uid = if (isUserB) userBId else userAId
+                        val uname = if (isUserB) "userB" else "userA"
+                        MockResponse()
+                            .setResponseCode(200)
+                            .setHeader("Set-Cookie", "mini_bi_session=sess-$uname; Path=/; HttpOnly")
+                            .setHeader("Content-Type", "application/json")
+                            .setBody(
+                                """
+                                {
+                                  "ok": true,
+                                  "user": {"id": "$uid", "username": "$uname", "fullName": "$uname", "role": "STAFF"},
+                                  "actor": {
+                                    "app_user_id": "$uid",
+                                    "display_name": "$uname",
+                                    "capabilities": [],
+                                    "scopes": [],
+                                    "self_recruiter_suggestion": null,
+                                    "allowed_worker_tabs": []
+                                  }
+                                }
+                                """.trimIndent()
+                            )
+                    }
+                    path.startsWith("/api/recruitment-posts") -> {
+                        when (responseMode.get()) {
+                            "HOLD_USER_A" -> {
+                                listAStarted.get().countDown()
+                                releaseListA.get().await(5, java.util.concurrent.TimeUnit.SECONDS)
+                                MockResponse()
+                                    .setResponseCode(200)
+                                    .setHeader("Content-Type", "application/json")
+                                    .setBody(
+                                        """
+                                        {
+                                          "ok": true,
+                                          "data": {
+                                            "items": [$samplePostJson],
+                                            "page_size": 10,
+                                            "has_more": false,
+                                            "next_cursor": null,
+                                            "snapshot_token": "snap-a"
+                                          }
+                                        }
+                                        """.trimIndent()
+                                    )
+                            }
+                            "FORBIDDEN" -> MockResponse()
+                                .setResponseCode(403)
+                                .setHeader("Content-Type", "application/json")
+                                .setBody("""{"ok":false,"error":{"code":"ACTOR_NOT_AVAILABLE","message":"Forbidden"}}""")
+                            "NOT_FOUND_LIST" -> MockResponse()
+                                .setResponseCode(404)
+                                .setHeader("Content-Type", "application/json")
+                                .setBody("""{"ok":false,"error":{"code":"NOT_FOUND","message":"Endpoint not found"}}""")
+                            "UNAVAILABLE_503" -> MockResponse()
+                                .setResponseCode(503)
+                                .setHeader("Content-Type", "application/json")
+                                .setBody("""{"ok":false,"error":{"code":"RECRUITMENT_POST_UNAVAILABLE","message":"Temporarily unavailable"}}""")
+                            else -> MockResponse()
+                                .setResponseCode(200)
+                                .setHeader("Content-Type", "application/json")
+                                .setBody("""{"ok":true,"data":{"items":[],"page_size":10,"has_more":false,"next_cursor":null,"snapshot_token":"snap-b"}}""")
+                        }
+                    }
+                    else -> MockResponse()
+                        .setResponseCode(200)
+                        .setHeader("Content-Type", "application/json")
+                        .setBody("""{"ok":true,"items":[]}""")
+                }
+            }
+        }
+        server.start()
+
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val db = buildTestDb(app)
+        val cookieFile = File(app.cacheDir, "reg17_cookie_${System.nanoTime()}.enc")
+        val prefsFile = File(app.cacheDir, "reg17_prefs_${System.nanoTime()}.preferences_pb")
+        val repo = MiniBiRepository(
+            context = app,
+            database = db,
+            defaultServerUrl = server.url("/").toString().trimEnd('/'),
+            allowDebugUrlOverride = true,
+            cookieStorageFile = cookieFile,
+            preferencesStorageFile = prefsFile,
+            cookieCipher = JvmAes256GcmCookieCipher()
+        )
+        val vm = MiniBiViewModel(app, repo)
+        registerTestResourcesCleanup(vm, db, server, cookieFile, prefsFile)
+
+        // Login User A and start recruitment posts fetch (held in flight)
+        vm.login("userA@hrpartner.vn", "passA", rememberAccount = false)
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            !vm.loginBusy.value && vm.currentActor.value?.appUserId == userAId
+        }
+        vm.loadRecruitmentPosts(reset = true)
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            listAStarted.get().count == 0L
+        }
+
+        // Switch to User B before User A's response completes -> User A's response must NOT leak into User B
+        responseMode.set("EMPTY_B")
+        vm.login("userB@hrpartner.vn", "passB", rememberAccount = false)
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            !vm.loginBusy.value && vm.currentActor.value?.appUserId == userBId
+        }
+        releaseListA.get().countDown()
+        Thread.sleep(150)
+        org.robolectric.shadows.ShadowLooper.idleMainLooper()
+        assertTrue("Stale response from User A must not populate User B state", vm.recruitmentPosts.value.isEmpty())
+
+        // 403 ACTOR_NOT_AVAILABLE sets accessDenied and purges state
+        responseMode.set("FORBIDDEN")
+        vm.loadRecruitmentPosts(reset = true)
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            vm.recruitmentPostsAccessDenied.value && !vm.recruitmentPostsLoading.value
+        }
+        assertTrue(vm.recruitmentPosts.value.isEmpty())
+
+        // 404 on list endpoint sets featureUnavailable (not empty list)
+        responseMode.set("NOT_FOUND_LIST")
+        vm.loadRecruitmentPosts(reset = true)
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            vm.recruitmentPostsFeatureUnavailable.value && !vm.recruitmentPostsLoading.value
+        }
+
+        // 503 RECRUITMENT_POST_UNAVAILABLE sets error message while keeping user logged in
+        responseMode.set("UNAVAILABLE_503")
+        vm.loadRecruitmentPosts(reset = true)
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            vm.recruitmentPostsError.value != null && !vm.recruitmentPostsLoading.value
+        }
+        assertEquals(userBId, vm.currentActor.value?.appUserId)
     }
 }

@@ -1093,15 +1093,18 @@ final class HRPBTests: XCTestCase {
             URLQueryItem(name: "to", value: "2026-10-27")
         ])
 
-        // Navigation menu order: Tổng quan - Báo cáo - Chấm công - Nhân sự - Cấp mới
+        // Navigation menu order: Tổng quan - Báo cáo - Chấm công - Nhân sự - Tuyển dụng (Cấp mới moved inside Nhân sự)
         XCTAssertEqual(
-            MiniBiNavDestination.allCases,
-            [.dashboard, .workReports, .attendance, .workers, .newEntry]
+            MiniBiNavDestination.mainMenuDestinations,
+            [.dashboard, .workReports, .attendance, .workers, .recruitment]
         )
         XCTAssertEqual(
-            MiniBiNavDestination.allCases.map(\.titleVi),
-            ["Tổng quan", "Báo cáo", "Chấm công", "Nhân sự", "Cấp mới"]
+            MiniBiNavDestination.mainMenuDestinations.map(\.titleVi),
+            ["Tổng quan", "Báo cáo", "Chấm công", "Nhân sự", "Tuyển dụng"]
         )
+        XCTAssertFalse(MiniBiNavDestination.mainMenuDestinations.contains(.newEntry))
+        XCTAssertTrue(MiniBiNavDestination.allCases.contains(.newEntry))
+        XCTAssertEqual(MiniBiNavDestination.recruitment.screenTitleVi, "Tin tuyển dụng")
 
         // DirectEntry worker-profile/1.2 row payload contract
         var draftRow = NewWorkerEntryDraft()
@@ -2015,7 +2018,7 @@ final class HRPBTests: XCTestCase {
 
         // Navigating to .workers or calling loadWorkers / loadSalaryAdvanceContext must be blocked and fire zero requests
         vm.navigateTo(.workers)
-        XCTAssertEqual(vm.currentDestination, .dashboard)
+        XCTAssertEqual(vm.currentDestination, .attendance)
         await vm.loadWorkers(resetPage: true)
         await vm.loadSalaryAdvanceContext()
 
@@ -3176,6 +3179,383 @@ final class HRPBTests: XCTestCase {
         XCTAssertEqual(vm.directEditBaselineDetail?.displayName, "Hồ Sơ Nhanh B")
     }
 
+    // MARK: - 23. Recruitment Posts Contract, Navigation & Fail-Closed Lifecycle (Section 9)
+
+    func testRecruitmentPostsContractAndNavigationGate() throws {
+        // 1-4. Main menu navigation & Cấp mới permission gate
+        let fullUser = MiniBiUser(
+            id: "aaaa0023-2222-4333-8444-555555555501",
+            username: "full.user",
+            fullName: "Full User",
+            permissions: ["entry_create", "submission_create", "entry_read"],
+            allowedWorkerTabs: ["managed", "recruited"]
+        )
+        let limitedUser = MiniBiUser(
+            id: "aaaa0023-2222-4333-8444-555555555502",
+            username: "limited.user",
+            fullName: "Limited User",
+            permissions: ["entry_read"],
+            allowedWorkerTabs: []
+        )
+        XCTAssertEqual(
+            MiniBiNavDestination.resolveMainNavigationDestinations(for: fullUser),
+            [.dashboard, .workReports, .attendance, .workers, .recruitment]
+        )
+        XCTAssertEqual(
+            MiniBiNavDestination.resolveMainNavigationDestinations(for: limitedUser),
+            [.dashboard, .workReports, .attendance, .recruitment]
+        )
+        XCTAssertFalse(MiniBiNavDestination.resolveMainNavigationDestinations(for: fullUser).contains(.newEntry))
+        XCTAssertTrue(fullUser.canAccessNewWorkerEntry)
+        XCTAssertFalse(limitedUser.canAccessNewWorkerEntry)
+
+        // 6 & 10. Contract parser, integer VND string formatting, created_by_display_name contact, and fail-closed validation
+        let samplePostJson = Self.makeRecruitmentPostJson(
+            briefId: "11111111-2222-4333-8444-555555555501",
+            projectName: "Luxshare Bắc Giang",
+            creatorName: "Nguyễn Người Tạo Tin",
+            managerName: "Lê Quản Lý Cấm Hiển Thị"
+        )
+        let listBody = """
+        {
+          "ok": true,
+          "data": {
+            "items": [\(samplePostJson)],
+            "page_size": 10,
+            "has_more": true,
+            "next_cursor": "cur-page-2",
+            "snapshot_token": "snap-1"
+          }
+        }
+        """
+        let listObj = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(listBody.utf8)) as? [String: Any])
+        let parsedList = try RecruitmentPostContract.parseListEnvelope(listObj)
+        XCTAssertEqual(parsedList.items.count, 1)
+        XCTAssertEqual(parsedList.pageSize, 10)
+        XCTAssertTrue(parsedList.hasMore)
+        XCTAssertEqual(parsedList.nextCursor, "cur-page-2")
+        XCTAssertEqual(parsedList.snapshotToken, "snap-1")
+
+        let card = RecruitmentPostContract.toCardViewModel(parsedList.items[0])
+        XCTAssertEqual(card.contactPersonDisplay, "Nguyễn Người Tạo Tin")
+        XCTAssertFalse(card.contactDisplay.contains("Lê Quản Lý Cấm Hiển Thị"))
+        XCTAssertEqual(card.contactPhoneDisplay, "0988111222")
+        XCTAssertEqual(card.incomeRangeDisplay, "9.500.000 đ – 14.500.000 đ")
+        XCTAssertEqual(card.locationDisplay, "Bắc Giang · KCN Quang Châu")
+
+        let detailBody = """
+        {"ok":true,"data":{"post":\(samplePostJson)}}
+        """
+        let detailObj = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(detailBody.utf8)) as? [String: Any])
+        let parsedDetail = try RecruitmentPostContract.parseDetailEnvelope(detailObj)
+        let detailVm = RecruitmentPostContract.toDetailViewModel(parsedDetail)
+        XCTAssertEqual(detailVm.section1General.contactPersonDisplay, "Nguyễn Người Tạo Tin")
+        XCTAssertEqual(detailVm.section3CompensationBenefits.baseSalaryVndDisplay, "8.500.000 đ")
+        XCTAssertEqual(detailVm.section3CompensationBenefits.seniorityAllowanceVndDisplay, "Chưa cung cấp")
+
+        // Fail-closed: extra key, WITHDRAWN status in feed, or float money string must throw
+        var extraKeyItem = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(samplePostJson.utf8)) as? [String: Any])
+        extraKeyItem["unexpected_key"] = "boom"
+        XCTAssertThrowsError(try RecruitmentPostContract.parseDetailEnvelope(["ok": true, "data": ["post": extraKeyItem]]))
+
+        var withdrawnItem = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(samplePostJson.utf8)) as? [String: Any])
+        withdrawnItem["status"] = "WITHDRAWN"
+        withdrawnItem["withdrawn_at"] = "2026-11-10T09:00:00Z"
+        withdrawnItem["withdrawn_by_display_name"] = "Admin"
+        XCTAssertThrowsError(
+            try RecruitmentPostContract.parseListEnvelope([
+                "ok": true,
+                "data": [
+                    "items": [withdrawnItem],
+                    "page_size": 10,
+                    "has_more": false,
+                    "next_cursor": NSNull(),
+                    "snapshot_token": "snap-1"
+                ]
+            ])
+        )
+
+        var floatCompItem = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(samplePostJson.utf8)) as? [String: Any])
+        var compDict = try XCTUnwrap(floatCompItem["compensation"] as? [String: Any])
+        compDict["base_salary_vnd"] = "8500000.5"
+        floatCompItem["compensation"] = compDict
+        XCTAssertThrowsError(try RecruitmentPostContract.parseDetailEnvelope(["ok": true, "data": ["post": floatCompItem]]))
+    }
+
+    @MainActor
+    func testRecruitmentPostsPaginationRefreshSnapshotRetry404AndSessionPurge() async throws {
+        let brief1 = "11111111-2222-4333-8444-555555555501"
+        let brief2 = "11111111-2222-4333-8444-555555555502"
+        let briefSlow = "11111111-2222-4333-8444-555555555599"
+        var snapshotInvalidMode = false
+        var detailNotFoundMode = false
+        var listResponseMode = "NORMAL"
+
+        MockURLProtocol.resetRecordedUrls()
+        MockURLProtocol.pathDelaySec = [
+            "/api/recruitment-posts/\(briefSlow)": 0.4
+        ]
+        defer { MockURLProtocol.pathDelaySec = [:] }
+        MockURLProtocol.requestHandler = { req in
+            let url = try XCTUnwrap(req.url)
+            let fullUrl = url.absoluteString
+            let body: String
+            var statusCode = 200
+
+            if fullUrl.contains("/api/recruitment-posts?") {
+                if listResponseMode == "FORBIDDEN" {
+                    statusCode = 403
+                    body = #"{"ok":false,"error":{"code":"ACTOR_NOT_AVAILABLE","message":"Forbidden"}}"#
+                } else if listResponseMode == "NOT_FOUND_LIST" {
+                    statusCode = 404
+                    body = #"{"ok":false,"error":{"code":"NOT_FOUND","message":"Not found"}}"#
+                } else if listResponseMode == "UNAVAILABLE_503" {
+                    statusCode = 503
+                    body = #"{"ok":false,"error":{"code":"RECRUITMENT_POST_UNAVAILABLE","message":"Unavailable"}}"#
+                } else if fullUrl.contains("cursor=cur-p2") {
+                    if snapshotInvalidMode {
+                        statusCode = 400
+                        body = #"{"ok":false,"error":{"code":"RECRUITMENT_POST_SNAPSHOT_INVALID","message":"Snapshot invalid"}}"#
+                    } else {
+                        body = """
+                        {
+                          "ok": true,
+                          "data": {
+                            "items": [
+                              \(Self.makeRecruitmentPostJson(briefId: brief1, projectName: "Dự Án 1 Trùng", creatorName: "Người Tạo 1", managerName: "Quản Lý")),
+                              \(Self.makeRecruitmentPostJson(briefId: brief2, projectName: "Dự Án 2 Mới", creatorName: "Người Tạo 2", managerName: "Quản Lý"))
+                            ],
+                            "page_size": 10,
+                            "has_more": false,
+                            "next_cursor": null,
+                            "snapshot_token": "snap-p1"
+                          }
+                        }
+                        """
+                    }
+                } else {
+                    body = """
+                    {
+                      "ok": true,
+                      "data": {
+                        "items": [
+                          \(Self.makeRecruitmentPostJson(briefId: brief1, projectName: "Dự Án 1", creatorName: "Người Tạo 1", managerName: "Quản Lý"))
+                        ],
+                        "page_size": 10,
+                        "has_more": true,
+                        "next_cursor": "cur-p2",
+                        "snapshot_token": "snap-p1"
+                      }
+                    }
+                    """
+                }
+            } else if fullUrl.contains("/api/recruitment-posts/\(briefSlow)") {
+                body = """
+                {"ok":true,"data":{"post":\(Self.makeRecruitmentPostJson(briefId: briefSlow, projectName: "Dự Án Chậm", creatorName: "Người Tạo Chậm", managerName: "Quản Lý"))}}
+                """
+            } else if fullUrl.contains("/api/recruitment-posts/\(brief1)") {
+                if detailNotFoundMode {
+                    statusCode = 404
+                    body = #"{"ok":false,"error":{"code":"RECRUITMENT_POST_NOT_FOUND","message":"Not found"}}"#
+                } else {
+                    body = """
+                    {"ok":true,"data":{"post":\(Self.makeRecruitmentPostJson(briefId: brief1, projectName: "Dự Án 1", creatorName: "Người Tạo 1", managerName: "Quản Lý"))}}
+                    """
+                }
+            } else {
+                body = #"{"ok":true,"items":[]}"#
+            }
+
+            let resp = HTTPURLResponse(url: url, statusCode: statusCode, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/json"])!
+            return (resp, Data(body.utf8))
+        }
+
+        let client = makeMockHttpClient()
+        let repo = MiniBiRepository(httpClient: client, keychain: KeychainStore(serviceName: "com.aistudio.minibi.rec23.\(UUID().uuidString)"))
+        let vm = MiniBiViewModel(
+            repository: repo,
+            directEntryService: DirectEntryService(httpClient: client),
+            workReportsService: WorkReportsAndReportingService(httpClient: client),
+            salaryAdvanceService: SalaryAdvanceService(httpClient: client),
+            recruitmentPostService: RecruitmentPostService(httpClient: client)
+        )
+        vm.currentUser = MiniBiUser(
+            id: "aaaa0023-2222-4333-8444-555555555599",
+            username: "rec.23",
+            fullName: "Recruiter 23",
+            permissions: ["entry_create", "submission_create"],
+            allowedWorkerTabs: ["managed"]
+        )
+        vm.isAuthenticated = true
+
+        // 5. Draft preservation when navigating to .newEntry from .workers
+        vm.newWorkerDraftRows[0].hoTen = "Nháp Giữ Nguyên"
+        vm.navigateTo(.newEntry)
+        XCTAssertEqual(vm.currentDestination, .newEntry)
+        XCTAssertEqual(vm.newWorkerDraftRows[0].hoTen, "Nháp Giữ Nguyên")
+
+        // 7-8. Load page 1 and loadMore with snapshot_token + deduplication by brief_id
+        await vm.loadRecruitmentPosts(reset: true)
+        XCTAssertEqual(vm.recruitmentPosts.map(\.briefId), [brief1])
+        XCTAssertTrue(vm.recruitmentPostsHasMore)
+        XCTAssertFalse(MockURLProtocol.recordedUrls().contains(where: { $0.contains("/api/recruitment-posts/context") }))
+
+        await vm.loadMoreRecruitmentPosts()
+        XCTAssertEqual(vm.recruitmentPosts.map(\.briefId), [brief1, brief2])
+        XCTAssertTrue(MockURLProtocol.recordedUrls().contains(where: { $0.contains("cursor=cur-p2") && $0.contains("snapshot_token=snap-p1") }))
+
+        // 9. Slow detail request closed before completion does not commit state
+        let slowDetailTask = Task { await vm.openRecruitmentPostDetail(briefId: briefSlow) }
+        try await waitForRecordedUrl(containing: "/api/recruitment-posts/\(briefSlow)")
+        vm.closeRecruitmentPostDetail()
+        _ = await slowDetailTask.value
+        XCTAssertNil(vm.selectedRecruitmentPostDetail)
+
+        // 12a. 400 RECRUITMENT_POST_SNAPSHOT_INVALID resets and reloads page 1 at most once
+        await vm.loadRecruitmentPosts(reset: true)
+        snapshotInvalidMode = true
+        await vm.loadMoreRecruitmentPosts()
+        XCTAssertEqual(vm.recruitmentPosts.map(\.briefId), [brief1])
+
+        // 12b. 404 RECRUITMENT_POST_NOT_FOUND on detail removes item and shows banner
+        detailNotFoundMode = true
+        await vm.openRecruitmentPostDetail(briefId: brief1)
+        XCTAssertTrue(vm.recruitmentPosts.isEmpty)
+        XCTAssertNil(vm.selectedRecruitmentPostDetail)
+        XCTAssertEqual(vm.bannerMessage, "Tin tuyển dụng không còn hiệu lực.")
+
+        // 12c. 403 access denied, 404 list feature unavailable, 503 retryable error
+        listResponseMode = "FORBIDDEN"
+        await vm.loadRecruitmentPosts(reset: true)
+        XCTAssertTrue(vm.recruitmentPostsAccessDenied)
+
+        listResponseMode = "NOT_FOUND_LIST"
+        await vm.loadRecruitmentPosts(reset: true)
+        XCTAssertTrue(vm.recruitmentPostsFeatureUnavailable)
+
+        listResponseMode = "UNAVAILABLE_503"
+        await vm.loadRecruitmentPosts(reset: true)
+        XCTAssertNotNil(vm.recruitmentPostsError)
+        XCTAssertTrue(vm.isAuthenticated)
+
+        // 13. Session reset / logout purges all recruitment state
+        await vm.performLogout()
+        XCTAssertTrue(vm.recruitmentPosts.isEmpty)
+        XCTAssertNil(vm.selectedRecruitmentPostDetail)
+        XCTAssertFalse(vm.recruitmentPostsHasMore)
+    }
+
+    private static func makeRecruitmentPostJson(
+        briefId: String,
+        projectName: String,
+        creatorName: String,
+        managerName: String
+    ) -> String {
+        """
+        {
+          "brief_id": "\(briefId)",
+          "version": 3,
+          "status": "PUBLISHED",
+          "project": {
+            "project_id": "PROJ_A",
+            "display_name": "\(projectName)"
+          },
+          "industrial_park": {
+            "industrial_park_id": "aaaaaaaa-1111-4222-8333-444444444402",
+            "industrial_park_code": "KCN_QUANG_CHAU",
+            "display_name": "KCN Quang Châu",
+            "active": true
+          },
+          "province": {
+            "province_id": "aaaaaaaa-1111-4222-8333-444444444403",
+            "province_code": "BAC_GIANG",
+            "display_name": "Bắc Giang"
+          },
+          "published_at": "2026-11-10T08:30:00.123456Z",
+          "updated_at": "2026-11-10T08:30:00.123456Z",
+          "withdrawn_at": null,
+          "created_by_display_name": "\(creatorName)",
+          "updated_by_display_name": "\(creatorName)",
+          "withdrawn_by_display_name": null,
+          "general": {
+            "customer_name": "Công ty TNHH Luxshare ICT",
+            "investment_origin": "Trung Quốc",
+            "manufacturing_industry": "Sản xuất linh kiện điện tử",
+            "job_description": "Lắp ráp và kiểm tra linh kiện",
+            "environment_types": ["CLEAN_ROOM", "NORMAL_ROOM"],
+            "work_postures": ["SITTING", "STANDING"],
+            "shift_pattern": "TWO_SHIFTS",
+            "shift_details": "Ca ngày 08:00-20:00, ca đêm 20:00-08:00",
+            "manager_name": "\(managerName)",
+            "manager_phone": "0988111222",
+            "labor_types": [
+              {"labor_type_key": "THOI_VU", "display_name": "Thời vụ"},
+              {"labor_type_key": "CHINH_THUC", "display_name": "Chính thức"}
+            ],
+            "supply_schedule_text": "Tuyển liên tục",
+            "expected_headcount": 150
+          },
+          "candidate": {
+            "age_min": 18,
+            "age_max": 40,
+            "gender_requirement": "ANY",
+            "education_requirement": "SECONDARY",
+            "experience_required": false,
+            "experience_details": null,
+            "accept_former_customer_workers": true,
+            "entry_assessment_text": "Test bảng chữ cái",
+            "other_requirements_text": "Sức khỏe tốt"
+          },
+          "compensation": {
+            "base_salary_vnd": "8500000",
+            "base_salary_conditions": "Làm đủ 26 công",
+            "attendance_bonus_vnd": "500000",
+            "attendance_bonus_conditions": "Không nghỉ buổi nào",
+            "living_allowance_vnd": "300000",
+            "living_allowance_conditions": "Hỗ trợ nhà ở",
+            "seniority_allowance_vnd": null,
+            "seniority_allowance_conditions": null,
+            "eyesight_allowance_vnd": "200000",
+            "eyesight_allowance_conditions": "Bộ phận kính hiển vi",
+            "other_allowance_text": "Phụ cấp phòng sạch 300.000 đ",
+            "average_income_min_vnd": "9500000",
+            "average_income_max_vnd": "14500000",
+            "salary_payment_schedule": "Ngày 15 hàng tháng",
+            "salary_advance_available": true,
+            "salary_advance_amount_vnd": "1000000",
+            "salary_advance_schedule": "Thứ 6 hàng tuần",
+            "weekly_salary_available": false,
+            "weekly_salary_payment_schedule": null,
+            "day_shift_8h_vnd": "280000",
+            "day_shift_11h_vnd": "410000",
+            "night_shift_8h_vnd": "340000",
+            "night_shift_11h_vnd": "490000",
+            "sunday_day_11h_vnd": "580000",
+            "sunday_night_11h_vnd": "660000",
+            "holiday_day_11h_vnd": "850000",
+            "holiday_night_11h_vnd": "950000",
+            "ppe_provided": true,
+            "ppe_details": "Cấp phát áo tĩnh điện và giày",
+            "other_benefits": "Thưởng lễ tết đầy đủ"
+          },
+          "documents": {
+            "require_original_cccd_and_copy": true,
+            "require_certified_resume": false,
+            "require_health_certificate_within_6_months": true,
+            "require_photo_3x4": true,
+            "require_degree_or_certificate": false,
+            "require_social_insurance_book": false,
+            "require_other_documents": true,
+            "other_documents_text": "Mang bút bi xanh khi phỏng vấn"
+          },
+          "allowed_actions": {
+            "can_edit": true,
+            "can_withdraw": true
+          }
+        }
+        """
+    }
+
     // MARK: - Helper
 
     private func waitForRecordedUrl(containing substring: String, timeoutNanoseconds: UInt64 = 2_000_000_000) async throws {
@@ -3201,5 +3581,390 @@ final class HRPBTests: XCTestCase {
             ctx.fill(CGRect(origin: .zero, size: size))
         }
         return try XCTUnwrap(img.jpegData(compressionQuality: 0.85))
+    }
+
+    // MARK: - 14. Round 1 Emergency Hotfix Regression Tests (Must Fix 0, 1, 3)
+
+    private static func makeJsonResponse(_ req: URLRequest, statusCode: Int, json: String) -> (HTTPURLResponse, Data) {
+        let url = req.url ?? URL(string: "https://bi.hrpartner.vn")!
+        let resp = HTTPURLResponse(
+            url: url,
+            statusCode: statusCode,
+            httpVersion: "HTTP/1.1",
+            headerFields: ["Content-Type": "application/json"]
+        )!
+        return (resp, Data(json.utf8))
+    }
+
+    @MainActor
+    func testMustFix0_RecruitmentPostsContractLocksPageSize10AndNeverEmitsPageSize20() async throws {
+        XCTAssertEqual(RecruitmentPostContract.defaultPageSize, 10)
+        XCTAssertEqual(RecruitmentPostContract.maxPageSize, 10)
+        XCTAssertEqual(RecruitmentPostContract.buildListPath(), "/api/recruitment-posts?page_size=10")
+        XCTAssertEqual(RecruitmentPostContract.buildListPath(pageSize: 20), "/api/recruitment-posts?page_size=10")
+        XCTAssertFalse(RecruitmentPostContract.buildListPath(pageSize: 20).contains("page_size=20"))
+
+        MockURLProtocol.resetRecordedUrls()
+        let firstPostJson = Self.makeRecruitmentPostJson(
+            briefId: "11111111-2222-4333-8444-555555555551",
+            projectName: "Công ty TNHH Điện tử A",
+            creatorName: "Người Tạo A",
+            managerName: "Quản Lý A"
+        )
+        let secondPostJson = Self.makeRecruitmentPostJson(
+            briefId: "22222222-2222-4333-8444-555555555552",
+            projectName: "Công ty TNHH Điện tử B",
+            creatorName: "Người Tạo B",
+            managerName: "Quản Lý B"
+        )
+        MockURLProtocol.requestHandler = { req in
+            let urlStr = req.url?.absoluteString ?? ""
+            if urlStr.contains("/api/recruitment-posts") && urlStr.contains("cursor=cursor-p2") {
+                return Self.makeJsonResponse(
+                    req,
+                    statusCode: 200,
+                    json: """
+                    {"ok":true,"data":{"items":[\(secondPostJson)],"page_size":10,"has_more":false,"next_cursor":null,"snapshot_token":"snap-1"}}
+                    """
+                )
+            }
+            if urlStr.contains("/api/recruitment-posts") {
+                return Self.makeJsonResponse(
+                    req,
+                    statusCode: 200,
+                    json: """
+                    {"ok":true,"data":{"items":[\(firstPostJson)],"page_size":10,"has_more":true,"next_cursor":"cursor-p2","snapshot_token":"snap-1"}}
+                    """
+                )
+            }
+            return Self.makeJsonResponse(req, statusCode: 200, json: #"{"ok":true,"data":{}}"#)
+        }
+
+        let client = makeMockHttpClient()
+        let vm = MiniBiViewModel(
+            repository: MiniBiRepository(httpClient: client, keychain: KeychainStore(serviceName: "com.aistudio.minibi.mf0.\(UUID().uuidString)")),
+            recruitmentPostService: RecruitmentPostService(httpClient: client)
+        )
+        vm.currentUser = MiniBiUser(
+            id: "11111111-1111-4111-8111-111111111111",
+            username: "recruiter.01",
+            fullName: "Tuyển dụng 01",
+            permissions: ["entry_read"],
+            allowedWorkerTabs: ["recruited"]
+        )
+        vm.isAuthenticated = true
+
+        await vm.loadRecruitmentPosts(reset: true)
+        await vm.loadMoreRecruitmentPosts()
+
+        let recruitmentUrls = MockURLProtocol.recordedUrls().filter { $0.contains("/api/recruitment-posts") }
+        XCTAssertEqual(recruitmentUrls.count, 2)
+        XCTAssertTrue(recruitmentUrls.allSatisfy { $0.contains("page_size=10") })
+        XCTAssertFalse(recruitmentUrls.contains(where: { $0.contains("page_size=20") }))
+    }
+
+    @MainActor
+    func testMustFix1_ExponentialBackoffScheduleAndResetOnSuccess() async throws {
+        // 1. Pure schedule check: 30s -> 60s -> 120s -> max 300s
+        XCTAssertEqual(AttendanceRetryBackoffPolicy.computeDelayMs(attempt: 0, jitterSample: 0.0), 0)
+        XCTAssertEqual(AttendanceRetryBackoffPolicy.computeDelayMs(attempt: 1, jitterSample: 0.0), 30_000)
+        XCTAssertEqual(AttendanceRetryBackoffPolicy.computeDelayMs(attempt: 2, jitterSample: 0.0), 60_000)
+        XCTAssertEqual(AttendanceRetryBackoffPolicy.computeDelayMs(attempt: 3, jitterSample: 0.0), 120_000)
+        XCTAssertEqual(AttendanceRetryBackoffPolicy.computeDelayMs(attempt: 4, jitterSample: 0.0), 300_000)
+        XCTAssertEqual(AttendanceRetryBackoffPolicy.computeDelayMs(attempt: 9, jitterSample: 0.0), 300_000)
+
+        // With positive jitter, stays within [base, min(300s, base * 1.15)]
+        let jittered1 = AttendanceRetryBackoffPolicy.computeDelayMs(attempt: 1, jitterSample: 1.0)
+        XCTAssertTrue((30_000...34_500).contains(jittered1))
+        let jittered4 = AttendanceRetryBackoffPolicy.computeDelayMs(attempt: 4, jitterSample: 1.0)
+        XCTAssertEqual(jittered4, 300_000)
+
+        // 2. Deterministic clock backoff progression & reset on 200 OK without Task.sleep
+        final class FakeClock: MonotonicClockProviding {
+            var monoMs: Int64 = 1_000_000
+            var wallMs: Int64 = 1_762_700_000_000
+            func elapsedRealtimeMs() -> Int64 { monoMs }
+            func currentEpochMs() -> Int64 { wallMs }
+            func bootSessionId() -> String { "boot-hotfix-1" }
+        }
+
+        let fakeClock = FakeClock()
+        let client = makeMockHttpClient()
+        let keychain = KeychainStore(serviceName: "com.aistudio.minibi.mf1.backoff.\(UUID().uuidString)")
+        let anchorManager = AttendanceTimeAnchorManager(httpClient: client, keychain: keychain, clock: fakeClock)
+        let vm = MiniBiViewModel(
+            repository: MiniBiRepository(httpClient: client, keychain: keychain),
+            timeAnchorManager: anchorManager
+        )
+        vm.backoffJitterProvider = { 0.0 }
+        vm.currentUser = MiniBiUser(
+            id: "11111111-1111-4111-8111-111111111111",
+            username: "worker.backoff",
+            fullName: "Nhân sự Backoff",
+            permissions: ["entry_read"],
+            allowedWorkerTabs: ["recruited"]
+        )
+        vm.isAuthenticated = true
+
+        var shouldReturn504 = true
+        MockURLProtocol.resetRecordedUrls()
+        MockURLProtocol.requestHandler = { req in
+            let url = req.url?.absoluteString ?? ""
+            if url.contains("/api/attendance/time") {
+                if shouldReturn504 {
+                    return Self.makeJsonResponse(req, statusCode: 504, json: #"{"ok":false,"code":"GATEWAY_TIMEOUT"}"#)
+                }
+                return Self.makeJsonResponse(
+                    req,
+                    statusCode: 200,
+                    json: #"{"ok":true,"data":{"server_epoch_ms":1762700000000,"server_now":"2026-11-10T08:00:00.000+07:00","time_token":"tok-ok","expires_at_epoch_ms":1762743200000}}"#
+                )
+            }
+            return Self.makeJsonResponse(req, statusCode: 200, json: #"{"ok":true,"data":{}}"#)
+        }
+
+        // Failure #1 -> 30,000ms backoff
+        let ok1 = await vm.syncAttendanceTimeAnchorOnly(force: true, isAutomatic: true)
+        XCTAssertFalse(ok1)
+        XCTAssertEqual(vm.timeAnchorBackoffAttempt, 1)
+        XCTAssertEqual(vm.nextAllowedTimeAnchorSyncElapsedMs, 1_030_000)
+
+        // Calling automatic sync at +15s (before 30s backoff) must NOT hit network
+        fakeClock.monoMs = 1_015_000
+        XCTAssertFalse(vm.canAttemptTimeAnchorAutoSync())
+        let blockedByBackoff = await vm.syncAttendanceTimeAnchorOnly(force: false, isAutomatic: true)
+        XCTAssertFalse(blockedByBackoff)
+        XCTAssertEqual(MockURLProtocol.recordedUrls().filter { $0.contains("/api/attendance/time") }.count, 1)
+
+        // Advance to 1_030_000ms -> Failure #2 -> 60,000ms backoff
+        fakeClock.monoMs = 1_030_000
+        XCTAssertTrue(vm.canAttemptTimeAnchorAutoSync())
+        _ = await vm.syncAttendanceTimeAnchorOnly(force: false, isAutomatic: true)
+        XCTAssertEqual(vm.timeAnchorBackoffAttempt, 2)
+        XCTAssertEqual(vm.nextAllowedTimeAnchorSyncElapsedMs, 1_090_000)
+
+        // Advance to 1_090_000ms -> Failure #3 -> 120,000ms backoff
+        fakeClock.monoMs = 1_090_000
+        _ = await vm.syncAttendanceTimeAnchorOnly(force: false, isAutomatic: true)
+        XCTAssertEqual(vm.timeAnchorBackoffAttempt, 3)
+        XCTAssertEqual(vm.nextAllowedTimeAnchorSyncElapsedMs, 1_210_000)
+
+        // Advance to 1_210_000ms -> Failure #4 -> 300,000ms (max) backoff
+        fakeClock.monoMs = 1_210_000
+        _ = await vm.syncAttendanceTimeAnchorOnly(force: false, isAutomatic: true)
+        XCTAssertEqual(vm.timeAnchorBackoffAttempt, 4)
+        XCTAssertEqual(vm.nextAllowedTimeAnchorSyncElapsedMs, 1_510_000)
+
+        // Advance to 1_510_000ms and recover -> resets attempt and nextAllowedElapsedMs to 0
+        fakeClock.monoMs = 1_510_000
+        shouldReturn504 = false
+        let recovered = await vm.syncAttendanceTimeAnchorOnly(force: false, isAutomatic: true)
+        XCTAssertTrue(recovered)
+        XCTAssertEqual(vm.timeAnchorBackoffAttempt, 0)
+        XCTAssertEqual(vm.nextAllowedTimeAnchorSyncElapsedMs, 0)
+    }
+
+    @MainActor
+    func testMustFix1_SplitResponsibilities_Time504AndCheckIn504NeverChainAndPendingOutboxDoesNotTriggerTimerSync() async throws {
+        final class FakeClock: MonotonicClockProviding {
+            var monoMs: Int64 = 500_000
+            var wallMs: Int64 = 1_762_700_000_000
+            func elapsedRealtimeMs() -> Int64 { monoMs }
+            func currentEpochMs() -> Int64 { wallMs }
+            func bootSessionId() -> String { "boot-hotfix-split" }
+        }
+
+        let fakeClock = FakeClock()
+        let client = makeMockHttpClient()
+        let keychain = KeychainStore(serviceName: "com.aistudio.minibi.mf1.split.\(UUID().uuidString)")
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("outbox_mf1_\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let anchorManager = AttendanceTimeAnchorManager(httpClient: client, keychain: keychain, clock: fakeClock)
+        let outboxService = AttendanceOutboxService(
+            httpClient: client,
+            timeAnchorManager: anchorManager,
+            customStorageDirectory: tempDir
+        )
+        let vm = MiniBiViewModel(
+            repository: MiniBiRepository(httpClient: client, keychain: keychain),
+            attendanceOutboxService: outboxService,
+            timeAnchorManager: anchorManager
+        )
+        vm.backoffJitterProvider = { 0.0 }
+        vm.currentUser = MiniBiUser(
+            id: "11111111-1111-4111-8111-111111111111",
+            username: "worker.split",
+            fullName: "Nhân sự Split",
+            permissions: ["entry_read"],
+            allowedWorkerTabs: ["recruited"]
+        )
+        vm.isAuthenticated = true
+
+        // Case A: Submit check-in when POST /api/attendance/check-in returns 504
+        // Must NOT call GET /api/attendance/history and must preserve record in outbox
+        MockURLProtocol.resetRecordedUrls()
+        MockURLProtocol.requestHandler = { req in
+            let url = req.url?.absoluteString ?? ""
+            if url.contains("/api/attendance/check-in") {
+                return Self.makeJsonResponse(req, statusCode: 504, json: #"{"ok":false,"code":"GATEWAY_TIMEOUT"}"#)
+            }
+            if url.contains("/api/attendance/time") {
+                return Self.makeJsonResponse(req, statusCode: 504, json: #"{"ok":false,"code":"GATEWAY_TIMEOUT"}"#)
+            }
+            return Self.makeJsonResponse(req, statusCode: 200, json: #"{"ok":true,"data":{}}"#)
+        }
+
+        let testPhoto = try makeSolidTestJpeg(color: .systemRed, size: CGSize(width: 320, height: 320))
+        await vm.submitAttendanceCheckIn(
+            lat: 21.0285,
+            lng: 105.8542,
+            accuracyM: 10.0,
+            photoData: testPhoto,
+            note: "Ca sáng"
+        )
+        XCTAssertEqual(vm.attendancePendingCount, 1)
+        XCTAssertFalse(MockURLProtocol.recordedUrls().contains(where: { $0.contains("/api/attendance/history") }))
+        XCTAssertEqual(vm.outboxBackoffAttempt, 1)
+
+        // Case B: When time anchor is valid and attendancePendingCount > 0,
+        // timer auto-sync (`syncAttendanceTimeAnchorOnly(force: false, isAutomatic: true)`) and Camera gate
+        // must fire ZERO requests (neither /time, /check-in, nor /history).
+        anchorManager.seedAnchorForTesting(
+            ServerTimeAnchor(
+                serverEpochMsAtSync: 1_762_700_000_000,
+                serverNowIso: "2026-11-10T08:00:00.000+07:00",
+                syncedElapsedRealtimeMs: 500_000,
+                syncedDeviceEpochMs: 1_762_700_000_000,
+                timeToken: "tok-valid",
+                expiresAtEpochMs: 1_762_700_000_000 + 3_600_000,
+                bootSessionId: "boot-hotfix-split"
+            )
+        )
+        MockURLProtocol.resetRecordedUrls()
+        for tick in 1...4 {
+            fakeClock.monoMs += Int64(tick * 15_000)
+            let ok = await vm.syncAttendanceTimeAnchorOnly(force: false, isAutomatic: true)
+            XCTAssertTrue(ok)
+        }
+        XCTAssertTrue(MockURLProtocol.recordedUrls().isEmpty, "15s timer with valid anchor and pending outbox must fire 0 requests")
+
+        // Case C: When GET /api/attendance/time fails with 504 on initial load,
+        // it must NOT chain POST /api/attendance/check-in or GET /api/attendance/history.
+        anchorManager.clearAnchor()
+        MockURLProtocol.resetRecordedUrls()
+        await vm.loadInitialAttendanceScreenDataIfNeeded()
+        let urlsAfterTime504 = MockURLProtocol.recordedUrls()
+        XCTAssertEqual(urlsAfterTime504.filter { $0.contains("/api/attendance/time") }.count, 1)
+        XCTAssertFalse(urlsAfterTime504.contains(where: { $0.contains("/api/attendance/check-in") }))
+        XCTAssertFalse(urlsAfterTime504.contains(where: { $0.contains("/api/attendance/history") }))
+
+        // Case D: Manual/auto outbox flush when check-in fails with 504 sets and resets `isSyncingAttendance`
+        // and does NOT call GET /api/attendance/history.
+        MockURLProtocol.resetRecordedUrls()
+        XCTAssertFalse(vm.isSyncingAttendance)
+        await vm.flushAttendanceOutboxNow()
+        XCTAssertFalse(vm.isSyncingAttendance, "isSyncingAttendance must be reset to false after failure")
+        XCTAssertEqual(MockURLProtocol.recordedUrls().filter { $0.contains("/api/attendance/check-in") }.count, 1)
+        XCTAssertFalse(MockURLProtocol.recordedUrls().contains(where: { $0.contains("/api/attendance/history") }))
+        XCTAssertEqual(vm.attendancePendingCount, 1, "Outbox item must remain preserved for later retry")
+    }
+
+    @MainActor
+    func testMustFix3_DefaultScreenOnLoginAndSessionRestoreIsAttendanceWithZeroBackgroundDashboardCalls() async throws {
+        MockURLProtocol.resetRecordedUrls()
+        MockURLProtocol.requestHandler = { req in
+            let url = req.url?.absoluteString ?? ""
+            if url.contains("/api/auth/session") || url.contains("/api/direct-entry/session") {
+                return Self.makeJsonResponse(
+                    req,
+                    statusCode: 200,
+                    json: """
+                    {
+                      "ok": true,
+                      "actor": {
+                        "app_user_id": "11111111-1111-4111-8111-111111111111",
+                        "display_name": "Nhân sự Mặc Định",
+                        "capabilities": ["entry_read", "entry_create", "submission_create"],
+                        "scopes": [{"scope_kind": "own", "project_id": null}],
+                        "allowed_worker_tabs": ["uploader", "recruited"]
+                      }
+                    }
+                    """
+                )
+            }
+            if url.contains("/api/attendance/time") {
+                return Self.makeJsonResponse(
+                    req,
+                    statusCode: 200,
+                    json: #"{"ok":true,"data":{"server_epoch_ms":1762700000000,"server_now":"2026-11-10T08:00:00.000+07:00","time_token":"tok-init","expires_at_epoch_ms":1762743200000}}"#
+                )
+            }
+            if url.contains("/api/attendance/history") {
+                return Self.makeJsonResponse(req, statusCode: 200, json: #"{"ok":true,"data":{"items":[],"total":0}}"#)
+            }
+            return Self.makeJsonResponse(req, statusCode: 200, json: #"{"ok":true,"data":{}}"#)
+        }
+
+        let client = makeMockHttpClient()
+        let keychain = KeychainStore(serviceName: "com.aistudio.minibi.mf3.\(UUID().uuidString)")
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("outbox_mf3_\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let anchorManager = AttendanceTimeAnchorManager(httpClient: client, keychain: keychain)
+        let outboxService = AttendanceOutboxService(
+            httpClient: client,
+            timeAnchorManager: anchorManager,
+            customStorageDirectory: tempDir
+        )
+        let vm = MiniBiViewModel(
+            repository: MiniBiRepository(httpClient: client, keychain: keychain),
+            directEntryService: DirectEntryService(httpClient: client),
+            workReportsService: WorkReportsAndReportingService(httpClient: client),
+            attendanceOutboxService: outboxService,
+            timeAnchorManager: anchorManager,
+            notificationService: NotificationService(httpClient: client),
+            leaveService: LeaveService(httpClient: client),
+            attendanceExplanationService: AttendanceExplanationService(httpClient: client),
+            salaryAdvanceService: SalaryAdvanceService(httpClient: client),
+            recruitmentPostService: RecruitmentPostService(httpClient: client)
+        )
+
+        // 1. Default destination before and after session establishment is `.attendance`
+        XCTAssertEqual(vm.currentDestination, .attendance)
+        let user = MiniBiUser(
+            id: "11111111-1111-4111-8111-111111111111",
+            username: "worker.default",
+            fullName: "Nhân sự Mặc Định",
+            permissions: ["entry_read", "entry_create", "submission_create"],
+            allowedWorkerTabs: ["uploader", "recruited"]
+        )
+        vm.onAuthenticatedSessionEstablished(user: user)
+        XCTAssertEqual(vm.currentDestination, .attendance)
+
+        // Simulate AttendanceScreen.onAppear + navigateTo(.attendance) firing simultaneously
+        await vm.loadInitialAttendanceScreenDataIfNeeded()
+        vm.navigateTo(.attendance)
+        await vm.loadInitialAttendanceScreenDataIfNeeded()
+
+        let recordedAfterOpen = MockURLProtocol.recordedUrls()
+        // Zero Dashboard endpoints called on app open / login!
+        XCTAssertFalse(recordedAfterOpen.contains(where: { $0.contains("/api/reporting/") }))
+        XCTAssertFalse(recordedAfterOpen.contains(where: { $0.contains("/api/cccd-review") }))
+        // Initial Attendance time anchor and history each called at most once!
+        XCTAssertEqual(recordedAfterOpen.filter { $0.contains("/api/attendance/time") }.count, 1)
+        XCTAssertEqual(recordedAfterOpen.filter { $0.contains("/api/attendance/history") }.count, 1)
+
+        // 2. Switching to another tab and returning from background keeps current tab
+        vm.navigateTo(.recruitment)
+        XCTAssertEqual(vm.currentDestination, .recruitment)
+        _ = await vm.syncAttendanceTimeAnchorOnly(force: false, isAutomatic: true)
+        XCTAssertEqual(vm.currentDestination, .recruitment)
+
+        // 3. Switching to `.dashboard` loads Dashboard data lazily on demand
+        vm.navigateTo(.dashboard)
+        XCTAssertEqual(vm.currentDestination, .dashboard)
+        try await waitForRecordedUrl(containing: "/api/reporting/")
+        await vm.performLogout()
     }
 }

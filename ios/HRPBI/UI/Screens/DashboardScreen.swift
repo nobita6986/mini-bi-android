@@ -109,6 +109,13 @@ public struct DashboardScreen: View {
         }
         .background(theme.background)
         .dismissKeyboardOnTapOutside()
+        .onAppear {
+            if viewModel.isAuthenticated
+                && !viewModel.isLoadingDashboard
+                && !viewModel.hasLoadedDashboardInSession {
+                Task { await viewModel.loadDashboardData(includeCccdTabs: false) }
+            }
+        }
         .sheet(item: $viewModel.selectedCccdReviewItem) { item in
             CccdReviewDetailSheet(viewModel: viewModel, item: item)
         }

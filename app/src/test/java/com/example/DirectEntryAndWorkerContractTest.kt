@@ -2345,4 +2345,243 @@ class DirectEntryAndWorkerContractTest {
         )
         assertEquals(baseline.entryId, saved.entryId)
     }
+
+    @Test
+    fun `recruitment post contract parses valid list and detail responses, enforces exact VND integer formatting, uses created_by_display_name, and fails closed on invalid fields`() {
+        val samplePostJson = """
+            {
+              "brief_id": "11111111-2222-4333-8444-555555555551",
+              "version": 3,
+              "status": "PUBLISHED",
+              "project": {
+                "project_id": "PROJ_A",
+                "display_name": "Luxshare Bắc Giang"
+              },
+              "industrial_park": {
+                "industrial_park_id": "aaaaaaaa-1111-4222-8333-444444444402",
+                "industrial_park_code": "KCN_QUANG_CHAU",
+                "display_name": "KCN Quang Châu",
+                "active": true
+              },
+              "province": {
+                "province_id": "aaaaaaaa-1111-4222-8333-444444444403",
+                "province_code": "BAC_GIANG",
+                "display_name": "Bắc Giang"
+              },
+              "published_at": "2026-11-10T08:30:00.123456Z",
+              "updated_at": "2026-11-10T08:30:00.123456Z",
+              "withdrawn_at": null,
+              "created_by_display_name": "Nguyễn Người Tạo Tin",
+              "updated_by_display_name": "Trần Người Cập Nhật",
+              "withdrawn_by_display_name": null,
+              "general": {
+                "customer_name": "Công ty TNHH Luxshare ICT",
+                "investment_origin": "Trung Quốc",
+                "manufacturing_industry": "Sản xuất linh kiện điện tử",
+                "job_description": "Lắp ráp và kiểm tra linh kiện",
+                "environment_types": ["CLEAN_ROOM", "NORMAL_ROOM"],
+                "work_postures": ["SITTING", "STANDING"],
+                "shift_pattern": "TWO_SHIFTS",
+                "shift_details": "Ca ngày 08:00-20:00, ca đêm 20:00-08:00",
+                "manager_name": "Lê Quản Lý Không Dùng",
+                "manager_phone": "0988111222",
+                "labor_types": [
+                  {"labor_type_key": "THOI_VU", "display_name": "Thời vụ"},
+                  {"labor_type_key": "CHINH_THUC", "display_name": "Chính thức"}
+                ],
+                "supply_schedule_text": "Tuyển liên tục",
+                "expected_headcount": 150
+              },
+              "candidate": {
+                "age_min": 18,
+                "age_max": 40,
+                "gender_requirement": "ANY",
+                "education_requirement": "SECONDARY",
+                "experience_required": false,
+                "experience_details": null,
+                "accept_former_customer_workers": true,
+                "entry_assessment_text": "Test bảng chữ cái",
+                "other_requirements_text": "Sức khỏe tốt"
+              },
+              "compensation": {
+                "base_salary_vnd": "8500000",
+                "base_salary_conditions": "Làm đủ 26 công",
+                "attendance_bonus_vnd": "500000",
+                "attendance_bonus_conditions": "Không nghỉ buổi nào",
+                "living_allowance_vnd": "300000",
+                "living_allowance_conditions": "Hỗ trợ nhà ở",
+                "seniority_allowance_vnd": null,
+                "seniority_allowance_conditions": null,
+                "eyesight_allowance_vnd": "200000",
+                "eyesight_allowance_conditions": "Bộ phận kính hiển vi",
+                "other_allowance_text": "Phụ cấp phòng sạch 300.000 đ",
+                "average_income_min_vnd": "9500000",
+                "average_income_max_vnd": "14500000",
+                "salary_payment_schedule": "Ngày 15 hàng tháng",
+                "salary_advance_available": true,
+                "salary_advance_amount_vnd": "1000000",
+                "salary_advance_schedule": "Thứ 6 hàng tuần",
+                "weekly_salary_available": false,
+                "weekly_salary_payment_schedule": null,
+                "day_shift_8h_vnd": "280000",
+                "day_shift_11h_vnd": "410000",
+                "night_shift_8h_vnd": "340000",
+                "night_shift_11h_vnd": "490000",
+                "sunday_day_11h_vnd": "580000",
+                "sunday_night_11h_vnd": "660000",
+                "holiday_day_11h_vnd": "850000",
+                "holiday_night_11h_vnd": "950000",
+                "ppe_provided": true,
+                "ppe_details": "Cấp phát áo tĩnh điện và giày",
+                "other_benefits": "Thưởng lễ tết đầy đủ"
+              },
+              "documents": {
+                "require_original_cccd_and_copy": true,
+                "require_certified_resume": false,
+                "require_health_certificate_within_6_months": true,
+                "require_photo_3x4": true,
+                "require_degree_or_certificate": false,
+                "require_social_insurance_book": false,
+                "require_other_documents": true,
+                "other_documents_text": "Mang bút bi xanh khi phỏng vấn"
+              },
+              "allowed_actions": {
+                "can_edit": true,
+                "can_withdraw": true
+              }
+            }
+        """.trimIndent()
+
+        val listPayload = JSONObject(
+            """
+            {
+              "ok": true,
+              "data": {
+                "items": [$samplePostJson],
+                "page_size": 10,
+                "has_more": true,
+                "next_cursor": "cursor-page-2",
+                "snapshot_token": "snap-token-1"
+              }
+            }
+            """.trimIndent()
+        )
+        val parsedList = com.example.data.RecruitmentPostContract.parseListEnvelope(listPayload)
+        assertEquals(1, parsedList.items.size)
+        assertEquals(10, parsedList.pageSize)
+        assertTrue(parsedList.hasMore)
+        assertEquals("cursor-page-2", parsedList.nextCursor)
+        assertEquals("snap-token-1", parsedList.snapshotToken)
+
+        val card = com.example.data.RecruitmentPostContract.toCardViewModel(parsedList.items.first())
+        assertEquals("Nguyễn Người Tạo Tin", card.contactPersonDisplay)
+        assertFalse(card.contactDisplay.contains("Lê Quản Lý Không Dùng"))
+        assertEquals("0988111222", card.contactPhoneDisplay)
+        assertEquals("9.500.000 đ – 14.500.000 đ", card.incomeRangeDisplay)
+        assertEquals("Bắc Giang · KCN Quang Châu", card.locationDisplay)
+
+        val detailPayload = JSONObject("""{"ok":true,"data":{"post":$samplePostJson}}""")
+        val parsedDetailItem = com.example.data.RecruitmentPostContract.parseDetailEnvelope(detailPayload)
+        val detailVm = com.example.data.RecruitmentPostContract.toDetailViewModel(parsedDetailItem)
+        assertEquals("Nguyễn Người Tạo Tin", detailVm.section1General.contactPersonDisplay)
+        assertFalse(detailVm.section1General.contactPersonDisplay.contains("Lê Quản Lý Không Dùng"))
+        assertEquals("8.500.000 đ", detailVm.section3CompensationBenefits.baseSalaryVndDisplay)
+        assertEquals("Chưa cung cấp", detailVm.section3CompensationBenefits.seniorityAllowanceVndDisplay)
+        assertEquals("280.000 đ", detailVm.section3CompensationBenefits.dayShift8hVndDisplay)
+
+        // Pagination query builder & deduplication by brief_id
+        assertEquals(10, com.example.data.RecruitmentPostContract.DEFAULT_PAGE_SIZE)
+        assertEquals(10, com.example.data.RecruitmentPostContract.MAX_PAGE_SIZE)
+        assertEquals(
+            "/api/recruitment-posts?page_size=10",
+            com.example.data.RecruitmentPostContract.buildListPath()
+        )
+        assertEquals(
+            "/api/recruitment-posts?page_size=10",
+            com.example.data.RecruitmentPostContract.buildListPath(pageSize = 20)
+        )
+        assertFalse(
+            com.example.data.RecruitmentPostContract.buildListPath(pageSize = 20).contains("page_size=20")
+        )
+        assertEquals(
+            "/api/recruitment-posts?page_size=10",
+            com.example.data.RecruitmentPostContract.buildListPath(pageSize = 10)
+        )
+        assertEquals(
+            "/api/recruitment-posts?page_size=10&snapshot_token=snap-token-1&cursor=cursor-page-2",
+            com.example.data.RecruitmentPostContract.buildListPath(
+                pageSize = 10,
+                cursor = "cursor-page-2",
+                snapshotToken = "snap-token-1"
+            )
+        )
+        val duplicatePostJson = JSONObject(samplePostJson).apply { put("version", 99) }
+        val secondPostJson = JSONObject(samplePostJson).apply {
+            put("brief_id", "22222222-2222-4333-8444-555555555552")
+        }
+        val duplicateItem = com.example.data.RecruitmentPostContract.parseDetailEnvelope(
+            JSONObject("""{"ok":true,"data":{"post":$duplicatePostJson}}""")
+        )
+        val secondItem = com.example.data.RecruitmentPostContract.parseDetailEnvelope(
+            JSONObject("""{"ok":true,"data":{"post":$secondPostJson}}""")
+        )
+        val merged = com.example.data.RecruitmentPostContract.mergeUniqueItems(
+            parsedList.items,
+            listOf(duplicateItem, secondItem)
+        )
+        assertEquals(2, merged.size)
+        assertEquals(99, merged[0].version)
+        assertEquals("22222222-2222-4333-8444-555555555552", merged[1].briefId)
+
+        // Fail-closed: extra key, WITHDRAWN status in feed, or float money string must throw
+        val extraKeyItem = JSONObject(samplePostJson).apply { put("unexpected_field", "boom") }
+        val withdrawnInFeedList = JSONObject(
+            """
+            {
+              "ok": true,
+              "data": {
+                "items": [${JSONObject(samplePostJson).apply {
+                    put("status", "WITHDRAWN")
+                    put("withdrawn_at", "2026-11-10T09:00:00Z")
+                    put("withdrawn_by_display_name", "Admin")
+                }}],
+                "page_size": 10,
+                "has_more": false,
+                "next_cursor": null,
+                "snapshot_token": "snap-token-1"
+              }
+            }
+            """.trimIndent()
+        )
+        val floatMoneyItem = JSONObject(samplePostJson).apply {
+            getJSONObject("compensation").put("base_salary_vnd", "8500000.50")
+        }
+        var threwExtra = false
+        try {
+            com.example.data.RecruitmentPostContract.parseDetailEnvelope(
+                JSONObject("""{"ok":true,"data":{"post":$extraKeyItem}}""")
+            )
+        } catch (_: BackendApiException) {
+            threwExtra = true
+        }
+        assertTrue(threwExtra)
+
+        var threwWithdrawnFeed = false
+        try {
+            com.example.data.RecruitmentPostContract.parseListEnvelope(withdrawnInFeedList)
+        } catch (_: BackendApiException) {
+            threwWithdrawnFeed = true
+        }
+        assertTrue(threwWithdrawnFeed)
+
+        var threwFloatMoney = false
+        try {
+            com.example.data.RecruitmentPostContract.parseDetailEnvelope(
+                JSONObject("""{"ok":true,"data":{"post":$floatMoneyItem}}""")
+            )
+        } catch (_: BackendApiException) {
+            threwFloatMoney = true
+        }
+        assertTrue(threwFloatMoney)
+    }
 }

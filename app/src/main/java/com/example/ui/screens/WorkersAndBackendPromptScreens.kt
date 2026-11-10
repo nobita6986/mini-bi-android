@@ -146,6 +146,7 @@ import com.example.data.SalaryAdvanceWorkerOption
 import com.example.data.StagedDocumentRef
 import com.example.data.WorkerEntryDetail
 import com.example.data.WorkerProfileEntity
+import com.example.ui.MainDestination
 import com.example.ui.MiniBiViewModel
 import com.example.ui.theme.JetBrainsMono
 import com.example.ui.theme.SemanticColors
@@ -2343,7 +2344,7 @@ private fun shareOrViewCachedFile(context: android.content.Context, file: File, 
 fun WorkersAndDirectEntryScreen(
     actor: AppActor,
     viewModel: MiniBiViewModel,
-    onOpenNewEntryScreen: () -> Unit = {},
+    onOpenNewEntryScreen: () -> Unit = { viewModel.navigateTo(MainDestination.NEW_ENTRY) },
     onBackToDashboard: () -> Unit,
     onSelectScopeTab: ((scopeKey: String) -> Unit)? = null,
     onSearchAndFilterChange: ((search: String, projectId: String?, status: String?) -> Unit)? = null,
@@ -2554,24 +2555,63 @@ fun WorkersAndDirectEntryScreen(
                             }
                         }
 
-                        if (canShowSalaryAdvance) {
-                            Button(
-                                onClick = {
-                                    focusManager.clearFocus()
-                                    keyboardController?.hide()
-                                    effectiveOpenSalaryAdvance()
-                                },
-                                shape = RoundedCornerShape(12.dp),
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(44.dp)
-                                    .testTag("salary_advance_open_button")
+                        val canCreateNewEntry = actor.canAccessNewEntryScreen()
+                        if (canShowSalaryAdvance || canCreateNewEntry) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Text(
-                                    text = "Ứng lương",
-                                    style = MaterialTheme.typography.labelLarge,
-                                    fontWeight = FontWeight.Bold
-                                )
+                                if (canShowSalaryAdvance) {
+                                    Button(
+                                        onClick = {
+                                            focusManager.clearFocus()
+                                            keyboardController?.hide()
+                                            effectiveOpenSalaryAdvance()
+                                        },
+                                        shape = RoundedCornerShape(12.dp),
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .height(46.dp)
+                                            .testTag("salary_advance_open_button")
+                                    ) {
+                                        Text(
+                                            text = "Ứng lương",
+                                            style = MaterialTheme.typography.labelLarge,
+                                            fontWeight = FontWeight.Bold,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+                                }
+                                if (canCreateNewEntry) {
+                                    Button(
+                                        onClick = {
+                                            focusManager.clearFocus()
+                                            keyboardController?.hide()
+                                            onOpenNewEntryScreen()
+                                        },
+                                        shape = RoundedCornerShape(12.dp),
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .height(46.dp)
+                                            .testTag("go_to_new_entry_from_workers")
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Add,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text(
+                                            text = "Cấp mới",
+                                            style = MaterialTheme.typography.labelLarge,
+                                            fontWeight = FontWeight.Bold,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+                                }
                             }
                         }
 
