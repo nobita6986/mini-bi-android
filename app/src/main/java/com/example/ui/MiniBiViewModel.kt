@@ -117,6 +117,15 @@ fun resolveMainNavigationDestinations(actor: AppActor?): List<MainDestination> {
     }
 }
 
+fun resolveDefaultLandingDestination(actor: AppActor?): MainDestination {
+    val allowed = resolveMainNavigationDestinations(actor)
+    return when {
+        MainDestination.ATTENDANCE in allowed -> MainDestination.ATTENDANCE
+        allowed.isNotEmpty() -> allowed.first()
+        else -> MainDestination.DASHBOARD
+    }
+}
+
 data class GpsSnapshot(
     val latitude: Double,
     val longitude: Double,
@@ -130,7 +139,7 @@ class MiniBiViewModel internal constructor(
     internal val repository: MiniBiRepository
 ) : AndroidViewModel(application) {
 
-    constructor(application: Application) : this(application, MiniBiRepository(application))
+    constructor(application: Application) : this(application, MiniBiRepository.getSharedInstance(application))
 
     val imageLoader: ImageLoader
         get() = repository.imageLoader
@@ -150,8 +159,13 @@ class MiniBiViewModel internal constructor(
     private val _sessionBootstrapping = MutableStateFlow(true)
     val sessionBootstrapping: StateFlow<Boolean> = _sessionBootstrapping.asStateFlow()
 
-    private val _currentDestination = MutableStateFlow(MainDestination.DASHBOARD)
+    private val _currentDestination = MutableStateFlow(MainDestination.ATTENDANCE)
     val currentDestination: StateFlow<MainDestination> = _currentDestination.asStateFlow()
+    private var hasExplicitDestinationOverride: Boolean = false
+    private var attendanceInitialLoadedGen: Long = -1L
+    private var timeAnchorBackoffAttempt: Int = 0
+    private var nextAllowedTimeAnchorSyncElapsedMs: Long = 0L
+    private val historyLoadedUserIds = java.util.Collections.synchronizedSet(HashSet<String>())
 
     // Login state
     private val _loginBusy = MutableStateFlow(false)
@@ -877,6 +891,41 @@ class MiniBiViewModel internal constructor(
         repository.closeForTest()
     }
 
+    private fun triggerInitialDestinationLoad(
+        actor: AppActor,
+        destination: MainDestination,
+        forceTimeAnchor: Boolean
+    ) {
+        when (destination) {
+            MainDestination.ATTENDANCE -> {
+                ensureAttendanceInitialLoaded(actor = actor, forceTimeAnchor = forceTimeAnchor)
+            }
+            MainDestination.DASHBOARD -> {
+                refreshDashboardData(actor)
+            }
+            MainDestination.WORK_REPORTS -> {
+                refreshWorkReportsData(actor)
+            }
+            MainDestination.WORKERS -> {
+                ensureInitialWorkerTabLoaded(actor)
+                if (actor.canAttemptPmSalaryAdvanceContext()) {
+                    loadSalaryAdvanceContextIfNeeded(actor = actor)
+                }
+            }
+            MainDestination.RECRUITMENT -> {
+                loadRecruitmentPosts(reset = true, actorOverride = actor)
+            }
+            MainDestination.NEW_ENTRY -> {
+                if (actor.canAccessNewEntryScreen()) {
+                    if (actor.canLoadDirectEntryCatalog()) {
+                        loadCatalogIfNeeded()
+                    }
+                    refreshOwnSubmissionsForHistory()
+                }
+            }
+        }
+    }
+
     fun bootstrapSession() {
         val expectedGen = ++sessionGeneration
         cancelAllInFlightSessionJobs()
@@ -892,11 +941,25 @@ class MiniBiViewModel internal constructor(
                         ?: baseActor.copy(allowedWorkerTabs = emptyList())
                     bindActorGeneration(resolvedActor)
                     if (!isSessionValid(expectedGen, resolvedActor.appUserId)) return@launch
+                    val allowed = resolveMainNavigationDestinations(resolvedActor)
+                    val targetDestination = if (
+                        hasExplicitDestinationOverride &&
+                        (_currentDestination.value in allowed ||
+                            (_currentDestination.value == MainDestination.NEW_ENTRY && resolvedActor.canAccessNewEntryScreen()))
+                    ) {
+                        _currentDestination.value
+                    } else {
+                        hasExplicitDestinationOverride = false
+                        resolveDefaultLandingDestination(resolvedActor)
+                    }
+                    _currentDestination.value = targetDestination
                     _activeWorkerTabKey.value = resolveVisibleWorkerTabs(resolvedActor).firstOrNull()?.key.orEmpty()
                     _sessionBootstrapping.value = false
-                    syncAttendanceTimeAnchor(actor = resolvedActor, force = false)
-                    syncAttendanceHistoryFromServer(actor = resolvedActor)
-                    refreshDashboardData(resolvedActor)
+                    triggerInitialDestinationLoad(
+                        actor = resolvedActor,
+                        destination = targetDestination,
+                        forceTimeAnchor = false
+                    )
                 } else {
                     _sessionBootstrapping.value = false
                 }
@@ -924,10 +987,17 @@ class MiniBiViewModel internal constructor(
         if (destination == MainDestination.NEW_ENTRY && (actor == null || !actor.canAccessNewEntryScreen())) {
             return
         }
+        if (actor != null && destination != MainDestination.NEW_ENTRY) {
+            val allowed = resolveMainNavigationDestinations(actor)
+            if (destination !in allowed) {
+                return
+            }
+        }
         if (previousDestination == MainDestination.RECRUITMENT && destination != MainDestination.RECRUITMENT) {
             cancelInFlightRecruitmentPostRequests()
             closeRecruitmentPostDetail()
         }
+        hasExplicitDestinationOverride = true
         _currentDestination.value = destination
         if (actor == null) return
         when (destination) {
@@ -965,10 +1035,7 @@ class MiniBiViewModel internal constructor(
             }
             MainDestination.ATTENDANCE -> {
                 _activeAttendanceTab.value = AttendanceAreaTab.CHECK_IN
-                syncAttendanceTimeAnchor(actor = actor, force = false)
-                syncAttendanceHistoryFromServer(actor = actor)
-                refreshMyLeaveSummary(year = _leaveYear.value)
-                refreshMyAttendanceExplanations(businessDate = _explanationSelectedDate.value)
+                ensureAttendanceInitialLoaded(actor = actor, forceTimeAnchor = false)
             }
         }
     }
@@ -1063,6 +1130,10 @@ class MiniBiViewModel internal constructor(
                         _workerSummary.value = null
                         _workerError.value = null
                         _catalog.value = null
+                        attendanceInitialLoadedGen = -1L
+                        timeAnchorBackoffAttempt = 0
+                        nextAllowedTimeAnchorSyncElapsedMs = 0L
+                        historyLoadedUserIds.clear()
                         resetSalaryAdvanceAllState()
                         resetRecruitmentPostsState()
                     }
@@ -1071,12 +1142,26 @@ class MiniBiViewModel internal constructor(
                         ?: actor.copy(allowedWorkerTabs = emptyList())
                     bindActorGeneration(resolvedActor)
                     if (!isSessionValid(postResetGen, resolvedActor.appUserId)) return@onSuccess
+                    val allowed = resolveMainNavigationDestinations(resolvedActor)
+                    val targetDestination = if (
+                        hasExplicitDestinationOverride &&
+                        (_currentDestination.value in allowed ||
+                            (_currentDestination.value == MainDestination.NEW_ENTRY && resolvedActor.canAccessNewEntryScreen()))
+                    ) {
+                        _currentDestination.value
+                    } else {
+                        hasExplicitDestinationOverride = false
+                        resolveDefaultLandingDestination(resolvedActor)
+                    }
+                    _currentDestination.value = targetDestination
                     _activeWorkerTabKey.value = resolveVisibleWorkerTabs(resolvedActor).firstOrNull()?.key.orEmpty()
                     _loginError.value = null
                     showBanner("Xin chào ${resolvedActor.displayName}")
-                    syncAttendanceTimeAnchor(actor = resolvedActor, force = true)
-                    syncAttendanceHistoryFromServer(actor = resolvedActor)
-                    refreshDashboardData(resolvedActor)
+                    triggerInitialDestinationLoad(
+                        actor = resolvedActor,
+                        destination = targetDestination,
+                        forceTimeAnchor = true
+                    )
                 }.onFailure { err ->
                     err.rethrowIfCancelled()
                     if (sessionGeneration == loginGen) {
@@ -1131,7 +1216,12 @@ class MiniBiViewModel internal constructor(
         myExplanationsFetchJob = null
         explanationInboxFetchJob?.cancel()
         explanationInboxFetchJob = null
-        _currentDestination.value = MainDestination.DASHBOARD
+        hasExplicitDestinationOverride = false
+        attendanceInitialLoadedGen = -1L
+        timeAnchorBackoffAttempt = 0
+        nextAllowedTimeAnchorSyncElapsedMs = 0L
+        historyLoadedUserIds.clear()
+        _currentDestination.value = MainDestination.ATTENDANCE
         _generalOverview.value = null
         _generalOverviewLoading.value = false
         _generalOverviewError.value = null
@@ -4348,6 +4438,113 @@ class MiniBiViewModel internal constructor(
         }
     }
 
+    /**
+     * Deduplicated initial load flow for the `Chấm công` screen (at most once per authenticated session generation).
+     * Strict failure gates:
+     * - If `GET /api/attendance/time` fails (and no valid anchor exists) -> does NOT call `check-in` or `history`.
+     * - If `POST /api/attendance/check-in` fails -> does NOT call `history`.
+     */
+    fun ensureAttendanceInitialLoaded(
+        actor: AppActor? = currentActor.value,
+        forceTimeAnchor: Boolean = false
+    ) {
+        val resolvedActor = actor ?: return
+        if (resolvedActor.appUserId.isBlank()) return
+        launchDeduplicatedSessionJob(
+            key = "attendance_initial_load",
+            actorOverride = resolvedActor,
+            force = false
+        ) { targetActor, gen ->
+            val isFirstLoadInSession = (attendanceInitialLoadedGen != gen)
+            if (isFirstLoadInSession) {
+                attendanceInitialLoadedGen = gen
+                val anchorRes = runCatching {
+                    repository.attendanceTimeAnchorManager.syncTimeAnchor(
+                        appUserId = targetActor.appUserId,
+                        force = forceTimeAnchor
+                    )
+                }.getOrElse { err ->
+                    err.rethrowIfCancelled()
+                    Result.failure(err)
+                }
+                if (!isSessionValid(gen, targetActor.appUserId)) return@launchDeduplicatedSessionJob
+
+                if (anchorRes.isSuccess) {
+                    timeAnchorBackoffAttempt = 0
+                    nextAllowedTimeAnchorSyncElapsedMs = 0L
+                    val flushSummary = runCatching {
+                        repository.attendanceOutboxService.flushRetryableOutbox(
+                            appUserId = targetActor.appUserId,
+                            scheduleWorkOnFailure = true
+                        )
+                    }.onFailure { it.rethrowIfCancelled() }.getOrNull()
+
+                    if (!isSessionValid(gen, targetActor.appUserId)) return@launchDeduplicatedSessionJob
+
+                    val hadCheckInFailure = flushSummary != null &&
+                        flushSummary.processedCount > 0 &&
+                        flushSummary.syncedCount == 0 &&
+                        (flushSummary.remainingRetryableCount > 0 || flushSummary.terminalFailureCount > 0)
+
+                    val userKeyLower = targetActor.appUserId.trim().lowercase(Locale.ROOT)
+                    val shouldFetchHistory = !hadCheckInFailure && (
+                        (flushSummary != null && flushSummary.syncedCount > 0) ||
+                            userKeyLower !in historyLoadedUserIds
+                    )
+                    if (shouldFetchHistory && WorkReportsContract.isUuid(targetActor.appUserId)) {
+                        val histOk = runCatching {
+                            val todayIso = resolveReferenceTodayIsoHcm(targetActor.appUserId)
+                            repository.attendanceOutboxService.syncServerHistoryForUser(
+                                actor = targetActor,
+                                referenceTodayIso = todayIso
+                            )
+                            true
+                        }.onFailure { it.rethrowIfCancelled() }.getOrDefault(false)
+                        if (histOk) {
+                            historyLoadedUserIds.add(userKeyLower)
+                        }
+                    }
+                } else {
+                    timeAnchorBackoffAttempt += 1
+                    val backoffScheduleMs = longArrayOf(30_000L, 60_000L, 120_000L, 300_000L)
+                    val delayMs = backoffScheduleMs[(timeAnchorBackoffAttempt - 1).coerceAtMost(backoffScheduleMs.lastIndex)]
+                    nextAllowedTimeAnchorSyncElapsedMs = android.os.SystemClock.elapsedRealtime() + delayMs
+                }
+            } else {
+                val nowElapsed = android.os.SystemClock.elapsedRealtime()
+                val needsRefresh = (repository.attendanceTimeAnchorManager.millisUntilProactiveRefresh(targetActor.appUserId) ?: 0L) <= 0L
+                if (needsRefresh && nowElapsed >= nextAllowedTimeAnchorSyncElapsedMs) {
+                    val anchorRes = runCatching {
+                        repository.attendanceTimeAnchorManager.syncTimeAnchor(
+                            appUserId = targetActor.appUserId,
+                            force = false
+                        )
+                    }.getOrElse { err ->
+                        err.rethrowIfCancelled()
+                        Result.failure(err)
+                    }
+                    if (anchorRes.isSuccess) {
+                        timeAnchorBackoffAttempt = 0
+                        nextAllowedTimeAnchorSyncElapsedMs = 0L
+                    } else {
+                        timeAnchorBackoffAttempt += 1
+                        val backoffScheduleMs = longArrayOf(30_000L, 60_000L, 120_000L, 300_000L)
+                        val delayMs = backoffScheduleMs[(timeAnchorBackoffAttempt - 1).coerceAtMost(backoffScheduleMs.lastIndex)]
+                        nextAllowedTimeAnchorSyncElapsedMs = android.os.SystemClock.elapsedRealtime() + delayMs
+                    }
+                }
+            }
+
+            if (!isSessionValid(gen, targetActor.appUserId)) return@launchDeduplicatedSessionJob
+            if (_myLeaveSummary.value == null && !_myLeaveLoading.value) {
+                refreshMyLeaveSummary(year = _leaveYear.value, actor = targetActor)
+            }
+            if (_myExplanationsOverview.value == null && !_myExplanationsLoading.value) {
+                refreshMyAttendanceExplanations(businessDate = _explanationSelectedDate.value, actor = targetActor)
+            }
+        }
+    }
+
     fun syncAttendanceHistoryFromServer(actor: AppActor? = currentActor.value) {
         val resolvedActor = actor ?: return
         if (resolvedActor.appUserId.isBlank()) return
@@ -4355,22 +4552,33 @@ class MiniBiViewModel internal constructor(
             key = "attendance_history_sync",
             actorOverride = resolvedActor
         ) { targetActor, gen ->
-            runCatching {
+            val flushSummary = runCatching {
                 repository.attendanceOutboxService.flushRetryableOutbox(
                     appUserId = targetActor.appUserId,
                     scheduleWorkOnFailure = true
                 )
-            }.onFailure { it.rethrowIfCancelled() }
+            }.onFailure { it.rethrowIfCancelled() }.getOrNull()
             if (!isSessionValid(gen, targetActor.appUserId) || !WorkReportsContract.isUuid(targetActor.appUserId)) {
                 return@launchDeduplicatedSessionJob
             }
-            runCatching {
+            val hadCheckInFailure = flushSummary != null &&
+                flushSummary.processedCount > 0 &&
+                flushSummary.syncedCount == 0 &&
+                (flushSummary.remainingRetryableCount > 0 || flushSummary.terminalFailureCount > 0)
+            if (hadCheckInFailure) {
+                return@launchDeduplicatedSessionJob
+            }
+            val histOk = runCatching {
                 val todayIso = resolveReferenceTodayIsoHcm(targetActor.appUserId)
                 repository.attendanceOutboxService.syncServerHistoryForUser(
                     actor = targetActor,
                     referenceTodayIso = todayIso
                 )
-            }.onFailure { it.rethrowIfCancelled() }
+                true
+            }.onFailure { it.rethrowIfCancelled() }.getOrDefault(false)
+            if (histOk) {
+                historyLoadedUserIds.add(targetActor.appUserId.trim().lowercase(Locale.ROOT))
+            }
         }
     }
 
@@ -4423,6 +4631,16 @@ class MiniBiViewModel internal constructor(
                     note = note,
                     capturedTimeOverride = capturedTime
                 )
+                if (outcome.isSynced && WorkReportsContract.isUuid(actor.appUserId)) {
+                    runCatching {
+                        val todayIso = resolveReferenceTodayIsoHcm(actor.appUserId)
+                        repository.attendanceOutboxService.syncServerHistoryForUser(
+                            actor = actor,
+                            referenceTodayIso = todayIso
+                        )
+                        historyLoadedUserIds.add(actor.appUserId.trim().lowercase(Locale.ROOT))
+                    }.onFailure { it.rethrowIfCancelled() }
+                }
                 // Only `SYNCED` has isError = false with "Đã chấm công"; offline QUEUED has "Đã lưu trên thiết bị, đang chờ đồng bộ"
                 showBanner(outcome.userMessage, isError = !outcome.isSynced)
             } catch (e: Exception) {
@@ -4449,6 +4667,16 @@ class MiniBiViewModel internal constructor(
                     appUserId = actor.appUserId,
                     scheduleWorkOnFailure = true
                 )
+                if (summary.syncedCount > 0 && WorkReportsContract.isUuid(actor.appUserId)) {
+                    runCatching {
+                        val todayIso = resolveReferenceTodayIsoHcm(actor.appUserId)
+                        repository.attendanceOutboxService.syncServerHistoryForUser(
+                            actor = actor,
+                            referenceTodayIso = todayIso
+                        )
+                        historyLoadedUserIds.add(actor.appUserId.trim().lowercase(Locale.ROOT))
+                    }.onFailure { it.rethrowIfCancelled() }
+                }
                 when {
                     summary.processedCount == 0 && summary.remainingRetryableCount > 0 ->
                         showBanner("Đã lưu trên thiết bị, đang chờ đồng bộ khi có mạng.", isError = true)

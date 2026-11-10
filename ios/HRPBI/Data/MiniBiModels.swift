@@ -279,6 +279,14 @@ public enum MiniBiNavDestination: String, CaseIterable, Identifiable, Equatable,
         }
     }
 
+    public static func resolveDefaultDestination(for user: MiniBiUser?) -> MiniBiNavDestination {
+        let allowed = resolveMainNavigationDestinations(for: user)
+        if allowed.contains(.attendance) {
+            return .attendance
+        }
+        return allowed.first ?? .dashboard
+    }
+
     public var id: String { rawValue }
 
     public var titleVi: String {

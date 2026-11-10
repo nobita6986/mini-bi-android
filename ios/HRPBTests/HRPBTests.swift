@@ -2018,7 +2018,7 @@ final class HRPBTests: XCTestCase {
 
         // Navigating to .workers or calling loadWorkers / loadSalaryAdvanceContext must be blocked and fire zero requests
         vm.navigateTo(.workers)
-        XCTAssertEqual(vm.currentDestination, .dashboard)
+        XCTAssertEqual(vm.currentDestination, .attendance)
         await vm.loadWorkers(resetPage: true)
         await vm.loadSalaryAdvanceContext()
 
@@ -3581,5 +3581,384 @@ final class HRPBTests: XCTestCase {
             ctx.fill(CGRect(origin: .zero, size: size))
         }
         return try XCTUnwrap(img.jpegData(compressionQuality: 0.85))
+    }
+
+    // MARK: - 14. Round 1 Emergency Hotfix Regression Tests (Must Fix 0, 1, 3)
+
+    @MainActor
+    func testMustFix0_RecruitmentPostsContractLocksPageSize10AndNeverEmitsPageSize20() async throws {
+        XCTAssertEqual(RecruitmentPostService.defaultPageSize, 10)
+        XCTAssertEqual(RecruitmentPostService.maxPageSize, 10)
+        XCTAssertEqual(RecruitmentPostService.buildListPath(), "/api/recruitment-posts?page_size=10")
+        XCTAssertEqual(RecruitmentPostService.buildListPath(pageSize: 20), "/api/recruitment-posts?page_size=10")
+        XCTAssertFalse(RecruitmentPostService.buildListPath(pageSize: 20).contains("page_size=20"))
+
+        MockURLProtocol.resetRecordedUrls()
+        let firstPostJson = sampleRecruitmentPostJson(
+            briefId: "11111111-2222-4333-8444-555555555551",
+            customerName: "Công ty TNHH Điện tử A",
+            version: 1
+        )
+        let secondPostJson = sampleRecruitmentPostJson(
+            briefId: "22222222-2222-4333-8444-555555555552",
+            customerName: "Công ty TNHH Điện tử B",
+            version: 1
+        )
+        MockURLProtocol.requestHandler = { req in
+            let urlStr = req.url?.absoluteString ?? ""
+            if urlStr.contains("/api/recruitment-posts") && urlStr.contains("cursor=cursor-p2") {
+                return MockURLProtocol.jsonResponse(
+                    req,
+                    statusCode: 200,
+                    json: """
+                    {"ok":true,"data":{"items":[\(secondPostJson)],"page_size":10,"has_more":false,"next_cursor":null,"snapshot_token":"snap-1"}}
+                    """
+                )
+            }
+            if urlStr.contains("/api/recruitment-posts") {
+                return MockURLProtocol.jsonResponse(
+                    req,
+                    statusCode: 200,
+                    json: """
+                    {"ok":true,"data":{"items":[\(firstPostJson)],"page_size":10,"has_more":true,"next_cursor":"cursor-p2","snapshot_token":"snap-1"}}
+                    """
+                )
+            }
+            return MockURLProtocol.jsonResponse(req, statusCode: 200, json: #"{"ok":true,"data":{}}"#)
+        }
+
+        let client = makeMockBackendClient()
+        let vm = MiniBiViewModel(
+            repository: MiniBiRepository(httpClient: client, keychain: KeychainStore(serviceName: "com.aistudio.minibi.mf0.\(UUID().uuidString)")),
+            recruitmentPostService: RecruitmentPostService(httpClient: client)
+        )
+        vm.currentUser = MiniBiUser(
+            id: "11111111-1111-4111-8111-111111111111",
+            username: "recruiter.01",
+            fullName: "Tuyển dụng 01",
+            role: "TD",
+            roleLabel: "Tuyển dụng",
+            capabilities: ["entry_read"],
+            allowedWorkerTabs: ["recruited"]
+        )
+        vm.isAuthenticated = true
+
+        await vm.loadRecruitmentPosts(reset: true)
+        await vm.loadMoreRecruitmentPostsIfNeeded(currentItem: vm.recruitmentPosts.last)
+
+        let recruitmentUrls = MockURLProtocol.recordedUrls().filter { $0.contains("/api/recruitment-posts") }
+        XCTAssertEqual(recruitmentUrls.count, 2)
+        XCTAssertTrue(recruitmentUrls.allSatisfy { $0.contains("page_size=10") })
+        XCTAssertFalse(recruitmentUrls.contains(where: { $0.contains("page_size=20") }))
+    }
+
+    @MainActor
+    func testMustFix1_ExponentialBackoffScheduleAndResetOnSuccess() async throws {
+        // 1. Pure schedule check: 30s -> 60s -> 120s -> max 300s
+        XCTAssertEqual(AttendanceRetryBackoffPolicy.computeDelayMs(attempt: 0, jitterSample: 0.0), 0)
+        XCTAssertEqual(AttendanceRetryBackoffPolicy.computeDelayMs(attempt: 1, jitterSample: 0.0), 30_000)
+        XCTAssertEqual(AttendanceRetryBackoffPolicy.computeDelayMs(attempt: 2, jitterSample: 0.0), 60_000)
+        XCTAssertEqual(AttendanceRetryBackoffPolicy.computeDelayMs(attempt: 3, jitterSample: 0.0), 120_000)
+        XCTAssertEqual(AttendanceRetryBackoffPolicy.computeDelayMs(attempt: 4, jitterSample: 0.0), 300_000)
+        XCTAssertEqual(AttendanceRetryBackoffPolicy.computeDelayMs(attempt: 9, jitterSample: 0.0), 300_000)
+
+        // With positive jitter, stays within [base, min(300s, base * 1.15)]
+        let jittered1 = AttendanceRetryBackoffPolicy.computeDelayMs(attempt: 1, jitterSample: 1.0)
+        XCTAssertTrue((30_000...34_500).contains(jittered1))
+        let jittered4 = AttendanceRetryBackoffPolicy.computeDelayMs(attempt: 4, jitterSample: 1.0)
+        XCTAssertEqual(jittered4, 300_000)
+
+        // 2. Deterministic clock backoff progression & reset on 200 OK without Task.sleep
+        final class FakeClock: MonotonicClockProviding {
+            var monoMs: Int64 = 1_000_000
+            var wallMs: Int64 = 1_762_700_000_000
+            func elapsedRealtimeMs() -> Int64 { monoMs }
+            func currentEpochMs() -> Int64 { wallMs }
+            func bootSessionId() -> String { "boot-hotfix-1" }
+        }
+
+        let fakeClock = FakeClock()
+        let client = makeMockBackendClient()
+        let keychain = KeychainStore(serviceName: "com.aistudio.minibi.mf1.backoff.\(UUID().uuidString)")
+        let anchorManager = AttendanceTimeAnchorManager(httpClient: client, keychain: keychain, clock: fakeClock)
+        let vm = MiniBiViewModel(
+            repository: MiniBiRepository(httpClient: client, keychain: keychain),
+            timeAnchorManager: anchorManager
+        )
+        vm.backoffJitterProvider = { 0.0 }
+        vm.currentUser = MiniBiUser(
+            id: "11111111-1111-4111-8111-111111111111",
+            username: "worker.backoff",
+            fullName: "Nhân sự Backoff",
+            role: "TD",
+            roleLabel: "Tuyển dụng",
+            capabilities: ["entry_read"],
+            allowedWorkerTabs: ["recruited"]
+        )
+        vm.isAuthenticated = true
+
+        var shouldReturn504 = true
+        MockURLProtocol.resetRecordedUrls()
+        MockURLProtocol.requestHandler = { req in
+            let url = req.url?.absoluteString ?? ""
+            if url.contains("/api/attendance/time") {
+                if shouldReturn504 {
+                    return MockURLProtocol.jsonResponse(req, statusCode: 504, json: #"{"ok":false,"code":"GATEWAY_TIMEOUT"}"#)
+                }
+                return MockURLProtocol.jsonResponse(
+                    req,
+                    statusCode: 200,
+                    json: #"{"ok":true,"data":{"server_epoch_ms":1762700000000,"server_now":"2026-11-10T08:00:00.000+07:00","time_token":"tok-ok","expires_at_epoch_ms":1762743200000}}"#
+                )
+            }
+            return MockURLProtocol.jsonResponse(req, statusCode: 200, json: #"{"ok":true,"data":{}}"#)
+        }
+
+        // Failure #1 -> 30,000ms backoff
+        let ok1 = await vm.syncAttendanceTimeAnchorOnly(force: true, isAutomatic: true)
+        XCTAssertFalse(ok1)
+        XCTAssertEqual(vm.timeAnchorBackoffAttempt, 1)
+        XCTAssertEqual(vm.nextAllowedTimeAnchorSyncElapsedMs, 1_030_000)
+
+        // Calling automatic sync at +15s (before 30s backoff) must NOT hit network
+        fakeClock.monoMs = 1_015_000
+        XCTAssertFalse(vm.canAttemptTimeAnchorAutoSync())
+        let blockedByBackoff = await vm.syncAttendanceTimeAnchorOnly(force: false, isAutomatic: true)
+        XCTAssertFalse(blockedByBackoff)
+        XCTAssertEqual(MockURLProtocol.recordedUrls().filter { $0.contains("/api/attendance/time") }.count, 1)
+
+        // Advance to 1_030_000ms -> Failure #2 -> 60,000ms backoff
+        fakeClock.monoMs = 1_030_000
+        XCTAssertTrue(vm.canAttemptTimeAnchorAutoSync())
+        _ = await vm.syncAttendanceTimeAnchorOnly(force: false, isAutomatic: true)
+        XCTAssertEqual(vm.timeAnchorBackoffAttempt, 2)
+        XCTAssertEqual(vm.nextAllowedTimeAnchorSyncElapsedMs, 1_090_000)
+
+        // Advance to 1_090_000ms -> Failure #3 -> 120,000ms backoff
+        fakeClock.monoMs = 1_090_000
+        _ = await vm.syncAttendanceTimeAnchorOnly(force: false, isAutomatic: true)
+        XCTAssertEqual(vm.timeAnchorBackoffAttempt, 3)
+        XCTAssertEqual(vm.nextAllowedTimeAnchorSyncElapsedMs, 1_210_000)
+
+        // Advance to 1_210_000ms -> Failure #4 -> 300,000ms (max) backoff
+        fakeClock.monoMs = 1_210_000
+        _ = await vm.syncAttendanceTimeAnchorOnly(force: false, isAutomatic: true)
+        XCTAssertEqual(vm.timeAnchorBackoffAttempt, 4)
+        XCTAssertEqual(vm.nextAllowedTimeAnchorSyncElapsedMs, 1_510_000)
+
+        // Advance to 1_510_000ms and recover -> resets attempt and nextAllowedElapsedMs to 0
+        fakeClock.monoMs = 1_510_000
+        shouldReturn504 = false
+        let recovered = await vm.syncAttendanceTimeAnchorOnly(force: false, isAutomatic: true)
+        XCTAssertTrue(recovered)
+        XCTAssertEqual(vm.timeAnchorBackoffAttempt, 0)
+        XCTAssertEqual(vm.nextAllowedTimeAnchorSyncElapsedMs, 0)
+    }
+
+    @MainActor
+    func testMustFix1_SplitResponsibilities_Time504AndCheckIn504NeverChainAndPendingOutboxDoesNotTriggerTimerSync() async throws {
+        final class FakeClock: MonotonicClockProviding {
+            var monoMs: Int64 = 500_000
+            var wallMs: Int64 = 1_762_700_000_000
+            func elapsedRealtimeMs() -> Int64 { monoMs }
+            func currentEpochMs() -> Int64 { wallMs }
+            func bootSessionId() -> String { "boot-hotfix-split" }
+        }
+
+        let fakeClock = FakeClock()
+        let client = makeMockBackendClient()
+        let keychain = KeychainStore(serviceName: "com.aistudio.minibi.mf1.split.\(UUID().uuidString)")
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("outbox_mf1_\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let anchorManager = AttendanceTimeAnchorManager(httpClient: client, keychain: keychain, clock: fakeClock)
+        let outboxService = AttendanceOutboxService(
+            httpClient: client,
+            timeAnchorManager: anchorManager,
+            customStorageDirectory: tempDir
+        )
+        let vm = MiniBiViewModel(
+            repository: MiniBiRepository(httpClient: client, keychain: keychain),
+            attendanceOutboxService: outboxService,
+            timeAnchorManager: anchorManager
+        )
+        vm.backoffJitterProvider = { 0.0 }
+        vm.currentUser = MiniBiUser(
+            id: "11111111-1111-4111-8111-111111111111",
+            username: "worker.split",
+            fullName: "Nhân sự Split",
+            role: "TD",
+            roleLabel: "Tuyển dụng",
+            capabilities: ["entry_read"],
+            allowedWorkerTabs: ["recruited"]
+        )
+        vm.isAuthenticated = true
+
+        // Case A: Submit check-in when POST /api/attendance/check-in returns 504
+        // Must NOT call GET /api/attendance/history and must preserve record in outbox
+        MockURLProtocol.resetRecordedUrls()
+        MockURLProtocol.requestHandler = { req in
+            let url = req.url?.absoluteString ?? ""
+            if url.contains("/api/attendance/check-in") {
+                return MockURLProtocol.jsonResponse(req, statusCode: 504, json: #"{"ok":false,"code":"GATEWAY_TIMEOUT"}"#)
+            }
+            if url.contains("/api/attendance/time") {
+                return MockURLProtocol.jsonResponse(req, statusCode: 504, json: #"{"ok":false,"code":"GATEWAY_TIMEOUT"}"#)
+            }
+            return MockURLProtocol.jsonResponse(req, statusCode: 200, json: #"{"ok":true,"data":{}}"#)
+        }
+
+        let testPhoto = try makeSolidTestJpeg(color: .systemRed, size: CGSize(width: 320, height: 320))
+        await vm.submitAttendanceCheckIn(
+            lat: 21.0285,
+            lng: 105.8542,
+            accuracyM: 10.0,
+            photoData: testPhoto,
+            note: "Ca sáng"
+        )
+        XCTAssertEqual(vm.attendancePendingCount, 1)
+        XCTAssertFalse(MockURLProtocol.recordedUrls().contains(where: { $0.contains("/api/attendance/history") }))
+        XCTAssertEqual(vm.outboxBackoffAttempt, 1)
+
+        // Case B: When time anchor is valid and attendancePendingCount > 0,
+        // timer auto-sync (`syncAttendanceTimeAnchorOnly(force: false, isAutomatic: true)`) and Camera gate
+        // must fire ZERO requests (neither /time, /check-in, nor /history).
+        anchorManager.seedAnchorForTesting(
+            ServerTimeAnchor(
+                serverEpochMsAtSync: 1_762_700_000_000,
+                serverNowIso: "2026-11-10T08:00:00.000+07:00",
+                syncedElapsedRealtimeMs: 500_000,
+                syncedDeviceEpochMs: 1_762_700_000_000,
+                timeToken: "tok-valid",
+                expiresAtEpochMs: 1_762_700_000_000 + 3_600_000,
+                bootSessionId: "boot-hotfix-split"
+            )
+        )
+        MockURLProtocol.resetRecordedUrls()
+        for tick in 1...4 {
+            fakeClock.monoMs += Int64(tick * 15_000)
+            let ok = await vm.syncAttendanceTimeAnchorOnly(force: false, isAutomatic: true)
+            XCTAssertTrue(ok)
+        }
+        XCTAssertTrue(MockURLProtocol.recordedUrls().isEmpty, "15s timer with valid anchor and pending outbox must fire 0 requests")
+
+        // Case C: When GET /api/attendance/time fails with 504 on initial load,
+        // it must NOT chain POST /api/attendance/check-in or GET /api/attendance/history.
+        anchorManager.clearAnchor()
+        MockURLProtocol.resetRecordedUrls()
+        await vm.loadInitialAttendanceScreenDataIfNeeded()
+        let urlsAfterTime504 = MockURLProtocol.recordedUrls()
+        XCTAssertEqual(urlsAfterTime504.filter { $0.contains("/api/attendance/time") }.count, 1)
+        XCTAssertFalse(urlsAfterTime504.contains(where: { $0.contains("/api/attendance/check-in") }))
+        XCTAssertFalse(urlsAfterTime504.contains(where: { $0.contains("/api/attendance/history") }))
+
+        // Case D: Manual/auto outbox flush when check-in fails with 504 sets and resets `isSyncingAttendance`
+        // and does NOT call GET /api/attendance/history.
+        MockURLProtocol.resetRecordedUrls()
+        XCTAssertFalse(vm.isSyncingAttendance)
+        await vm.flushAttendanceOutboxNow()
+        XCTAssertFalse(vm.isSyncingAttendance, "isSyncingAttendance must be reset to false after failure")
+        XCTAssertEqual(MockURLProtocol.recordedUrls().filter { $0.contains("/api/attendance/check-in") }.count, 1)
+        XCTAssertFalse(MockURLProtocol.recordedUrls().contains(where: { $0.contains("/api/attendance/history") }))
+        XCTAssertEqual(vm.attendancePendingCount, 1, "Outbox item must remain preserved for later retry")
+    }
+
+    @MainActor
+    func testMustFix3_DefaultScreenOnLoginAndSessionRestoreIsAttendanceWithZeroBackgroundDashboardCalls() async throws {
+        MockURLProtocol.resetRecordedUrls()
+        MockURLProtocol.requestHandler = { req in
+            let url = req.url?.absoluteString ?? ""
+            if url.contains("/api/auth/session") || url.contains("/api/direct-entry/session") {
+                return MockURLProtocol.jsonResponse(
+                    req,
+                    statusCode: 200,
+                    json: """
+                    {
+                      "ok": true,
+                      "actor": {
+                        "app_user_id": "11111111-1111-4111-8111-111111111111",
+                        "display_name": "Nhân sự Mặc Định",
+                        "capabilities": ["entry_read", "entry_create", "submission_create"],
+                        "scopes": [{"scope_kind": "own", "project_id": null}],
+                        "allowed_worker_tabs": ["uploader", "recruited"]
+                      }
+                    }
+                    """
+                )
+            }
+            if url.contains("/api/attendance/time") {
+                return MockURLProtocol.jsonResponse(
+                    req,
+                    statusCode: 200,
+                    json: #"{"ok":true,"data":{"server_epoch_ms":1762700000000,"server_now":"2026-11-10T08:00:00.000+07:00","time_token":"tok-init","expires_at_epoch_ms":1762743200000}}"#
+                )
+            }
+            if url.contains("/api/attendance/history") {
+                return MockURLProtocol.jsonResponse(req, statusCode: 200, json: #"{"ok":true,"data":{"items":[],"total":0}}"#)
+            }
+            return MockURLProtocol.jsonResponse(req, statusCode: 200, json: #"{"ok":true,"data":{}}"#)
+        }
+
+        let client = makeMockBackendClient()
+        let keychain = KeychainStore(serviceName: "com.aistudio.minibi.mf3.\(UUID().uuidString)")
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("outbox_mf3_\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let anchorManager = AttendanceTimeAnchorManager(httpClient: client, keychain: keychain)
+        let outboxService = AttendanceOutboxService(
+            httpClient: client,
+            timeAnchorManager: anchorManager,
+            customStorageDirectory: tempDir
+        )
+        let vm = MiniBiViewModel(
+            repository: MiniBiRepository(httpClient: client, keychain: keychain),
+            directEntryService: DirectEntryService(httpClient: client),
+            workReportsService: WorkReportsAndReportingService(httpClient: client),
+            attendanceOutboxService: outboxService,
+            timeAnchorManager: anchorManager,
+            notificationService: NotificationService(httpClient: client),
+            leaveService: LeaveService(httpClient: client),
+            attendanceExplanationService: AttendanceExplanationService(httpClient: client),
+            salaryAdvanceService: SalaryAdvanceService(httpClient: client),
+            recruitmentPostService: RecruitmentPostService(httpClient: client)
+        )
+
+        // 1. Default destination before and after session establishment is `.attendance`
+        XCTAssertEqual(vm.currentDestination, .attendance)
+        let user = MiniBiUser(
+            id: "11111111-1111-4111-8111-111111111111",
+            username: "worker.default",
+            fullName: "Nhân sự Mặc Định",
+            role: "TD",
+            roleLabel: "Tuyển dụng",
+            capabilities: ["entry_read", "entry_create", "submission_create"],
+            allowedWorkerTabs: ["uploader", "recruited"]
+        )
+        vm.onAuthenticatedSessionEstablished(user: user)
+        XCTAssertEqual(vm.currentDestination, .attendance)
+
+        // Simulate AttendanceScreen.onAppear + navigateTo(.attendance) firing simultaneously
+        await vm.loadInitialAttendanceScreenDataIfNeeded()
+        vm.navigateTo(.attendance)
+        await vm.loadInitialAttendanceScreenDataIfNeeded()
+
+        let recordedAfterOpen = MockURLProtocol.recordedUrls()
+        // Zero Dashboard endpoints called on app open / login!
+        XCTAssertFalse(recordedAfterOpen.contains(where: { $0.contains("/api/reporting/") }))
+        XCTAssertFalse(recordedAfterOpen.contains(where: { $0.contains("/api/cccd-review") }))
+        // Initial Attendance time anchor and history each called at most once!
+        XCTAssertEqual(recordedAfterOpen.filter { $0.contains("/api/attendance/time") }.count, 1)
+        XCTAssertEqual(recordedAfterOpen.filter { $0.contains("/api/attendance/history") }.count, 1)
+
+        // 2. Switching to another tab and returning from background keeps current tab
+        vm.navigateTo(.recruitment)
+        XCTAssertEqual(vm.currentDestination, .recruitment)
+        _ = await vm.syncAttendanceTimeAnchorOnly(force: false, isAutomatic: true)
+        XCTAssertEqual(vm.currentDestination, .recruitment)
+
+        // 3. Switching to `.dashboard` loads Dashboard data lazily on demand
+        vm.navigateTo(.dashboard)
+        XCTAssertEqual(vm.currentDestination, .dashboard)
+        try await waitForRecordedUrl(containing: "/api/reporting/overview")
     }
 }

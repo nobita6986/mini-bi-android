@@ -389,6 +389,28 @@ public enum AttendanceContract {
     }
 }
 
+public struct AttendanceOutboxFlushSummary: Equatable {
+    public let processedCount: Int
+    public let syncedCount: Int
+    public let retryableFailureCount: Int
+    public let remainingRetryableCount: Int
+    public let lastFailureHttpStatus: Int?
+
+    public init(
+        processedCount: Int,
+        syncedCount: Int,
+        retryableFailureCount: Int,
+        remainingRetryableCount: Int,
+        lastFailureHttpStatus: Int? = nil
+    ) {
+        self.processedCount = processedCount
+        self.syncedCount = syncedCount
+        self.retryableFailureCount = retryableFailureCount
+        self.remainingRetryableCount = remainingRetryableCount
+        self.lastFailureHttpStatus = lastFailureHttpStatus
+    }
+}
+
 public final class AttendanceOutboxService {
     public static let shared = AttendanceOutboxService()
 
@@ -438,16 +460,34 @@ public final class AttendanceOutboxService {
         recoverInterruptedUploads()
     }
 
-    public func startNetworkAutoFlush(userKeyProvider: @escaping () -> String?) {
+    public func startNetworkAutoFlush(
+        userKeyProvider: @escaping () -> String?,
+        customFlushHandler: (() async -> Void)? = nil
+    ) {
         stopNetworkAutoFlush()
         let monitor = NWPathMonitor()
+        var hasObservedInitialPath = false
+        var wasSatisfied = false
         monitor.pathUpdateHandler = { [weak self] path in
-            guard let self, path.status == .satisfied else { return }
+            guard let self else { return }
+            let isNowSatisfied = (path.status == .satisfied)
+            if !hasObservedInitialPath {
+                hasObservedInitialPath = true
+                wasSatisfied = isNowSatisfied
+                return
+            }
+            let transitionedToOnline = !wasSatisfied && isNowSatisfied
+            wasSatisfied = isNowSatisfied
+            guard transitionedToOnline else { return }
             guard let userKey = userKeyProvider(), !userKey.isEmpty else { return }
             Task {
-                let synced = await self.flushRetryableOutbox(userKey: userKey)
-                if synced > 0 {
-                    _ = await self.syncServerHistoryForUser(userKey: userKey)
+                if let customFlushHandler {
+                    await customFlushHandler()
+                } else {
+                    let summary = await self.flushRetryableOutboxWithSummary(userKey: userKey)
+                    if summary.syncedCount > 0 {
+                        _ = await self.syncServerHistoryForUser(userKey: userKey)
+                    }
                 }
             }
         }
@@ -544,20 +584,50 @@ public final class AttendanceOutboxService {
 
     // MARK: - Flush Retryable Outbox
 
-    public func flushRetryableOutbox(userKey: String) async -> Int {
+    public func flushRetryableOutboxWithSummary(userKey: String) async -> AttendanceOutboxFlushSummary {
         recoverInterruptedUploads()
         let candidates = listItemsForUser(userKey: userKey).filter {
             AttendanceContract.isRetryableStatus($0.status)
         }.sorted { $0.createdAtEpochMs < $1.createdAtEpochMs }
 
+        var processedCount = 0
         var syncedCount = 0
+        var retryableFailureCount = 0
+        var lastFailureHttpStatus: Int?
+
         for candidate in candidates {
+            processedCount += 1
             let result = await processSingleOutboxItem(localId: candidate.localId)
-            if case .success(let updated, _) = result, updated.status == AttendanceContract.statusSynced {
-                syncedCount += 1
+            switch result {
+            case .success(let updated, _):
+                if updated.status == AttendanceContract.statusSynced {
+                    syncedCount += 1
+                }
+            case .failure(_, let httpStatus, _, _):
+                let current = getItem(localId: candidate.localId)
+                let isRetryable = current.map { AttendanceContract.isRetryableStatus($0.status) }
+                    ?? AttendanceRetryBackoffPolicy.isRetryableFailure(httpStatus: httpStatus)
+                if isRetryable {
+                    retryableFailureCount += 1
+                    lastFailureHttpStatus = httpStatus
+                    break
+                }
             }
         }
-        return syncedCount
+
+        let remainingRetryableCount = pendingCountForUser(userKey: userKey)
+        return AttendanceOutboxFlushSummary(
+            processedCount: processedCount,
+            syncedCount: syncedCount,
+            retryableFailureCount: retryableFailureCount,
+            remainingRetryableCount: remainingRetryableCount,
+            lastFailureHttpStatus: lastFailureHttpStatus
+        )
+    }
+
+    public func flushRetryableOutbox(userKey: String) async -> Int {
+        let summary = await flushRetryableOutboxWithSummary(userKey: userKey)
+        return summary.syncedCount
     }
 
     // MARK: - Process Single Item

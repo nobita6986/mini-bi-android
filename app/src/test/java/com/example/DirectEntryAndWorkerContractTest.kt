@@ -2490,6 +2490,19 @@ class DirectEntryAndWorkerContractTest {
         assertEquals("280.000 đ", detailVm.section3CompensationBenefits.dayShift8hVndDisplay)
 
         // Pagination query builder & deduplication by brief_id
+        assertEquals(10, com.example.data.RecruitmentPostContract.DEFAULT_PAGE_SIZE)
+        assertEquals(10, com.example.data.RecruitmentPostContract.MAX_PAGE_SIZE)
+        assertEquals(
+            "/api/recruitment-posts?page_size=10",
+            com.example.data.RecruitmentPostContract.buildListPath()
+        )
+        assertEquals(
+            "/api/recruitment-posts?page_size=10",
+            com.example.data.RecruitmentPostContract.buildListPath(pageSize = 20)
+        )
+        assertFalse(
+            com.example.data.RecruitmentPostContract.buildListPath(pageSize = 20).contains("page_size=20")
+        )
         assertEquals(
             "/api/recruitment-posts?page_size=10",
             com.example.data.RecruitmentPostContract.buildListPath(pageSize = 10)

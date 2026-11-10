@@ -1,13 +1,19 @@
 package com.example
 
+import android.app.Application
 import android.content.Context
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
+import androidx.work.BackoffPolicy
+import androidx.work.ExistingWorkPolicy
+import androidx.work.ListenableWorker
+import androidx.work.WorkerParameters
 import com.example.data.ActorScope
 import com.example.data.AppActor
 import com.example.data.AttendanceContract
 import com.example.data.AttendanceOutboxService
 import com.example.data.AttendanceOutboxStatus
+import com.example.data.AttendanceSyncWorker
 import com.example.data.AttendanceTimeAnchorManager
 import com.example.data.AttendanceTimeSource
 import com.example.data.BackendApiException
@@ -15,6 +21,9 @@ import com.example.data.BackendFailureKind
 import com.example.data.MiniBiDatabase
 import com.example.data.MiniBiRepository
 import com.example.data.TimeAnchorInvalidReason
+import com.example.ui.MainDestination
+import com.example.ui.MiniBiViewModel
+import com.example.ui.resolveDefaultLandingDestination
 import kotlinx.coroutines.runBlocking
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
@@ -707,5 +716,208 @@ class AttendanceServerTimeAlignmentTest {
         val actorAFlush = service.flushRetryableOutbox(appUserId = actorA.appUserId)
         assertEquals(1, actorAFlush.syncedCount)
         assertEquals(AttendanceOutboxStatus.SYNCED, database.miniBiDao().getAttendanceById(actorAQueued.record.id)!!.syncStatus)
+    }
+
+    // -------------------------------------------------------------------------
+    // 7. Must Fix 2: WorkManager KEEP policy, initialDelay >= 30s, exponential
+    //    backoff 30s, shared repository/cookieJar, no history on check-in failure
+    // -------------------------------------------------------------------------
+    @Test
+    fun `workmanager outbox scheduling enforces KEEP policy, initialDelay at least 30s, exponential backoff 30s, shared repository, and no re-enqueue or history on failure`() = runBlocking {
+        AttendanceOutboxService.clearEnqueuedWorkHistoryForTest()
+        val repo = createRepository()
+        MiniBiRepository.testSharedInstanceOverride = repo
+        try {
+            // 1. Verify shared repository & cookieJar between ViewModel and Worker
+            val sharedRepo = MiniBiRepository.getSharedInstance(context)
+            assertTrue("getSharedInstance must return the shared repository", sharedRepo === repo)
+            assertTrue("Shared repository must share the exact same CookieJar instance", sharedRepo.cookieJar === repo.cookieJar)
+
+            // 2. Verify WorkManager request specification: KEEP, initialDelay >= 30s, EXPONENTIAL 30s, per-user unique name
+            val enqueued = AttendanceOutboxService.enqueueDurableOutboxWork(context, actorA.appUserId)
+            assertEquals(AttendanceContract.buildUniqueOutboxWorkName(actorA.appUserId), enqueued.uniqueWorkName)
+            assertEquals(ExistingWorkPolicy.KEEP, enqueued.existingWorkPolicy)
+            assertTrue("initialDelayMillis must be >= 30_000ms", enqueued.initialDelayMillis >= 30_000L)
+            assertEquals(BackoffPolicy.EXPONENTIAL, enqueued.backoffPolicy)
+            assertEquals(30_000L, enqueued.backoffDelayMillis)
+
+            // 3. Foreground check-in failure schedules durable work once (KEEP + >= 30s) and does NOT call /api/attendance/history
+            AttendanceOutboxService.clearEnqueuedWorkHistoryForTest()
+            val serviceWithRealScheduler = AttendanceOutboxService(
+                context = context,
+                httpClient = repo.httpClient,
+                dao = database.miniBiDao(),
+                timeAnchorManager = repo.attendanceTimeAnchorManager,
+                isNetworkAvailable = { true }
+            )
+            server.enqueue(MockResponse().setResponseCode(504).setBody("""{"ok":false,"code":"GATEWAY_TIMEOUT"}"""))
+            val failedCheckIn = serviceWithRealScheduler.submitCheckIn(
+                actor = actorA,
+                latitude = 21.0285,
+                longitude = 105.8542,
+                accuracyMeters = 8.0f,
+                addressHint = "Hà Nội",
+                sourcePhotoFile = createPhotoFile("mf2_fail.jpg"),
+                sourcePhotoUri = null,
+                note = "Test 504"
+            )
+            assertFalse(failedCheckIn.isSynced)
+            assertEquals(AttendanceOutboxStatus.RETRYABLE_ERROR, failedCheckIn.record.syncStatus)
+            val scheduledAfterFailure = AttendanceOutboxService.getEnqueuedWorkHistoryForTest()
+            assertEquals(1, scheduledAfterFailure.size)
+            assertEquals(ExistingWorkPolicy.KEEP, scheduledAfterFailure.single().existingWorkPolicy)
+            assertTrue(scheduledAfterFailure.single().initialDelayMillis >= 30_000L)
+
+            // 4. Worker execution on transient failure: must NOT re-enqueue a new OneTimeWorkRequest and must NOT call /api/attendance/history
+            AttendanceOutboxService.clearEnqueuedWorkHistoryForTest()
+            val reqCountBeforeWorkerFlush = server.requestCount
+            server.enqueue(MockResponse().setResponseCode(504).setBody("""{"ok":false,"code":"GATEWAY_TIMEOUT"}"""))
+            val workerFlushSummary = serviceWithRealScheduler.flushRetryableOutbox(
+                appUserId = actorA.appUserId,
+                scheduleWorkOnFailure = false
+            )
+            assertEquals(1, workerFlushSummary.remainingRetryableCount)
+            assertEquals(0, workerFlushSummary.syncedCount)
+            assertTrue(
+                "Worker failure path must NEVER re-enqueue another OneTimeWorkRequest",
+                AttendanceOutboxService.getEnqueuedWorkHistoryForTest().isEmpty()
+            )
+            assertEquals(
+                "Worker failure path must only call POST /api/attendance/check-in and NEVER call /api/attendance/history",
+                1,
+                server.requestCount - reqCountBeforeWorkerFlush
+            )
+            val workerReq = server.takeRequest()
+            assertEquals("/api/attendance/check-in", workerReq.path)
+        } finally {
+            MiniBiRepository.testSharedInstanceOverride = null
+            AttendanceOutboxService.clearEnqueuedWorkHistoryForTest()
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // 8. Must Fix 3: Default destination on login/cold start is ATTENDANCE
+    //    with zero background Dashboard calls and strict failure gates
+    // -------------------------------------------------------------------------
+    @Test
+    fun `default landing destination is ATTENDANCE with zero background dashboard requests and strict time failure gate`() = runBlocking {
+        assertEquals(MainDestination.ATTENDANCE, resolveDefaultLandingDestination(actorA))
+
+        val repo = createRepository()
+        val app = context.applicationContext as Application
+
+        // Enqueue responses for bootstrapSession + time anchor 504 + leave/explanations
+        val recordedPaths = java.util.Collections.synchronizedList(mutableListOf<String>())
+        server.dispatcher = object : okhttp3.mockwebserver.Dispatcher() {
+            override fun dispatch(request: okhttp3.mockwebserver.RecordedRequest): MockResponse {
+                val path = request.path.orEmpty()
+                recordedPaths.add(path)
+                return when {
+                    path.startsWith("/api/auth/session") || path.startsWith("/api/direct-entry/session") ->
+                        MockResponse().setResponseCode(200).setBody(
+                            """
+                            {
+                              "ok": true,
+                              "actor": {
+                                "app_user_id": "${actorA.appUserId}",
+                                "display_name": "${actorA.displayName}",
+                                "capabilities": ["entry_read", "entry_create", "submission_create"],
+                                "scopes": [{"kind": "own", "reference": "${actorA.appUserId}", "valid_from": "2026-01-01", "valid_to": null}],
+                                "allowed_worker_tabs": ["uploader", "recruited"]
+                              }
+                            }
+                            """.trimIndent()
+                        )
+                    path.startsWith("/api/attendance/time") ->
+                        MockResponse().setResponseCode(504).setBody("""{"ok":false,"code":"GATEWAY_TIMEOUT"}""")
+                    path.startsWith("/api/leave/me") ->
+                        MockResponse().setResponseCode(200).setBody(
+                            """
+                            {
+                              "ok": true,
+                              "data": {
+                                "authority": {
+                                  "app_user_id": "${actorA.appUserId}",
+                                  "can_submit_leave": false,
+                                  "can_approve_requests": false,
+                                  "is_shared_non_employee": false
+                                },
+                                "year": 2026,
+                                "requests": []
+                              }
+                            }
+                            """.trimIndent()
+                        )
+                    path.startsWith("/api/attendance/explanations") ->
+                        MockResponse().setResponseCode(200).setBody(
+                            """
+                            {
+                              "ok": true,
+                              "data": {
+                                "viewer": {
+                                  "app_user_id": "${actorA.appUserId}",
+                                  "can_submit_explanation": false,
+                                  "can_approve_explanations": false,
+                                  "is_shared_non_employee": false
+                                },
+                                "business_date": "2026-11-10",
+                                "slots": [],
+                                "items": []
+                              }
+                            }
+                            """.trimIndent()
+                        )
+                    else ->
+                        MockResponse().setResponseCode(200).setBody("""{"ok":true,"data":{}}""")
+                }
+            }
+        }
+
+        val vm = MiniBiViewModel(app, repo)
+        try {
+            assertEquals(MainDestination.ATTENDANCE, vm.currentDestination.value)
+
+            // Wait for bootstrapSession + initial Attendance load to settle (pumping Robolectric MainLooper)
+            val deadline = System.currentTimeMillis() + 5_000L
+            while (
+                (vm.sessionBootstrapping.value || !recordedPaths.any { it.startsWith("/api/attendance/time") }) &&
+                System.currentTimeMillis() < deadline
+            ) {
+                org.robolectric.shadows.ShadowLooper.idleMainLooper()
+                Thread.sleep(20)
+            }
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            // Also simulate AttendanceScreen LaunchedEffect + navigateTo(ATTENDANCE) firing
+            vm.ensureAttendanceInitialLoaded(actor = vm.currentActor.value, forceTimeAnchor = false)
+            vm.navigateTo(MainDestination.ATTENDANCE)
+            repeat(5) {
+                org.robolectric.shadows.ShadowLooper.idleMainLooper()
+                Thread.sleep(20)
+            }
+
+            assertEquals(MainDestination.ATTENDANCE, vm.currentDestination.value)
+            val snapshotPaths = recordedPaths.toList()
+            // Zero Dashboard endpoints requested on cold start / login!
+            assertFalse(
+                "Dashboard overview must NOT be loaded in background on cold start: $snapshotPaths",
+                snapshotPaths.any { it.contains("/api/reporting/") || it.contains("/api/cccd-review") }
+            )
+            // Because /api/attendance/time returned 504, neither check-in nor history may be chained!
+            assertEquals(
+                "Initial Attendance load must only call /api/attendance/time once across bootstrap + LaunchedEffect + navigateTo",
+                1,
+                snapshotPaths.count { it.startsWith("/api/attendance/time") }
+            )
+            assertFalse(
+                "When /api/attendance/time fails with 504, /api/attendance/check-in must NOT be called",
+                snapshotPaths.any { it.startsWith("/api/attendance/check-in") }
+            )
+            assertFalse(
+                "When /api/attendance/time fails with 504, /api/attendance/history must NOT be called",
+                snapshotPaths.any { it.startsWith("/api/attendance/history") }
+            )
+        } finally {
+            vm.cancelScopeForTest()
+        }
     }
 }

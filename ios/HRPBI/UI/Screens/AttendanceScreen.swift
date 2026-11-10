@@ -171,9 +171,7 @@ public struct AttendanceScreen: View {
             locationManager.requestLocationUpdate()
             lastAutoTimeSyncAttemptSec = Date().timeIntervalSince1970
             Task {
-                await viewModel.syncAttendanceTimeAnchor()
-                await viewModel.refreshMyLeaveSummary(year: viewModel.leaveYear)
-                await viewModel.refreshMyAttendanceExplanations()
+                await viewModel.loadInitialAttendanceScreenDataIfNeeded()
             }
         }
         .onChange(of: scenePhase) { newPhase in
@@ -181,7 +179,7 @@ public struct AttendanceScreen: View {
             locationManager.requestLocationUpdate()
             lastAutoTimeSyncAttemptSec = Date().timeIntervalSince1970
             Task {
-                await viewModel.syncAttendanceTimeAnchor()
+                _ = await viewModel.syncAttendanceTimeAnchorOnly(force: false, isAutomatic: true)
             }
         }
         .onReceive(liveClockTimer) { now in
@@ -189,12 +187,13 @@ public struct AttendanceScreen: View {
             viewModel.refreshAttendanceTimeEvaluation()
             let eval = viewModel.attendanceTimeEvaluation
             let nowSec = now.timeIntervalSince1970
-            let hasPendingOutbox = viewModel.attendancePendingCount > 0 && !viewModel.isSubmittingAttendance && !viewModel.isSyncingAttendance
-            let needsSync = !eval.isTrusted || (eval.remainingValidMs ?? 0) <= AttendanceTimeContract.refreshBeforeExpiryMs || hasPendingOutbox
-            if needsSync && (nowSec - lastAutoTimeSyncAttemptSec >= 15.0) {
+            let needsTimeAnchorRefresh = !eval.isTrusted || (eval.remainingValidMs ?? 0) <= AttendanceTimeContract.refreshBeforeExpiryMs
+            if needsTimeAnchorRefresh
+                && viewModel.canAttemptTimeAnchorAutoSync()
+                && (nowSec - lastAutoTimeSyncAttemptSec >= 15.0) {
                 lastAutoTimeSyncAttemptSec = nowSec
                 Task {
-                    await viewModel.syncAttendanceTimeAnchor()
+                    _ = await viewModel.syncAttendanceTimeAnchorOnly(force: false, isAutomatic: true)
                 }
             }
         }
@@ -206,7 +205,7 @@ public struct AttendanceScreen: View {
                 frozenCaptureTimestamp = viewModel.timeAnchorManager.resolveCaptureTime()
                 if !viewModel.timeAnchorManager.evaluateAnchor().isTrusted {
                     Task {
-                        await viewModel.syncAttendanceTimeAnchor()
+                        _ = await viewModel.syncAttendanceTimeAnchorOnly(force: false, isAutomatic: true)
                         if viewModel.timeAnchorManager.evaluateAnchor().isTrusted {
                             frozenCaptureTimestamp = viewModel.timeAnchorManager.resolveCaptureTime()
                         }
@@ -445,7 +444,9 @@ public struct AttendanceScreen: View {
                     // Photo Capture Row (Live Camera Only — matches Android 100%, freezes timestamp immediately upon capture)
                     Button {
                         locationManager.requestLocationUpdate()
-                        Task { await viewModel.syncAttendanceTimeAnchor() }
+                        if !viewModel.timeAnchorManager.evaluateAnchor().isTrusted {
+                            Task { _ = await viewModel.syncAttendanceTimeAnchorOnly(force: false, isAutomatic: true) }
+                        }
                         isShowingCamera = true
                     } label: {
                         HStack(spacing: 6) {

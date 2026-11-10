@@ -34,10 +34,19 @@ public final class MiniBiViewModel: ObservableObject {
     @Published public var loginErrorMessage: String?
 
     // MARK: - Navigation & Global Banner
-    @Published public var currentDestination: MiniBiNavDestination = .dashboard
+    @Published public var currentDestination: MiniBiNavDestination = .attendance
     @Published public var bannerMessage: String?
     @Published public var bannerIsError: Bool = false
     private var bannerDismissTask: Task<Void, Never>?
+    private var hasExplicitDestinationOverride: Bool = false
+    private var initialAttendanceLoadedGeneration: Int64?
+    public private(set) var hasLoadedAttendanceHistoryInSession: Bool = false
+    public private(set) var isSyncingTimeAnchor: Bool = false
+    public private(set) var timeAnchorBackoffAttempt: Int = 0
+    public private(set) var nextAllowedTimeAnchorSyncElapsedMs: Int64 = 0
+    public private(set) var outboxBackoffAttempt: Int = 0
+    public private(set) var nextAllowedOutboxFlushElapsedMs: Int64 = 0
+    public var backoffJitterProvider: () -> Double = { Double.random(in: 0.0...1.0) }
 
     // MARK: - Notifications (SSE + List)
     @Published public var notifications: [AppNotificationItem] = []
@@ -474,20 +483,33 @@ public final class MiniBiViewModel: ObservableObject {
         if destination == .newEntry && (!isAuthenticated || !canAccessNewWorkerEntry) {
             return
         }
+        if isAuthenticated && destination != .newEntry {
+            let allowed = MiniBiNavDestination.resolveMainNavigationDestinations(for: currentUser)
+            if !allowed.contains(destination) {
+                return
+            }
+        }
         let previousDestination = currentDestination
         if previousDestination == .recruitment && destination != .recruitment {
             cancelInFlightRecruitmentPostRequests()
             closeRecruitmentPostDetail()
         }
+        hasExplicitDestinationOverride = true
         currentDestination = destination
         if destination == .attendance {
             activeAttendanceTab = .checkIn
             if isAuthenticated {
                 Task {
-                    await syncAttendanceTimeAnchor()
-                    await refreshMyLeaveSummary(year: leaveYear)
-                    await refreshMyAttendanceExplanations()
+                    await loadInitialAttendanceScreenDataIfNeeded()
                 }
+            }
+        } else if destination == .dashboard {
+            if isAuthenticated
+                && !isLoadingDashboard
+                && generalOverview.kpis.totalHeadcount == 0
+                && workforceDeepMetrics.byProject.isEmpty
+                && teamReport.members.isEmpty {
+                Task { await loadDashboardData(includeCccdTabs: false) }
             }
         } else if destination == .workers {
             if salaryAdvanceSheetOpen {
@@ -587,6 +609,15 @@ public final class MiniBiViewModel: ObservableObject {
     private func resetSessionScopedState(clearDraftRows: Bool) {
         cancelAllSessionTasks()
         salaryAdvanceContextLoadedGeneration = nil
+        initialAttendanceLoadedGeneration = nil
+        hasLoadedAttendanceHistoryInSession = false
+        isSyncingTimeAnchor = false
+        isSyncingAttendance = false
+        isSubmittingAttendance = false
+        timeAnchorBackoffAttempt = 0
+        nextAllowedTimeAnchorSyncElapsedMs = 0
+        outboxBackoffAttempt = 0
+        nextAllowedOutboxFlushElapsedMs = 0
         ownSubmissionsFetchGeneration &+= 1
         openDirectEditGeneration &+= 1
         selectedWorkerScope = ""
@@ -649,6 +680,15 @@ public final class MiniBiViewModel: ObservableObject {
         } else {
             cancelAllSessionTasks()
             salaryAdvanceContextLoadedGeneration = nil
+            initialAttendanceLoadedGeneration = nil
+            hasLoadedAttendanceHistoryInSession = false
+            isSyncingTimeAnchor = false
+            isSyncingAttendance = false
+            isSubmittingAttendance = false
+            timeAnchorBackoffAttempt = 0
+            nextAllowedTimeAnchorSyncElapsedMs = 0
+            outboxBackoffAttempt = 0
+            nextAllowedOutboxFlushElapsedMs = 0
             ownSubmissionsFetchGeneration &+= 1
             openDirectEditGeneration &+= 1
             workers = []
@@ -665,7 +705,15 @@ public final class MiniBiViewModel: ObservableObject {
         currentUser = user
         selectedWorkerScope = Self.resolveVisibleWorkerTabs(for: user).first?.key ?? ""
         isAuthenticated = true
-        currentDestination = .dashboard
+        let allowedDestinations = MiniBiNavDestination.resolveMainNavigationDestinations(for: user)
+        if hasExplicitDestinationOverride
+            && (allowedDestinations.contains(currentDestination)
+                || (currentDestination == .newEntry && user.canAccessNewWorkerEntry)) {
+            // Preserve deep-link / notification destination selected prior to session establishment
+        } else {
+            hasExplicitDestinationOverride = false
+            currentDestination = MiniBiNavDestination.resolveDefaultDestination(for: user)
+        }
 
         // Ensure at least 1 draft row is ready for "Cấp mới"
         if newWorkerDraftRows.isEmpty {
@@ -673,9 +721,15 @@ public final class MiniBiViewModel: ObservableObject {
         }
 
         attendanceOutboxItems = attendanceOutboxService.listItemsForUser(userKey: user.username)
-        attendanceOutboxService.startNetworkAutoFlush { [weak self] in
-            self?.currentUser?.username
-        }
+        attendanceOutboxService.startNetworkAutoFlush(
+            userKeyProvider: { [weak self] in
+                self?.currentUser?.username
+            },
+            customFlushHandler: { [weak self] in
+                guard let self else { return }
+                _ = await self.flushAttendanceOutboxOnly(isManual: false)
+            }
+        )
 
         notificationService.startSseStream { [weak self] incomingItem in
             Task { @MainActor [weak self] in
@@ -697,15 +751,35 @@ public final class MiniBiViewModel: ObservableObject {
             }
         }
 
-        // Never eagerly load `/api/direct-entry/catalog`, `/api/salary-advance/context`, or `/api/work-reports/*` at login/resume.
+        // Never eagerly load `/api/direct-entry/catalog`, `/api/salary-advance/context`, `/api/work-reports/*`, or Dashboard data when opening into `Chấm công`.
         let token = captureSessionToken()
+        let initialDest = currentDestination
         Task { [weak self] in
             guard let self, self.isSessionValid(token) else { return }
-            await self.syncAttendanceTimeAnchor()
-            guard self.isSessionValid(token) else { return }
             await self.refreshNotifications()
             guard self.isSessionValid(token) else { return }
-            await self.loadDashboardData(includeCccdTabs: false)
+            switch initialDest {
+            case .attendance:
+                await self.loadInitialAttendanceScreenDataIfNeeded()
+            case .dashboard:
+                await self.loadDashboardData(includeCccdTabs: false)
+            case .workReports:
+                if self.workReportObligations.isEmpty {
+                    await self.loadWorkReportsData()
+                }
+            case .workers:
+                if self.currentUser?.canAttemptPmSalaryAdvanceContext == true {
+                    await self.loadSalaryAdvanceContext()
+                }
+            case .recruitment:
+                if self.recruitmentPosts.isEmpty {
+                    await self.loadRecruitmentPosts(reset: true)
+                }
+            case .newEntry:
+                if self.currentUser?.canLoadDirectEntryCatalog == true && self.directEntryOptions.catalogProjects.isEmpty {
+                    await self.loadDirectEntryAssigneeOptions()
+                }
+            }
         }
     }
 
@@ -716,7 +790,8 @@ public final class MiniBiViewModel: ObservableObject {
         attendanceOutboxService.stopNetworkAutoFlush()
         isAuthenticated = false
         currentUser = nil
-        currentDestination = .dashboard
+        hasExplicitDestinationOverride = false
+        currentDestination = .attendance
         resetSessionScopedState(clearDraftRows: true)
         await repository.logout()
         timeAnchorManager.clearAnchor()
@@ -793,6 +868,7 @@ public final class MiniBiViewModel: ObservableObject {
         let routeLower = (item.targetRoute ?? "").lowercased()
 
         if typeUpper.contains("WORK_REPORT") || routeLower.contains("work-report") {
+            hasExplicitDestinationOverride = true
             currentDestination = .workReports
             await loadWorkReportsData()
             if let entityIdStr = item.targetEntityId, let obId = Int64(entityIdStr) {
@@ -801,10 +877,12 @@ public final class MiniBiViewModel: ObservableObject {
                 }
             }
         } else if typeUpper.contains("CCCD") || routeLower.contains("cccd") {
+            hasExplicitDestinationOverride = true
             currentDestination = .dashboard
             selectedDashboardSubTab = .cccdReview
             await loadCccdReviewItems()
         } else if typeUpper.contains("LEAVE") || routeLower.contains("leave") {
+            hasExplicitDestinationOverride = true
             currentDestination = .attendance
             await refreshMyLeaveSummary(year: leaveYear)
             if (typeUpper.contains("APPROV") || routeLower.contains("approv")),
@@ -815,10 +893,12 @@ public final class MiniBiViewModel: ObservableObject {
                 selectAttendanceTab(.leaveRequest)
             }
         } else if typeUpper.contains("ATTENDANCE") || routeLower.contains("attendance") {
+            hasExplicitDestinationOverride = true
             currentDestination = .attendance
             activeAttendanceTab = .checkIn
         } else if typeUpper.contains("WORKER") || routeLower.contains("worker") {
             guard !visibleWorkerTabs.isEmpty else { return }
+            hasExplicitDestinationOverride = true
             currentDestination = .workers
             await loadWorkers(resetPage: true)
             if let maNld = item.targetEntityId, !maNld.isEmpty {
@@ -829,6 +909,7 @@ public final class MiniBiViewModel: ObservableObject {
             }
         } else if typeUpper.contains("DIRECT_ENTRY") || routeLower.contains("direct-entry") {
             guard canAccessNewWorkerEntry else { return }
+            hasExplicitDestinationOverride = true
             currentDestination = .newEntry
             await loadDirectEntryBatchHistory()
         }
@@ -2851,25 +2932,196 @@ public final class MiniBiViewModel: ObservableObject {
         attendanceTimeEvaluation = timeAnchorManager.evaluateAnchor()
     }
 
+    public func canAttemptTimeAnchorAutoSync() -> Bool {
+        !isSyncingTimeAnchor && timeAnchorManager.clock.elapsedRealtimeMs() >= nextAllowedTimeAnchorSyncElapsedMs
+    }
+
+    public func canAttemptOutboxAutoFlush() -> Bool {
+        !isSyncingAttendance && !isSubmittingAttendance && timeAnchorManager.clock.elapsedRealtimeMs() >= nextAllowedOutboxFlushElapsedMs
+    }
+
+    private func recordTimeAnchorSyncSuccess() {
+        timeAnchorBackoffAttempt = 0
+        nextAllowedTimeAnchorSyncElapsedMs = 0
+    }
+
+    private func recordTimeAnchorSyncFailure(httpStatus: Int?) {
+        guard AttendanceRetryBackoffPolicy.isRetryableFailure(httpStatus: httpStatus) else { return }
+        timeAnchorBackoffAttempt += 1
+        let delayMs = AttendanceRetryBackoffPolicy.computeDelayMs(
+            attempt: timeAnchorBackoffAttempt,
+            jitterSample: backoffJitterProvider()
+        )
+        nextAllowedTimeAnchorSyncElapsedMs = timeAnchorManager.clock.elapsedRealtimeMs() + delayMs
+    }
+
+    private func recordOutboxFlushSuccess() {
+        outboxBackoffAttempt = 0
+        nextAllowedOutboxFlushElapsedMs = 0
+    }
+
+    private func recordOutboxFlushFailure(httpStatus: Int?) {
+        guard AttendanceRetryBackoffPolicy.isRetryableFailure(httpStatus: httpStatus) else { return }
+        outboxBackoffAttempt += 1
+        let delayMs = AttendanceRetryBackoffPolicy.computeDelayMs(
+            attempt: outboxBackoffAttempt,
+            jitterSample: backoffJitterProvider()
+        )
+        nextAllowedOutboxFlushElapsedMs = timeAnchorManager.clock.elapsedRealtimeMs() + delayMs
+    }
+
+    /// Operation 1 (isolated): Synchronizes the server time anchor (`GET /api/attendance/time`) ONLY.
+    /// Never chains check-in (`POST /api/attendance/check-in`) or history (`GET /api/attendance/history`).
+    @discardableResult
+    public func syncAttendanceTimeAnchorOnly(force: Bool = false, isAutomatic: Bool = false) async -> Bool {
+        guard let token = captureSessionToken() else { return false }
+        if isAutomatic && !canAttemptTimeAnchorAutoSync() {
+            return false
+        }
+        if !force {
+            let eval = timeAnchorManager.evaluateAnchor()
+            if eval.isTrusted, let remaining = eval.remainingValidMs, remaining > AttendanceTimeContract.refreshBeforeExpiryMs {
+                attendanceTimeEvaluation = eval
+                return true
+            }
+        }
+        guard !isSyncingTimeAnchor else { return false }
+        isSyncingTimeAnchor = true
+        defer {
+            isSyncingTimeAnchor = false
+        }
+
+        let res = await timeAnchorManager.syncTimeAnchor()
+        guard !Task.isCancelled, isSessionValid(token) else { return false }
+        attendanceTimeEvaluation = timeAnchorManager.evaluateAnchor()
+
+        switch res {
+        case .success:
+            recordTimeAnchorSyncSuccess()
+            return true
+        case .failure(_, let httpStatus, _, _):
+            recordTimeAnchorSyncFailure(httpStatus: httpStatus)
+            return false
+        }
+    }
+
     public func syncAttendanceTimeAnchor() async {
+        _ = await syncAttendanceTimeAnchorOnly(force: true, isAutomatic: false)
+    }
+
+    /// Operation 2 (isolated): Flushes retryable offline outbox records (`POST /api/attendance/check-in`).
+    /// Only refreshes server history (`GET /api/attendance/history`) when at least one record is newly synced (`syncedCount > 0`).
+    /// Never refreshes history when check-in fails.
+    @discardableResult
+    public func flushAttendanceOutboxOnly(isManual: Bool = false) async -> AttendanceOutboxFlushSummary {
+        let emptySummary = AttendanceOutboxFlushSummary(
+            processedCount: 0,
+            syncedCount: 0,
+            retryableFailureCount: 0,
+            remainingRetryableCount: attendancePendingCount
+        )
+        guard let token = captureSessionToken(),
+              let userKey = currentUser?.username.trimmingCharacters(in: .whitespacesAndNewlines),
+              !userKey.isEmpty else {
+            return emptySummary
+        }
+        guard !isSyncingAttendance && !isSubmittingAttendance else {
+            return emptySummary
+        }
+        if !isManual && !canAttemptOutboxAutoFlush() {
+            return emptySummary
+        }
+        guard attendanceOutboxService.pendingCountForUser(userKey: userKey) > 0 else {
+            return emptySummary
+        }
+
+        isSyncingAttendance = true
+        defer {
+            isSyncingAttendance = false
+        }
+
+        let summary = await attendanceOutboxService.flushRetryableOutboxWithSummary(userKey: userKey)
+        guard !Task.isCancelled, isSessionValid(token) else {
+            return summary
+        }
+
+        if summary.retryableFailureCount > 0 {
+            recordOutboxFlushFailure(httpStatus: summary.lastFailureHttpStatus)
+        } else if summary.syncedCount > 0 && summary.remainingRetryableCount == 0 {
+            recordOutboxFlushSuccess()
+        }
+
+        attendanceOutboxItems = attendanceOutboxService.listItemsForUser(userKey: userKey)
+
+        if summary.syncedCount > 0 {
+            _ = await refreshAttendanceHistoryOnly(force: true)
+        }
+
+        return summary
+    }
+
+    /// Operation 3 (isolated): Refreshes server attendance history (`GET /api/attendance/history`).
+    @discardableResult
+    public func refreshAttendanceHistoryOnly(force: Bool = false) async -> Bool {
+        guard let token = captureSessionToken(),
+              let userKey = currentUser?.username.trimmingCharacters(in: .whitespacesAndNewlines),
+              !userKey.isEmpty else {
+            return false
+        }
+        if !force && hasLoadedAttendanceHistoryInSession {
+            return true
+        }
+        let histRes = await attendanceOutboxService.syncServerHistoryForUser(userKey: userKey)
+        guard !Task.isCancelled, isSessionValid(token) else { return false }
+        switch histRes {
+        case .success(let data, _):
+            hasLoadedAttendanceHistoryInSession = true
+            attendanceOutboxItems = data.items
+            todayServerAttendanceCount = data.todayCount
+            return true
+        case .failure:
+            attendanceOutboxItems = attendanceOutboxService.listItemsForUser(userKey: userKey)
+            return false
+        }
+    }
+
+    /// Deduplicated initial load flow for the `Chấm công` screen (at most once per authenticated session generation).
+    /// Respects strict failure gates:
+    /// - If `GET /api/attendance/time` fails -> does NOT call `check-in` or `history`.
+    /// - If `POST /api/attendance/check-in` fails -> does NOT call `history`.
+    public func loadInitialAttendanceScreenDataIfNeeded() async {
         guard captureSessionToken() != nil else { return }
-        await runDeduplicatedSessionTask(key: "attendance_time_anchor") { [weak self] token in
+        await runDeduplicatedSessionTask(key: "attendance_initial_load") { [weak self] token in
             guard let self, self.isSessionValid(token) else { return }
-            _ = await self.timeAnchorManager.syncTimeAnchor()
-            guard !Task.isCancelled, self.isSessionValid(token) else { return }
-            self.attendanceTimeEvaluation = self.timeAnchorManager.evaluateAnchor()
-            if let username = self.currentUser?.username, !username.isEmpty {
-                if self.attendanceOutboxService.pendingCountForUser(userKey: username) > 0 {
-                    _ = await self.attendanceOutboxService.flushRetryableOutbox(userKey: username)
-                }
-                let histRes = await self.attendanceOutboxService.syncServerHistoryForUser(userKey: username)
+            let isFirstLoadInSession = (self.initialAttendanceLoadedGeneration != token.generation)
+            if isFirstLoadInSession {
+                self.initialAttendanceLoadedGeneration = token.generation
+
+                let timeOk = await self.syncAttendanceTimeAnchorOnly(force: true, isAutomatic: true)
                 guard !Task.isCancelled, self.isSessionValid(token) else { return }
-                if case .success(let data, _) = histRes {
-                    self.attendanceOutboxItems = data.items
-                    self.todayServerAttendanceCount = data.todayCount
-                } else {
-                    self.attendanceOutboxItems = self.attendanceOutboxService.listItemsForUser(userKey: username)
+
+                if timeOk, let userKey = self.currentUser?.username.trimmingCharacters(in: .whitespacesAndNewlines), !userKey.isEmpty {
+                    if self.attendanceOutboxService.pendingCountForUser(userKey: userKey) > 0 {
+                        let flushSummary = await self.flushAttendanceOutboxOnly(isManual: false)
+                        guard !Task.isCancelled, self.isSessionValid(token) else { return }
+                        if flushSummary.retryableFailureCount == 0 && !self.hasLoadedAttendanceHistoryInSession {
+                            _ = await self.refreshAttendanceHistoryOnly(force: false)
+                        }
+                    } else {
+                        _ = await self.refreshAttendanceHistoryOnly(force: false)
+                    }
                 }
+            } else {
+                _ = await self.syncAttendanceTimeAnchorOnly(force: false, isAutomatic: true)
+            }
+
+            guard !Task.isCancelled, self.isSessionValid(token) else { return }
+            if self.myLeaveSummary == nil && !self.isLoadingMyLeave {
+                await self.refreshMyLeaveSummary(year: self.leaveYear)
+            }
+            guard !Task.isCancelled, self.isSessionValid(token) else { return }
+            if self.myExplanationsOverview == nil && !self.isLoadingMyExplanations {
+                await self.refreshMyAttendanceExplanations()
             }
         }
     }
@@ -2884,6 +3136,9 @@ public final class MiniBiViewModel: ObservableObject {
     ) async {
         let userKey = currentUser?.username ?? "guest"
         isSubmittingAttendance = true
+        defer {
+            isSubmittingAttendance = false
+        }
         let (item, apiResult) = await attendanceOutboxService.submitCheckIn(
             userKey: userKey,
             lat: lat,
@@ -2895,38 +3150,47 @@ public final class MiniBiViewModel: ObservableObject {
             note: note,
             captureTimestampOverride: frozenTimestamp
         )
-        isSubmittingAttendance = false
         attendanceOutboxItems = attendanceOutboxService.listItemsForUser(userKey: userKey)
 
         switch apiResult {
         case .success:
+            recordOutboxFlushSuccess()
             todayServerAttendanceCount = max(
                 todayServerAttendanceCount,
                 attendanceOutboxService.todaySyncedCountForUser(userKey: userKey)
             )
+            _ = await refreshAttendanceHistoryOnly(force: true)
             showBanner("Chấm công thành công! Đã đồng bộ lên máy chủ.")
-        case .failure(let message, _, _, _):
+        case .failure(let message, let httpStatus, _, _):
             if item.status == AttendanceContract.statusFailedPermanent {
                 showBanner(message, isError: true)
             } else {
+                recordOutboxFlushFailure(httpStatus: httpStatus)
                 showBanner("Đã lưu chấm công vào hàng đợi ngoại tuyến (\(message)). Sẽ tự động gửi bù khi có mạng.", isError: false)
             }
         }
     }
 
     public func flushAttendanceOutboxNow() async {
-        guard let userKey = currentUser?.username, !userKey.isEmpty else { return }
-        isSyncingAttendance = true
-        let syncedCount = await attendanceOutboxService.flushRetryableOutbox(userKey: userKey)
-        let histRes = await attendanceOutboxService.syncServerHistoryForUser(userKey: userKey)
-        isSyncingAttendance = false
-        if case .success(let data, _) = histRes {
-            attendanceOutboxItems = data.items
-            todayServerAttendanceCount = data.todayCount
+        guard let userKey = currentUser?.username.trimmingCharacters(in: .whitespacesAndNewlines),
+              !userKey.isEmpty else { return }
+        guard !isSyncingAttendance && !isSubmittingAttendance else { return }
+
+        if attendanceOutboxService.pendingCountForUser(userKey: userKey) > 0 {
+            let summary = await flushAttendanceOutboxOnly(isManual: true)
+            if summary.syncedCount > 0 {
+                showBanner("Đã gửi bù thành công \(summary.syncedCount) bản ghi chấm công.")
+            } else if summary.retryableFailureCount > 0 {
+                showBanner("Chưa thể gửi bù chấm công lúc này. Sẽ thử lại sau theo chu kỳ an toàn.", isError: true)
+            }
         } else {
-            attendanceOutboxItems = attendanceOutboxService.listItemsForUser(userKey: userKey)
+            isSyncingAttendance = true
+            defer {
+                isSyncingAttendance = false
+            }
+            _ = await refreshAttendanceHistoryOnly(force: true)
+            showBanner("Đã đồng bộ trạng thái chấm công.")
         }
-        showBanner(syncedCount > 0 ? "Đã gửi bù thành công \(syncedCount) bản ghi chấm công." : "Đã đồng bộ trạng thái chấm công.")
     }
 
     // MARK: - Leave Request ("Xin nghỉ") & Leave Approval ("Duyệt nghỉ") Actions
