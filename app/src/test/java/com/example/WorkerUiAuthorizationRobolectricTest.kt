@@ -7420,4 +7420,188 @@ class WorkerUiAuthorizationRobolectricTest {
         }
         assertEquals(userBId, vm.currentActor.value?.appUserId)
     }
+
+    @Test
+    fun `regression 18 - topbar bell reminder button replaces topbar logout, preserves drawer logout, opens reminder dialog, and supports unlimited DAILY and ONCE reminders with auto-disable`() {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val singletonManager = com.example.data.TaskReminderManager.getInstance(app)
+        singletonManager.getReminders().forEach { singletonManager.deleteReminder(it.id) }
+
+        val server = MockWebServer()
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val path = request.path.orEmpty()
+                return when {
+                    path.startsWith("/api/auth/session") || path.startsWith("/api/direct-entry/session") ->
+                        MockResponse()
+                            .setResponseCode(200)
+                            .setHeader("Content-Type", "application/json")
+                            .setBody(
+                                """
+                                {
+                                  "ok": true,
+                                  "actor": {
+                                    "app_user_id": "11111111-2222-4333-8444-555555555555",
+                                    "display_name": "Nguyễn Văn Chuông",
+                                    "capabilities": ["entry_read", "entry_create", "submission_create"],
+                                    "scopes": [{"kind": "own", "reference": "11111111-2222-4333-8444-555555555555", "valid_from": "2026-01-01", "valid_to": null}],
+                                    "allowed_worker_tabs": ["uploader"]
+                                  }
+                                }
+                                """.trimIndent()
+                            )
+                    else ->
+                        MockResponse()
+                            .setResponseCode(200)
+                            .setHeader("Content-Type", "application/json")
+                            .setBody("""{"ok":true,"data":{}}""")
+                }
+            }
+        }
+        server.start()
+
+        val db = buildTestDb(app)
+        val cookieFile = File(app.cacheDir, "reg18_cookie_${System.nanoTime()}.enc")
+        val prefsFile = File(app.cacheDir, "reg18_prefs_${System.nanoTime()}.preferences_pb")
+        val cipher = JvmAes256GcmCookieCipher()
+        val repo = MiniBiRepository(
+            context = app,
+            database = db,
+            defaultServerUrl = server.url("/").toString().trimEnd('/'),
+            allowDebugUrlOverride = true,
+            cookieStorageFile = cookieFile,
+            preferencesStorageFile = prefsFile,
+            cookieCipher = cipher
+        )
+        repo.cookieJar.saveFromResponse(
+            server.url("/api/auth/session"),
+            listOf(
+                Cookie.Builder()
+                    .name("mini_bi_sid")
+                    .value("valid_bell_sid")
+                    .hostOnlyDomain(server.hostName)
+                    .path("/")
+                    .expiresAt(System.currentTimeMillis() + 3_600_000L)
+                    .build()
+            )
+        )
+        val vm = MiniBiViewModel(app, repo)
+        registerTestResourcesCleanup(vm, db, server, cookieFile, prefsFile)
+
+        try {
+            composeTestRule.setContent {
+                MyApplicationTheme {
+                    MiniBiAppRoot(viewModel = vm)
+                }
+            }
+
+            composeTestRule.waitUntil(timeoutMillis = 5_000) {
+                org.robolectric.shadows.ShadowLooper.idleMainLooper()
+                !vm.sessionBootstrapping.value && vm.currentActor.value != null
+            }
+            composeTestRule.waitForIdle()
+
+            // 1. Top bar displays bell reminder button and removes topbar logout button
+            composeTestRule.onNodeWithTag("topbar_bell_reminder_button").assertIsDisplayed()
+            composeTestRule.onNodeWithTag("topbar_logout_button").assertDoesNotExist()
+            composeTestRule.onNodeWithTag("topbar_bell_reminder_badge").assertDoesNotExist()
+
+            // 2. Clicking the bell button opens TaskReminderDialog and creates a reminder via UI
+            composeTestRule.onNodeWithTag("topbar_bell_reminder_button").performClick()
+            composeTestRule.waitForIdle()
+            composeTestRule.onNodeWithTag("task_reminder_dialog").assertIsDisplayed()
+            composeTestRule.onNodeWithTag("task_reminder_empty_state").assertIsDisplayed()
+
+            composeTestRule.onNodeWithTag("task_reminder_add_button").performClick()
+            composeTestRule.waitForIdle()
+
+            composeTestRule.onNodeWithTag("task_reminder_title_input").performTextReplacement("Gửi báo cáo ca sáng")
+            composeTestRule.onNodeWithTag("task_reminder_hour_input").performTextReplacement("07")
+            composeTestRule.onNodeWithTag("task_reminder_minute_input").performTextReplacement("30")
+            composeTestRule.onNodeWithTag("task_reminder_mode_once").performClick()
+            composeTestRule.onNodeWithTag("task_reminder_sound_option_0").performClick()
+            composeTestRule.onNodeWithTag("task_reminder_save_button").performClick()
+            composeTestRule.waitForIdle()
+
+            val uiCreatedList = singletonManager.getReminders()
+            assertEquals(1, uiCreatedList.size)
+            val uiCreated = uiCreatedList.single()
+            assertEquals("Gửi báo cáo ca sáng", uiCreated.title)
+            assertEquals("07:30", uiCreated.formattedTime)
+            assertEquals(com.example.data.TaskReminderRepeatMode.ONCE, uiCreated.repeatMode)
+            assertTrue(uiCreated.isEnabled)
+
+            composeTestRule.onNodeWithTag("task_reminder_close_button").performClick()
+            composeTestRule.waitForIdle()
+            composeTestRule.onNodeWithTag("topbar_bell_reminder_badge").assertIsDisplayed()
+
+            // Verify drawer logout button is preserved in the left navigation drawer
+            composeTestRule.onNodeWithTag("open_drawer_menu_button").performClick()
+            composeTestRule.waitForIdle()
+            composeTestRule.onNodeWithTag("drawer_logout_button").assertIsDisplayed()
+
+            // 3. Direct unit verification of TaskReminderManager: unlimited reminders, DAILY vs ONCE, and ONCE auto-disable
+            val fakeClock = java.util.concurrent.atomic.AtomicLong(1_762_732_800_000L) // Fixed epoch
+            val isolatedManager = com.example.data.TaskReminderManager(
+                context = app,
+                prefsName = "test_reminders_${System.nanoTime()}",
+                clockMillis = { fakeClock.get() },
+                scheduleSystemAlarms = false
+            )
+            val sounds = isolatedManager.querySystemSounds()
+            assertTrue("System sounds must always include at least the system default option", sounds.isNotEmpty())
+            assertEquals(com.example.data.TaskReminderManager.DEFAULT_SOUND_URI, sounds.first().uri)
+
+            // Create 12 reminders (proving no limit) with blank and custom titles
+            for (idx in 0 until 12) {
+                isolatedManager.saveReminder(
+                    title = if (idx == 0) "   " else "Nhắc việc #$idx",
+                    hour = (20 - idx).coerceIn(0, 23),
+                    minute = (idx * 5) % 60,
+                    repeatMode = if (idx % 2 == 0) com.example.data.TaskReminderRepeatMode.DAILY else com.example.data.TaskReminderRepeatMode.ONCE,
+                    soundUri = sounds.first().uri,
+                    soundTitle = sounds.first().title,
+                    isEnabled = true
+                )
+            }
+            val allSaved = isolatedManager.getReminders()
+            assertEquals(12, allSaved.size)
+            // Verify ascending time sort (hour * 60 + minute)
+            for (i in 0 until allSaved.size - 1) {
+                val curMinutes = allSaved[i].hour * 60 + allSaved[i].minute
+                val nextMinutes = allSaved[i + 1].hour * 60 + allSaved[i + 1].minute
+                assertTrue("Reminders must be sorted by time ascending", curMinutes <= nextMinutes)
+            }
+            // Blank title defaults to "Nhắc việc"
+            assertTrue(allSaved.any { it.title == "Nhắc việc" })
+
+            // Verify ONCE reminder auto-disables after alarm triggers or when clock passes nextTriggerEpochMs
+            val onceItem = allSaved.first { it.repeatMode == com.example.data.TaskReminderRepeatMode.ONCE }
+            val dailyItem = allSaved.first { it.repeatMode == com.example.data.TaskReminderRepeatMode.DAILY }
+
+            isolatedManager.onAlarmTriggered(onceItem.id)
+            assertFalse(
+                "ONCE reminder must automatically turn isEnabled=false after firing",
+                isolatedManager.getReminders().first { it.id == onceItem.id }.isEnabled
+            )
+
+            val prevDailyTrigger = dailyItem.nextTriggerEpochMs
+            isolatedManager.onAlarmTriggered(dailyItem.id)
+            val updatedDaily = isolatedManager.getReminders().first { it.id == dailyItem.id }
+            assertTrue("DAILY reminder must stay enabled after firing", updatedDaily.isEnabled)
+            assertTrue("DAILY reminder must advance nextTriggerEpochMs to next day", updatedDaily.nextTriggerEpochMs > prevDailyTrigger)
+
+            // Re-enable ONCE reminder, then advance clock past its nextTriggerEpochMs -> reconcileExpiredOnceReminders disables it
+            val reEnabledOnce = isolatedManager.setReminderEnabled(onceItem.id, true)!!
+            assertTrue(reEnabledOnce.isEnabled)
+            fakeClock.set(reEnabledOnce.nextTriggerEpochMs + 1_000L)
+            val afterExpiry = isolatedManager.reconcileExpiredOnceReminders()
+            assertFalse(
+                "ONCE reminder must automatically disable when nextTriggerEpochMs <= now",
+                afterExpiry.first { it.id == onceItem.id }.isEnabled
+            )
+        } finally {
+            singletonManager.getReminders().forEach { singletonManager.deleteReminder(it.id) }
+        }
+    }
 }

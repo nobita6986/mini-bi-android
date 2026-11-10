@@ -17,6 +17,7 @@ public final class MiniBiViewModel: ObservableObject {
     public let attendanceExplanationService: AttendanceExplanationService
     public let salaryAdvanceService: SalaryAdvanceService
     public let recruitmentPostService: RecruitmentPostService
+    public let taskReminderManager: TaskReminderManager
 
     // MARK: - Environment & Theme
     @Published public var environmentConfig: AppEnvironmentConfig = .current
@@ -48,11 +49,17 @@ public final class MiniBiViewModel: ObservableObject {
     public private(set) var nextAllowedOutboxFlushElapsedMs: Int64 = 0
     public var backoffJitterProvider: () -> Double = { Double.random(in: 0.0...1.0) }
 
-    // MARK: - Notifications (SSE + List)
+    // MARK: - Notifications (SSE + List) & Local Task Reminders
     @Published public var notifications: [AppNotificationItem] = []
     @Published public var unreadNotificationCount: Int = 0
     @Published public var isNotificationSheetPresented: Bool = false
+    @Published public var isTaskReminderSheetPresented: Bool = false
+    @Published public var taskReminders: [TaskReminderItem] = []
     private var announcedNotificationIds: Set<Int64> = []
+
+    public var enabledRemindersCount: Int {
+        taskReminders.filter { $0.isEnabled }.count
+    }
 
     // MARK: - Dashboard & CCCD Review State
     @Published public var selectedDashboardSubTab: DashboardSubTab = .overview
@@ -363,7 +370,8 @@ public final class MiniBiViewModel: ObservableObject {
         leaveService: LeaveService = .shared,
         attendanceExplanationService: AttendanceExplanationService = .shared,
         salaryAdvanceService: SalaryAdvanceService = .shared,
-        recruitmentPostService: RecruitmentPostService = .shared
+        recruitmentPostService: RecruitmentPostService = .shared,
+        taskReminderManager: TaskReminderManager = .shared
     ) {
         self.repository = repository
         self.directEntryService = directEntryService
@@ -375,7 +383,9 @@ public final class MiniBiViewModel: ObservableObject {
         self.attendanceExplanationService = attendanceExplanationService
         self.salaryAdvanceService = salaryAdvanceService
         self.recruitmentPostService = recruitmentPostService
+        self.taskReminderManager = taskReminderManager
         self.attendanceTimeEvaluation = timeAnchorManager.evaluateAnchor()
+        self.taskReminders = taskReminderManager.reconcileExpiredOnceReminders()
 
         let bundleEnv = AppEnvironmentConfig.current
         let resolvedEnv = AppEnvironmentConfig.forVariant(
@@ -404,6 +414,55 @@ public final class MiniBiViewModel: ObservableObject {
                 )
             }
         }
+
+        self.taskReminderManager.onRemindersChanged = { [weak self] updated in
+            Task { @MainActor [weak self] in
+                self?.taskReminders = updated
+            }
+        }
+    }
+
+    // MARK: - Local Task Reminders ("Nhắc việc")
+
+    public func refreshTaskReminders() {
+        taskReminders = taskReminderManager.reconcileExpiredOnceReminders()
+    }
+
+    @discardableResult
+    public func saveTaskReminder(
+        id: String? = nil,
+        title: String,
+        hour: Int,
+        minute: Int,
+        repeatMode: TaskReminderRepeatMode,
+        soundId: String = TaskReminderSystemSound.defaultSound.id,
+        isEnabled: Bool = true
+    ) -> TaskReminderItem {
+        let item = taskReminderManager.saveReminder(
+            id: id,
+            title: title,
+            hour: hour,
+            minute: minute,
+            repeatMode: repeatMode,
+            soundId: soundId,
+            isEnabled: isEnabled
+        )
+        taskReminders = taskReminderManager.reminders
+        return item
+    }
+
+    public func setTaskReminderEnabled(id: String, isEnabled: Bool) {
+        _ = taskReminderManager.setReminderEnabled(id: id, isEnabled: isEnabled)
+        taskReminders = taskReminderManager.reminders
+    }
+
+    public func deleteTaskReminder(id: String) {
+        taskReminderManager.deleteReminder(id: id)
+        taskReminders = taskReminderManager.reminders
+    }
+
+    public func playTaskReminderSoundPreview(soundId: String) {
+        taskReminderManager.playSoundPreview(soundId: soundId)
     }
 
     // MARK: - Computed Properties for Work Reports (Overdue Contract)

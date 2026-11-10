@@ -50,13 +50,13 @@ import androidx.compose.material.icons.filled.Campaign
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.PersonAdd
 import androidx.compose.material.icons.outlined.Analytics
 import androidx.compose.material.icons.outlined.CameraAlt
 import androidx.compose.material.icons.outlined.Campaign
 import androidx.compose.material.icons.outlined.Groups
 import androidx.compose.material.icons.outlined.PersonAdd
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.HorizontalDivider
@@ -68,7 +68,6 @@ import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.NavigationBarDefaults
 import androidx.compose.material3.NavigationDrawerItem
 import androidx.compose.material3.NavigationDrawerItemDefaults
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -78,13 +77,17 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
@@ -101,6 +104,7 @@ import androidx.compose.ui.zIndex
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.Coil
+import com.example.data.TaskReminderManager
 import com.example.ui.MainDestination
 import com.example.ui.MiniBiViewModel
 import com.example.ui.resolveMainNavigationDestinations
@@ -109,6 +113,7 @@ import com.example.ui.screens.DashboardScreen
 import com.example.ui.screens.DirectEntryNewWorkersScreen
 import com.example.ui.screens.LoginScreen
 import com.example.ui.screens.RecruitmentPostsScreen
+import com.example.ui.screens.TaskReminderDialog
 import com.example.ui.screens.WorkReportsScreen
 import com.example.ui.screens.WorkersAndDirectEntryScreen
 import com.example.ui.screens.resolveVisibleWorkerTabs
@@ -260,6 +265,15 @@ fun MiniBiAppRoot(viewModel: MiniBiViewModel) {
 
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val scope = rememberCoroutineScope()
+    val context = LocalContext.current
+    val taskReminderManager = remember(context) { TaskReminderManager.getInstance(context) }
+    val taskReminders by taskReminderManager.remindersFlow.collectAsStateWithLifecycle()
+    val enabledReminderCount = taskReminders.count { it.isEnabled }
+    var reminderDialogOpen by remember { mutableStateOf(false) }
+
+    LaunchedEffect(taskReminderManager) {
+        taskReminderManager.reconcileExpiredOnceReminders()
+    }
 
     val canCreateEntry = authenticatedActor.hasCapability("entry_create") &&
         authenticatedActor.hasCapability("submission_create")
@@ -596,34 +610,54 @@ fun MiniBiAppRoot(viewModel: MiniBiViewModel) {
 
                             Spacer(modifier = Modifier.width(8.dp))
 
-                            OutlinedButton(
-                                onClick = { viewModel.logout() },
-                                shape = RoundedCornerShape(50),
-                                border = BorderStroke(
-                                    width = 1.dp,
-                                    color = MaterialTheme.colorScheme.primary.copy(alpha = 0.28f)
-                                ),
-                                colors = ButtonDefaults.outlinedButtonColors(
-                                    containerColor = Color.White.copy(alpha = 0.85f),
-                                    contentColor = MaterialTheme.colorScheme.primary
-                                ),
-                                contentPadding = PaddingValues(horizontal = 11.dp, vertical = 5.dp),
-                                modifier = Modifier
-                                    .height(34.dp)
-                                    .testTag("topbar_logout_button")
+                            Box(
+                                modifier = Modifier.size(40.dp),
+                                contentAlignment = Alignment.Center
                             ) {
-                                Icon(
-                                    imageVector = Icons.AutoMirrored.Filled.Logout,
-                                    contentDescription = "Đăng xuất",
-                                    modifier = Modifier.size(15.dp)
-                                )
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text(
-                                    text = "Đăng xuất",
-                                    style = MaterialTheme.typography.labelMedium,
-                                    fontWeight = FontWeight.SemiBold,
-                                    maxLines = 1
-                                )
+                                Surface(
+                                    shape = CircleShape,
+                                    color = Color.White.copy(alpha = 0.88f),
+                                    border = BorderStroke(
+                                        width = 1.dp,
+                                        color = palette.lightTopBarBorder
+                                    ),
+                                    modifier = Modifier
+                                        .size(36.dp)
+                                        .clip(CircleShape)
+                                        .clickable { reminderDialogOpen = true }
+                                        .testTag("topbar_bell_reminder_button")
+                                ) {
+                                    Box(
+                                        modifier = Modifier.fillMaxSize(),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Notifications,
+                                            contentDescription = "Nhắc việc",
+                                            tint = MaterialTheme.colorScheme.primary,
+                                            modifier = Modifier.size(19.dp)
+                                        )
+                                    }
+                                }
+
+                                if (enabledReminderCount > 0) {
+                                    Surface(
+                                        shape = RoundedCornerShape(50),
+                                        color = SemanticColors.ErrorLight,
+                                        modifier = Modifier
+                                            .align(Alignment.TopEnd)
+                                            .testTag("topbar_bell_reminder_badge")
+                                    ) {
+                                        Text(
+                                            text = enabledReminderCount.coerceAtMost(99).toString(),
+                                            style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp),
+                                            fontWeight = FontWeight.Bold,
+                                            color = Color.White,
+                                            maxLines = 1,
+                                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                                        )
+                                    }
+                                }
                             }
                         }
                         HorizontalDivider(thickness = 1.dp, color = palette.lightTopBarBorder)
@@ -866,6 +900,13 @@ fun MiniBiAppRoot(viewModel: MiniBiViewModel) {
                     }
                 }
             }
+        }
+
+        if (reminderDialogOpen) {
+            TaskReminderDialog(
+                taskReminderManager = taskReminderManager,
+                onDismiss = { reminderDialogOpen = false }
+            )
         }
     }
 }

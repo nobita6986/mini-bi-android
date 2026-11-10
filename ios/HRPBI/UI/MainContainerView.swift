@@ -76,10 +76,10 @@ public struct MainContainerView: View {
 
                     Spacer()
 
-                    // Notifications Bell with Unread Badge
+                    // Task Reminder Bell with Enabled Count Badge
                     Button {
-                        Task { await viewModel.refreshNotifications() }
-                        viewModel.isNotificationSheetPresented = true
+                        viewModel.refreshTaskReminders()
+                        viewModel.isTaskReminderSheetPresented = true
                     } label: {
                         ZStack(alignment: .topTrailing) {
                             Image(systemName: "bell.fill")
@@ -92,8 +92,8 @@ public struct MainContainerView: View {
                                     Circle()
                                         .stroke(theme.topBarBorder, lineWidth: 1)
                                 )
-                            if viewModel.unreadNotificationCount > 0 {
-                                Text("\(min(99, viewModel.unreadNotificationCount))")
+                            if viewModel.enabledRemindersCount > 0 {
+                                Text("\(min(99, viewModel.enabledRemindersCount))")
                                     .font(.system(size: 10, weight: .bold))
                                     .padding(.horizontal, 5)
                                     .padding(.vertical, 2)
@@ -254,6 +254,9 @@ public struct MainContainerView: View {
             }
             .padding(.horizontal, 6)
             .background(Color.white)
+        }
+        .sheet(isPresented: $viewModel.isTaskReminderSheetPresented) {
+            TaskReminderSheet(viewModel: viewModel)
         }
         .sheet(isPresented: $viewModel.isNotificationSheetPresented) {
             NotificationDrawerSheet(viewModel: viewModel)

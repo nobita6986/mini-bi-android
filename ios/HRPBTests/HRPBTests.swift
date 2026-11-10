@@ -3967,4 +3967,144 @@ final class HRPBTests: XCTestCase {
         try await waitForRecordedUrl(containing: "/api/reporting/")
         await vm.performLogout()
     }
+
+    // MARK: - Task Reminder Manager & ViewModel Tests (Bell Icon Local Task Reminders)
+
+    @MainActor
+    func testTaskReminderManagerAndViewModelUnlimitedRemindersPersistenceAndOnceAutoDisable() throws {
+        let suiteName = "com.aistudio.minibi.reminders.\(UUID().uuidString)"
+        guard let testDefaults = UserDefaults(suiteName: suiteName) else {
+            XCTFail("Could not create isolated UserDefaults suite")
+            return
+        }
+        defer {
+            testDefaults.removePersistentDomain(forName: suiteName)
+        }
+
+        var currentNow = Date(timeIntervalSince1970: 1_762_732_800) // 2025-11-10 00:00:00 UTC
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone(identifier: "Asia/Ho_Chi_Minh") ?? .current
+
+        let manager = TaskReminderManager(
+            userDefaults: testDefaults,
+            storageKey: "test_reminders_key",
+            scheduleSystemNotifications: false,
+            playSystemAudioPreview: false,
+            calendar: cal,
+            nowProvider: { currentNow }
+        )
+
+        // 1. Built-in system sounds catalog (zero external audio files)
+        let sounds = TaskReminderSystemSound.allSystemSounds
+        XCTAssertFalse(sounds.isEmpty)
+        XCTAssertEqual(sounds.first?.id, "default")
+        XCTAssertEqual(TaskReminderSystemSound.resolve(byId: "unknown_sound").id, "default")
+        XCTAssertEqual(TaskReminderSystemSound.resolve(byId: "alarm").id, "alarm")
+
+        // 2. Wire into MiniBiViewModel and create 12 reminders (unlimited) with custom and blank titles
+        let client = makeMockHttpClient()
+        let keychain = KeychainStore(serviceName: "com.aistudio.minibi.remvm.\(UUID().uuidString)")
+        let vm = MiniBiViewModel(
+            repository: MiniBiRepository(httpClient: client, keychain: keychain),
+            directEntryService: DirectEntryService(httpClient: client),
+            workReportsService: WorkReportsAndReportingService(httpClient: client),
+            attendanceOutboxService: AttendanceOutboxService(httpClient: client),
+            timeAnchorManager: AttendanceTimeAnchorManager(httpClient: client, keychain: keychain),
+            notificationService: NotificationService(httpClient: client),
+            leaveService: LeaveService(httpClient: client),
+            attendanceExplanationService: AttendanceExplanationService(httpClient: client),
+            salaryAdvanceService: SalaryAdvanceService(httpClient: client),
+            recruitmentPostService: RecruitmentPostService(httpClient: client),
+            taskReminderManager: manager
+        )
+
+        XCTAssertEqual(vm.taskReminders.count, 0)
+        XCTAssertEqual(vm.enabledRemindersCount, 0)
+
+        for idx in 0..<12 {
+            let mode: TaskReminderRepeatMode = (idx % 2 == 0) ? .daily : .once
+            let soundId = sounds[idx % sounds.count].id
+            let hour = (21 - idx) % 24
+            let minute = (idx * 5) % 60
+            let rawTitle = (idx == 0) ? "   " : "Nhắc việc ca #\(idx)"
+            _ = vm.saveTaskReminder(
+                title: rawTitle,
+                hour: hour,
+                minute: minute,
+                repeatMode: mode,
+                soundId: soundId,
+                isEnabled: true
+            )
+        }
+
+        XCTAssertEqual(vm.taskReminders.count, 12)
+        XCTAssertEqual(vm.enabledRemindersCount, 12)
+        XCTAssertTrue(vm.taskReminders.contains(where: { $0.title == "Nhắc việc" }))
+
+        // Verify ascending sort by time (hour * 60 + minute)
+        for i in 0..<(vm.taskReminders.count - 1) {
+            let lhsMin = vm.taskReminders[i].hour * 60 + vm.taskReminders[i].minute
+            let rhsMin = vm.taskReminders[i + 1].hour * 60 + vm.taskReminders[i + 1].minute
+            XCTAssertLessThanOrEqual(lhsMin, rhsMin)
+        }
+
+        // 3. Edit an existing reminder & verify persistence across a new TaskReminderManager instance
+        let firstItem = vm.taskReminders[0]
+        let edited = vm.saveTaskReminder(
+            id: firstItem.id,
+            title: "Đã sửa tiêu đề nhắc việc",
+            hour: 6,
+            minute: 15,
+            repeatMode: .once,
+            soundId: "bell",
+            isEnabled: true
+        )
+        XCTAssertEqual(edited.title, "Đã sửa tiêu đề nhắc việc")
+        XCTAssertEqual(edited.formattedTime, "06:15")
+        XCTAssertEqual(edited.repeatMode, .once)
+        XCTAssertEqual(edited.soundId, "bell")
+
+        let reloadedManager = TaskReminderManager(
+            userDefaults: testDefaults,
+            storageKey: "test_reminders_key",
+            scheduleSystemNotifications: false,
+            playSystemAudioPreview: false,
+            calendar: cal,
+            nowProvider: { currentNow }
+        )
+        XCTAssertEqual(reloadedManager.reminders.count, 12)
+        XCTAssertEqual(reloadedManager.reminders.first?.id, edited.id)
+        XCTAssertEqual(reloadedManager.reminders.first?.title, "Đã sửa tiêu đề nhắc việc")
+
+        // 4. ONCE reminder auto-disables when triggered or when clock passes nextTriggerEpochMs
+        _ = manager.onNotificationTriggered(id: edited.id, now: currentNow)
+        vm.refreshTaskReminders()
+        let afterTrigger = vm.taskReminders.first(where: { $0.id == edited.id })
+        XCTAssertEqual(afterTrigger?.isEnabled, false)
+        XCTAssertEqual(vm.enabledRemindersCount, 11)
+
+        // Re-enable ONCE reminder -> recomputes nextTriggerEpochMs -> advance clock past nextTriggerEpochMs -> auto-disables
+        vm.setTaskReminderEnabled(id: edited.id, isEnabled: true)
+        let reEnabled = vm.taskReminders.first(where: { $0.id == edited.id })!
+        XCTAssertTrue(reEnabled.isEnabled)
+        currentNow = Date(timeIntervalSince1970: Double(reEnabled.nextTriggerEpochMs) / 1000.0 + 5.0)
+        vm.refreshTaskReminders()
+        let afterClockExpiry = vm.taskReminders.first(where: { $0.id == edited.id })!
+        XCTAssertFalse(afterClockExpiry.isEnabled)
+
+        // 5. DAILY reminder remains enabled after firing and advances nextTriggerEpochMs to next day
+        let dailyCandidate = vm.taskReminders.first(where: { $0.repeatMode == .daily && $0.isEnabled })!
+        let oldDailyTrigger = dailyCandidate.nextTriggerEpochMs
+        _ = manager.onNotificationTriggered(id: dailyCandidate.id, now: currentNow)
+        vm.refreshTaskReminders()
+        let updatedDaily = vm.taskReminders.first(where: { $0.id == dailyCandidate.id })!
+        XCTAssertTrue(updatedDaily.isEnabled)
+        XCTAssertGreaterThan(updatedDaily.nextTriggerEpochMs, oldDailyTrigger)
+
+        // 6. Delete reminder
+        let countBeforeDelete = vm.taskReminders.count
+        vm.deleteTaskReminder(id: edited.id)
+        XCTAssertEqual(vm.taskReminders.count, countBeforeDelete - 1)
+        XCTAssertNil(vm.taskReminders.first(where: { $0.id == edited.id }))
+    }
 }
