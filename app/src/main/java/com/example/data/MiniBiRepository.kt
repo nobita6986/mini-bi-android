@@ -14,8 +14,10 @@ import com.example.BuildConfig
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -453,6 +455,19 @@ class MiniBiRepository(
     val currentActorFlow: StateFlow<AppActor?> = _activeActor.asStateFlow()
     private val authSessionEpoch = java.util.concurrent.atomic.AtomicLong(0L)
 
+    private data class InFlightBootstrap(
+        val epoch: Long,
+        val deferred: Deferred<Result<AppActor>>,
+        val shouldScheduleOutbox: java.util.concurrent.atomic.AtomicBoolean = java.util.concurrent.atomic.AtomicBoolean(false),
+        val outboxScheduled: java.util.concurrent.atomic.AtomicBoolean = java.util.concurrent.atomic.AtomicBoolean(false)
+    )
+
+    private val bootstrapSingleFlightLock = Any()
+    private val bootstrapScope = CoroutineScope(
+        Dispatchers.IO + SupervisorJob() + CoroutineExceptionHandler { _, _ -> }
+    )
+    private var inFlightBootstrap: InFlightBootstrap? = null
+
     val themeIdFlow: Flow<String> = safePrefsFlow.map { prefs ->
         prefs[KEY_THEME_ID] ?: "hr-partner"
     }
@@ -511,9 +526,78 @@ class MiniBiRepository(
         }
     }
 
+    private fun buildSessionSupersededFailure(message: String = "Phiên xác thực đã thay đổi."): Result<AppActor> {
+        return Result.failure(
+            BackendApiException(
+                kind = BackendFailureKind.UNAUTHENTICATED,
+                statusCode = null,
+                backendCode = "SESSION_SUPERSEDED",
+                message = message
+            )
+        )
+    }
+
     suspend fun bootstrapSession(scheduleOutboxWork: Boolean = true): Result<AppActor> = withContext(Dispatchers.IO) {
         val startEpoch = authSessionEpoch.get()
-        try {
+        val flight = synchronized(bootstrapSingleFlightLock) {
+            val currentEpoch = authSessionEpoch.get()
+            if (currentEpoch != startEpoch) {
+                return@withContext buildSessionSupersededFailure()
+            }
+            val existing = inFlightBootstrap
+            if (existing != null && existing.epoch == startEpoch && existing.deferred.isActive) {
+                if (scheduleOutboxWork) {
+                    existing.shouldScheduleOutbox.set(true)
+                }
+                existing
+            } else {
+                val shouldSchedule = java.util.concurrent.atomic.AtomicBoolean(scheduleOutboxWork)
+                val outboxScheduled = java.util.concurrent.atomic.AtomicBoolean(false)
+                lateinit var created: InFlightBootstrap
+                val deferred = bootstrapScope.async {
+                    executeBootstrapSessionNetworkFetch(
+                        startEpoch = startEpoch,
+                        shouldScheduleOutbox = shouldSchedule,
+                        outboxScheduled = outboxScheduled
+                    )
+                }
+                created = InFlightBootstrap(
+                    epoch = startEpoch,
+                    deferred = deferred,
+                    shouldScheduleOutbox = shouldSchedule,
+                    outboxScheduled = outboxScheduled
+                )
+                inFlightBootstrap = created
+                deferred.invokeOnCompletion {
+                    synchronized(bootstrapSingleFlightLock) {
+                        if (inFlightBootstrap === created) {
+                            inFlightBootstrap = null
+                        }
+                    }
+                }
+                created
+            }
+        }
+
+        val result = flight.deferred.await()
+        if (authSessionEpoch.get() != startEpoch) {
+            return@withContext buildSessionSupersededFailure()
+        }
+        val actor = result.getOrNull()
+        if (scheduleOutboxWork && actor != null && flight.outboxScheduled.compareAndSet(false, true)) {
+            if (dao.getRetryableAttendanceOutboxForUser(actor.appUserId).isNotEmpty()) {
+                AttendanceOutboxService.enqueueDurableOutboxWork(context, actor.appUserId)
+            }
+        }
+        result
+    }
+
+    private suspend fun executeBootstrapSessionNetworkFetch(
+        startEpoch: Long,
+        shouldScheduleOutbox: java.util.concurrent.atomic.AtomicBoolean,
+        outboxScheduled: java.util.concurrent.atomic.AtomicBoolean
+    ): Result<AppActor> {
+        return try {
             val displayHint = safePrefsFlow.first()[KEY_DISPLAY_IDENTIFIER]
             val json = httpClient.getJson(
                 pathWithQuery = "/api/auth/session",
@@ -521,36 +605,36 @@ class MiniBiRepository(
                 clearSessionOn401 = false
             )
             if (authSessionEpoch.get() != startEpoch) {
-                return@withContext Result.failure(
-                    BackendApiException(
-                        kind = BackendFailureKind.UNAUTHENTICATED,
-                        statusCode = null,
-                        backendCode = "SESSION_SUPERSEDED",
-                        message = "Phiên xác thực đã thay đổi."
-                    )
-                )
+                return buildSessionSupersededFailure()
             }
             val actor = ActorContractParser.parseEnvelopeActor(json, displayHint)
+            if (authSessionEpoch.get() != startEpoch) {
+                return buildSessionSupersededFailure()
+            }
             _activeActor.value = actor
-            if (scheduleOutboxWork && dao.getRetryableAttendanceOutboxForUser(actor.appUserId).isNotEmpty()) {
-                AttendanceOutboxService.enqueueDurableOutboxWork(context, actor.appUserId)
+            if (shouldScheduleOutbox.get() && outboxScheduled.compareAndSet(false, true)) {
+                if (dao.getRetryableAttendanceOutboxForUser(actor.appUserId).isNotEmpty()) {
+                    AttendanceOutboxService.enqueueDurableOutboxWork(context, actor.appUserId)
+                }
             }
             Result.success(actor)
         } catch (e: BackendApiException) {
-            if (authSessionEpoch.get() == startEpoch) {
-                if (e.kind == BackendFailureKind.UNAUTHENTICATED || e.kind == BackendFailureKind.FORBIDDEN) {
-                    clearLocalSessionAndCache()
-                } else {
-                    // Never expose stale cached actor if backend session could not be verified
-                    _activeActor.value = null
-                }
+            if (authSessionEpoch.get() != startEpoch) {
+                return buildSessionSupersededFailure()
+            }
+            if (e.kind == BackendFailureKind.UNAUTHENTICATED || e.kind == BackendFailureKind.FORBIDDEN) {
+                clearLocalSessionAndCache()
+            } else {
+                // Never expose stale cached actor if backend session could not be verified
+                _activeActor.value = null
             }
             Result.failure(e)
         } catch (e: Exception) {
             if (e is CancellationException) throw e
-            if (authSessionEpoch.get() == startEpoch) {
-                _activeActor.value = null
+            if (authSessionEpoch.get() != startEpoch) {
+                return buildSessionSupersededFailure()
             }
+            _activeActor.value = null
             Result.failure(
                 BackendApiException(
                     kind = BackendFailureKind.CONTRACT_INVALID,
@@ -701,6 +785,10 @@ class MiniBiRepository(
     }
 
     internal fun closeForTest() {
+        synchronized(bootstrapSingleFlightLock) {
+            inFlightBootstrap?.deferred?.cancel()
+            inFlightBootstrap = null
+        }
         synchronized(Companion) {
             if (sharedInstance === this) {
                 sharedInstance = null
@@ -709,10 +797,12 @@ class MiniBiRepository(
                 testSharedInstanceOverride = null
             }
         }
+        bootstrapScope.cancel()
         customDataStoreScope?.cancel()
     }
 
     suspend fun logout() = withContext(Dispatchers.IO) {
+        authSessionEpoch.incrementAndGet()
         try {
             httpClient.postNoContent("/api/auth/logout")
         } catch (_: Exception) {
