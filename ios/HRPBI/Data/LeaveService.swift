@@ -17,11 +17,11 @@ public enum AttendanceAreaTab: String, CaseIterable, Identifiable, Equatable, Se
         case .checkIn:
             return "Chấm công"
         case .explanation:
-            return "Giải trình chấm công"
+            return "Giải trình"
         case .leaveRequest:
-            return "Xin nghỉ phép"
+            return "Nghỉ phép"
         case .explanationApproval:
-            return "Xét duyệt giải trình"
+            return "Duyệt giải trình"
         case .leaveApproval:
             return "Duyệt nghỉ"
         }
@@ -1985,7 +1985,7 @@ public final class LeaveService: @unchecked Sendable {
 
     public func fetchApprovalInbox(
         statusFilter: String = "PENDING",
-        limit: Int = 50,
+        limit: Int = 15,
         offset: Int = 0
     ) async -> MiniBiApiResult<LeaveApprovalInboxProjection> {
         let upperStatus = statusFilter.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()

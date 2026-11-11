@@ -444,7 +444,7 @@ final class HRPBTests: XCTestCase {
         )
         let empTabs = LeaveContract.resolveVisibleAttendanceTabs(authority: employeeAuth, errorCode: nil)
         XCTAssertEqual(empTabs, [.checkIn, .explanation, .leaveRequest])
-        XCTAssertEqual(empTabs.map(\.label), ["Chấm công", "Giải trình chấm công", "Xin nghỉ phép"])
+        XCTAssertEqual(empTabs.map(\.label), ["Chấm công", "Giải trình", "Nghỉ phép"])
 
         // 2. Approver (Team Leader / Department Head / Admin / BoD) -> sees all 5 tabs in exact order
         let approverAuth = LeaveAuthorityProjection(
@@ -461,7 +461,7 @@ final class HRPBTests: XCTestCase {
         )
         XCTAssertEqual(
             approverTabs.map(\.label),
-            ["Chấm công", "Giải trình chấm công", "Xin nghỉ phép", "Xét duyệt giải trình", "Duyệt nghỉ"]
+            ["Chấm công", "Giải trình", "Nghỉ phép", "Duyệt giải trình", "Duyệt nghỉ"]
         )
 
         // 3. Shared non-employee account -> sees only Check-in
@@ -4106,5 +4106,527 @@ final class HRPBTests: XCTestCase {
         vm.deleteTaskReminder(id: edited.id)
         XCTAssertEqual(vm.taskReminders.count, countBeforeDelete - 1)
         XCTAssertNil(vm.taskReminders.first(where: { $0.id == edited.id }))
+    }
+
+    // MARK: - 14. Appllama UI Design Tokens & Tab Icon Contract Tests
+
+    func testAppllamaNavTabIconNameOutlineVsFillAndDesignTokens() {
+        // Outline when unselected (`isSelected: false`)
+        XCTAssertEqual(MiniBiNavDestination.dashboard.tabIconName(isSelected: false), "chart.bar")
+        XCTAssertEqual(MiniBiNavDestination.workReports.tabIconName(isSelected: false), "doc.text")
+        XCTAssertEqual(MiniBiNavDestination.attendance.tabIconName(isSelected: false), "viewfinder.circle")
+        XCTAssertEqual(MiniBiNavDestination.workers.tabIconName(isSelected: false), "person.3")
+        XCTAssertEqual(MiniBiNavDestination.recruitment.tabIconName(isSelected: false), "megaphone")
+        XCTAssertEqual(MiniBiNavDestination.newEntry.tabIconName(isSelected: false), "person.badge.plus")
+
+        // Filled when selected (`isSelected: true`)
+        XCTAssertEqual(MiniBiNavDestination.dashboard.tabIconName(isSelected: true), "chart.bar.fill")
+        XCTAssertEqual(MiniBiNavDestination.workReports.tabIconName(isSelected: true), "doc.text.fill")
+        XCTAssertEqual(MiniBiNavDestination.attendance.tabIconName(isSelected: true), "viewfinder.circle.fill")
+        XCTAssertEqual(MiniBiNavDestination.workers.tabIconName(isSelected: true), "person.3.fill")
+        XCTAssertEqual(MiniBiNavDestination.recruitment.tabIconName(isSelected: true), "megaphone.fill")
+        XCTAssertEqual(MiniBiNavDestination.newEntry.tabIconName(isSelected: true), "person.fill.badge.plus")
+
+        // Backward-compatible `systemIconName` preserved
+        XCTAssertEqual(MiniBiNavDestination.dashboard.systemIconName, "chart.bar.xaxis")
+        XCTAssertEqual(MiniBiNavDestination.workReports.systemIconName, "doc.text.fill")
+        XCTAssertEqual(MiniBiNavDestination.attendance.systemIconName, "camera.viewfinder")
+        XCTAssertEqual(MiniBiNavDestination.workers.systemIconName, "person.3.fill")
+        XCTAssertEqual(MiniBiNavDestination.recruitment.systemIconName, "megaphone.fill")
+        XCTAssertEqual(MiniBiNavDestination.newEntry.systemIconName, "person.badge.plus")
+
+        // 4-step continuous corner radius scale (`HrpDesignTokens`)
+        XCTAssertEqual(HrpDesignTokens.radiusXS, 8)
+        XCTAssertEqual(HrpDesignTokens.radiusMD, 12)
+        XCTAssertEqual(HrpDesignTokens.radiusCard, 16)
+        XCTAssertEqual(HrpDesignTokens.radiusHero, 22)
+    }
+
+    @MainActor
+    func testAppllamaRound2LabelInitialsAndPaginationDefaults() async throws {
+        // 1. Shortened tab labels ("Giải trình", "Nghỉ phép", "Duyệt giải trình")
+        XCTAssertEqual(AttendanceAreaTab.explanation.label, "Giải trình")
+        XCTAssertEqual(AttendanceAreaTab.leaveRequest.label, "Nghỉ phép")
+        XCTAssertEqual(AttendanceAreaTab.explanationApproval.label, "Duyệt giải trình")
+
+        // 1b. Compact worker status helper ("Đang làm việc" -> "Đang làm", "Đã nghỉ việc" -> "Đã nghỉ")
+        XCTAssertEqual(WorkersScreen.compactWorkerStatusLabel("Đang làm việc"), "Đang làm")
+        XCTAssertEqual(WorkersScreen.compactWorkerStatusLabel("Đã nghỉ việc"), "Đã nghỉ")
+        XCTAssertEqual(WorkersScreen.compactWorkerStatusLabel("Chờ nhận việc"), "Chờ nhận việc")
+
+        // 1c. RecruitmentPostContract page size & security invariants preserved
+        XCTAssertEqual(RecruitmentPostContract.defaultPageSize, 10)
+        XCTAssertEqual(RecruitmentPostContract.maxPageSize, 10)
+
+        // 2. Explanation default page limit is 15
+        XCTAssertEqual(AttendanceExplanationContract.defaultPageLimit, 15)
+
+        // 3. Initials extraction for 2-line worker avatar
+        XCTAssertEqual(HrpInitialsAvatar.extractInitials(from: "Nguyễn Văn An"), "NA")
+        XCTAssertEqual(HrpInitialsAvatar.extractInitials(from: "Lê Hoa"), "LH")
+        XCTAssertEqual(HrpInitialsAvatar.extractInitials(from: "Minh"), "MI")
+        XCTAssertEqual(HrpInitialsAvatar.extractInitials(from: "   "), "NL")
+
+        // 4. Date-scoped attendance history query contract (`from_date`, `to_date`, `page`, `page_size=15`)
+        MockURLProtocol.resetRecordedUrls()
+        MockURLProtocol.requestHandler = { req in
+            return Self.makeJsonResponse(
+                req,
+                statusCode: 200,
+                json: #"{"ok":true,"data":{"items":[],"has_more":true,"total":34}}"#
+            )
+        }
+
+        let client = makeMockHttpClient()
+        let keychain = KeychainStore(serviceName: "com.aistudio.minibi.round2.\(UUID().uuidString)")
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("outbox_round2_\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let anchorManager = AttendanceTimeAnchorManager(httpClient: client, keychain: keychain)
+        let outboxService = AttendanceOutboxService(
+            httpClient: client,
+            timeAnchorManager: anchorManager,
+            customStorageDirectory: tempDir
+        )
+
+        let synced = await outboxService.syncServerHistoryForUser(
+            userKey: "user-round2",
+            fromDate: "2026-11-11",
+            toDate: "2026-11-11",
+            page: 2,
+            pageSize: 15
+        )
+        if case .success(let payload, _) = synced {
+            XCTAssertTrue(payload.items.isEmpty)
+        } else {
+            XCTFail("Expected syncServerHistoryForUser to succeed")
+        }
+        XCTAssertTrue(outboxService.lastHistorySyncHasMore)
+        XCTAssertEqual(outboxService.lastHistorySyncTotalCount, 34)
+
+        let historyUrls = MockURLProtocol.recordedUrls().filter { $0.contains("/api/attendance/history") }
+        XCTAssertEqual(historyUrls.count, 1)
+        let queryUrl = try XCTUnwrap(historyUrls.first)
+        XCTAssertTrue(queryUrl.contains("from_date=2026-11-11"))
+        XCTAssertTrue(queryUrl.contains("to_date=2026-11-11"))
+        XCTAssertTrue(queryUrl.contains("page=2"))
+        XCTAssertTrue(queryUrl.contains("page_size=15"))
+    }
+
+    @MainActor
+    func testRound4PlainVietnameseExplanationHelpersAndWorkerTabLabel() {
+        // 1. friendlySlotTitle: converts technical/default labels ("Time 1", "SLOT_1", "Mốc #2") to "Mốc N", preserves custom Vietnamese labels
+        XCTAssertEqual(
+            AttendanceExplanationContract.friendlySlotTitle(slotLabel: "Time 1", slotCode: "SLOT_1", slotIndex: 1),
+            "Mốc 1"
+        )
+        XCTAssertEqual(
+            AttendanceExplanationContract.friendlySlotTitle(slotLabel: "SLOT_1", slotCode: "SLOT_1", slotIndex: 1),
+            "Mốc 1"
+        )
+        XCTAssertEqual(
+            AttendanceExplanationContract.friendlySlotTitle(slotLabel: "Mốc #2", slotCode: "SLOT_2", slotIndex: 2),
+            "Mốc 2"
+        )
+        XCTAssertEqual(
+            AttendanceExplanationContract.friendlySlotTitle(slotLabel: "TIME 3", slotCode: "SLOT_3", slotIndex: 3),
+            "Mốc 3"
+        )
+        XCTAssertEqual(
+            AttendanceExplanationContract.friendlySlotTitle(slotLabel: "", slotCode: "SLOT_4", slotIndex: 4),
+            "Mốc 4"
+        )
+        XCTAssertEqual(
+            AttendanceExplanationContract.friendlySlotTitle(slotLabel: "Ca sáng", slotCode: "SLOT_1", slotIndex: 1),
+            "Ca sáng"
+        )
+        XCTAssertEqual(
+            AttendanceExplanationContract.friendlySlotTitle(slotLabel: "Vào ca sáng", slotCode: "SLOT_1", slotIndex: 1),
+            "Vào ca sáng"
+        )
+
+        // 2. friendlyValidTimeRange: calculates "07:15 – 07:45" from "07:30" with 15, 15
+        XCTAssertEqual(
+            AttendanceExplanationContract.friendlyValidTimeRange(
+                targetTime: "07:30",
+                graceBeforeMinutes: 15,
+                graceAfterMinutes: 15
+            ),
+            "07:15 – 07:45"
+        )
+        XCTAssertEqual(
+            AttendanceExplanationContract.friendlyValidTimeRange(
+                targetTime: "08:00",
+                graceBeforeMinutes: 0,
+                graceAfterMinutes: 0
+            ),
+            "Đúng 08:00"
+        )
+        XCTAssertEqual(
+            AttendanceExplanationContract.friendlyValidTimeRange(
+                targetTime: "invalid",
+                graceBeforeMinutes: 10,
+                graceAfterMinutes: 15
+            ),
+            "±15 phút"
+        )
+
+        // 3. compactSlotStatusBadge
+        XCTAssertEqual(AttendanceExplanationContract.compactSlotStatusBadge("ON_TIME"), "Đúng giờ")
+        XCTAssertEqual(AttendanceExplanationContract.compactSlotStatusBadge("OUT_OF_GRACE"), "Ngoài khung giờ")
+        XCTAssertEqual(AttendanceExplanationContract.compactSlotStatusBadge("MISSING"), "Thiếu chấm")
+        XCTAssertEqual(AttendanceExplanationContract.compactSlotStatusBadge("LEAVE_COVERED"), "Nghỉ phép")
+        XCTAssertEqual(AttendanceExplanationContract.compactSlotStatusBadge("UPCOMING"), "Chưa đến giờ")
+        XCTAssertEqual(AttendanceExplanationContract.compactSlotStatusBadge("EXPLAINED_PENDING"), "Chờ duyệt")
+        XCTAssertEqual(AttendanceExplanationContract.compactSlotStatusBadge("EXPLAINED_APPROVED"), "Đã duyệt")
+        XCTAssertEqual(AttendanceExplanationContract.compactSlotStatusBadge("EXPLAINED_REJECTED"), "Từ chối")
+
+        // 4. friendlyProfileSummary & friendlyApproverSummary
+        let defaultEval = AttendanceExplanationDayEvaluationProjection(
+            businessDate: "2026-11-11",
+            policyProfileCodeUsed: "DEFAULT",
+            policyProfileNameUsed: "Mặc định",
+            policyIsDefaultUsed: true,
+            policyVersionUsed: 1,
+            slots: []
+        )
+        XCTAssertEqual(AttendanceExplanationContract.friendlyProfileSummary(dayEval: defaultEval), "0 mốc/ngày")
+
+        let customEval = AttendanceExplanationDayEvaluationProjection(
+            businessDate: "2026-11-11",
+            policyProfileCodeUsed: "KHOI_TD_MB",
+            policyProfileNameUsed: "Khối Tuyển dụng Miền Bắc",
+            policyIsDefaultUsed: false,
+            policyVersionUsed: 3,
+            slots: []
+        )
+        XCTAssertEqual(
+            AttendanceExplanationContract.friendlyProfileSummary(dayEval: customEval),
+            "Khối Tuyển dụng Miền Bắc · 0 mốc"
+        )
+
+        let directTeamRouting = AttendanceExplanationRoutingProjection(
+            routeKind: "TEAM_LEADER",
+            unitKind: "RECRUITMENT",
+            primaryApprover: AttendanceExplanationAccountSummaryProjection(
+                appUserId: "u-leader",
+                displayName: "Nguyễn Văn A"
+            ),
+            teamName: "Team 3"
+        )
+        XCTAssertEqual(
+            AttendanceExplanationContract.friendlyApproverSummary(routing: directTeamRouting),
+            "Nguyễn Văn A (Team 3)"
+        )
+
+        let fallbackRouting = AttendanceExplanationRoutingProjection(
+            routeKind: "ADMIN_BOD_FALLBACK",
+            unitKind: "RECRUITMENT",
+            primaryApprover: nil,
+            fallbackReason: "UNMAPPED_PERSONNEL"
+        )
+        XCTAssertEqual(
+            AttendanceExplanationContract.friendlyApproverSummary(routing: fallbackRouting),
+            "Ban Quản trị / Nhân sự"
+        )
+
+        // 5. friendlyRequesterSubtitle deduplicates when personnelCode == loginId -> "Team 3 · chungpb.td"
+        let requester = AttendanceExplanationAccountSummaryProjection(
+            appUserId: "u-chung",
+            displayName: "Phạm Bảo Chung",
+            loginId: "chungpb.td",
+            personnelCode: "chungpb.td"
+        )
+        XCTAssertEqual(
+            AttendanceExplanationContract.friendlyRequesterSubtitle(
+                requester: requester,
+                teamName: "Team 3"
+            ),
+            "Team 3 · chungpb.td"
+        )
+
+        // 6. Worker tab label "uploader" -> "Tôi nhập"
+        let uploaderUser = MiniBiUser(
+            id: "u-up",
+            username: "uploader",
+            fullName: "Uploader",
+            allowedWorkerTabs: ["uploader", "managed"]
+        )
+        let resolvedWorkerTabs = MiniBiViewModel.resolveVisibleWorkerTabs(for: uploaderUser)
+        XCTAssertEqual(resolvedWorkerTabs.first?.key, "uploader")
+        XCTAssertEqual(resolvedWorkerTabs.first?.label, "Tôi nhập")
+    }
+
+    // MARK: - Round 5 Regression Tests (Cursor Pagination & Refreshable Cancellation)
+
+    @MainActor
+    func testWorkersPaginationUsesCursorAndNeverSendsPageParam() async throws {
+        MockURLProtocol.resetRecordedUrls()
+        var workerFetchCallCount = 0
+
+        MockURLProtocol.requestHandler = { req in
+            let url = req.url!
+            let path = url.path
+            let query = url.query ?? ""
+            let body: String
+            if path == "/api/direct-entry/workers" {
+                workerFetchCallCount += 1
+                if query.contains("cursor=cursor_page_2") {
+                    body = """
+                    {
+                      "ok": true,
+                      "scope": "managed",
+                      "items": [
+                        {"entry_id": "w-3", "employee_code": "HRP-003", "display_name": "Lê Văn C", "employment_status": "ON"}
+                      ],
+                      "next_cursor": null,
+                      "has_more": false,
+                      "summary": {"total_workers": 3}
+                    }
+                    """
+                } else {
+                    body = """
+                    {
+                      "ok": true,
+                      "scope": "managed",
+                      "items": [
+                        {"entry_id": "w-1", "employee_code": "HRP-001", "display_name": "Nguyễn Văn A", "employment_status": "ON"},
+                        {"entry_id": "w-2", "employee_code": "HRP-002", "display_name": "Trần Thị B", "employment_status": "ON"}
+                      ],
+                      "next_cursor": "cursor_page_2",
+                      "has_more": true,
+                      "summary": {"total_workers": 3}
+                    }
+                    """
+                }
+            } else {
+                body = """
+                {"ok": true, "items": []}
+                """
+            }
+            let resp = HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/json"])!
+            return (resp, Data(body.utf8))
+        }
+
+        let client = makeMockHttpClient()
+        let repo = MiniBiRepository(
+            httpClient: client,
+            keychain: KeychainStore(serviceName: "com.aistudio.minibi.r5workers.\(UUID().uuidString)")
+        )
+        let vm = MiniBiViewModel(repository: repo)
+        vm.currentUser = MiniBiUser(
+            id: "aaaa1111-2222-4333-8444-555555555555",
+            username: "pm.user",
+            fullName: "PM User",
+            permissions: ["entry_read"],
+            allowedWorkerTabs: ["managed"]
+        )
+        vm.isAuthenticated = true
+        vm.selectedWorkerScope = "managed"
+
+        await vm.loadWorkers(resetPage: true)
+
+        XCTAssertEqual(vm.workers.count, 2)
+        XCTAssertEqual(vm.workersTotalCount, 3)
+        XCTAssertTrue(vm.workersHasMore)
+        XCTAssertEqual(vm.workersNextCursor, "cursor_page_2")
+
+        await vm.loadMoreWorkers()
+
+        XCTAssertEqual(vm.workers.count, 3)
+        XCTAssertFalse(vm.workersHasMore)
+        XCTAssertNil(vm.workersNextCursor)
+
+        // Calling loadMoreWorkers when workersHasMore == false must not fire a 3rd request
+        await vm.loadMoreWorkers()
+        XCTAssertEqual(workerFetchCallCount, 2)
+
+        let workerUrls = MockURLProtocol.recordedUrls().filter { $0.contains("/api/direct-entry/workers") }
+        XCTAssertEqual(workerUrls.count, 2)
+        for url in workerUrls {
+            XCTAssertFalse(url.contains("page="), "Workers API must never send page= parameter: \(url)")
+            XCTAssertTrue(url.contains("page_size=15"), "Workers API must send page_size=15: \(url)")
+        }
+        XCTAssertFalse(workerUrls[0].contains("cursor="), "First page must not send cursor=: \(workerUrls[0])")
+        XCTAssertTrue(workerUrls[1].contains("cursor=cursor_page_2"), "Second page must send cursor=cursor_page_2: \(workerUrls[1])")
+    }
+
+    @MainActor
+    func testRefreshableCancellationNeverSetsInlineErrorInExplanationOrLeaveInbox() async throws {
+        MockURLProtocol.resetRecordedUrls()
+        MockURLProtocol.requestHandler = { req in
+            let path = req.url?.path ?? ""
+            if path.contains("/api/attendance/explanations/approvals") || path.contains("/api/leave/approvals") {
+                throw URLError(.cancelled)
+            }
+            let resp = HTTPURLResponse(url: req.url!, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/json"])!
+            return (resp, Data("{\"ok\":true}".utf8))
+        }
+
+        let client = makeMockHttpClient()
+        let repo = MiniBiRepository(
+            httpClient: client,
+            keychain: KeychainStore(serviceName: "com.aistudio.minibi.r5cancel.\(UUID().uuidString)")
+        )
+        let leaveService = LeaveService(httpClient: client)
+        let explanationService = AttendanceExplanationService(httpClient: client)
+        let vm = MiniBiViewModel(
+            repository: repo,
+            leaveService: leaveService,
+            attendanceExplanationService: explanationService
+        )
+        vm.currentUser = MiniBiUser(
+            id: "aaaa1111-2222-4333-8444-555555555555",
+            username: "leader.user",
+            fullName: "Leader User",
+            permissions: ["attendance_access"]
+        )
+        vm.isAuthenticated = true
+
+        let seededExplanation = AttendanceExplanationItemProjection(
+            explanationId: "exp-1",
+            appUserId: "emp-1",
+            requester: AttendanceExplanationAccountSummaryProjection(
+                appUserId: "emp-1",
+                displayName: "Nguyễn Văn A"
+            ),
+            businessDate: "2026-11-11",
+            slotCode: "SLOT_1",
+            slotIndex: 1,
+            slotLabel: "Ca sáng",
+            targetTime: "07:30",
+            originalSlotStatus: "LATE",
+            status: "PENDING",
+            reason: "Tắc đường",
+            rowVersion: 1
+        )
+        vm.explanationApprovalInbox = AttendanceExplanationApprovalInboxProjection(
+            viewer: AttendanceExplanationApprovalInboxViewerProjection(
+                appUserId: "aaaa1111-2222-4333-8444-555555555555",
+                canApproveExplanations: true
+            ),
+            pagination: AttendanceExplanationApprovalInboxPaginationProjection(
+                limit: 15,
+                offset: 0,
+                totalRows: 1,
+                pendingCount: 1
+            ),
+            items: [seededExplanation]
+        )
+
+        let seededLeave = LeaveRequestProjection(
+            requestId: "leave-1",
+            appUserId: "emp-1",
+            status: "PENDING",
+            reason: "Việc gia đình",
+            rowVersion: 1
+        )
+        vm.leaveApprovalInbox = LeaveApprovalInboxProjection(
+            asOfDate: "2026-11-11",
+            statusFilter: "PENDING",
+            total: 1,
+            limit: 15,
+            offset: 0,
+            items: [seededLeave]
+        )
+
+        await vm.performRefreshable {
+            await vm.refreshExplanationApprovalInbox()
+        }
+        await vm.performRefreshable {
+            await vm.refreshLeaveApprovalInbox()
+        }
+
+        XCTAssertNil(vm.explanationInboxError, "REQUEST_CANCELLED must never set explanationInboxError")
+        XCTAssertNil(vm.explanationInboxErrorCode, "REQUEST_CANCELLED must never set explanationInboxErrorCode")
+        XCTAssertFalse(vm.isLoadingExplanationInbox)
+        XCTAssertEqual(vm.explanationApprovalInbox?.items.count, 1, "Existing explanationApprovalInbox items must be preserved on cancellation")
+
+        XCTAssertNil(vm.leaveInboxError, "REQUEST_CANCELLED must never set leaveInboxError")
+        XCTAssertFalse(vm.isLoadingLeaveInbox)
+        XCTAssertEqual(vm.leaveApprovalInbox?.items.count, 1, "Existing leaveApprovalInbox items must be preserved on cancellation")
+    }
+
+    @MainActor
+    func testWorkReportReviewsPaginationUsesCursorWithoutPageOrStateParam() async throws {
+        MockURLProtocol.resetRecordedUrls()
+        MockURLProtocol.requestHandler = { req in
+            let url = req.url!
+            let path = url.path
+            let query = url.query ?? ""
+            let body: String
+            if path == "/api/work-reports/reviews" {
+                if query.contains("cursor=rev_cursor_2") {
+                    body = """
+                    {
+                      "ok": true,
+                      "items": [
+                        {"obligation_id": "ob-2", "submission_id": "sub-2", "template_name": "Báo cáo ngày", "submitter_name": "Trần Thị B", "submission_state": "SUBMITTED", "submission_version": 1}
+                      ],
+                      "next_cursor": null,
+                      "has_more": false
+                    }
+                    """
+                } else {
+                    body = """
+                    {
+                      "ok": true,
+                      "items": [
+                        {"obligation_id": "ob-1", "submission_id": "sub-1", "template_name": "Báo cáo ngày", "submitter_name": "Nguyễn Văn A", "submission_state": "SUBMITTED", "submission_version": 1}
+                      ],
+                      "next_cursor": "rev_cursor_2",
+                      "has_more": true
+                    }
+                    """
+                }
+            } else {
+                body = """
+                {"ok": true, "items": []}
+                """
+            }
+            let resp = HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/json"])!
+            return (resp, Data(body.utf8))
+        }
+
+        let client = makeMockHttpClient()
+        let repo = MiniBiRepository(
+            httpClient: client,
+            keychain: KeychainStore(serviceName: "com.aistudio.minibi.r5reviews.\(UUID().uuidString)")
+        )
+        let workReportsService = WorkReportsAndReportingService(httpClient: client)
+        let vm = MiniBiViewModel(
+            repository: repo,
+            workReportsService: workReportsService
+        )
+        vm.currentUser = MiniBiUser(
+            id: "aaaa1111-2222-4333-8444-555555555555",
+            username: "reviewer.user",
+            fullName: "Reviewer User",
+            permissions: ["work_report_review"]
+        )
+        vm.isAuthenticated = true
+
+        await vm.loadWorkReportsData(force: true)
+
+        XCTAssertEqual(vm.workReportReviews.count, 1)
+        XCTAssertTrue(vm.workReportReviewsHasMore)
+        XCTAssertEqual(vm.workReportReviewsNextCursor, "rev_cursor_2")
+
+        await vm.loadMoreWorkReportReviews()
+
+        XCTAssertEqual(vm.workReportReviews.count, 2)
+        XCTAssertFalse(vm.workReportReviewsHasMore)
+        XCTAssertNil(vm.workReportReviewsNextCursor)
+
+        let reviewUrls = MockURLProtocol.recordedUrls().filter { $0.contains("/api/work-reports/reviews") }
+        XCTAssertEqual(reviewUrls.count, 2)
+        for url in reviewUrls {
+            XCTAssertFalse(url.contains("page="), "Work report reviews API must never send page= parameter: \(url)")
+            XCTAssertFalse(url.contains("state="), "Work report reviews API must never send state= parameter: \(url)")
+            XCTAssertTrue(url.contains("page_size=15"), "Work report reviews API must send page_size=15: \(url)")
+        }
+        XCTAssertFalse(reviewUrls[0].contains("cursor="), "First page must not send cursor=: \(reviewUrls[0])")
+        XCTAssertTrue(reviewUrls[1].contains("cursor=rev_cursor_2"), "Second page must send cursor=rev_cursor_2: \(reviewUrls[1])")
     }
 }
