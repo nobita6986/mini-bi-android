@@ -546,9 +546,9 @@ public struct WorkReportsScreen: View {
                                     .foregroundColor(theme.primary)
                             }
                             HrpSegmentedBar(
-                                positiveCount: row.submittedCount,
-                                negativeCount: row.overdueCount,
-                                neutralCount: max(0, row.totalObligations - row.submittedCount - row.overdueCount),
+                                activeCount: row.submittedCount,
+                                inactiveCount: row.overdueCount,
+                                otherCount: max(0, row.totalObligations - row.submittedCount - row.overdueCount),
                                 height: 6
                             )
                             Text("Đã nộp \(row.submittedCount)/\(row.totalObligations) · Quá hạn \(row.overdueCount)")
