@@ -113,7 +113,9 @@ public struct WorkReportsScreen: View {
                 .padding(14)
             }
             .refreshable {
-                await viewModel.loadWorkReportsData()
+                await viewModel.performRefreshable {
+                    await viewModel.loadWorkReportsData(force: true)
+                }
             }
         }
         .background(theme.background)

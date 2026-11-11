@@ -403,9 +403,10 @@ public final class MiniBiRepository {
         status: String = "",
         manager: String = "",
         recruiter: String = "",
+        cursor: String? = nil,
         page: Int = 1,
         pageSize: Int = 15
-    ) async -> MiniBiApiResult<(items: [WorkerItem], total: Int, totalPages: Int)> {
+    ) async -> MiniBiApiResult<(items: [WorkerItem], total: Int, hasMore: Bool, nextCursor: String?)> {
         let normalizedScope = scope.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard MiniBiUser.canonicalWorkerDirectoryScopes.contains(normalizedScope) else {
             return .failure(
@@ -415,13 +416,13 @@ public final class MiniBiRepository {
             )
         }
 
-        let safePage = max(page, 1)
         var queryItems: [URLQueryItem] = [
             URLQueryItem(name: "scope", value: normalizedScope),
             URLQueryItem(name: "page_size", value: String(min(max(pageSize, 1), 100)))
         ]
-        if safePage > 1 {
-            queryItems.append(URLQueryItem(name: "page", value: String(safePage)))
+        let cleanCursor = (cursor ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if !cleanCursor.isEmpty {
+            queryItems.append(URLQueryItem(name: "cursor", value: cleanCursor))
         }
         let cleanSearch = search.trimmingCharacters(in: .whitespacesAndNewlines)
         if !cleanSearch.isEmpty {
@@ -451,8 +452,16 @@ public final class MiniBiRepository {
             let summaryObj = dataObj["summary"] as? [String: Any]
             let total = summaryObj?.optInt("total_workers", defaultValue: items.count)
                 ?? dataObj.optInt("total", "total_count", defaultValue: items.count)
-            let totalPages = max(1, dataObj.optInt("total_pages", defaultValue: (total + pageSize - 1) / max(1, pageSize)))
-            return .success((items: items, total: total, totalPages: totalPages), statusCode: response.statusCode)
+            let rawNextCursor = dataObj.optString("next_cursor")
+                .ifEmpty(root.optString("next_cursor"))
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let nextCursor: String? = (rawNextCursor.isEmpty || rawNextCursor.lowercased() == "null") ? nil : rawNextCursor
+            let hasMore = dataObj.optBool("has_more", defaultValue: root.optBool("has_more", defaultValue: nextCursor != nil))
+                && nextCursor != nil
+            return .success(
+                (items: items, total: total, hasMore: hasMore, nextCursor: nextCursor),
+                statusCode: response.statusCode
+            )
         }
 
         return .failure(

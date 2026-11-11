@@ -4356,4 +4356,276 @@ final class HRPBTests: XCTestCase {
         XCTAssertEqual(resolvedWorkerTabs.first?.key, "uploader")
         XCTAssertEqual(resolvedWorkerTabs.first?.label, "Tôi nhập")
     }
+
+    // MARK: - Round 5 Regression Tests (Cursor Pagination & Refreshable Cancellation)
+
+    @MainActor
+    func testWorkersPaginationUsesCursorAndNeverSendsPageParam() async throws {
+        MockURLProtocol.resetRecordedUrls()
+        var workerFetchCallCount = 0
+
+        MockURLProtocol.requestHandler = { req in
+            let url = req.url!
+            let path = url.path
+            let query = url.query ?? ""
+            let body: String
+            if path == "/api/direct-entry/workers" {
+                workerFetchCallCount += 1
+                if query.contains("cursor=cursor_page_2") {
+                    body = """
+                    {
+                      "ok": true,
+                      "scope": "managed",
+                      "items": [
+                        {"entry_id": "w-3", "employee_code": "HRP-003", "display_name": "Lê Văn C", "employment_status": "ON"}
+                      ],
+                      "next_cursor": null,
+                      "has_more": false,
+                      "summary": {"total_workers": 3}
+                    }
+                    """
+                } else {
+                    body = """
+                    {
+                      "ok": true,
+                      "scope": "managed",
+                      "items": [
+                        {"entry_id": "w-1", "employee_code": "HRP-001", "display_name": "Nguyễn Văn A", "employment_status": "ON"},
+                        {"entry_id": "w-2", "employee_code": "HRP-002", "display_name": "Trần Thị B", "employment_status": "ON"}
+                      ],
+                      "next_cursor": "cursor_page_2",
+                      "has_more": true,
+                      "summary": {"total_workers": 3}
+                    }
+                    """
+                }
+            } else {
+                body = """
+                {"ok": true, "items": []}
+                """
+            }
+            let resp = HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/json"])!
+            return (resp, Data(body.utf8))
+        }
+
+        let client = makeMockHttpClient()
+        let repo = MiniBiRepository(
+            httpClient: client,
+            keychain: KeychainStore(serviceName: "com.aistudio.minibi.r5workers.\(UUID().uuidString)")
+        )
+        let vm = MiniBiViewModel(repository: repo)
+        vm.currentUser = MiniBiUser(
+            id: "aaaa1111-2222-4333-8444-555555555555",
+            username: "pm.user",
+            fullName: "PM User",
+            permissions: ["entry_read"],
+            allowedWorkerTabs: ["managed"]
+        )
+        vm.isAuthenticated = true
+        vm.selectedWorkerScope = "managed"
+
+        await vm.loadWorkers(resetPage: true)
+
+        XCTAssertEqual(vm.workers.count, 2)
+        XCTAssertEqual(vm.workersTotalCount, 3)
+        XCTAssertTrue(vm.workersHasMore)
+        XCTAssertEqual(vm.workersNextCursor, "cursor_page_2")
+
+        await vm.loadMoreWorkers()
+
+        XCTAssertEqual(vm.workers.count, 3)
+        XCTAssertFalse(vm.workersHasMore)
+        XCTAssertNil(vm.workersNextCursor)
+
+        // Calling loadMoreWorkers when workersHasMore == false must not fire a 3rd request
+        await vm.loadMoreWorkers()
+        XCTAssertEqual(workerFetchCallCount, 2)
+
+        let workerUrls = MockURLProtocol.recordedUrls().filter { $0.contains("/api/direct-entry/workers") }
+        XCTAssertEqual(workerUrls.count, 2)
+        for url in workerUrls {
+            XCTAssertFalse(url.contains("page="), "Workers API must never send page= parameter: \(url)")
+            XCTAssertTrue(url.contains("page_size=15"), "Workers API must send page_size=15: \(url)")
+        }
+        XCTAssertFalse(workerUrls[0].contains("cursor="), "First page must not send cursor=: \(workerUrls[0])")
+        XCTAssertTrue(workerUrls[1].contains("cursor=cursor_page_2"), "Second page must send cursor=cursor_page_2: \(workerUrls[1])")
+    }
+
+    @MainActor
+    func testRefreshableCancellationNeverSetsInlineErrorInExplanationOrLeaveInbox() async throws {
+        MockURLProtocol.resetRecordedUrls()
+        MockURLProtocol.requestHandler = { req in
+            let path = req.url?.path ?? ""
+            if path.contains("/api/attendance/explanations/approval-inbox") || path.contains("/api/leave/approval-inbox") {
+                throw URLError(.cancelled)
+            }
+            let resp = HTTPURLResponse(url: req.url!, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/json"])!
+            return (resp, Data("{\"ok\":true}".utf8))
+        }
+
+        let client = makeMockHttpClient()
+        let repo = MiniBiRepository(
+            httpClient: client,
+            keychain: KeychainStore(serviceName: "com.aistudio.minibi.r5cancel.\(UUID().uuidString)")
+        )
+        let leaveService = LeaveService(httpClient: client)
+        let explanationService = AttendanceExplanationService(httpClient: client)
+        let vm = MiniBiViewModel(
+            repository: repo,
+            leaveService: leaveService,
+            attendanceExplanationService: explanationService
+        )
+        vm.currentUser = MiniBiUser(
+            id: "aaaa1111-2222-4333-8444-555555555555",
+            username: "leader.user",
+            fullName: "Leader User",
+            permissions: ["attendance_access"]
+        )
+        vm.isAuthenticated = true
+
+        let seededExplanation = AttendanceExplanationItemProjection(
+            explanationId: "exp-1",
+            appUserId: "emp-1",
+            requester: AttendanceExplanationAccountSummaryProjection(
+                appUserId: "emp-1",
+                displayName: "Nguyễn Văn A"
+            ),
+            businessDate: "2026-11-11",
+            slotCode: "SLOT_1",
+            slotIndex: 1,
+            slotLabel: "Ca sáng",
+            targetTime: "07:30",
+            originalSlotStatus: "LATE",
+            status: "PENDING",
+            reason: "Tắc đường",
+            rowVersion: 1
+        )
+        vm.explanationApprovalInbox = AttendanceExplanationApprovalInboxProjection(
+            viewer: AttendanceExplanationApprovalInboxViewerProjection(
+                appUserId: "aaaa1111-2222-4333-8444-555555555555",
+                canApproveExplanations: true
+            ),
+            pagination: AttendanceExplanationApprovalInboxPaginationProjection(
+                limit: 15,
+                offset: 0,
+                totalRows: 1,
+                pendingCount: 1
+            ),
+            items: [seededExplanation]
+        )
+
+        let seededLeave = LeaveRequestProjection(
+            requestId: "leave-1",
+            appUserId: "emp-1",
+            status: "PENDING",
+            reason: "Việc gia đình",
+            rowVersion: 1
+        )
+        vm.leaveApprovalInbox = LeaveApprovalInboxProjection(
+            asOfDate: "2026-11-11",
+            statusFilter: "PENDING",
+            total: 1,
+            limit: 15,
+            offset: 0,
+            items: [seededLeave]
+        )
+
+        await vm.performRefreshable {
+            await vm.refreshExplanationApprovalInbox()
+        }
+        await vm.performRefreshable {
+            await vm.refreshLeaveApprovalInbox()
+        }
+
+        XCTAssertNil(vm.explanationInboxError, "REQUEST_CANCELLED must never set explanationInboxError")
+        XCTAssertNil(vm.explanationInboxErrorCode, "REQUEST_CANCELLED must never set explanationInboxErrorCode")
+        XCTAssertFalse(vm.isLoadingExplanationInbox)
+        XCTAssertEqual(vm.explanationApprovalInbox?.items.count, 1, "Existing explanationApprovalInbox items must be preserved on cancellation")
+
+        XCTAssertNil(vm.leaveInboxError, "REQUEST_CANCELLED must never set leaveInboxError")
+        XCTAssertFalse(vm.isLoadingLeaveInbox)
+        XCTAssertEqual(vm.leaveApprovalInbox?.items.count, 1, "Existing leaveApprovalInbox items must be preserved on cancellation")
+    }
+
+    @MainActor
+    func testWorkReportReviewsPaginationUsesCursorWithoutPageOrStateParam() async throws {
+        MockURLProtocol.resetRecordedUrls()
+        MockURLProtocol.requestHandler = { req in
+            let url = req.url!
+            let path = url.path
+            let query = url.query ?? ""
+            let body: String
+            if path == "/api/work-reports/reviews" {
+                if query.contains("cursor=rev_cursor_2") {
+                    body = """
+                    {
+                      "ok": true,
+                      "items": [
+                        {"obligation_id": "ob-2", "submission_id": "sub-2", "template_name": "Báo cáo ngày", "submitter_name": "Trần Thị B", "submission_state": "SUBMITTED", "submission_version": 1}
+                      ],
+                      "next_cursor": null,
+                      "has_more": false
+                    }
+                    """
+                } else {
+                    body = """
+                    {
+                      "ok": true,
+                      "items": [
+                        {"obligation_id": "ob-1", "submission_id": "sub-1", "template_name": "Báo cáo ngày", "submitter_name": "Nguyễn Văn A", "submission_state": "SUBMITTED", "submission_version": 1}
+                      ],
+                      "next_cursor": "rev_cursor_2",
+                      "has_more": true
+                    }
+                    """
+                }
+            } else {
+                body = """
+                {"ok": true, "items": []}
+                """
+            }
+            let resp = HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/json"])!
+            return (resp, Data(body.utf8))
+        }
+
+        let client = makeMockHttpClient()
+        let repo = MiniBiRepository(
+            httpClient: client,
+            keychain: KeychainStore(serviceName: "com.aistudio.minibi.r5reviews.\(UUID().uuidString)")
+        )
+        let workReportsService = WorkReportsAndReportingService(httpClient: client)
+        let vm = MiniBiViewModel(
+            repository: repo,
+            workReportsService: workReportsService
+        )
+        vm.currentUser = MiniBiUser(
+            id: "aaaa1111-2222-4333-8444-555555555555",
+            username: "reviewer.user",
+            fullName: "Reviewer User",
+            permissions: ["work_report_review"]
+        )
+        vm.isAuthenticated = true
+
+        await vm.loadWorkReportsData(force: true)
+
+        XCTAssertEqual(vm.workReportReviews.count, 1)
+        XCTAssertTrue(vm.workReportReviewsHasMore)
+        XCTAssertEqual(vm.workReportReviewsNextCursor, "rev_cursor_2")
+
+        await vm.loadMoreWorkReportReviews()
+
+        XCTAssertEqual(vm.workReportReviews.count, 2)
+        XCTAssertFalse(vm.workReportReviewsHasMore)
+        XCTAssertNil(vm.workReportReviewsNextCursor)
+
+        let reviewUrls = MockURLProtocol.recordedUrls().filter { $0.contains("/api/work-reports/reviews") }
+        XCTAssertEqual(reviewUrls.count, 2)
+        for url in reviewUrls {
+            XCTAssertFalse(url.contains("page="), "Work report reviews API must never send page= parameter: \(url)")
+            XCTAssertFalse(url.contains("state="), "Work report reviews API must never send state= parameter: \(url)")
+            XCTAssertTrue(url.contains("page_size=15"), "Work report reviews API must send page_size=15: \(url)")
+        }
+        XCTAssertFalse(reviewUrls[0].contains("cursor="), "First page must not send cursor=: \(reviewUrls[0])")
+        XCTAssertTrue(reviewUrls[1].contains("cursor=rev_cursor_2"), "Second page must send cursor=rev_cursor_2: \(reviewUrls[1])")
+    }
 }

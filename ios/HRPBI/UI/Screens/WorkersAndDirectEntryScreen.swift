@@ -134,7 +134,9 @@ public struct DirectEntryNewWorkersScreen: View {
                         .padding(14)
                     }
                     .refreshable {
-                        await viewModel.loadDirectEntryAssigneeOptions(force: true)
+                        await viewModel.performRefreshable {
+                            await viewModel.loadDirectEntryAssigneeOptions(force: true)
+                        }
                     }
 
                     // Sticky Bottom Action Bar (`.ultraThinMaterial`)
@@ -1808,7 +1810,9 @@ public struct WorkersScreen: View {
                             .padding(14)
                         }
                         .refreshable {
-                            await viewModel.refreshOwnSubmissions(reset: true)
+                            await viewModel.performRefreshable {
+                                await viewModel.refreshOwnSubmissions(reset: true)
+                            }
                         }
                     } else {
                         // Search & Export Bar
@@ -2000,7 +2004,7 @@ public struct WorkersScreen: View {
                                         }
                                     }
 
-                                    if viewModel.workersPage < viewModel.workersTotalPages || viewModel.workers.count < viewModel.workersTotalCount {
+                                    if viewModel.workersHasMore {
                                         HrpLoadMoreButton(
                                             title: "Tải thêm nhân sự",
                                             loadedCount: viewModel.workers.count,
@@ -2016,7 +2020,9 @@ public struct WorkersScreen: View {
                             .padding(14)
                         }
                         .refreshable {
-                            await viewModel.loadWorkers(resetPage: true)
+                            await viewModel.performRefreshable {
+                                await viewModel.loadWorkers(resetPage: true, force: true)
+                            }
                         }
                     }
                 }
@@ -2222,7 +2228,9 @@ struct WorkerDetailSheet: View {
                 .padding(14)
             }
             .refreshable {
-                await loadFullWorkerDetail()
+                await viewModel.performRefreshable {
+                    await loadFullWorkerDetail()
+                }
             }
             .background(theme.background)
             .navigationTitle("Chi tiết hồ sơ NLĐ")
@@ -3860,7 +3868,9 @@ struct SalaryAdvanceWorkspaceView: View {
             }
             .scrollDismissesKeyboard(.interactively)
             .refreshable {
-                await viewModel.refreshSalaryAdvanceCreateTab()
+                await viewModel.performRefreshable {
+                    await viewModel.refreshSalaryAdvanceCreateTab()
+                }
             }
             .onChange(of: focusedField) { target in
                 guard let target else { return }
@@ -4116,7 +4126,9 @@ struct SalaryAdvanceWorkspaceView: View {
             .padding(14)
         }
         .refreshable {
-            await viewModel.refreshSalaryAdvanceRequests()
+            await viewModel.performRefreshable {
+                await viewModel.refreshSalaryAdvanceRequests()
+            }
         }
     }
 
@@ -4298,7 +4310,9 @@ struct SalaryAdvanceWorkspaceView: View {
             }
             .scrollDismissesKeyboard(.interactively)
             .refreshable {
-                await viewModel.refreshSalaryAdvanceActiveDetail()
+                await viewModel.performRefreshable {
+                    await viewModel.refreshSalaryAdvanceActiveDetail()
+                }
             }
             .onChange(of: focusedField) { target in
                 guard let target else { return }

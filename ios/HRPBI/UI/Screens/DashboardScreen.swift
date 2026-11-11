@@ -139,7 +139,9 @@ public struct DashboardScreen: View {
                 .padding(14)
             }
             .refreshable {
-                await viewModel.loadDashboardData()
+                await viewModel.performRefreshable {
+                    await viewModel.loadDashboardData(force: true)
+                }
             }
         }
         .background(theme.background)

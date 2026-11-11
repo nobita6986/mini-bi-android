@@ -533,6 +533,8 @@ public final class WorkReportsAndReportingService {
 
     private let httpClient: BackendHttpClient
     private let reportingCoalescer = DashboardReportingCoalescer()
+    public private(set) var lastPendingReviewsNextCursor: String? = nil
+    public private(set) var lastPendingReviewsHasMore: Bool = false
 
     public init(httpClient: BackendHttpClient = .shared) {
         self.httpClient = httpClient
@@ -780,22 +782,31 @@ public final class WorkReportsAndReportingService {
 
     public func fetchPendingReviews(
         status: String = "SUBMITTED",
+        templateId: String? = nil,
+        cursor: String? = nil,
         page: Int = 1,
         pageSize: Int = 15
     ) async -> MiniBiApiResult<[WorkReportReviewItem]> {
-        let resolvedState = status.uppercased() == "PENDING" ? "SUBMITTED" : status.uppercased()
-        let safePage = max(1, page)
         let safePageSize = min(max(pageSize, 1), 100)
+        var queryItems: [URLQueryItem] = [
+            URLQueryItem(name: "page_size", value: String(safePageSize))
+        ]
+        let cleanTemplateId = (templateId ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if !cleanTemplateId.isEmpty {
+            queryItems.append(URLQueryItem(name: "template_id", value: cleanTemplateId))
+        }
+        let cleanCursor = (cursor ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if !cleanCursor.isEmpty {
+            queryItems.append(URLQueryItem(name: "cursor", value: cleanCursor))
+        }
         let response = await httpClient.request(
             method: "GET",
             path: "/api/work-reports/reviews",
-            queryItems: [
-                URLQueryItem(name: "state", value: resolvedState),
-                URLQueryItem(name: "page", value: String(safePage)),
-                URLQueryItem(name: "page_size", value: String(safePageSize))
-            ]
+            queryItems: queryItems
         )
         if response.statusCode == 403 || response.statusCode == 404 {
+            lastPendingReviewsNextCursor = nil
+            lastPendingReviewsHasMore = false
             return .success([], statusCode: response.statusCode)
         }
         guard response.isSuccess else {
@@ -807,11 +818,21 @@ public final class WorkReportsAndReportingService {
         }
 
         let root = response.jsonObject ?? [:]
+        let dataObj = (root["data"] as? [String: Any]) ?? root
         let rawList = root.optObjectArray("items")
             .ifEmpty(root.optObjectArray("data"))
             .ifEmpty(root.optObjectArray("reviews"))
-            .ifEmpty((root["data"] as? [String: Any])?.optObjectArray("reviews") ?? [])
-            .ifEmpty((root["data"] as? [String: Any])?.optObjectArray("items") ?? [])
+            .ifEmpty(dataObj.optObjectArray("reviews"))
+            .ifEmpty(dataObj.optObjectArray("items"))
+
+        let rawNextCursor = dataObj.optString("next_cursor")
+            .ifEmpty(root.optString("next_cursor"))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let nextCursor: String? = (rawNextCursor.isEmpty || rawNextCursor.lowercased() == "null") ? nil : rawNextCursor
+        let hasMore = dataObj.optBool("has_more", defaultValue: root.optBool("has_more", defaultValue: nextCursor != nil))
+            && nextCursor != nil
+        lastPendingReviewsNextCursor = nextCursor
+        lastPendingReviewsHasMore = hasMore
 
         let items = rawList.map { Self.parseReviewItem($0) }
         return .success(items, statusCode: response.statusCode)

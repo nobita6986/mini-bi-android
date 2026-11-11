@@ -935,9 +935,11 @@ public struct AttendanceScreen: View {
             .padding(14)
         }
         .refreshable {
-            locationManager.requestLocationUpdate()
-            await viewModel.syncAttendanceTimeAnchor()
-            _ = await viewModel.refreshAttendanceHistoryOnly(force: true)
+            await viewModel.performRefreshable {
+                locationManager.requestLocationUpdate()
+                await viewModel.syncAttendanceTimeAnchor()
+                _ = await viewModel.refreshAttendanceHistoryOnly(force: true)
+            }
         }
     }
 
@@ -1270,7 +1272,9 @@ public struct AttendanceScreen: View {
             .padding(14)
         }
         .refreshable {
-            await viewModel.refreshMyLeaveSummary(year: viewModel.leaveYear)
+            await viewModel.performRefreshable {
+                await viewModel.refreshMyLeaveSummary(year: viewModel.leaveYear, force: true)
+            }
         }
         .onAppear {
             viewModel.ensureInitialLeaveDraftDay()
@@ -2302,7 +2306,9 @@ public struct AttendanceScreen: View {
                 .padding(14)
             }
             .refreshable {
-                await viewModel.refreshLeaveApprovalInbox()
+                await viewModel.performRefreshable {
+                    await viewModel.refreshLeaveApprovalInbox()
+                }
             }
             .onAppear {
                 if viewModel.leaveApprovalInbox == nil && !viewModel.isLoadingLeaveInbox {
@@ -3000,7 +3006,9 @@ public struct AttendanceScreen: View {
             .padding(14)
         }
         .refreshable {
-            await viewModel.refreshMyAttendanceExplanations(businessDate: selectedDate)
+            await viewModel.performRefreshable {
+                await viewModel.refreshMyAttendanceExplanations(businessDate: selectedDate, force: true)
+            }
         }
         .onAppear {
             if viewModel.myExplanationsOverview == nil && !viewModel.isLoadingMyExplanations {
@@ -3464,10 +3472,15 @@ public struct AttendanceScreen: View {
                                         Image(systemName: "calendar.badge.clock")
                                             .font(.caption.weight(.semibold))
                                             .foregroundColor(theme.primary)
-                                        Text("\(LeaveContract.formatIsoDateVi(item.businessDate)) · \(friendlyTitle) (\(item.targetTime))")
-                                            .font(.subheadline.weight(.semibold).monospacedDigit())
+                                        Text(
+                                            item.targetTime.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                                                ? "\(LeaveContract.formatIsoDateVi(item.businessDate)) · \(friendlyTitle)"
+                                                : "\(LeaveContract.formatIsoDateVi(item.businessDate)) · \(friendlyTitle) · \(item.targetTime)"
+                                        )
+                                            .font(.caption.weight(.bold).monospacedDigit())
                                             .foregroundColor(SemanticColors.textPrimary)
                                             .lineLimit(1)
+                                            .minimumScaleFactor(0.85)
                                         Spacer(minLength: 4)
                                         Text(AttendanceExplanationContract.originalSlotStatusLabel(item.originalSlotStatus))
                                             .font(.caption2.weight(.bold))
@@ -3648,7 +3661,9 @@ public struct AttendanceScreen: View {
                 .padding(14)
             }
             .refreshable {
-                await viewModel.refreshExplanationApprovalInbox()
+                await viewModel.performRefreshable {
+                    await viewModel.refreshExplanationApprovalInbox()
+                }
             }
             .onAppear {
                 if viewModel.explanationApprovalInbox == nil && !viewModel.isLoadingExplanationInbox {

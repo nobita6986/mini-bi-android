@@ -186,7 +186,9 @@ public struct RecruitmentPostsScreen: View {
                     .padding(14)
                 }
                 .refreshable {
-                    await viewModel.loadRecruitmentPosts(reset: true)
+                    await viewModel.performRefreshable {
+                        await viewModel.loadRecruitmentPosts(reset: true)
+                    }
                 }
             }
         }

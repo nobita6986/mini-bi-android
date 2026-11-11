@@ -122,6 +122,13 @@ public enum MiniBiApiResult<T> {
         errorCode: String? = nil,
         rawBody: String? = nil
     )
+
+    public var isCancelledRequest: Bool {
+        if case let .failure(_, _, errorCode, _) = self {
+            return errorCode?.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() == "REQUEST_CANCELLED"
+        }
+        return false
+    }
 }
 
 // MARK: - Auth & Session Models
