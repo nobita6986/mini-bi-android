@@ -136,6 +136,7 @@ public struct AttendanceScreen: View {
     @State private var expandedInboxExplanationIds: Set<String> = []
     @State private var isShowingExplanationDatePickerSheet: Bool = false
     @State private var explanationDatePickerSelection: Date = Date()
+    @State private var isShowingExplanationPolicyInfoSheet: Bool = false
 
     public init(viewModel: MiniBiViewModel) {
         self.viewModel = viewModel
@@ -255,6 +256,10 @@ public struct AttendanceScreen: View {
         .sheet(isPresented: $isShowingExplanationDatePickerSheet) {
             explanationDatePickerSheet(theme: theme)
                 .hrpSheetPresentation(detents: [.medium, .large])
+        }
+        .sheet(isPresented: $isShowingExplanationPolicyInfoSheet) {
+            explanationPolicyInfoSheet(theme: theme)
+                .hrpSheetPresentation(detents: [.medium])
         }
         .sheet(item: $selectedPreviewOutboxItem) { previewItem in
             AttendancePhotoPreviewSheet(
@@ -2791,7 +2796,7 @@ public struct AttendanceScreen: View {
         return df.string(from: date)
     }
 
-    // MARK: - Tab 2: Attendance Explanation ("Giải trình chấm công") Content
+    // MARK: - Tab 2: Attendance Explanation ("Giải trình") Content
 
     @ViewBuilder
     private func explanationTabContent(theme: MiniBiThemePalette) -> some View {
@@ -2830,40 +2835,48 @@ public struct AttendanceScreen: View {
                         .cornerRadius(12)
                 }
 
-                // Header & Date Selector Card
-                VStack(alignment: .leading, spacing: 12) {
-                    HStack(alignment: .top) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("GIẢI TRÌNH CÁ NHÂN")
-                                .font(.caption2.weight(.bold))
-                                .foregroundColor(theme.primary)
-                            Text("Giải trình")
-                                .font(.headline.weight(.bold))
-                                .foregroundColor(SemanticColors.textPrimary)
-                        }
-                        Spacer()
+                // Compact Header & Date Navigator Card
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack(alignment: .center, spacing: 8) {
+                        Text("Giải trình chấm công")
+                            .font(.headline.weight(.bold))
+                            .foregroundColor(SemanticColors.textPrimary)
+
                         Button {
+                            HapticsManager.selection()
+                            isShowingExplanationPolicyInfoSheet = true
+                        } label: {
+                            Image(systemName: "info.circle")
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundColor(theme.primary)
+                                .frame(width: 44, height: 44)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(HrpPressableButtonStyle())
+                        .accessibilityLabel("Thông tin quy chế giải trình")
+
+                        Spacer()
+
+                        Button {
+                            HapticsManager.lightImpact()
                             Task { await viewModel.refreshMyAttendanceExplanations(businessDate: selectedDate) }
                         } label: {
                             if viewModel.isLoadingMyExplanations {
                                 ProgressView()
                                     .scaleEffect(0.75)
-                                    .frame(width: 28, height: 28)
+                                    .frame(width: 36, height: 36)
                             } else {
                                 Image(systemName: "arrow.clockwise")
                                     .font(.caption.weight(.bold))
-                                    .frame(width: 28, height: 28)
+                                    .frame(width: 36, height: 36)
                                     .background(theme.primaryLight)
                                     .foregroundColor(theme.primary)
-                                    .cornerRadius(8)
+                                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                             }
                         }
+                        .buttonStyle(HrpPressableButtonStyle())
                         .disabled(viewModel.isLoadingMyExplanations || viewModel.isMutatingExplanation)
                     }
-
-                    Text("Giải trình được duyệt chỉ xác nhận lượt chấm muộn/bị thiếu là hợp lệ trên bảng tổng hợp; ứng dụng không tự tạo lượt chấm công giả hoặc quyết định chế tài nhân sự.")
-                        .font(.caption)
-                        .foregroundColor(SemanticColors.textSecondary)
 
                     // Shared Date Navigator Bar for Explanation Business Date
                     HrpDateNavigatorBar(
@@ -2878,104 +2891,61 @@ public struct AttendanceScreen: View {
 
                     if let currentOverview = overview {
                         let dayEval = currentOverview.dayEvaluation
-                        let profileModeBadge = dayEval.policyIsDefaultUsed
-                            ? "Mặc định công ty"
-                            : "Nhóm cấu hình riêng"
-
-                        VStack(alignment: .leading, spacing: 4) {
-                            HStack(alignment: .center, spacing: 8) {
-                                Text("Bảng chấm công áp dụng: \(dayEval.resolvedProfileDisplayName())")
-                                    .font(.caption.weight(.bold))
-                                    .foregroundColor(theme.primary)
-                                Spacer()
-                                Text(profileModeBadge)
-                                    .font(.caption2.weight(.semibold))
-                                    .lineLimit(1)
-                                    .fixedSize(horizontal: true, vertical: false)
-                                    .padding(.horizontal, 8)
-                                    .padding(.vertical, 2)
-                                    .background(theme.primary.opacity(0.12))
-                                    .foregroundColor(theme.primary)
-                                    .cornerRadius(6)
-                            }
-                            Text("Mã cấu hình: \(dayEval.policyProfileCodeUsed) • Phiên bản v\(dayEval.policyVersionUsed) • \(dayEval.slots.count) mốc/ngày")
-                                .font(.caption)
-                                .foregroundColor(SemanticColors.textSecondary)
-                            Text("Khung giờ chuẩn: \(dayEval.resolvedSlotScheduleSummary())")
-                                .font(.caption2)
-                                .foregroundColor(SemanticColors.textSecondary)
-                        }
-                        .padding(10)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(theme.primaryLight.opacity(0.65))
-                        .cornerRadius(10)
-
-                        let routing = currentOverview.routing
-                        let approverName = routing.primaryApprover?.resolvedDisplayName() ?? "Hàng đợi Admin / BGĐ"
-                        let routeLabel = LeaveContract.leaveRouteKindLabel(
-                            routing.routeKind,
-                            teamName: routing.teamName,
-                            unitKind: routing.unitKind
+                        let approverText = AttendanceExplanationContract.friendlyApproverSummary(
+                            routing: currentOverview.routing
                         )
-                        let fallbackLabel = LeaveContract.leaveFallbackReasonLabel(routing.fallbackReason)
+                        let profileText = AttendanceExplanationContract.friendlyProfileSummary(
+                            dayEval: dayEval
+                        )
 
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("Luồng xét duyệt: \(routeLabel)")
+                        HStack(spacing: 8) {
+                            Image(systemName: "person.badge.shield.checkmark")
                                 .font(.caption.weight(.semibold))
+                                .foregroundColor(theme.primary)
+                            Text("Người duyệt: \(approverText)")
+                                .font(.caption.weight(.medium))
                                 .foregroundColor(SemanticColors.textPrimary)
-                            Text("Người duyệt chính: \(approverName)")
-                                .font(.caption)
-                                .foregroundColor(SemanticColors.textSecondary)
-                            if let fallbackLabel, !fallbackLabel.isEmpty {
-                                Text("Lưu ý định tuyến: \(fallbackLabel)")
-                                    .font(.caption2.weight(.semibold))
-                                    .foregroundColor(SemanticColors.warningText)
-                            }
+                                .lineLimit(1)
+                            Spacer(minLength: 6)
+                            Text(profileText)
+                                .font(.caption2.weight(.bold).monospacedDigit())
+                                .lineLimit(1)
+                                .fixedSize(horizontal: true, vertical: false)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 3)
+                                .background(theme.primary.opacity(0.12))
+                                .foregroundColor(theme.primary)
+                                .clipShape(Capsule())
                         }
-                        .padding(10)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Color(hex: 0xF8FAFC))
-                        .cornerRadius(10)
+                        .padding(.horizontal, 10)
+                        .frame(minHeight: 34)
+                        .hrpMutedTile(cornerRadius: HrpDesignTokens.radiusMD)
                     }
                 }
                 .padding(14)
-                .background(Color.white)
-                .cornerRadius(14)
+                .hrpCardSurface(cornerRadius: HrpDesignTokens.radiusCard)
 
                 if viewModel.isLoadingMyExplanations && overview == nil {
                     HStack(spacing: 10) {
                         Spacer()
                         ProgressView()
-                        Text("Đang tải đánh giá mốc chấm công và lịch sử giải trình...")
+                        Text("Đang tải các mốc chấm công...")
                             .font(.caption)
                             .foregroundColor(SemanticColors.textSecondary)
                         Spacer()
                     }
                     .padding(24)
-                    .background(Color.white)
-                    .cornerRadius(14)
+                    .hrpCardSurface(cornerRadius: HrpDesignTokens.radiusCard)
                 }
 
                 if let currentOverview = overview {
                     let dayEval = currentOverview.dayEvaluation
 
                     // Dynamic Day Slots Header
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("Các mốc chấm công ngày \(dayEval.businessDate)")
-                            .font(.subheadline.weight(.bold))
-                            .foregroundColor(SemanticColors.textPrimary)
-                        Text(dayEval.resolvedProfileBadgeLabel())
-                            .font(.caption2.weight(.bold))
-                            .lineLimit(1)
-                            .fixedSize(horizontal: true, vertical: false)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 4)
-                            .background(theme.primaryLight)
-                            .foregroundColor(theme.primary)
-                            .cornerRadius(8)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 2)
+                    Text("Mốc chấm công ngày \(LeaveContract.formatIsoDateVi(dayEval.businessDate))")
+                        .font(.subheadline.weight(.bold).monospacedDigit())
+                        .foregroundColor(SemanticColors.textPrimary)
+                        .padding(.horizontal, 2)
 
                     if dayEval.slots.isEmpty {
                         Text("Không có mốc chấm công nào được cấu hình cho ngày này.")
@@ -2983,8 +2953,7 @@ public struct AttendanceScreen: View {
                             .foregroundColor(SemanticColors.textSecondary)
                             .padding(14)
                             .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(Color.white)
-                            .cornerRadius(14)
+                            .hrpCardSurface(cornerRadius: HrpDesignTokens.radiusCard)
                     } else {
                         ForEach(dayEval.slots) { slot in
                             explanationDaySlotCard(
@@ -2996,20 +2965,19 @@ public struct AttendanceScreen: View {
                     }
 
                     // My Explanation History Section
-                    Text("Lịch sử giải trình chấm công của tôi (\(currentOverview.pagination.totalRows))")
-                        .font(.subheadline.weight(.bold))
+                    Text("Lịch sử giải trình đã gửi (\(currentOverview.pagination.totalRows))")
+                        .font(.subheadline.weight(.bold).monospacedDigit())
                         .foregroundColor(SemanticColors.textPrimary)
                         .padding(.top, 4)
                         .padding(.horizontal, 2)
 
                     if currentOverview.items.isEmpty {
-                        Text("Bạn chưa gửi giải trình chấm công nào.")
+                        Text("Bạn chưa gửi giải trình chấm công nào trong ngày này.")
                             .font(.caption)
                             .foregroundColor(SemanticColors.textSecondary)
                             .padding(16)
                             .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(Color.white)
-                            .cornerRadius(14)
+                            .hrpCardSurface(cornerRadius: HrpDesignTokens.radiusCard)
                     } else {
                         ForEach(currentOverview.items) { item in
                             explanationMyHistoryCard(item: item, theme: theme)
@@ -3046,49 +3014,96 @@ public struct AttendanceScreen: View {
         canSubmitExplanation: Bool,
         theme: MiniBiThemePalette
     ) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .top) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("\(slot.slotLabel) (\(slot.slotCode))")
-                        .font(.subheadline.weight(.bold))
-                        .foregroundColor(SemanticColors.textPrimary)
-                    Text("\(AttendanceExplanationContract.sessionLabel(slot.sessionCode)) • Khung giờ: \(AttendanceExplanationContract.formatGraceWindow(targetTime: slot.targetTime, graceBeforeMinutes: slot.graceBeforeMinutes, graceAfterMinutes: slot.graceAfterMinutes))")
-                        .font(.caption)
+        let friendlyTitle = AttendanceExplanationContract.friendlySlotTitle(
+            slotLabel: slot.slotLabel,
+            slotCode: slot.slotCode,
+            slotIndex: slot.slotIndex
+        )
+        let validRange = AttendanceExplanationContract.friendlyValidTimeRange(
+            targetTime: slot.targetTime,
+            graceBeforeMinutes: slot.graceBeforeMinutes,
+            graceAfterMinutes: slot.graceAfterMinutes
+        )
+        let shortSession = slot.sessionCode.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() == "PM"
+            ? "Chiều"
+            : "Sáng"
+
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .center, spacing: 12) {
+                // Left column: Target time highlight box (60pt)
+                VStack(spacing: 2) {
+                    Text(slot.targetTime)
+                        .font(.system(size: 16, weight: .bold, design: .rounded).monospacedDigit())
+                        .foregroundColor(theme.primary)
+                        .lineLimit(1)
+                    Text(shortSession)
+                        .font(.caption2.weight(.semibold))
                         .foregroundColor(SemanticColors.textSecondary)
+                        .lineLimit(1)
                 }
-                Spacer()
-                Text(AttendanceExplanationContract.slotStatusLabel(slot.slotStatus))
+                .frame(width: 60)
+                .padding(.vertical, 8)
+                .background(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(theme.primaryLight.opacity(0.85))
+                )
+
+                // Middle column: Friendly title + valid range & actual check-in line
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 6) {
+                        Text(friendlyTitle)
+                            .font(.subheadline.weight(.bold))
+                            .foregroundColor(SemanticColors.textPrimary)
+                            .lineLimit(1)
+                        Text("· \(validRange)")
+                            .font(.caption.monospacedDigit())
+                            .foregroundColor(SemanticColors.textSecondary)
+                            .lineLimit(1)
+                    }
+
+                    if let firstCheckin = slot.checkins.first {
+                        let devLabel = AttendanceExplanationContract.formatDeviationBadge(firstCheckin)
+                        let timeText = firstCheckin.timeLocal.isEmpty ? firstCheckin.capturedAtLocal : firstCheckin.timeLocal
+                        let devSuffix = (devLabel?.isEmpty == false) ? " · \(devLabel!)" : ""
+                        Text("Đã chấm lúc \(timeText)\(devSuffix)")
+                            .font(.caption.monospacedDigit())
+                            .foregroundColor(SemanticColors.textPrimary)
+                            .lineLimit(1)
+                    } else {
+                        let emptySlotHint: String = {
+                            switch slot.slotStatus.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() {
+                            case "UPCOMING", "NOT_APPLICABLE":
+                                return "Chưa đến giờ chấm"
+                            case "LEAVE_COVERED", "LEAVE_EXEMPT":
+                                return "Được miễn chấm"
+                            default:
+                                return "Chưa ghi nhận chấm công"
+                            }
+                        }()
+                        Text(emptySlotHint)
+                            .font(.caption)
+                            .foregroundColor(SemanticColors.textSecondary)
+                            .lineLimit(1)
+                    }
+                }
+
+                Spacer(minLength: 4)
+
+                // Right column: Compact status capsule
+                Text(AttendanceExplanationContract.compactSlotStatusBadge(slot.slotStatus))
                     .font(.caption2.weight(.bold))
                     .lineLimit(1)
                     .fixedSize(horizontal: true, vertical: false)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 5)
                     .background(explanationSlotStatusBgColor(slot.slotStatus))
                     .foregroundColor(explanationSlotStatusTextColor(slot.slotStatus))
-                    .cornerRadius(8)
-            }
-
-            if slot.checkins.isEmpty {
-                Text("Chưa có lượt chấm công gắn vào mốc này.")
-                    .font(.caption)
-                    .foregroundColor(SemanticColors.textSecondary)
-            } else {
-                VStack(alignment: .leading, spacing: 3) {
-                    ForEach(slot.checkins) { checkin in
-                        let devLabel = AttendanceExplanationContract.formatDeviationBadge(checkin)
-                        let timeText = checkin.timeLocal.isEmpty ? checkin.capturedAtLocal : checkin.timeLocal
-                        let devSuffix = (devLabel?.isEmpty == false) ? " (\(devLabel!))" : ""
-                        let distSuffix = checkin.distanceMeters.map { " • \($0)m" } ?? ""
-                        Text("• Lần #\(checkin.sequenceInDay) lúc \(timeText)\(devSuffix)\(distSuffix)")
-                            .font(.caption.monospacedDigit())
-                            .foregroundColor(SemanticColors.textPrimary)
-                    }
-                }
+                    .clipShape(Capsule())
             }
 
             if let existingExp = slot.explanation {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Giải trình đã gửi: \(AttendanceExplanationContract.explanationStatusLabel(existingExp.status)) (v\(existingExp.rowVersion))")
+                    Text("Giải trình đã gửi · \(AttendanceExplanationContract.explanationStatusLabel(existingExp.status))")
                         .font(.caption.weight(.bold))
                         .foregroundColor(leaveStatusTextColor(existingExp.status))
                     Text("Lý do: \(existingExp.reason)")
@@ -3097,7 +3112,7 @@ public struct AttendanceScreen: View {
                     let deciderName = existingExp.decidedByDisplayName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
                     let cleanNote = existingExp.decisionNote.trimmingCharacters(in: .whitespacesAndNewlines)
                     if !deciderName.isEmpty || !cleanNote.isEmpty {
-                        let noteSuffix = cleanNote.isEmpty ? "" : " • Phản hồi: \(cleanNote)"
+                        let noteSuffix = cleanNote.isEmpty ? "" : " · Phản hồi: \(cleanNote)"
                         Text("Người duyệt: \(deciderName.isEmpty ? "--" : deciderName)\(noteSuffix)")
                             .font(.caption2)
                             .foregroundColor(SemanticColors.textSecondary)
@@ -3105,35 +3120,36 @@ public struct AttendanceScreen: View {
                 }
                 .padding(10)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .background(leaveStatusBgColor(existingExp.status))
-                .cornerRadius(10)
+                .background(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(leaveStatusBgColor(existingExp.status))
+                )
             } else if slot.eligibleForExplanation && canSubmitExplanation {
-                HStack {
-                    Spacer()
-                    Button {
-                        viewModel.clearExplanationMutationError()
-                        localExplanationSubmitError = nil
-                        explanationReasonInput = ""
-                        pendingExplanationSubmitSlot = slot
-                    } label: {
-                        HStack(spacing: 6) {
-                            Image(systemName: "paperplane.fill")
-                            Text("Gửi giải trình")
-                        }
-                        .font(.caption.weight(.bold))
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 8)
-                        .background(theme.primary)
-                        .foregroundColor(.white)
-                        .cornerRadius(8)
+                Button {
+                    HapticsManager.lightImpact()
+                    viewModel.clearExplanationMutationError()
+                    localExplanationSubmitError = nil
+                    explanationReasonInput = ""
+                    pendingExplanationSubmitSlot = slot
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "paperplane.fill")
+                        Text("Gửi giải trình")
                     }
-                    .disabled(viewModel.isMutatingExplanation)
+                    .font(.caption.weight(.bold))
+                    .frame(maxWidth: .infinity, minHeight: 38)
+                    .background(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .fill(theme.primary)
+                    )
+                    .foregroundColor(.white)
                 }
+                .buttonStyle(HrpPressableButtonStyle())
+                .disabled(viewModel.isMutatingExplanation)
             }
         }
         .padding(14)
-        .background(Color.white)
-        .cornerRadius(14)
+        .hrpCardSurface(cornerRadius: HrpDesignTokens.radiusCard)
     }
 
     private func explanationMyHistoryCard(
@@ -3142,57 +3158,83 @@ public struct AttendanceScreen: View {
     ) -> some View {
         let isExpanded = expandedMyExplanationIds.contains(item.explanationId)
         let cleanDecisionNote = item.decisionNote.trimmingCharacters(in: .whitespacesAndNewlines)
+        let friendlyTitle = AttendanceExplanationContract.friendlySlotTitle(
+            slotLabel: item.slotLabel,
+            slotCode: item.slotCode,
+            slotIndex: item.slotIndex
+        )
 
-        return VStack(alignment: .leading, spacing: 6) {
-            HStack(alignment: .top) {
-                Text("\(item.businessDate) • \(item.slotLabel) (\(item.targetTime))")
-                    .font(.subheadline.weight(.bold))
+        return VStack(alignment: .leading, spacing: 8) {
+            // Line 1: Formatted date · Friendly slot title (targetTime) + Status Capsule
+            HStack(alignment: .center, spacing: 8) {
+                Text("\(LeaveContract.formatIsoDateVi(item.businessDate)) · \(friendlyTitle) (\(item.targetTime))")
+                    .font(.subheadline.weight(.bold).monospacedDigit())
                     .foregroundColor(SemanticColors.textPrimary)
                 Spacer()
                 Text(AttendanceExplanationContract.explanationStatusLabel(item.status))
                     .font(.caption2.weight(.bold))
                     .lineLimit(1)
                     .fixedSize(horizontal: true, vertical: false)
-                    .padding(.horizontal, 8)
+                    .padding(.horizontal, 9)
                     .padding(.vertical, 4)
                     .background(leaveStatusBgColor(item.status))
                     .foregroundColor(leaveStatusTextColor(item.status))
-                    .cornerRadius(8)
+                    .clipShape(Capsule())
             }
 
-            Text("Bảng chấm công: \(item.resolvedProfileVersionLabel()) • Trạng thái mốc gốc: \(AttendanceExplanationContract.originalSlotStatusLabel(item.originalSlotStatus))")
-                .font(.caption2)
-                .foregroundColor(SemanticColors.textSecondary)
+            // Line 2: Compact original cause tag
+            HStack(spacing: 5) {
+                Image(systemName: "clock.badge.exclamationmark")
+                    .font(.caption2)
+                Text(AttendanceExplanationContract.originalSlotStatusLabel(item.originalSlotStatus))
+                    .font(.caption2.weight(.semibold))
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background(explanationSlotStatusBgColor(item.originalSlotStatus))
+            .foregroundColor(explanationSlotStatusTextColor(item.originalSlotStatus))
+            .clipShape(Capsule())
 
-            Text("Lý do giải trình: \(item.reason)")
+            // Line 3: Highlighted Reason Tile
+            Text("Lý do: \(item.reason)")
                 .font(.caption)
                 .foregroundColor(SemanticColors.textPrimary)
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .hrpMutedTile(cornerRadius: HrpDesignTokens.radiusMD)
 
+            // Line 4: Decision feedback (only when decided)
             if item.decidedBy != nil || !cleanDecisionNote.isEmpty || (item.decidedAtLocal?.isEmpty == false) {
                 let decider = item.decidedBy?.resolvedDisplayName() ?? "--"
-                let decidedTime = item.decidedAtLocal ?? item.decidedAt ?? "--"
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Người duyệt: \(decider) (\(decidedTime))")
-                        .font(.caption2.weight(.semibold))
+                let decidedTime = (item.decidedAtLocal ?? item.decidedAt ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                let timeSuffix = decidedTime.isEmpty ? "" : " · \(decidedTime)"
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Người duyệt: \(decider)\(timeSuffix)")
+                        .font(.caption2.weight(.semibold).monospacedDigit())
                         .foregroundColor(SemanticColors.textPrimary)
-                    Text("Nội dung phản hồi: \(cleanDecisionNote.isEmpty ? "Không có ghi chú phản hồi" : cleanDecisionNote)")
-                        .font(.caption)
-                        .foregroundColor(SemanticColors.textSecondary)
+                    if !cleanDecisionNote.isEmpty {
+                        Text("Phản hồi: \(cleanDecisionNote)")
+                            .font(.caption)
+                            .foregroundColor(SemanticColors.textSecondary)
+                    }
                 }
                 .padding(10)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color(hex: 0xF8FAFC))
-                .cornerRadius(10)
+                .background(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(Color(hex: 0xF8FAFC))
+                )
             }
 
             Button {
+                HapticsManager.selection()
                 if isExpanded {
                     expandedMyExplanationIds.remove(item.explanationId)
                 } else {
                     expandedMyExplanationIds.insert(item.explanationId)
                 }
             } label: {
-                Text(isExpanded ? "Thu gọn chi tiết" : "Xem chi tiết")
+                Text(isExpanded ? "Thu gọn" : "Xem lịch sử xử lý")
                     .font(.caption2.weight(.semibold))
                     .foregroundColor(theme.primary)
             }
@@ -3202,13 +3244,15 @@ public struct AttendanceScreen: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Divider()
                     let subTime = item.submittedAtLocal.isEmpty ? item.submittedAt : item.submittedAtLocal
-                    Text("Phiên bản bản ghi: v\(item.rowVersion) • Gửi lúc: \(subTime)")
-                        .font(.caption2)
+                    Text("Gửi lúc: \(subTime)")
+                        .font(.caption2.monospacedDigit())
                         .foregroundColor(SemanticColors.textSecondary)
                     ForEach(item.events) { ev in
                         let evTime = ev.createdAtLocal.isEmpty ? ev.createdAt : ev.createdAtLocal
                         let actorName = ev.actorDisplayName ?? "Hệ thống"
-                        Text("• \(AttendanceExplanationContract.auditEventTypeLabel(ev.eventType)) bởi \(actorName) (\(evTime)): \(ev.note)")
+                        let cleanEvNote = ev.note.trimmingCharacters(in: .whitespacesAndNewlines)
+                        let evNoteSuffix = cleanEvNote.isEmpty ? "" : ": \(cleanEvNote)"
+                        Text("• \(AttendanceExplanationContract.auditEventTypeLabel(ev.eventType)) bởi \(actorName) (\(evTime))\(evNoteSuffix)")
                             .font(.caption2)
                             .foregroundColor(SemanticColors.textSecondary)
                     }
@@ -3216,11 +3260,10 @@ public struct AttendanceScreen: View {
             }
         }
         .padding(14)
-        .background(Color.white)
-        .cornerRadius(14)
+        .hrpCardSurface(cornerRadius: HrpDesignTokens.radiusCard)
     }
 
-    // MARK: - Tab 4: Attendance Explanation Approval ("Xét duyệt giải trình") Content
+    // MARK: - Tab 4: Attendance Explanation Approval ("Duyệt giải trình") Content
 
     @ViewBuilder
     private func explanationApprovalTabContent(theme: MiniBiThemePalette) -> some View {
@@ -3246,43 +3289,42 @@ public struct AttendanceScreen: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
                     // Header & Status Filter Card
-                    VStack(alignment: .leading, spacing: 10) {
-                        HStack(alignment: .top) {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("HỘP THƯ PHÊ DUYỆT GIẢI TRÌNH")
-                                    .font(.caption2.weight(.bold))
-                                    .foregroundColor(theme.primary)
-                                Text("Duyệt giải trình")
-                                    .font(.headline.weight(.bold))
-                                    .foregroundColor(SemanticColors.textPrimary)
-                            }
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack(alignment: .center, spacing: 8) {
+                            Text("Duyệt giải trình")
+                                .font(.headline.weight(.bold))
+                                .foregroundColor(SemanticColors.textPrimary)
+
                             Spacer()
+
                             Text("Chờ duyệt: \(pendingCount)")
-                                .font(.caption.weight(.bold))
+                                .font(.caption.weight(.bold).monospacedDigit())
                                 .lineLimit(1)
                                 .fixedSize(horizontal: true, vertical: false)
                                 .padding(.horizontal, 10)
                                 .padding(.vertical, 6)
                                 .background(SemanticColors.warningBg)
                                 .foregroundColor(SemanticColors.warningText)
-                                .cornerRadius(8)
+                                .clipShape(Capsule())
 
                             Button {
+                                HapticsManager.lightImpact()
                                 Task { await viewModel.refreshExplanationApprovalInbox() }
                             } label: {
                                 if viewModel.isLoadingExplanationInbox {
                                     ProgressView()
                                         .scaleEffect(0.75)
-                                        .frame(width: 28, height: 28)
+                                        .frame(width: 36, height: 36)
                                 } else {
                                     Image(systemName: "arrow.clockwise")
                                         .font(.caption.weight(.bold))
-                                        .frame(width: 28, height: 28)
+                                        .frame(width: 36, height: 36)
                                         .background(theme.primaryLight)
                                         .foregroundColor(theme.primary)
-                                        .cornerRadius(8)
+                                        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                                 }
                             }
+                            .buttonStyle(HrpPressableButtonStyle())
                             .disabled(viewModel.isLoadingExplanationInbox)
                         }
 
@@ -3291,24 +3333,24 @@ public struct AttendanceScreen: View {
                                 ForEach(AttendanceExplanationContract.approvalStatusFilters, id: \.self) { code in
                                     let isSelected = viewModel.explanationInboxStatusFilter == code
                                     Button {
+                                        HapticsManager.selection()
                                         viewModel.setExplanationInboxFilter(code)
                                     } label: {
                                         Text(AttendanceExplanationContract.statusFilterLabel(code))
                                             .font(.caption.weight(isSelected ? .bold : .medium))
-                                            .padding(.horizontal, 12)
-                                            .padding(.vertical, 6)
+                                            .padding(.horizontal, 14)
+                                            .padding(.vertical, 7)
                                             .background(isSelected ? theme.primary : Color(hex: 0xF1F5F9))
                                             .foregroundColor(isSelected ? .white : SemanticColors.textSecondary)
-                                            .cornerRadius(8)
+                                            .clipShape(Capsule())
                                     }
-                                    .buttonStyle(.plain)
+                                    .buttonStyle(HrpPressableButtonStyle())
                                 }
                             }
                         }
                     }
                     .padding(14)
-                    .background(Color.white)
-                    .cornerRadius(14)
+                    .hrpCardSurface(cornerRadius: HrpDesignTokens.radiusCard)
 
                     if let inbErr = viewModel.explanationInboxError, !inbErr.isEmpty {
                         HStack {
@@ -3343,14 +3385,13 @@ public struct AttendanceScreen: View {
                         HStack(spacing: 10) {
                             Spacer()
                             ProgressView()
-                            Text("Đang tải hộp thư xét duyệt giải trình...")
+                            Text("Đang tải danh sách giải trình cần duyệt...")
                                 .font(.caption)
                                 .foregroundColor(SemanticColors.textSecondary)
                             Spacer()
                         }
                         .padding(24)
-                        .background(Color.white)
-                        .cornerRadius(14)
+                        .hrpCardSurface(cornerRadius: HrpDesignTokens.radiusCard)
                     } else if items.isEmpty {
                         VStack(spacing: 8) {
                             Image(systemName: "checkmark.seal")
@@ -3362,8 +3403,7 @@ public struct AttendanceScreen: View {
                         }
                         .frame(maxWidth: .infinity)
                         .padding(24)
-                        .background(Color.white)
-                        .cornerRadius(14)
+                        .hrpCardSurface(cornerRadius: HrpDesignTokens.radiusCard)
                     } else {
                         ForEach(items) { item in
                             let isExpanded = expandedInboxExplanationIds.contains(item.explanationId)
@@ -3372,97 +3412,145 @@ public struct AttendanceScreen: View {
                             let canAct = item.canDecide &&
                                 item.status.uppercased() == "PENDING" &&
                                 !isSelfRequest
+                            let requesterName = item.requester.resolvedDisplayName()
+                            let requesterSub = AttendanceExplanationContract.friendlyRequesterSubtitle(
+                                requester: item.requester,
+                                teamName: item.routedTeam.teamName
+                            )
+                            let friendlyTitle = AttendanceExplanationContract.friendlySlotTitle(
+                                slotLabel: item.slotLabel,
+                                slotCode: item.slotCode,
+                                slotIndex: item.slotIndex
+                            )
 
-                            VStack(alignment: .leading, spacing: 8) {
-                                HStack(alignment: .top) {
+                            VStack(alignment: .leading, spacing: 10) {
+                                // Block 1: Requester Header with Initials Avatar
+                                HStack(alignment: .center, spacing: 10) {
+                                    HrpInitialsAvatar(
+                                        fullName: requesterName,
+                                        tint: theme.primary,
+                                        size: 38
+                                    )
+
                                     VStack(alignment: .leading, spacing: 2) {
-                                        Text(item.requester.resolvedDisplayName())
+                                        Text(requesterName)
                                             .font(.subheadline.weight(.bold))
                                             .foregroundColor(SemanticColors.textPrimary)
-                                        let subMeta = [
-                                            item.requester.personnelCode,
-                                            item.requester.loginId,
-                                            item.routedTeam.teamName
-                                        ]
-                                        .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
-                                        .filter { !$0.isEmpty }
-                                        .joined(separator: " • ")
-                                        if !subMeta.isEmpty {
-                                            Text(subMeta)
-                                                .font(.caption2)
-                                                .foregroundColor(SemanticColors.textMuted)
+                                            .lineLimit(1)
+                                        if !requesterSub.isEmpty {
+                                            Text(requesterSub)
+                                                .font(.caption)
+                                                .foregroundColor(SemanticColors.textSecondary)
+                                                .lineLimit(1)
                                         }
                                     }
-                                    Spacer()
+
+                                    Spacer(minLength: 6)
+
                                     Text(AttendanceExplanationContract.explanationStatusLabel(item.status))
                                         .font(.caption2.weight(.bold))
-                                        .padding(.horizontal, 8)
+                                        .lineLimit(1)
+                                        .fixedSize(horizontal: true, vertical: false)
+                                        .padding(.horizontal, 9)
                                         .padding(.vertical, 4)
                                         .background(leaveStatusBgColor(item.status))
                                         .foregroundColor(leaveStatusTextColor(item.status))
-                                        .cornerRadius(8)
+                                        .clipShape(Capsule())
                                 }
 
-                                Text("Ngày: \(item.businessDate) • \(item.slotLabel) (\(item.slotCode)) • Khung giờ: \(AttendanceExplanationContract.formatGraceWindow(targetTime: item.targetTime, graceBeforeMinutes: item.graceBeforeMinutes, graceAfterMinutes: item.graceAfterMinutes))")
-                                    .font(.caption.weight(.semibold))
-                                    .foregroundColor(SemanticColors.textPrimary)
+                                // Block 2: Shift & Attendance Status Strip (.hrpMutedTile)
+                                VStack(alignment: .leading, spacing: 6) {
+                                    HStack(alignment: .center, spacing: 6) {
+                                        Image(systemName: "calendar.badge.clock")
+                                            .font(.caption.weight(.semibold))
+                                            .foregroundColor(theme.primary)
+                                        Text("\(LeaveContract.formatIsoDateVi(item.businessDate)) · \(friendlyTitle) (\(item.targetTime))")
+                                            .font(.subheadline.weight(.semibold).monospacedDigit())
+                                            .foregroundColor(SemanticColors.textPrimary)
+                                            .lineLimit(1)
+                                        Spacer(minLength: 4)
+                                        Text(AttendanceExplanationContract.originalSlotStatusLabel(item.originalSlotStatus))
+                                            .font(.caption2.weight(.bold))
+                                            .lineLimit(1)
+                                            .fixedSize(horizontal: true, vertical: false)
+                                            .padding(.horizontal, 8)
+                                            .padding(.vertical, 3)
+                                            .background(explanationSlotStatusBgColor(item.originalSlotStatus))
+                                            .foregroundColor(explanationSlotStatusTextColor(item.originalSlotStatus))
+                                            .clipShape(Capsule())
+                                    }
 
-                                Text("Bảng chấm công: \(item.resolvedProfileVersionLabel()) • Trạng thái gốc: \(AttendanceExplanationContract.originalSlotStatusLabel(item.originalSlotStatus))")
-                                    .font(.caption2.weight(.semibold))
-                                    .foregroundColor(explanationSlotStatusTextColor(item.originalSlotStatus))
-
-                                if item.actualCheckins.isEmpty {
-                                    Text("Chấm công thực tế: Chưa có lượt chấm ở mốc này")
-                                        .font(.caption)
-                                        .foregroundColor(SemanticColors.textSecondary)
-                                } else {
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        ForEach(item.actualCheckins) { checkin in
-                                            let dev = AttendanceExplanationContract.formatDeviationBadge(checkin)
-                                            let timeText = checkin.timeLocal.isEmpty ? checkin.capturedAtLocal : checkin.timeLocal
-                                            let devSuffix = (dev?.isEmpty == false) ? " (\(dev!))" : ""
-                                            Text("Chấm công thực tế: Lần #\(checkin.sequenceInDay) lúc \(timeText)\(devSuffix)")
-                                                .font(.caption.monospacedDigit())
-                                                .foregroundColor(SemanticColors.textPrimary)
-                                        }
+                                    if let firstCheckin = item.actualCheckins.first {
+                                        let dev = AttendanceExplanationContract.formatDeviationBadge(firstCheckin)
+                                        let timeText = firstCheckin.timeLocal.isEmpty ? firstCheckin.capturedAtLocal : firstCheckin.timeLocal
+                                        let devSuffix = (dev?.isEmpty == false) ? " (\(dev!))" : ""
+                                        Text("Thực tế: Chấm lúc \(timeText)\(devSuffix)")
+                                            .font(.caption.monospacedDigit())
+                                            .foregroundColor(SemanticColors.textPrimary)
+                                            .lineLimit(1)
+                                    } else {
+                                        Text("Thực tế: Chưa có lượt chấm công")
+                                            .font(.caption)
+                                            .foregroundColor(SemanticColors.textSecondary)
+                                            .lineLimit(1)
                                     }
                                 }
+                                .padding(10)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .hrpMutedTile(cornerRadius: HrpDesignTokens.radiusMD)
 
-                                Text("Lý do nhân viên giải trình: \(item.reason)")
-                                    .font(.caption)
-                                    .foregroundColor(SemanticColors.textPrimary)
+                                // Block 3: Highlighted Reason Box
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text("LÝ DO GIẢI TRÌNH")
+                                        .font(.caption2.weight(.bold))
+                                        .foregroundColor(theme.primary)
+                                    Text(item.reason)
+                                        .font(.subheadline.weight(.medium))
+                                        .foregroundColor(SemanticColors.textPrimary)
+                                }
+                                .padding(10)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                        .fill(theme.primaryLight.opacity(0.45))
+                                )
 
+                                // Block 4: Decision Feedback (if decided) & Bottom Action Bar
                                 let cleanDecNote = item.decisionNote.trimmingCharacters(in: .whitespacesAndNewlines)
                                 if item.decidedBy != nil || !cleanDecNote.isEmpty {
                                     let deciderName = item.decidedBy?.resolvedDisplayName() ?? "--"
-                                    Text("Phản hồi xét duyệt (\(deciderName)): \(cleanDecNote.isEmpty ? "Không có ghi chú" : cleanDecNote)")
+                                    let noteSuffix = cleanDecNote.isEmpty ? "" : " · \(cleanDecNote)"
+                                    Text("Người duyệt: \(deciderName)\(noteSuffix)")
                                         .font(.caption)
                                         .foregroundColor(SemanticColors.textSecondary)
                                 }
 
-                                HStack {
+                                HStack(alignment: .center, spacing: 10) {
                                     Button {
+                                        HapticsManager.selection()
                                         if isExpanded {
                                             expandedInboxExplanationIds.remove(item.explanationId)
                                         } else {
                                             expandedInboxExplanationIds.insert(item.explanationId)
                                         }
                                     } label: {
-                                        Text(isExpanded ? "Thu gọn chi tiết" : "Xem chi tiết")
+                                        Text(isExpanded ? "Thu gọn" : "Chi tiết")
                                             .font(.caption.weight(.semibold))
                                             .foregroundColor(theme.primary)
+                                            .padding(.vertical, 6)
                                     }
                                     .buttonStyle(.plain)
 
                                     Spacer()
 
                                     if isSelfRequest {
-                                        Text("Giải trình của chính bạn (không tự duyệt)")
+                                        Text("Đơn của bạn (không tự duyệt)")
                                             .font(.caption2)
                                             .foregroundColor(SemanticColors.textMuted)
                                     } else if canAct {
                                         HStack(spacing: 8) {
                                             Button {
+                                                HapticsManager.lightImpact()
                                                 viewModel.clearExplanationMutationError()
                                                 localExplanationDecisionError = nil
                                                 explanationDecisionNoteInput = ""
@@ -3476,15 +3564,19 @@ public struct AttendanceScreen: View {
                                                     Text("Từ chối")
                                                 }
                                                 .font(.caption.weight(.bold))
-                                                .padding(.horizontal, 12)
-                                                .padding(.vertical, 8)
-                                                .background(SemanticColors.dangerBg)
+                                                .padding(.horizontal, 14)
+                                                .frame(minHeight: 38)
+                                                .background(
+                                                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                                        .fill(SemanticColors.dangerBg)
+                                                )
                                                 .foregroundColor(SemanticColors.dangerText)
-                                                .cornerRadius(8)
                                             }
+                                            .buttonStyle(HrpPressableButtonStyle())
                                             .disabled(viewModel.isMutatingExplanation)
 
                                             Button {
+                                                HapticsManager.lightImpact()
                                                 viewModel.clearExplanationMutationError()
                                                 localExplanationDecisionError = nil
                                                 explanationDecisionNoteInput = ""
@@ -3498,12 +3590,15 @@ public struct AttendanceScreen: View {
                                                     Text("Duyệt")
                                                 }
                                                 .font(.caption.weight(.bold))
-                                                .padding(.horizontal, 12)
-                                                .padding(.vertical, 8)
-                                                .background(SemanticColors.successText)
+                                                .padding(.horizontal, 16)
+                                                .frame(minHeight: 38)
+                                                .background(
+                                                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                                        .fill(SemanticColors.successText)
+                                                )
                                                 .foregroundColor(.white)
-                                                .cornerRadius(8)
                                             }
+                                            .buttonStyle(HrpPressableButtonStyle())
                                             .disabled(viewModel.isMutatingExplanation)
                                         }
                                     }
@@ -3512,27 +3607,17 @@ public struct AttendanceScreen: View {
                                 if isExpanded {
                                     VStack(alignment: .leading, spacing: 4) {
                                         Divider()
-                                        let routeLabel = LeaveContract.leaveRouteKindLabel(
-                                            item.routeKind,
-                                            teamName: item.routedTeam.teamName,
-                                            unitKind: item.unitKindSnapshot
-                                        )
-                                        Text("Luồng định tuyến: \(routeLabel) • Phiên bản: v\(item.rowVersion)")
-                                            .font(.caption2)
+                                        let subTime = item.submittedAtLocal.isEmpty ? item.submittedAt : item.submittedAtLocal
+                                        Text("Gửi lúc: \(subTime)")
+                                            .font(.caption2.monospacedDigit())
                                             .foregroundColor(SemanticColors.textSecondary)
-                                        if let fb = LeaveContract.leaveFallbackReasonLabel(item.fallbackReason), !fb.isEmpty {
-                                            Text("Lý do dự phòng: \(fb)")
-                                                .font(.caption2)
-                                                .foregroundColor(SemanticColors.warningText)
-                                        }
                                         if !item.events.isEmpty {
-                                            Text("Lịch sử xử lý:")
-                                                .font(.caption2.weight(.semibold))
-                                                .foregroundColor(SemanticColors.textPrimary)
                                             ForEach(item.events) { ev in
                                                 let evTime = ev.createdAtLocal.isEmpty ? ev.createdAt : ev.createdAtLocal
                                                 let actorName = ev.actorDisplayName ?? "Hệ thống"
-                                                Text("• \(AttendanceExplanationContract.auditEventTypeLabel(ev.eventType)) — \(actorName) (\(evTime)): \(ev.note)")
+                                                let cleanEvNote = ev.note.trimmingCharacters(in: .whitespacesAndNewlines)
+                                                let evNoteSuffix = cleanEvNote.isEmpty ? "" : ": \(cleanEvNote)"
+                                                Text("• \(AttendanceExplanationContract.auditEventTypeLabel(ev.eventType)) — \(actorName) (\(evTime))\(evNoteSuffix)")
                                                     .font(.caption2)
                                                     .foregroundColor(SemanticColors.textSecondary)
                                             }
@@ -3540,13 +3625,11 @@ public struct AttendanceScreen: View {
                                     }
                                     .padding(10)
                                     .frame(maxWidth: .infinity, alignment: .leading)
-                                    .background(Color(hex: 0xF8FAFC))
-                                    .cornerRadius(10)
+                                    .hrpMutedTile(cornerRadius: HrpDesignTokens.radiusMD)
                                 }
                             }
                             .padding(14)
-                            .background(Color.white)
-                            .cornerRadius(14)
+                            .hrpCardSurface(cornerRadius: HrpDesignTokens.radiusCard)
                         }
 
                         if let pagination = inbox?.pagination, items.count < pagination.totalRows {
@@ -3577,7 +3660,102 @@ public struct AttendanceScreen: View {
         }
     }
 
-    // MARK: - Attendance Explanation Sheets (Submit, Decision, Date Picker)
+    // MARK: - Attendance Explanation Sheets (Policy Info, Submit, Decision, Date Picker)
+
+    private func explanationPolicyInfoSheet(theme: MiniBiThemePalette) -> some View {
+        let overview = viewModel.myExplanationsOverview
+
+        return NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Quy định giải trình chấm công")
+                            .font(.subheadline.weight(.bold))
+                            .foregroundColor(SemanticColors.textPrimary)
+                        Text("Giải trình được duyệt xác nhận lượt chấm công muộn hoặc bị thiếu là hợp lệ trên bảng tổng hợp chấm công.")
+                            .font(.caption)
+                            .foregroundColor(SemanticColors.textSecondary)
+                    }
+                    .padding(12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .hrpMutedTile(cornerRadius: HrpDesignTokens.radiusMD)
+
+                    if let currentOverview = overview {
+                        let dayEval = currentOverview.dayEvaluation
+                        let approverText = AttendanceExplanationContract.friendlyApproverSummary(
+                            routing: currentOverview.routing
+                        )
+                        let profileText = AttendanceExplanationContract.friendlyProfileSummary(
+                            dayEval: dayEval
+                        )
+
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack {
+                                Text("Người duyệt")
+                                    .font(.caption)
+                                    .foregroundColor(SemanticColors.textSecondary)
+                                Spacer()
+                                Text(approverText)
+                                    .font(.caption.weight(.bold))
+                                    .foregroundColor(SemanticColors.textPrimary)
+                            }
+                            Divider()
+                            HStack {
+                                Text("Khung chấm công")
+                                    .font(.caption)
+                                    .foregroundColor(SemanticColors.textSecondary)
+                                Spacer()
+                                Text(profileText)
+                                    .font(.caption.weight(.bold).monospacedDigit())
+                                    .foregroundColor(theme.primary)
+                            }
+                            if !dayEval.slots.isEmpty {
+                                Divider()
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text("Các mốc giờ trong ngày")
+                                        .font(.caption)
+                                        .foregroundColor(SemanticColors.textSecondary)
+                                    ForEach(dayEval.slots) { slot in
+                                        let slotTitle = AttendanceExplanationContract.friendlySlotTitle(
+                                            slotLabel: slot.slotLabel,
+                                            slotCode: slot.slotCode,
+                                            slotIndex: slot.slotIndex
+                                        )
+                                        let validRange = AttendanceExplanationContract.friendlyValidTimeRange(
+                                            targetTime: slot.targetTime,
+                                            graceBeforeMinutes: slot.graceBeforeMinutes,
+                                            graceAfterMinutes: slot.graceAfterMinutes
+                                        )
+                                        HStack {
+                                            Text(slotTitle)
+                                                .font(.caption.weight(.semibold))
+                                                .foregroundColor(SemanticColors.textPrimary)
+                                            Spacer()
+                                            Text("\(slot.targetTime) (\(validRange))")
+                                                .font(.caption.monospacedDigit())
+                                                .foregroundColor(SemanticColors.textSecondary)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        .padding(12)
+                        .hrpCardSurface(cornerRadius: HrpDesignTokens.radiusCard)
+                    }
+                }
+                .padding(16)
+            }
+            .navigationTitle("Thông tin giải trình")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Đóng") {
+                        isShowingExplanationPolicyInfoSheet = false
+                    }
+                }
+            }
+        }
+    }
 
     private func explanationSubmitSheet(
         slot: AttendanceExplanationDaySlotEvaluationProjection,
@@ -3586,33 +3764,44 @@ public struct AttendanceScreen: View {
         let targetDate = viewModel.myExplanationsOverview?.dayEvaluation.businessDate ?? viewModel.explanationSelectedDate
         let todayLocal = viewModel.myExplanationsOverview?.todayLocal
         let cleanReasonCount = explanationReasonInput.trimmingCharacters(in: .whitespacesAndNewlines).count
+        let friendlyTitle = AttendanceExplanationContract.friendlySlotTitle(
+            slotLabel: slot.slotLabel,
+            slotCode: slot.slotCode,
+            slotIndex: slot.slotIndex
+        )
+        let validRange = AttendanceExplanationContract.friendlyValidTimeRange(
+            targetTime: slot.targetTime,
+            graceBeforeMinutes: slot.graceBeforeMinutes,
+            graceAfterMinutes: slot.graceAfterMinutes
+        )
+        let sessionText = AttendanceExplanationContract.sessionLabel(slot.sessionCode)
 
         return NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Ngày nghiệp vụ: \(targetDate)")
-                            .font(.caption.weight(.semibold))
-                            .foregroundColor(SemanticColors.textPrimary)
-                        if let dayEval = viewModel.myExplanationsOverview?.dayEvaluation {
-                            Text("Bảng chấm công: \(dayEval.resolvedProfileVersionLabel())")
-                                .font(.caption)
-                                .foregroundColor(SemanticColors.textSecondary)
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack(alignment: .center, spacing: 8) {
+                            Text("Ngày \(LeaveContract.formatIsoDateVi(targetDate)) · \(friendlyTitle) (\(slot.targetTime))")
+                                .font(.subheadline.weight(.bold).monospacedDigit())
+                                .foregroundColor(SemanticColors.textPrimary)
+                            Spacer()
+                            Text(AttendanceExplanationContract.originalSlotStatusLabel(slot.originalSlotStatus))
+                                .font(.caption2.weight(.bold))
+                                .lineLimit(1)
+                                .fixedSize(horizontal: true, vertical: false)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 3)
+                                .background(explanationSlotStatusBgColor(slot.originalSlotStatus))
+                                .foregroundColor(explanationSlotStatusTextColor(slot.originalSlotStatus))
+                                .clipShape(Capsule())
                         }
-                        Text("Mốc: \(slot.slotLabel) (\(slot.slotCode) • \(AttendanceExplanationContract.sessionLabel(slot.sessionCode)))")
-                            .font(.caption)
-                            .foregroundColor(SemanticColors.textPrimary)
-                        Text("Khung giờ chuẩn: \(AttendanceExplanationContract.formatGraceWindow(targetTime: slot.targetTime, graceBeforeMinutes: slot.graceBeforeMinutes, graceAfterMinutes: slot.graceAfterMinutes))")
-                            .font(.caption)
+                        Text("Khung giờ hợp lệ: \(validRange) · \(sessionText)")
+                            .font(.caption.monospacedDigit())
                             .foregroundColor(SemanticColors.textSecondary)
-                        Text("Trạng thái gốc: \(AttendanceExplanationContract.originalSlotStatusLabel(slot.originalSlotStatus))")
-                            .font(.caption.weight(.semibold))
-                            .foregroundColor(explanationSlotStatusTextColor(slot.originalSlotStatus))
                     }
                     .padding(12)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color(hex: 0xF8FAFC))
-                    .cornerRadius(10)
+                    .hrpMutedTile(cornerRadius: HrpDesignTokens.radiusMD)
 
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Lý do giải trình (3 - 500 ký tự) *")
@@ -3641,7 +3830,7 @@ public struct AttendanceScreen: View {
                         .disabled(viewModel.isMutatingExplanation)
 
                         Text("\(cleanReasonCount)/\(AttendanceExplanationContract.reasonMaxLength) ký tự")
-                            .font(.caption2)
+                            .font(.caption2.monospacedDigit())
                             .foregroundColor(SemanticColors.textMuted)
                     }
 
@@ -3662,11 +3851,12 @@ public struct AttendanceScreen: View {
                             localExplanationSubmitError = nil
                         }
                         .font(.subheadline.weight(.semibold))
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 11)
-                        .background(Color(hex: 0xF1F5F9))
+                        .frame(maxWidth: .infinity, minHeight: 46)
+                        .background(
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .fill(Color(hex: 0xF1F5F9))
+                        )
                         .foregroundColor(SemanticColors.textPrimary)
-                        .cornerRadius(10)
                         .disabled(viewModel.isMutatingExplanation)
 
                         Button {
@@ -3695,11 +3885,12 @@ public struct AttendanceScreen: View {
                         } label: {
                             Text(viewModel.isMutatingExplanation ? "Đang gửi..." : "Gửi giải trình")
                                 .font(.subheadline.weight(.bold))
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 11)
-                                .background(theme.primary)
+                                .frame(maxWidth: .infinity, minHeight: 46)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                        .fill(theme.primary)
+                                )
                                 .foregroundColor(.white)
-                                .cornerRadius(10)
                         }
                         .disabled(viewModel.isMutatingExplanation)
                     }
@@ -3719,17 +3910,42 @@ public struct AttendanceScreen: View {
     ) -> some View {
         let targetItem = item.explanation
         let decision = item.decision
+        let requesterName = targetItem.requester.resolvedDisplayName()
+        let friendlyTitle = AttendanceExplanationContract.friendlySlotTitle(
+            slotLabel: targetItem.slotLabel,
+            slotCode: targetItem.slotCode,
+            slotIndex: targetItem.slotIndex
+        )
 
         return NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
-                    Text("Nhân sự: \(targetItem.requester.resolvedDisplayName()) • Ngày \(targetItem.businessDate) • \(targetItem.slotLabel) (\(targetItem.resolvedProfileVersionLabel()) • v\(targetItem.rowVersion))")
-                        .font(.caption.weight(.semibold))
-                        .foregroundColor(SemanticColors.textSecondary)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(requesterName)
+                            .font(.subheadline.weight(.bold))
+                            .foregroundColor(SemanticColors.textPrimary)
+                        Text("\(LeaveContract.formatIsoDateVi(targetItem.businessDate)) · \(friendlyTitle) (\(targetItem.targetTime))")
+                            .font(.caption.weight(.semibold).monospacedDigit())
+                            .foregroundColor(SemanticColors.textSecondary)
+                    }
+                    .padding(12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .hrpMutedTile(cornerRadius: HrpDesignTokens.radiusMD)
 
-                    Text("Lý do nhân viên: \(targetItem.reason)")
-                        .font(.subheadline)
-                        .foregroundColor(SemanticColors.textPrimary)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("LÝ DO GIẢI TRÌNH")
+                            .font(.caption2.weight(.bold))
+                            .foregroundColor(theme.primary)
+                        Text("Lý do: \(targetItem.reason)")
+                            .font(.subheadline.weight(.medium))
+                            .foregroundColor(SemanticColors.textPrimary)
+                    }
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .fill(theme.primaryLight.opacity(0.45))
+                    )
 
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Ghi chú phản hồi (tối đa 500 ký tự)")
@@ -3775,11 +3991,12 @@ public struct AttendanceScreen: View {
                             localExplanationDecisionError = nil
                         }
                         .font(.subheadline.weight(.semibold))
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 11)
-                        .background(Color(hex: 0xF1F5F9))
+                        .frame(maxWidth: .infinity, minHeight: 46)
+                        .background(
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .fill(Color(hex: 0xF1F5F9))
+                        )
                         .foregroundColor(SemanticColors.textPrimary)
-                        .cornerRadius(10)
                         .disabled(viewModel.isMutatingExplanation)
 
                         Button {
@@ -3814,11 +4031,12 @@ public struct AttendanceScreen: View {
                             }()
                             Text(labelText)
                                 .font(.subheadline.weight(.bold))
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 11)
-                                .background(decision == "APPROVE" ? SemanticColors.successText : SemanticColors.dangerText)
+                                .frame(maxWidth: .infinity, minHeight: 46)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                        .fill(decision == "APPROVE" ? SemanticColors.successText : SemanticColors.dangerText)
+                                )
                                 .foregroundColor(.white)
-                                .cornerRadius(10)
                         }
                         .disabled(viewModel.isMutatingExplanation)
                     }
@@ -3829,14 +4047,14 @@ public struct AttendanceScreen: View {
             .navigationTitle(decision == "APPROVE" ? "Duyệt giải trình chấm công" : "Từ chối giải trình chấm công")
             .navigationBarTitleDisplayMode(.inline)
         }
-        .presentationDetents([.height(320), .medium])
+        .presentationDetents([.height(340), .medium])
     }
 
     private func explanationDatePickerSheet(theme: MiniBiThemePalette) -> some View {
         NavigationStack {
             VStack(alignment: .leading, spacing: 14) {
                 DatePicker(
-                    "Chọn ngày nghiệp vụ",
+                    "Chọn ngày chấm công",
                     selection: $explanationDatePickerSelection,
                     in: ...Date(),
                     displayedComponents: [.date]
@@ -3850,18 +4068,19 @@ public struct AttendanceScreen: View {
                     isShowingExplanationDatePickerSheet = false
                 } label: {
                     let chosenIso = formatDateIso(explanationDatePickerSelection)
-                    Text("Xem ngày \(LeaveContract.formatIsoDateVi(chosenIso)) (\(chosenIso))")
-                        .font(.subheadline.weight(.bold))
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 12)
-                        .background(theme.primary)
+                    Text("Xem ngày \(LeaveContract.formatIsoDateVi(chosenIso))")
+                        .font(.subheadline.weight(.bold).monospacedDigit())
+                        .frame(maxWidth: .infinity, minHeight: 46)
+                        .background(
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .fill(theme.primary)
+                        )
                         .foregroundColor(.white)
-                        .cornerRadius(10)
                 }
                 Spacer()
             }
             .padding(16)
-            .navigationTitle("Chọn ngày nghiệp vụ")
+            .navigationTitle("Chọn ngày chấm công")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {

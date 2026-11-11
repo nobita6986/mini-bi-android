@@ -190,7 +190,7 @@ public final class MiniBiViewModel: ObservableObject {
             case "managed": return ("managed", "Dự án phụ trách")
             case "recruited": return ("recruited", "Do tôi tuyển")
             case "team": return ("team", "Theo nhóm")
-            case "uploader": return ("uploader", "Tôi nhập hộ")
+            case "uploader": return ("uploader", "Tôi nhập")
             case "all": return ("all", "Toàn hệ thống")
             default: return nil
             }

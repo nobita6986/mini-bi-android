@@ -870,6 +870,157 @@ public enum AttendanceExplanationContract {
         }
     }
 
+    // MARK: - Plain-Vietnamese Friendly Display Helpers (UI Layer)
+
+    public static func friendlySlotTitle(
+        slotLabel: String,
+        slotCode: String,
+        slotIndex: Int = 1
+    ) -> String {
+        let cleanLabel = slotLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanCode = slotCode.trimmingCharacters(in: .whitespacesAndNewlines)
+        let fallbackIndex = max(1, slotIndex)
+
+        func extractSlotNumber(from text: String) -> Int? {
+            let digits = text.filter(\.isNumber)
+            if let value = Int(digits), value > 0 {
+                return value
+            }
+            return nil
+        }
+
+        if cleanLabel.isEmpty ||
+            cleanLabel.caseInsensitiveCompare(cleanCode) == .orderedSame ||
+            cleanLabel.uppercased().hasPrefix("SLOT_") {
+            let num = extractSlotNumber(from: cleanLabel)
+                ?? extractSlotNumber(from: cleanCode)
+                ?? fallbackIndex
+            return "Mốc \(num)"
+        }
+
+        let pattern = #"^(?:time|slot|mốc|moc)[_\s]*#?\s*(\d+)$"#
+        if let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]),
+           let match = regex.firstMatch(
+               in: cleanLabel,
+               options: [],
+               range: NSRange(cleanLabel.startIndex..., in: cleanLabel)
+           ),
+           match.numberOfRanges > 1,
+           let numRange = Range(match.range(at: 1), in: cleanLabel),
+           let num = Int(cleanLabel[numRange]),
+           num > 0 {
+            return "Mốc \(num)"
+        }
+
+        return cleanLabel
+    }
+
+    public static func friendlyValidTimeRange(
+        targetTime: String,
+        graceBeforeMinutes: Int,
+        graceAfterMinutes: Int
+    ) -> String {
+        let cleanTarget = targetTime.trimmingCharacters(in: .whitespacesAndNewlines)
+        if graceBeforeMinutes == 0 && graceAfterMinutes == 0 {
+            return "Đúng \(cleanTarget)"
+        }
+        let parts = cleanTarget.split(separator: ":")
+        if parts.count >= 2,
+           let hour = Int(parts[0].trimmingCharacters(in: .whitespaces)),
+           let minute = Int(parts[1].trimmingCharacters(in: .whitespaces)),
+           (0...23).contains(hour),
+           (0...59).contains(minute) {
+            let totalMinutes = hour * 60 + minute
+            let startMinutes = ((totalMinutes - max(0, graceBeforeMinutes)) % 1440 + 1440) % 1440
+            let endMinutes = ((totalMinutes + max(0, graceAfterMinutes)) % 1440 + 1440) % 1440
+            let startStr = String(format: "%02d:%02d", startMinutes / 60, startMinutes % 60)
+            let endStr = String(format: "%02d:%02d", endMinutes / 60, endMinutes % 60)
+            return "\(startStr) – \(endStr)"
+        }
+        return "±\(graceAfterMinutes) phút"
+    }
+
+    public static func compactSlotStatusBadge(_ slotStatus: String) -> String {
+        switch slotStatus.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() {
+        case "ON_TIME":
+            return "Đúng giờ"
+        case "OUT_OF_GRACE":
+            return "Ngoài khung giờ"
+        case "MISSING":
+            return "Thiếu chấm"
+        case "LEAVE_COVERED", "LEAVE_EXEMPT":
+            return "Nghỉ phép"
+        case "UPCOMING", "NOT_APPLICABLE":
+            return "Chưa đến giờ"
+        case "EXPLAINED_PENDING":
+            return "Chờ duyệt"
+        case "EXPLAINED_APPROVED":
+            return "Đã duyệt"
+        case "EXPLAINED_REJECTED":
+            return "Từ chối"
+        default:
+            return slotStatusLabel(slotStatus)
+        }
+    }
+
+    public static func friendlyProfileSummary(
+        dayEval: AttendanceExplanationDayEvaluationProjection
+    ) -> String {
+        let displayName = dayEval.resolvedProfileDisplayName().trimmingCharacters(in: .whitespacesAndNewlines)
+        let upperName = displayName.uppercased()
+        if dayEval.policyIsDefaultUsed ||
+            displayName.isEmpty ||
+            upperName == "MẶC ĐỊNH" ||
+            upperName == "DEFAULT" {
+            return "\(dayEval.slots.count) mốc/ngày"
+        }
+        return "\(displayName) · \(dayEval.slots.count) mốc"
+    }
+
+    public static func friendlyApproverSummary(
+        routing: AttendanceExplanationRoutingProjection
+    ) -> String {
+        let upperRoute = routing.routeKind.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        if upperRoute != "ADMIN_BOD_FALLBACK" && upperRoute != "ADMIN_BOD_DIRECT",
+           let approver = routing.primaryApprover {
+            let name = approver.resolvedDisplayName().trimmingCharacters(in: .whitespacesAndNewlines)
+            if !name.isEmpty {
+                if let team = routing.teamName?.trimmingCharacters(in: .whitespacesAndNewlines), !team.isEmpty {
+                    return "\(name) (\(team))"
+                }
+                return name
+            }
+        }
+        return "Ban Quản trị / Nhân sự"
+    }
+
+    public static func friendlyRequesterSubtitle(
+        requester: AttendanceExplanationAccountSummaryProjection,
+        teamName: String?
+    ) -> String {
+        let displayName = requester.resolvedDisplayName().trimmingCharacters(in: .whitespacesAndNewlines)
+        let rawCandidates: [String?] = [
+            teamName,
+            requester.personnelCode,
+            requester.loginId
+        ]
+        var seenLower = Set<String>()
+        var result: [String] = []
+        for candidate in rawCandidates {
+            guard let trimmed = candidate?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !trimmed.isEmpty else { continue }
+            if !displayName.isEmpty && trimmed.caseInsensitiveCompare(displayName) == .orderedSame {
+                continue
+            }
+            let lower = trimmed.lowercased()
+            if !seenLower.contains(lower) {
+                seenLower.insert(lower)
+                result.append(trimmed)
+            }
+        }
+        return result.joined(separator: " · ")
+    }
+
     // MARK: - JSON Parsing
 
     public static func parseAccountSummary(_ obj: [String: Any]) -> AttendanceExplanationAccountSummaryProjection {

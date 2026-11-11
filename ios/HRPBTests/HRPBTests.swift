@@ -4212,4 +4212,148 @@ final class HRPBTests: XCTestCase {
         XCTAssertTrue(queryUrl.contains("page=2"))
         XCTAssertTrue(queryUrl.contains("page_size=15"))
     }
+
+    @MainActor
+    func testRound4PlainVietnameseExplanationHelpersAndWorkerTabLabel() {
+        // 1. friendlySlotTitle: converts technical/default labels ("Time 1", "SLOT_1", "Mốc #2") to "Mốc N", preserves custom Vietnamese labels
+        XCTAssertEqual(
+            AttendanceExplanationContract.friendlySlotTitle(slotLabel: "Time 1", slotCode: "SLOT_1", slotIndex: 1),
+            "Mốc 1"
+        )
+        XCTAssertEqual(
+            AttendanceExplanationContract.friendlySlotTitle(slotLabel: "SLOT_1", slotCode: "SLOT_1", slotIndex: 1),
+            "Mốc 1"
+        )
+        XCTAssertEqual(
+            AttendanceExplanationContract.friendlySlotTitle(slotLabel: "Mốc #2", slotCode: "SLOT_2", slotIndex: 2),
+            "Mốc 2"
+        )
+        XCTAssertEqual(
+            AttendanceExplanationContract.friendlySlotTitle(slotLabel: "TIME 3", slotCode: "SLOT_3", slotIndex: 3),
+            "Mốc 3"
+        )
+        XCTAssertEqual(
+            AttendanceExplanationContract.friendlySlotTitle(slotLabel: "", slotCode: "SLOT_4", slotIndex: 4),
+            "Mốc 4"
+        )
+        XCTAssertEqual(
+            AttendanceExplanationContract.friendlySlotTitle(slotLabel: "Ca sáng", slotCode: "SLOT_1", slotIndex: 1),
+            "Ca sáng"
+        )
+        XCTAssertEqual(
+            AttendanceExplanationContract.friendlySlotTitle(slotLabel: "Vào ca sáng", slotCode: "SLOT_1", slotIndex: 1),
+            "Vào ca sáng"
+        )
+
+        // 2. friendlyValidTimeRange: calculates "07:15 – 07:45" from "07:30" with 15, 15
+        XCTAssertEqual(
+            AttendanceExplanationContract.friendlyValidTimeRange(
+                targetTime: "07:30",
+                graceBeforeMinutes: 15,
+                graceAfterMinutes: 15
+            ),
+            "07:15 – 07:45"
+        )
+        XCTAssertEqual(
+            AttendanceExplanationContract.friendlyValidTimeRange(
+                targetTime: "08:00",
+                graceBeforeMinutes: 0,
+                graceAfterMinutes: 0
+            ),
+            "Đúng 08:00"
+        )
+        XCTAssertEqual(
+            AttendanceExplanationContract.friendlyValidTimeRange(
+                targetTime: "invalid",
+                graceBeforeMinutes: 10,
+                graceAfterMinutes: 15
+            ),
+            "±15 phút"
+        )
+
+        // 3. compactSlotStatusBadge
+        XCTAssertEqual(AttendanceExplanationContract.compactSlotStatusBadge("ON_TIME"), "Đúng giờ")
+        XCTAssertEqual(AttendanceExplanationContract.compactSlotStatusBadge("OUT_OF_GRACE"), "Ngoài khung giờ")
+        XCTAssertEqual(AttendanceExplanationContract.compactSlotStatusBadge("MISSING"), "Thiếu chấm")
+        XCTAssertEqual(AttendanceExplanationContract.compactSlotStatusBadge("LEAVE_COVERED"), "Nghỉ phép")
+        XCTAssertEqual(AttendanceExplanationContract.compactSlotStatusBadge("UPCOMING"), "Chưa đến giờ")
+        XCTAssertEqual(AttendanceExplanationContract.compactSlotStatusBadge("EXPLAINED_PENDING"), "Chờ duyệt")
+        XCTAssertEqual(AttendanceExplanationContract.compactSlotStatusBadge("EXPLAINED_APPROVED"), "Đã duyệt")
+        XCTAssertEqual(AttendanceExplanationContract.compactSlotStatusBadge("EXPLAINED_REJECTED"), "Từ chối")
+
+        // 4. friendlyProfileSummary & friendlyApproverSummary
+        let defaultEval = AttendanceExplanationDayEvaluationProjection(
+            businessDate: "2026-11-11",
+            policyProfileCodeUsed: "DEFAULT",
+            policyProfileNameUsed: "Mặc định",
+            policyIsDefaultUsed: true,
+            policyVersionUsed: 1,
+            slots: []
+        )
+        XCTAssertEqual(AttendanceExplanationContract.friendlyProfileSummary(dayEval: defaultEval), "0 mốc/ngày")
+
+        let customEval = AttendanceExplanationDayEvaluationProjection(
+            businessDate: "2026-11-11",
+            policyProfileCodeUsed: "KHOI_TD_MB",
+            policyProfileNameUsed: "Khối Tuyển dụng Miền Bắc",
+            policyIsDefaultUsed: false,
+            policyVersionUsed: 3,
+            slots: []
+        )
+        XCTAssertEqual(
+            AttendanceExplanationContract.friendlyProfileSummary(dayEval: customEval),
+            "Khối Tuyển dụng Miền Bắc · 0 mốc"
+        )
+
+        let directTeamRouting = AttendanceExplanationRoutingProjection(
+            routeKind: "TEAM_LEADER",
+            unitKind: "RECRUITMENT",
+            primaryApprover: AttendanceExplanationAccountSummaryProjection(
+                appUserId: "u-leader",
+                displayName: "Nguyễn Văn A"
+            ),
+            teamName: "Team 3"
+        )
+        XCTAssertEqual(
+            AttendanceExplanationContract.friendlyApproverSummary(routing: directTeamRouting),
+            "Nguyễn Văn A (Team 3)"
+        )
+
+        let fallbackRouting = AttendanceExplanationRoutingProjection(
+            routeKind: "ADMIN_BOD_FALLBACK",
+            unitKind: "RECRUITMENT",
+            primaryApprover: nil,
+            fallbackReason: "UNMAPPED_PERSONNEL"
+        )
+        XCTAssertEqual(
+            AttendanceExplanationContract.friendlyApproverSummary(routing: fallbackRouting),
+            "Ban Quản trị / Nhân sự"
+        )
+
+        // 5. friendlyRequesterSubtitle deduplicates when personnelCode == loginId -> "Team 3 · chungpb.td"
+        let requester = AttendanceExplanationAccountSummaryProjection(
+            appUserId: "u-chung",
+            displayName: "Phạm Bảo Chung",
+            loginId: "chungpb.td",
+            personnelCode: "chungpb.td"
+        )
+        XCTAssertEqual(
+            AttendanceExplanationContract.friendlyRequesterSubtitle(
+                requester: requester,
+                teamName: "Team 3"
+            ),
+            "Team 3 · chungpb.td"
+        )
+
+        // 6. Worker tab label "uploader" -> "Tôi nhập"
+        let uploaderUser = MiniBiUser(
+            id: "u-up",
+            username: "uploader",
+            fullName: "Uploader",
+            allowedWorkerTabs: ["uploader", "managed"]
+        )
+        let resolvedWorkerTabs = MiniBiViewModel.resolveVisibleWorkerTabs(for: uploaderUser)
+        XCTAssertEqual(resolvedWorkerTabs.first?.key, "uploader")
+        XCTAssertEqual(resolvedWorkerTabs.first?.label, "Tôi nhập")
+    }
 }
