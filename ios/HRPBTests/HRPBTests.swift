@@ -2257,6 +2257,7 @@ final class HRPBTests: XCTestCase {
         )
 
         // Case A: allowed_worker_tabs = ["uploader", "managed"]
+        // Round 6: "uploader" no longer creates a tab on WorkersScreen; only directory scopes ("managed") are visible.
         let uploaderAndManagedUser = MiniBiUser(
             id: "11112222-3333-4444-8555-666666666666",
             username: "uploader.pm",
@@ -2266,9 +2267,17 @@ final class HRPBTests: XCTestCase {
         )
         vm.currentUser = uploaderAndManagedUser
         vm.isAuthenticated = true
-        vm.selectedWorkerScope = "uploader"
+        XCTAssertEqual(vm.visibleWorkerTabs.map(\.key), ["managed"])
+        XCTAssertEqual(vm.visibleWorkerTabs.map(\.label), ["Dự án quản lý"])
 
+        // Forcing selectedWorkerScope = "uploader" on WorkersScreen must fail closed without calling workers API
+        vm.selectedWorkerScope = "uploader"
         await vm.loadWorkers(resetPage: true)
+        XCTAssertTrue(vm.workers.isEmpty)
+        XCTAssertFalse(MockURLProtocol.recordedUrls().contains(where: { $0.contains("/api/direct-entry/workers") }))
+
+        // Direct submission history service used inside "Cấp mới" ("Lịch sử") still works independently
+        await vm.refreshOwnSubmissions(reset: true)
         XCTAssertEqual(vm.ownSubmissions.count, 1)
         XCTAssertTrue(vm.ownSubmissionsHasMore)
         XCTAssertEqual(vm.ownSubmissionsNextCursor, "cur-2")
@@ -2288,7 +2297,7 @@ final class HRPBTests: XCTestCase {
         await vm.loadWorkers(resetPage: true)
         XCTAssertEqual(vm.workers.count, 1)
 
-        // Case B: allowed_worker_tabs = ["uploader"] only
+        // Case B: allowed_worker_tabs = ["uploader"] only -> visibleWorkerTabs is empty and loadWorkers fires zero requests
         MockURLProtocol.resetRecordedUrls()
         let uploaderOnlyUser = MiniBiUser(
             id: "22223333-4444-4555-8666-777777777777",
@@ -2299,11 +2308,11 @@ final class HRPBTests: XCTestCase {
         )
         vm.currentUser = uploaderOnlyUser
         vm.selectedWorkerScope = ""
+        XCTAssertTrue(vm.visibleWorkerTabs.isEmpty)
         await vm.loadWorkers(resetPage: true)
-        XCTAssertEqual(vm.selectedWorkerScope, "uploader")
+        XCTAssertEqual(vm.selectedWorkerScope, "")
 
         let allUrls = MockURLProtocol.recordedUrls()
-        XCTAssertTrue(allUrls.contains(where: { $0.contains("/api/direct-entry/submissions") }))
         XCTAssertFalse(allUrls.contains(where: { $0.contains("scope=uploader") }))
         XCTAssertFalse(allUrls.contains(where: { $0.contains("/api/direct-entry/workers") }))
         XCTAssertFalse(allUrls.contains(where: { $0.contains("/api/direct-entry/workers/export") }))
@@ -4346,16 +4355,16 @@ final class HRPBTests: XCTestCase {
             "Team 3 · chungpb.td"
         )
 
-        // 6. Worker tab label "uploader" -> "Tôi nhập"
+        // 6. Round 6: "uploader" is excluded from WorkersScreen tabs; directory scopes use concise labels
         let uploaderUser = MiniBiUser(
             id: "u-up",
             username: "uploader",
             fullName: "Uploader",
-            allowedWorkerTabs: ["uploader", "managed"]
+            allowedWorkerTabs: ["uploader", "managed", "recruited", "team", "all"]
         )
         let resolvedWorkerTabs = MiniBiViewModel.resolveVisibleWorkerTabs(for: uploaderUser)
-        XCTAssertEqual(resolvedWorkerTabs.first?.key, "uploader")
-        XCTAssertEqual(resolvedWorkerTabs.first?.label, "Tôi nhập")
+        XCTAssertEqual(resolvedWorkerTabs.map(\.key), ["managed", "recruited", "team", "all"])
+        XCTAssertEqual(resolvedWorkerTabs.map(\.label), ["Dự án quản lý", "Tôi tuyển", "Nhóm quản lý", "Toàn hệ thống"])
     }
 
     // MARK: - Round 5 Regression Tests (Cursor Pagination & Refreshable Cancellation)
@@ -4628,5 +4637,168 @@ final class HRPBTests: XCTestCase {
         }
         XCTAssertFalse(reviewUrls[0].contains("cursor="), "First page must not send cursor=: \(reviewUrls[0])")
         XCTAssertTrue(reviewUrls[1].contains("cursor=rev_cursor_2"), "Second page must send cursor=rev_cursor_2: \(reviewUrls[1])")
+    }
+
+    // MARK: - Round 6 Regression Tests (Dashboard 2-Tab + Filter Reset Skeleton + Uploader Creator Edge Case)
+
+    @MainActor
+    func testRound6_DashboardTwoTabClampFilterResetSkeletonAndStreamlinedNetwork() async throws {
+        MockURLProtocol.resetRecordedUrls()
+        MockURLProtocol.pathDelaySec = [
+            "/api/reporting/workforce-deep": 0.15
+        ]
+        MockURLProtocol.requestHandler = { req in
+            let url = req.url!
+            let path = url.path
+            let query = url.query ?? ""
+            let body: String
+            if path == "/api/reporting/workforce-deep" {
+                let isFiltered = query.contains("from=")
+                let totalCount = isFiltered ? 42 : 120
+                body = """
+                {
+                  "ok": true,
+                  "workforce": {
+                    "snapshot": {
+                      "eligible_episode_total": \(totalCount),
+                      "on_count": \(totalCount - 10),
+                      "off_count": 10,
+                      "unconfirmed_count": 0
+                    },
+                    "balance": {
+                      "applicable": \(isFiltered ? "true" : "false"),
+                      "new_episodes_in_period": {"total": \(totalCount)},
+                      "by_status": {
+                        "on": {"total_inflow_count": \(totalCount - 10)},
+                        "off": {"total_inflow_count": 10},
+                        "unconfirmed": {"total_inflow_count": 0}
+                      }
+                    },
+                    "dimensions": {
+                      "by_team": {
+                        "buckets": [
+                          {"key": "team_1", "display": "Team 1", "eligible_episode_count": 20, "on_count": 18, "off_count": 2, "unconfirmed_count": 0}
+                        ]
+                      }
+                    }
+                  }
+                }
+                """
+            } else {
+                body = """
+                {"ok": true, "items": [], "groups": []}
+                """
+            }
+            let resp = HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/json"])!
+            return (resp, Data(body.utf8))
+        }
+        defer {
+            MockURLProtocol.pathDelaySec = [:]
+        }
+
+        let client = makeMockHttpClient()
+        let repo = MiniBiRepository(
+            httpClient: client,
+            keychain: KeychainStore(serviceName: "com.aistudio.minibi.r6dash.\(UUID().uuidString)")
+        )
+        let directEntry = DirectEntryService(httpClient: client)
+        let workReportsService = WorkReportsAndReportingService(httpClient: client)
+        let vm = MiniBiViewModel(
+            repository: repo,
+            directEntryService: directEntry,
+            workReportsService: workReportsService
+        )
+        vm.currentUser = MiniBiUser(
+            id: "aaaa1111-2222-4333-8444-555555555555",
+            username: "admin.user",
+            fullName: "Admin User",
+            permissions: ["entry_read"],
+            allowedWorkerTabs: ["all"]
+        )
+        vm.isAuthenticated = true
+
+        // 1. Only 2 primary tabs exist; setting removed tabs clamps back to .overview
+        XCTAssertEqual(DashboardSubTab.primaryTabs, [.overview, .teamReport])
+        vm.selectedDashboardSubTab = .deepMetrics
+        XCTAssertEqual(vm.selectedDashboardSubTab, .overview)
+        vm.selectedDashboardSubTab = .duplicateCccd
+        XCTAssertEqual(vm.selectedDashboardSubTab, .overview)
+        vm.selectedDashboardSubTab = .cccdReview
+        XCTAssertEqual(vm.selectedDashboardSubTab, .overview)
+        vm.selectedDashboardSubTab = .teamReport
+        XCTAssertEqual(vm.selectedDashboardSubTab, .teamReport)
+
+        // 2. Initial load (even with includeCccdTabs: true) never calls duplicate-cccd or cccd-review APIs
+        vm.applyDatePreset(.all, reload: false)
+        await vm.loadDashboardData(includeCccdTabs: true, force: true)
+        XCTAssertTrue(vm.hasLoadedDashboardInSession)
+        XCTAssertFalse(vm.isLoadingDashboard)
+        XCTAssertEqual(vm.generalOverview.kpis.totalHeadcount, 120)
+        XCTAssertEqual(vm.teamReport.teams.count, 1)
+
+        let initialUrls = MockURLProtocol.recordedUrls()
+        XCTAssertFalse(initialUrls.contains(where: { $0.contains("duplicate-cccd") }))
+        XCTAssertFalse(initialUrls.contains(where: { $0.contains("cccd-review") }))
+
+        // 3. Changing date preset immediately clears stale data and triggers skeleton state before network completes
+        vm.applyDatePreset(.lastMonth, reload: true)
+        XCTAssertFalse(vm.hasLoadedDashboardInSession, "hasLoadedDashboardInSession must reset immediately on filter change")
+        XCTAssertTrue(vm.isLoadingDashboard, "isLoadingDashboard must become true immediately on filter change")
+        XCTAssertEqual(vm.generalOverview.kpis.totalHeadcount, 0, "Stale generalOverview KPIs must be cleared immediately")
+        XCTAssertTrue(vm.teamReport.teams.isEmpty, "Stale teamReport must be cleared immediately")
+
+        // Wait for delayed reload task to complete
+        try await Task.sleep(nanoseconds: 350_000_000)
+        XCTAssertTrue(vm.hasLoadedDashboardInSession, "hasLoadedDashboardInSession must become true after network completion")
+        XCTAssertFalse(vm.isLoadingDashboard)
+        XCTAssertEqual(vm.generalOverview.kpis.totalHeadcount, 42)
+    }
+
+    @MainActor
+    func testRound6_UploaderWithNewEntryPermissionCanOpenWorkersGuidanceWithoutWorkersApiCall() async throws {
+        MockURLProtocol.resetRecordedUrls()
+        MockURLProtocol.requestHandler = { req in
+            let resp = HTTPURLResponse(url: req.url!, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/json"])!
+            return (resp, Data("{\"ok\":true,\"projects\":[]}".utf8))
+        }
+
+        let client = makeMockHttpClient()
+        let repo = MiniBiRepository(
+            httpClient: client,
+            keychain: KeychainStore(serviceName: "com.aistudio.minibi.r6uploader.\(UUID().uuidString)")
+        )
+        let directEntry = DirectEntryService(httpClient: client)
+        let vm = MiniBiViewModel(
+            repository: repo,
+            directEntryService: directEntry
+        )
+
+        let uploaderCreator = MiniBiUser(
+            id: "cccc1111-2222-4333-8444-555555555555",
+            username: "creator.uploader",
+            fullName: "Người Nhập Liệu",
+            permissions: ["entry_create", "submission_create"],
+            allowedWorkerTabs: ["uploader"]
+        )
+        vm.currentUser = uploaderCreator
+        vm.isAuthenticated = true
+
+        XCTAssertTrue(vm.visibleWorkerTabs.isEmpty)
+        XCTAssertTrue(vm.canAccessNewWorkerEntry)
+        XCTAssertTrue(
+            MiniBiNavDestination.resolveMainNavigationDestinations(for: uploaderCreator).contains(.workers),
+            "Uploader account with canAccessNewWorkerEntry must still see Nhân sự menu to reach + Cấp mới"
+        )
+
+        vm.navigateTo(.workers)
+        XCTAssertEqual(vm.currentDestination, .workers)
+        await vm.loadWorkers(resetPage: true)
+        XCTAssertFalse(
+            MockURLProtocol.recordedUrls().contains(where: { $0.contains("/api/direct-entry/workers") }),
+            "WorkersScreen must fail-closed and never call /api/direct-entry/workers when visibleWorkerTabs is empty"
+        )
+
+        vm.navigateTo(.newEntry)
+        XCTAssertEqual(vm.currentDestination, .newEntry)
     }
 }

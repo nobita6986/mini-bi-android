@@ -192,6 +192,11 @@ public struct MiniBiUser: Codable, Equatable, Identifiable, Sendable {
         Self.sanitizeAllowedWorkerTabs(allowedWorkerTabs)
     }
 
+    /// Canonical worker directory scopes granted to this actor (excludes `"uploader"`).
+    public var safeAllowedWorkerDirectoryScopes: [String] {
+        safeAllowedWorkerTabs.filter { Self.canonicalWorkerDirectoryScopes.contains($0) }
+    }
+
     public func hasCapability(_ capability: String) -> Bool {
         let target = capability.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !target.isEmpty else { return false }
@@ -280,7 +285,7 @@ public enum MiniBiNavDestination: String, CaseIterable, Identifiable, Equatable,
         guard let user else { return [] }
         return mainMenuDestinations.filter { dest in
             if dest == .workers {
-                return !user.safeAllowedWorkerTabs.isEmpty
+                return !user.safeAllowedWorkerDirectoryScopes.isEmpty || user.canAccessNewWorkerEntry
             }
             return true
         }
@@ -363,6 +368,12 @@ public enum DashboardSubTab: String, CaseIterable, Identifiable, Equatable, Send
     case teamReport = "team_report"
     case duplicateCccd = "duplicate_cccd"
     case cccdReview = "cccd_review"
+
+    /// Only the 2 streamlined sub-tabs displayed in the `Tổng quan` screen (Round 6).
+    public static let primaryTabs: [DashboardSubTab] = [
+        .overview,
+        .teamReport
+    ]
 
     public var id: String { rawValue }
 
