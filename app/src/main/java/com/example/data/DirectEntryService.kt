@@ -1973,11 +1973,14 @@ object DirectEntryContract {
     }
 
     fun parseEntryDetailResponse(json: JSONObject): WorkerEntryDetail {
-        val entry = json.optJSONObject("entry") ?: throw contractInvalid("ENTRY_DETAIL_MISSING")
+        val entry = json.optJSONObject("entry")
+            ?: json.optJSONObject("data")
+            ?: throw contractInvalid("ENTRY_DETAIL_MISSING")
         val entryId = entry.optString("entry_id", "").trim()
         val submissionId = entry.optString("submission_id", "").trim()
         val version = entry.optInt("version", 0)
-        if (!UUID_REGEX.matches(entryId) || !UUID_REGEX.matches(submissionId) || version < 1) {
+        val submissionIdValid = submissionId.isEmpty() || UUID_REGEX.matches(submissionId)
+        if (!UUID_REGEX.matches(entryId) || !submissionIdValid || version < 1) {
             throw contractInvalid("ENTRY_DETAIL_INVALID")
         }
 

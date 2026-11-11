@@ -51,6 +51,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Edit
@@ -116,6 +117,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.ContextCompat
@@ -151,6 +153,8 @@ import com.example.ui.MiniBiViewModel
 import com.example.ui.components.HrpDesignTokens
 import com.example.ui.components.HrpHaptics
 import com.example.ui.components.HrpInitialsAvatar
+import com.example.ui.components.HrpSegmentedTabGroup
+import com.example.ui.components.HrpSegmentedTabItem
 import com.example.ui.components.HrpSkeletonCard
 import com.example.ui.components.HrpStatusBadge
 import com.example.ui.components.hrpCardSurface
@@ -2326,7 +2330,6 @@ fun resolveVisibleWorkerTabs(actor: AppActor): List<WorkerScopeTabSpec> {
             "managed" -> WorkerScopeTabSpec("managed", "DA tôi quản lý")
             "recruited" -> WorkerScopeTabSpec("recruited", "Tôi tuyển")
             "team" -> WorkerScopeTabSpec("team", "Team tôi quản lý")
-            "uploader" -> WorkerScopeTabSpec("uploader", "Tôi đã nhập")
             "all" -> WorkerScopeTabSpec("all", "Toàn hệ thống")
             else -> null
         }
@@ -2377,6 +2380,7 @@ fun WorkersAndDirectEntryScreen(
     val workerSummary by viewModel.workerSummary.collectAsStateWithLifecycle()
     val proposeTarget by viewModel.proposeChangeTarget.collectAsStateWithLifecycle()
     val directEditTarget by viewModel.directEditTarget.collectAsStateWithLifecycle()
+    val directEditLoadingEntryId by viewModel.directEditLoadingEntryId.collectAsStateWithLifecycle()
     val directEditProfileSaveMessage by viewModel.directEditProfileSaveMessage.collectAsStateWithLifecycle()
     val directEditFileStatuses by viewModel.directEditFileStatuses.collectAsStateWithLifecycle()
     val mutationBusy by viewModel.workerMutationBusy.collectAsStateWithLifecycle()
@@ -2442,7 +2446,7 @@ fun WorkersAndDirectEntryScreen(
 
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
-    val isSubmissionTab = activeScopeKey == "uploader"
+    val canCreateNewEntry = actor.canAccessNewEntryScreen()
 
     if (salaryAdvanceDialogOpen && canShowSalaryAdvance && salaryAdvanceContext != null) {
         SalaryAdvanceWorkspaceScreen(
@@ -2455,7 +2459,7 @@ fun WorkersAndDirectEntryScreen(
     val haptic = LocalHapticFeedback.current
 
     PullToRefreshBox(
-        isRefreshing = workerLoading && (workers.isNotEmpty() || ownSubmissions.isNotEmpty()),
+        isRefreshing = workerLoading && workers.isNotEmpty(),
         onRefresh = {
             focusManager.clearFocus()
             keyboardController?.hide()
@@ -2478,85 +2482,37 @@ fun WorkersAndDirectEntryScreen(
                 })
             }
             .testTag("workers_lazy_column"),
-        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
+        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         if (visibleTabs.isNotEmpty()) {
             item {
                 Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .hrpCardSurface()
-                        .padding(12.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .testTag("worker_scope_grid"),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        visibleTabs.chunked(2).forEach { rowTabs ->
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(IntrinsicSize.Min),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                rowTabs.forEach { tab ->
-                                    val selected = tab.key == activeScopeKey
-                                    Surface(
-                                        selected = selected,
-                                        onClick = {
-                                            focusManager.clearFocus()
-                                            HrpHaptics.tick(haptic)
-                                            effectiveSelectTab(tab.key)
-                                        },
-                                        modifier = Modifier
-                                            .weight(1f)
-                                            .fillMaxHeight()
-                                            .heightIn(min = 42.dp)
-                                            .testTag("worker_scope_tab_${tab.key}"),
-                                        shape = RoundedCornerShape(HrpDesignTokens.RadiusMD),
-                                        color = if (selected) {
-                                            MaterialTheme.colorScheme.primary
-                                        } else {
-                                            SemanticColors.SurfaceSubtle
-                                        },
-                                        border = if (selected) {
-                                            null
-                                        } else {
-                                            BorderStroke(1.dp, SemanticColors.SurfaceBorder)
-                                        }
-                                    ) {
-                                        Box(
-                                            modifier = Modifier
-                                                .fillMaxSize()
-                                                .padding(horizontal = 10.dp, vertical = 8.dp),
-                                            contentAlignment = Alignment.Center
-                                        ) {
-                                            Text(
-                                                text = tab.label,
-                                                style = MaterialTheme.typography.labelLarge,
-                                                fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
-                                                color = if (selected) {
-                                                    MaterialTheme.colorScheme.onPrimary
-                                                } else {
-                                                    SemanticColors.TextSecondary
-                                                },
-                                                textAlign = TextAlign.Center,
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis
-                                            )
-                                        }
-                                    }
-                                }
-                            }
+                    val segmentedTabs = remember(visibleTabs) {
+                        visibleTabs.map { tab ->
+                            HrpSegmentedTabItem(
+                                key = tab.key,
+                                label = tab.label,
+                                testTag = "worker_scope_tab_${tab.key}"
+                            )
                         }
                     }
+                    HrpSegmentedTabGroup(
+                        items = segmentedTabs,
+                        selectedKey = activeScopeKey,
+                        onSelect = { selectedKey ->
+                            focusManager.clearFocus()
+                            effectiveSelectTab(selectedKey)
+                        },
+                        maxItemsPerRow = 3,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("worker_scope_grid")
+                    )
 
-                    val canCreateNewEntry = actor.canAccessNewEntryScreen()
                     if (canShowSalaryAdvance || canCreateNewEntry) {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
@@ -2564,17 +2520,23 @@ fun WorkersAndDirectEntryScreen(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             if (canShowSalaryAdvance) {
-                                Button(
+                                OutlinedButton(
                                     onClick = {
                                         focusManager.clearFocus()
                                         keyboardController?.hide()
                                         HrpHaptics.tick(haptic)
                                         effectiveOpenSalaryAdvance()
                                     },
-                                    shape = RoundedCornerShape(HrpDesignTokens.RadiusMD),
+                                    shape = RoundedCornerShape(10.dp),
+                                    colors = ButtonDefaults.outlinedButtonColors(
+                                        containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f),
+                                        contentColor = MaterialTheme.colorScheme.primary
+                                    ),
+                                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.4f)),
+                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
                                     modifier = Modifier
                                         .weight(1f)
-                                        .height(46.dp)
+                                        .height(38.dp)
                                         .testTag("salary_advance_open_button")
                                 ) {
                                     Text(
@@ -2594,16 +2556,17 @@ fun WorkersAndDirectEntryScreen(
                                         HrpHaptics.tick(haptic)
                                         onOpenNewEntryScreen()
                                     },
-                                    shape = RoundedCornerShape(HrpDesignTokens.RadiusMD),
+                                    shape = RoundedCornerShape(10.dp),
+                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
                                     modifier = Modifier
                                         .weight(1f)
-                                        .height(46.dp)
+                                        .height(38.dp)
                                         .testTag("go_to_new_entry_from_workers")
                                 ) {
                                     Icon(
                                         imageVector = Icons.Default.Add,
                                         contentDescription = null,
-                                        modifier = Modifier.size(18.dp)
+                                        modifier = Modifier.size(16.dp)
                                     )
                                     Spacer(modifier = Modifier.width(6.dp))
                                     Text(
@@ -2618,23 +2581,54 @@ fun WorkersAndDirectEntryScreen(
                         }
                     }
 
-                    if (!isSubmissionTab) {
-                        Text(
-                            text = if (workerSummary != null) {
-                                "Tổng: ${workerSummary!!.totalWorkers} NLĐ · ${workerSummary!!.projectCount} dự án · ${workerSummary!!.recruiterCount} người tuyển"
-                            } else {
-                                "Chọn phạm vi để xem danh sách NLĐ từ máy chủ"
-                            },
-                            style = MaterialTheme.typography.bodySmall.tabularNums(),
-                            color = SemanticColors.TextSecondary,
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                    }
+                    Text(
+                        text = if (workerSummary != null) {
+                            "Tổng: ${workerSummary!!.totalWorkers} NLĐ · ${workerSummary!!.projectCount} dự án · ${workerSummary!!.recruiterCount} người tuyển"
+                        } else {
+                            "Chọn phạm vi để xem danh sách NLĐ từ máy chủ"
+                        },
+                        style = MaterialTheme.typography.labelSmall.tabularNums(),
+                        color = SemanticColors.TextSecondary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            }
+        } else if (canCreateNewEntry) {
+            item {
+                Button(
+                    onClick = {
+                        focusManager.clearFocus()
+                        keyboardController?.hide()
+                        HrpHaptics.tick(haptic)
+                        onOpenNewEntryScreen()
+                    },
+                    shape = RoundedCornerShape(10.dp),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(38.dp)
+                        .testTag("go_to_new_entry_from_workers")
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Add,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = "Cấp mới",
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
                 }
             }
         }
 
-        if (!isSubmissionTab && visibleTabs.isNotEmpty()) {
+        if (visibleTabs.isNotEmpty()) {
             item {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedTextField(
@@ -2720,11 +2714,11 @@ fun WorkersAndDirectEntryScreen(
             }
         }
 
-        if (workerLoading && workers.isEmpty() && ownSubmissions.isEmpty()) {
+        if (workerLoading && workers.isEmpty()) {
             items(3, key = { "worker_skeleton_$it" }) {
                 HrpSkeletonCard(
                     lineCount = 3,
-                    showAvatar = !isSubmissionTab
+                    showAvatar = true
                 )
             }
         }
@@ -2755,37 +2749,6 @@ fun WorkersAndDirectEntryScreen(
                     )
                 }
             }
-        } else if (isSubmissionTab) {
-            if (ownSubmissions.isEmpty() && !workerLoading) {
-                item {
-                    EmptyWorkersCard(
-                        title = "Chưa có lịch sử đợt nhập liệu",
-                        subtitle = "Các đợt hồ sơ do bạn tải lên máy chủ sẽ hiển thị tại đây."
-                    )
-                }
-            } else {
-                items(ownSubmissions, key = { it.submissionId }) { sub ->
-                    OwnSubmissionRowCard(
-                        item = sub,
-                        busy = mutationBusy,
-                        onSubmitDraft = { viewModel.submitExistingDraftSubmission(sub) }
-                    )
-                }
-                if (submissionsHasMore) {
-                    item {
-                        OutlinedButton(
-                            onClick = { viewModel.loadMoreWorkersOrSubmissions() },
-                            enabled = !workerLoading,
-                            shape = RoundedCornerShape(12.dp),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .testTag("load_more_submissions_button")
-                        ) {
-                            Text("Tải thêm đợt nhập liệu")
-                        }
-                    }
-                }
-            }
         } else {
             if (workers.isEmpty() && !workerLoading) {
                 item {
@@ -2808,7 +2771,8 @@ fun WorkersAndDirectEntryScreen(
                         worker = worker,
                         onViewDetail = { effectiveOpenDetail(worker.entryId) },
                         onProposeChange = { effectiveOpenPropose(worker) },
-                        onDirectEdit = { effectiveOpenDirectEdit(worker) }
+                        onDirectEdit = { effectiveOpenDirectEdit(worker) },
+                        isDirectEditLoading = directEditLoadingEntryId.equals(worker.entryId, ignoreCase = true)
                     )
                 }
                 if (workerHasMore) {
@@ -3038,7 +3002,8 @@ internal fun WorkerOperationsRowCard(
     worker: WorkerProfileEntity,
     onViewDetail: () -> Unit,
     onProposeChange: () -> Unit = {},
-    onDirectEdit: () -> Unit
+    onDirectEdit: () -> Unit,
+    isDirectEditLoading: Boolean = false
 ) {
     val actions = worker.allowedActions
     val statusLabel = when (worker.employmentStatus) {
@@ -3053,12 +3018,23 @@ internal fun WorkerOperationsRowCard(
         else -> SemanticColors.ErrorBg to SemanticColors.ErrorText
     }
 
+    val recruiterPart = worker.recruiterDisplay.trim().takeIf { it.isNotEmpty() }?.let { "NT: $it" }
+    val datePart = worker.firstWorkDate.trim().takeIf { it.isNotEmpty() }?.let { "Vào: $it" }
+    val metaLine = listOfNotNull(recruiterPart, datePart).joinToString(" · ")
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .hrpCardSurface()
-            .padding(14.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp)
+            .hrpCardSurface(cornerRadius = 14.dp)
+            .let { baseMod ->
+                if (actions.view) {
+                    baseMod.clickable(onClick = onViewDetail)
+                } else {
+                    baseMod
+                }
+            }
+            .padding(horizontal = 12.dp, vertical = 11.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp)
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -3069,87 +3045,137 @@ internal fun WorkerOperationsRowCard(
                 fullName = worker.displayName,
                 size = 40.dp
             )
-            Text(
-                text = worker.displayName.ifBlank { "Chưa cập nhật họ tên" },
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold,
-                color = SemanticColors.TextPrimary,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f)
-            )
-            HrpStatusBadge(
-                text = statusLabel,
-                containerColor = statusBg,
-                contentColor = statusFg
-            )
-        }
 
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .hrpMutedTile()
-                .padding(11.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp)
-        ) {
-            Text(
-                text = "Dự án: ${worker.projectDisplay.trim()}",
-                style = MaterialTheme.typography.bodySmall,
-                fontWeight = FontWeight.SemiBold,
-                color = SemanticColors.TextPrimary,
-                modifier = Modifier.fillMaxWidth()
-            )
-            if (worker.recruiterDisplay.isNotBlank()) {
-                Text(
-                    text = "Người tuyển: ${worker.recruiterDisplay.trim()}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = SemanticColors.TextSecondary,
-                    modifier = Modifier.fillMaxWidth()
-                )
-            }
-            if (worker.firstWorkDate.isNotBlank() || worker.laborTypeDisplay.isNotBlank()) {
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(3.dp)
+            ) {
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     Text(
-                        text = if (worker.firstWorkDate.isNotBlank()) {
-                            "Ngày đầu: ${worker.firstWorkDate.trim()}"
-                        } else {
-                            ""
-                        },
-                        style = MaterialTheme.typography.bodySmall.tabularNums(),
-                        color = SemanticColors.TextSecondary,
+                        text = worker.displayName.ifBlank { "Chưa cập nhật họ tên" },
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = SemanticColors.TextPrimary,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f)
+                        modifier = Modifier.weight(1f, fill = false)
                     )
                     if (worker.laborTypeDisplay.isNotBlank()) {
                         Surface(
                             shape = RoundedCornerShape(999.dp),
-                            color = MaterialTheme.colorScheme.primaryContainer
+                            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f)
                         ) {
                             Text(
                                 text = worker.laborTypeDisplay.trim(),
-                                style = MaterialTheme.typography.labelSmall,
+                                style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
                                 fontWeight = FontWeight.SemiBold,
                                 color = MaterialTheme.colorScheme.primary,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 1.dp)
                             )
                         }
                     }
                 }
-            }
-            if (worker.paymentSummary.isNotBlank()) {
+
                 Text(
-                    text = "Thanh toán: ${worker.paymentSummary.trim()}",
-                    style = MaterialTheme.typography.bodySmall.tabularNums(),
+                    text = worker.projectDisplay.trim().ifBlank { "Chưa gắn dự án" },
+                    style = MaterialTheme.typography.bodySmall,
+                    fontWeight = FontWeight.Medium,
                     color = SemanticColors.TextSecondary,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.fillMaxWidth()
                 )
+
+                if (metaLine.isNotEmpty()) {
+                    Text(
+                        text = metaLine,
+                        style = MaterialTheme.typography.labelSmall.tabularNums(),
+                        color = SemanticColors.TextSecondary.copy(alpha = 0.85f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            }
+
+            Column(
+                horizontalAlignment = Alignment.End,
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                HrpStatusBadge(
+                    text = statusLabel,
+                    containerColor = statusBg,
+                    contentColor = statusFg
+                )
+
+                if (actions.directEdit || actions.view) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        if (actions.directEdit) {
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = MaterialTheme.colorScheme.primaryContainer,
+                                border = BorderStroke(
+                                    1.dp,
+                                    MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)
+                                ),
+                                modifier = Modifier
+                                    .size(32.dp)
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .clickable(
+                                        enabled = !isDirectEditLoading,
+                                        onClick = onDirectEdit
+                                    )
+                                    .testTag("worker_direct_edit_${worker.entryId}")
+                            ) {
+                                Box(
+                                    modifier = Modifier.fillMaxSize(),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    if (isDirectEditLoading) {
+                                        CircularProgressIndicator(
+                                            modifier = Modifier.size(14.dp),
+                                            strokeWidth = 2.dp,
+                                            color = MaterialTheme.colorScheme.primary
+                                        )
+                                    } else {
+                                        Icon(
+                                            imageVector = Icons.Default.Edit,
+                                            contentDescription = "Sửa trực tiếp",
+                                            tint = MaterialTheme.colorScheme.primary,
+                                            modifier = Modifier.size(15.dp)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        if (actions.view) {
+                            Box(
+                                modifier = Modifier
+                                    .size(24.dp)
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .clickable(onClick = onViewDetail)
+                                    .testTag("worker_detail_${worker.entryId}"),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.ChevronRight,
+                                    contentDescription = "Xem chi tiết",
+                                    tint = SemanticColors.TextSecondary,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                        }
+                    }
+                }
             }
         }
 
@@ -3172,47 +3198,6 @@ internal fun WorkerOperationsRowCard(
                         style = MaterialTheme.typography.bodySmall,
                         color = SemanticColors.TextSecondary
                     )
-                }
-            }
-        }
-
-        if (actions.view || actions.directEdit) {
-            HorizontalDivider(color = SemanticColors.SurfaceBorder.copy(alpha = 0.7f))
-
-            FlowRow(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                if (actions.view) {
-                    OutlinedButton(
-                        onClick = onViewDetail,
-                        shape = RoundedCornerShape(HrpDesignTokens.RadiusXS),
-                        border = BorderStroke(1.dp, SemanticColors.SurfaceBorder),
-                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
-                        modifier = Modifier
-                            .height(36.dp)
-                            .testTag("worker_detail_${worker.entryId}")
-                    ) {
-                        Icon(Icons.Default.Visibility, contentDescription = null, modifier = Modifier.size(15.dp))
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text("Xem chi tiết", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
-                    }
-                }
-
-                if (actions.directEdit) {
-                    Button(
-                        onClick = onDirectEdit,
-                        shape = RoundedCornerShape(HrpDesignTokens.RadiusXS),
-                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-                        modifier = Modifier
-                            .height(36.dp)
-                            .testTag("worker_direct_edit_${worker.entryId}")
-                    ) {
-                        Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(15.dp))
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text("Sửa trực tiếp", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
-                    }
                 }
             }
         }
@@ -3528,7 +3513,15 @@ internal fun WorkerProposeChangeDialog(
 
     val dialogBody: @Composable () -> Unit = {
         Surface(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .let { mod ->
+                    if (renderInDialog) {
+                        mod.padding(horizontal = 14.dp, vertical = 20.dp)
+                    } else {
+                        mod
+                    }
+                },
             shape = RoundedCornerShape(24.dp),
             color = MaterialTheme.colorScheme.surface,
             tonalElevation = 6.dp
@@ -3802,7 +3795,10 @@ internal fun WorkerProposeChangeDialog(
         }
     }
     if (renderInDialog) {
-        Dialog(onDismissRequest = { if (!busy) onDismiss() }) {
+        Dialog(
+            onDismissRequest = { if (!busy) onDismiss() },
+            properties = DialogProperties(usePlatformDefaultWidth = false)
+        ) {
             dialogBody()
         }
     } else {
@@ -3972,7 +3968,15 @@ internal fun WorkerPrivilegedEditDialog(
 
     val dialogBody: @Composable () -> Unit = {
         Surface(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .let { mod ->
+                    if (renderInDialog) {
+                        mod.padding(horizontal = 14.dp, vertical = 20.dp)
+                    } else {
+                        mod
+                    }
+                },
             shape = RoundedCornerShape(24.dp),
             color = MaterialTheme.colorScheme.surface,
             tonalElevation = 6.dp
@@ -4841,7 +4845,10 @@ internal fun WorkerPrivilegedEditDialog(
         }
     }
     if (renderInDialog) {
-        Dialog(onDismissRequest = { if (!busy) onDismiss() }) {
+        Dialog(
+            onDismissRequest = { if (!busy) onDismiss() },
+            properties = DialogProperties(usePlatformDefaultWidth = false)
+        ) {
             dialogBody()
         }
     } else {

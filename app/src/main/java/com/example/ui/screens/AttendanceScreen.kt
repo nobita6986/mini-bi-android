@@ -434,27 +434,22 @@ fun AttendanceScreen(
                                         )
                                     )
                                 )
-                                .padding(16.dp),
-                            verticalArrangement = Arrangement.spacedBy(12.dp)
+                                .padding(14.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(
-                                        text = "CHẤM CÔNG ĐỊNH VỊ & HÌNH ẢNH",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        fontWeight = FontWeight.Bold,
-                                        color = MaterialTheme.colorScheme.primary
-                                    )
-                                    Text(
-                                        text = "Ghi nhận Chấm công",
-                                        style = MaterialTheme.typography.titleLarge,
-                                        fontWeight = FontWeight.Bold
-                                    )
-                                }
+                                Text(
+                                    text = "Ghi nhận Chấm công",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f)
+                                )
                                 Surface(
                                     shape = CircleShape,
                                     color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.65f)
@@ -474,7 +469,7 @@ fun AttendanceScreen(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .hrpMutedTile(cornerRadius = HrpDesignTokens.RadiusCard)
-                                    .padding(vertical = 12.dp, horizontal = 14.dp),
+                                    .padding(vertical = 10.dp, horizontal = 14.dp),
                                 horizontalAlignment = Alignment.CenterHorizontally,
                                 verticalArrangement = Arrangement.spacedBy(4.dp)
                             ) {
@@ -517,7 +512,7 @@ fun AttendanceScreen(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .hrpMutedTile()
-                                    .padding(horizontal = 12.dp, vertical = 8.dp)
+                                    .padding(horizontal = 12.dp, vertical = 6.dp)
                                     .testTag("attendance_time_anchor_banner"),
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically
@@ -580,7 +575,7 @@ fun AttendanceScreen(
                                     },
                                     enabled = !timeAnchorState.syncing,
                                     modifier = Modifier
-                                        .size(34.dp)
+                                        .size(32.dp)
                                         .testTag("refresh_time_anchor_button")
                                 ) {
                                     if (timeAnchorState.syncing) {
@@ -602,7 +597,7 @@ fun AttendanceScreen(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .hrpMutedTile()
-                                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                                    .padding(horizontal = 12.dp, vertical = 6.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.SpaceBetween
                             ) {
@@ -668,7 +663,7 @@ fun AttendanceScreen(
                                         }
                                     },
                                     modifier = Modifier
-                                        .size(34.dp)
+                                        .size(32.dp)
                                         .testTag("refresh_gps_button")
                                 ) {
                                     if (gpsLoading) {
@@ -702,77 +697,69 @@ fun AttendanceScreen(
                                 }
                             }
 
-                            Button(
-                                onClick = {
-                                    HrpHaptics.tick(haptic)
-                                    startOneTapGpsAndCameraFlow()
-                                },
-                                interactionSource = cameraButtonInteraction,
-                                shape = RoundedCornerShape(16.dp),
-                                colors = ButtonDefaults.buttonColors(
-                                    containerColor = MaterialTheme.colorScheme.primary
-                                ),
-                                contentPadding = PaddingValues(horizontal = 0.dp, vertical = 12.dp),
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .heightIn(min = 68.dp)
-                                    .hrpPressableScale(interactionSource = cameraButtonInteraction)
-                                    .testTag("primary_checkin_camera_button")
-                            ) {
-                                BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
-                                    val maxLabelWidth = (this.maxWidth - 88.dp).coerceAtLeast(120.dp)
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Box(
-                                            modifier = Modifier.weight(1f),
-                                            contentAlignment = Alignment.Center
+                            if (capturedPhotoFile == null || capturedPhotoUri == null) {
+                                Button(
+                                    onClick = {
+                                        HrpHaptics.tick(haptic)
+                                        startOneTapGpsAndCameraFlow()
+                                    },
+                                    interactionSource = cameraButtonInteraction,
+                                    shape = RoundedCornerShape(16.dp),
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = MaterialTheme.colorScheme.primary
+                                    ),
+                                    contentPadding = PaddingValues(horizontal = 0.dp, vertical = 10.dp),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .heightIn(min = 60.dp)
+                                        .hrpPressableScale(interactionSource = cameraButtonInteraction)
+                                        .testTag("primary_checkin_camera_button")
+                                ) {
+                                    BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+                                        val maxLabelWidth = (this.maxWidth - 88.dp).coerceAtLeast(120.dp)
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            verticalAlignment = Alignment.CenterVertically
                                         ) {
-                                            Icon(
-                                                imageVector = Icons.Default.PhotoCamera,
-                                                contentDescription = null,
+                                            Box(
+                                                modifier = Modifier.weight(1f),
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Default.PhotoCamera,
+                                                    contentDescription = null,
+                                                    modifier = Modifier
+                                                        .size(32.dp)
+                                                        .testTag("primary_checkin_camera_icon")
+                                                )
+                                            }
+                                            Column(
+                                                horizontalAlignment = Alignment.CenterHorizontally,
+                                                verticalArrangement = Arrangement.spacedBy(2.dp),
                                                 modifier = Modifier
-                                                    .size(32.dp)
-                                                    .testTag("primary_checkin_camera_icon")
-                                            )
+                                                    .widthIn(max = maxLabelWidth)
+                                                    .testTag("primary_checkin_camera_label")
+                                            ) {
+                                                Text(
+                                                    text = "CHẤM CÔNG NGAY",
+                                                    style = MaterialTheme.typography.titleMedium,
+                                                    fontWeight = FontWeight.ExtraBold,
+                                                    textAlign = TextAlign.Center,
+                                                    maxLines = 1
+                                                )
+                                                Text(
+                                                    text = "Hôm nay: ${syncedTodayRecords.size} lượt",
+                                                    style = MaterialTheme.typography.labelMedium.tabularNums(),
+                                                    color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.9f),
+                                                    textAlign = TextAlign.Center,
+                                                    maxLines = 1
+                                                )
+                                            }
+                                            Spacer(modifier = Modifier.weight(1f))
                                         }
-                                        Column(
-                                            horizontalAlignment = Alignment.CenterHorizontally,
-                                            verticalArrangement = Arrangement.spacedBy(2.dp),
-                                            modifier = Modifier
-                                                .widthIn(max = maxLabelWidth)
-                                                .testTag("primary_checkin_camera_label")
-                                        ) {
-                                            Text(
-                                                text = if (capturedPhotoFile == null) {
-                                                    "CHẤM CÔNG NGAY"
-                                                } else {
-                                                    "CHỤP LẠI ẢNH"
-                                                },
-                                                style = MaterialTheme.typography.titleMedium,
-                                                fontWeight = if (capturedPhotoFile == null) {
-                                                    FontWeight.ExtraBold
-                                                } else {
-                                                    FontWeight.Bold
-                                                },
-                                                textAlign = TextAlign.Center,
-                                                maxLines = 1
-                                            )
-                                            Text(
-                                                text = "Hôm nay: ${syncedTodayRecords.size} lượt",
-                                                style = MaterialTheme.typography.labelMedium.tabularNums(),
-                                                color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.9f),
-                                                textAlign = TextAlign.Center,
-                                                maxLines = 1
-                                            )
-                                        }
-                                        Spacer(modifier = Modifier.weight(1f))
                                     }
                                 }
-                            }
-
-                            AnimatedVisibility(visible = capturedPhotoFile != null && capturedPhotoUri != null) {
+                            } else {
                                 val isServerAnchoredPreview =
                                     capturedPhotoTime?.timeSource == AttendanceTimeSource.SERVER_ANCHORED
                                 val previewAccent = if (isServerAnchoredPreview) {
@@ -783,117 +770,194 @@ fun AttendanceScreen(
                                 Column(
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .hrpCardSurface(
-                                            borderColor = previewAccent.copy(alpha = 0.55f)
+                                        .hrpMutedTile(cornerRadius = 12.dp)
+                                        .border(
+                                            width = 1.dp,
+                                            color = previewAccent.copy(alpha = 0.55f),
+                                            shape = RoundedCornerShape(12.dp)
                                         )
-                                        .padding(14.dp),
-                                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                                        .padding(10.dp),
+                                    verticalArrangement = Arrangement.spacedBy(8.dp)
                                 ) {
                                     Row(
+                                        modifier = Modifier.fillMaxWidth(),
                                         verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                        horizontalArrangement = Arrangement.spacedBy(10.dp)
                                     ) {
-                                        Icon(
-                                            imageVector = if (isServerAnchoredPreview) {
-                                                Icons.Default.Verified
-                                            } else {
-                                                Icons.Default.WarningAmber
-                                            },
-                                            contentDescription = null,
-                                            tint = previewAccent
+                                        AsyncImage(
+                                            model = capturedPhotoUri,
+                                            contentDescription = "Ảnh chấm công vừa chụp",
+                                            contentScale = ContentScale.Crop,
+                                            modifier = Modifier
+                                                .size(64.dp)
+                                                .clip(RoundedCornerShape(10.dp))
                                         )
-                                        Column {
-                                            Text(
-                                                text = if (isServerAnchoredPreview) {
-                                                    "Đã khóa thời điểm chụp theo giờ chuẩn máy chủ"
-                                                } else {
-                                                    AttendanceContract.MSG_DEVICE_TIME_UNVERIFIED
-                                                },
-                                                style = MaterialTheme.typography.titleSmall,
-                                                color = previewAccent
-                                            )
-                                            capturedPhotoTime?.let { frozen ->
+
+                                        Column(
+                                            modifier = Modifier.weight(1f),
+                                            verticalArrangement = Arrangement.spacedBy(3.dp)
+                                        ) {
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                            ) {
+                                                Icon(
+                                                    imageVector = if (isServerAnchoredPreview) {
+                                                        Icons.Default.Verified
+                                                    } else {
+                                                        Icons.Default.WarningAmber
+                                                    },
+                                                    contentDescription = null,
+                                                    tint = previewAccent,
+                                                    modifier = Modifier.size(14.dp)
+                                                )
                                                 Text(
-                                                    text = "Thời điểm chụp đã cố định: ${frozen.clientCapturedAtIso.take(19).replace('T', ' ')}",
-                                                    style = MaterialTheme.typography.bodySmall.tabularNums(),
-                                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                    text = if (isServerAnchoredPreview) {
+                                                        "Đã khóa mốc giờ chụp"
+                                                    } else {
+                                                        AttendanceContract.MSG_DEVICE_TIME_UNVERIFIED
+                                                    },
+                                                    style = MaterialTheme.typography.labelMedium,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = previewAccent,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
                                                 )
                                             }
+                                            capturedPhotoTime?.let { frozen ->
+                                                Text(
+                                                    text = "Lúc ${frozen.clientCapturedAtIso.take(19).replace('T', ' ')}",
+                                                    style = MaterialTheme.typography.labelSmall.tabularNums(),
+                                                    color = SemanticColors.TextSecondary,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                            }
+                                            Surface(
+                                                shape = RoundedCornerShape(50),
+                                                color = MaterialTheme.colorScheme.primaryContainer,
+                                                modifier = Modifier
+                                                    .height(28.dp)
+                                                    .clip(RoundedCornerShape(50))
+                                                    .clickable {
+                                                        HrpHaptics.tick(haptic)
+                                                        startOneTapGpsAndCameraFlow()
+                                                    }
+                                                    .testTag("retake_attendance_photo_button")
+                                            ) {
+                                                Row(
+                                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                                ) {
+                                                    Icon(
+                                                        imageVector = Icons.Default.PhotoCamera,
+                                                        contentDescription = null,
+                                                        tint = MaterialTheme.colorScheme.primary,
+                                                        modifier = Modifier.size(13.dp)
+                                                    )
+                                                    Text(
+                                                        text = "Chụp lại ảnh",
+                                                        style = MaterialTheme.typography.labelSmall,
+                                                        fontWeight = FontWeight.Bold,
+                                                        color = MaterialTheme.colorScheme.primary,
+                                                        maxLines = 1
+                                                    )
+                                                }
+                                            }
+                                        }
+
+                                        IconButton(
+                                            onClick = {
+                                                HrpHaptics.tick(haptic)
+                                                capturedPhotoFile = null
+                                                capturedPhotoUri = null
+                                                capturedPhotoTime = null
+                                                note = ""
+                                            },
+                                            modifier = Modifier
+                                                .size(28.dp)
+                                                .align(Alignment.Top)
+                                                .testTag("discard_attendance_photo_button")
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.Close,
+                                                contentDescription = "Hủy ảnh vừa chụp",
+                                                tint = SemanticColors.TextSecondary,
+                                                modifier = Modifier.size(16.dp)
+                                            )
                                         }
                                     }
-
-                                    AsyncImage(
-                                        model = capturedPhotoUri,
-                                        contentDescription = "Ảnh chấm công vừa chụp",
-                                        contentScale = ContentScale.Crop,
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .height(200.dp)
-                                            .clip(RoundedCornerShape(12.dp))
-                                    )
 
                                     OutlinedTextField(
                                         value = note,
                                         onValueChange = { note = it },
-                                        label = { Text("Ghi chú (tùy chọn)") },
-                                        placeholder = { Text("Nhập ghi chú nếu cần...") },
+                                        singleLine = true,
+                                        textStyle = MaterialTheme.typography.bodySmall,
+                                        placeholder = {
+                                            Text(
+                                                text = "Ghi chú chấm công (tùy chọn)...",
+                                                style = MaterialTheme.typography.bodySmall
+                                            )
+                                        },
                                         modifier = Modifier
                                             .fillMaxWidth()
                                             .testTag("attendance_note_input")
                                     )
+                                }
 
-                                    Button(
-                                        onClick = {
-                                            val file = capturedPhotoFile ?: return@Button
-                                            val uriStr = capturedPhotoUri ?: return@Button
-                                            val frozenTime = capturedPhotoTime
-                                            if (gpsSnapshot == null) {
-                                                captureError = "Chưa có tọa độ GPS thực tế. Vui lòng bấm làm mới GPS."
-                                                return@Button
-                                            }
-                                            HrpHaptics.tick(haptic)
-                                            if (onSubmitAttendanceAction != null) {
-                                                onSubmitAttendanceAction.invoke(file, uriStr, note, frozenTime)
-                                            } else {
-                                                viewModel.submitAttendanceCheckIn(file, uriStr, note, frozenTime)
-                                            }
-                                            capturedPhotoFile = null
-                                            capturedPhotoUri = null
-                                            capturedPhotoTime = null
-                                            note = ""
-                                        },
-                                        enabled = !submitting && gpsSnapshot != null,
-                                        shape = RoundedCornerShape(14.dp),
-                                        colors = ButtonDefaults.buttonColors(
-                                            containerColor = previewAccent
-                                        ),
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .heightIn(min = 50.dp)
-                                            .testTag("send_attendance_to_backend_button")
-                                    ) {
-                                        if (submitting) {
-                                            CircularProgressIndicator(
-                                                modifier = Modifier.size(20.dp),
-                                                strokeWidth = 2.dp,
-                                                color = Color.White
-                                            )
-                                            Spacer(modifier = Modifier.width(8.dp))
-                                            Text("Đang gửi chấm công lên máy chủ...")
-                                        } else {
-                                            Icon(
-                                                imageVector = Icons.AutoMirrored.Filled.Send,
-                                                contentDescription = null,
-                                                modifier = Modifier.size(18.dp),
-                                                tint = Color.White
-                                            )
-                                            Spacer(modifier = Modifier.width(8.dp))
-                                            Text(
-                                                text = "Xác Nhận Gửi Chấm Công",
-                                                style = MaterialTheme.typography.labelLarge,
-                                                color = Color.White
-                                            )
+                                Button(
+                                    onClick = {
+                                        val file = capturedPhotoFile ?: return@Button
+                                        val uriStr = capturedPhotoUri ?: return@Button
+                                        val frozenTime = capturedPhotoTime
+                                        if (gpsSnapshot == null) {
+                                            captureError = "Chưa có tọa độ GPS thực tế. Vui lòng bấm làm mới GPS."
+                                            return@Button
                                         }
+                                        HrpHaptics.tick(haptic)
+                                        if (onSubmitAttendanceAction != null) {
+                                            onSubmitAttendanceAction.invoke(file, uriStr, note, frozenTime)
+                                        } else {
+                                            viewModel.submitAttendanceCheckIn(file, uriStr, note, frozenTime)
+                                        }
+                                        capturedPhotoFile = null
+                                        capturedPhotoUri = null
+                                        capturedPhotoTime = null
+                                        note = ""
+                                    },
+                                    enabled = !submitting && gpsSnapshot != null,
+                                    shape = RoundedCornerShape(16.dp),
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = previewAccent
+                                    ),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .heightIn(min = 56.dp)
+                                        .testTag("send_attendance_to_backend_button")
+                                ) {
+                                    if (submitting) {
+                                        CircularProgressIndicator(
+                                            modifier = Modifier.size(20.dp),
+                                            strokeWidth = 2.dp,
+                                            color = Color.White
+                                        )
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Text("Đang gửi chấm công lên máy chủ...")
+                                    } else {
+                                        Icon(
+                                            imageVector = Icons.Default.CheckCircle,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(18.dp),
+                                            tint = Color.White
+                                        )
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Text(
+                                            text = "Ghi nhận chấm công",
+                                            style = MaterialTheme.typography.labelLarge,
+                                            fontWeight = FontWeight.Bold,
+                                            color = Color.White
+                                        )
                                     }
                                 }
                             }
@@ -1475,20 +1539,23 @@ private fun AttendanceAreaTopTabBar(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 6.dp)
-            .hrpCardSurface(
-                cornerRadius = 14.dp,
-                containerColor = SemanticColors.SurfaceSubtle
+            .padding(horizontal = 12.dp, vertical = 5.dp)
+            .clip(RoundedCornerShape(11.dp))
+            .background(SemanticColors.SurfaceSubtle)
+            .border(
+                width = 1.dp,
+                color = SemanticColors.SurfaceBorder.copy(alpha = 0.65f),
+                shape = RoundedCornerShape(11.dp)
             )
-            .padding(4.dp)
+            .padding(3.dp)
             .testTag("attendance_area_tab_row"),
-        verticalArrangement = Arrangement.spacedBy(4.dp)
+        verticalArrangement = Arrangement.spacedBy(3.dp)
     ) {
         tabRows.forEach { rowTabs ->
             val isThreeColumnRow = rowTabs.size >= 3
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                horizontalArrangement = Arrangement.spacedBy(3.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 rowTabs.forEach { tab ->
@@ -1515,16 +1582,22 @@ private fun AttendanceAreaTopTabBar(
                         AttendanceAreaTab.LEAVE_APPROVAL -> 1.0f
                     }
                     Surface(
-                        shape = RoundedCornerShape(10.dp),
+                        shape = RoundedCornerShape(8.dp),
                         color = if (isSelected) {
-                            MaterialTheme.colorScheme.primary
+                            SemanticColors.SurfaceLight
                         } else {
                             Color.Transparent
                         },
                         shadowElevation = if (isSelected) 1.dp else 0.dp,
+                        border = if (isSelected) {
+                            BorderStroke(0.5.dp, SemanticColors.SurfaceBorder)
+                        } else {
+                            null
+                        },
                         modifier = Modifier
                             .weight(tabWeight)
-                            .clip(RoundedCornerShape(10.dp))
+                            .heightIn(min = 33.dp)
+                            .clip(RoundedCornerShape(8.dp))
                             .clickable {
                                 if (!isSelected) {
                                     HrpHaptics.tick(haptic)
@@ -1536,9 +1609,10 @@ private fun AttendanceAreaTopTabBar(
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
+                                .heightIn(min = 33.dp)
                                 .padding(
-                                    horizontal = if (isThreeColumnRow) 6.dp else 10.dp,
-                                    vertical = 8.dp
+                                    horizontal = if (isThreeColumnRow) 5.dp else 8.dp,
+                                    vertical = 4.dp
                                 ),
                             horizontalArrangement = Arrangement.Center,
                             verticalAlignment = Alignment.CenterVertically
@@ -1547,11 +1621,11 @@ private fun AttendanceAreaTopTabBar(
                                 imageVector = icon,
                                 contentDescription = null,
                                 tint = if (isSelected) {
-                                    MaterialTheme.colorScheme.onPrimary
+                                    MaterialTheme.colorScheme.primary
                                 } else {
-                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                    SemanticColors.TextSecondary
                                 },
-                                modifier = Modifier.size(if (isThreeColumnRow) 14.dp else 15.dp)
+                                modifier = Modifier.size(if (isThreeColumnRow) 13.dp else 14.dp)
                             )
                             Spacer(modifier = Modifier.width(4.dp))
                             Text(
@@ -1560,11 +1634,11 @@ private fun AttendanceAreaTopTabBar(
                                     fontSize = 12.sp,
                                     lineHeight = 14.sp
                                 ),
-                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.SemiBold,
+                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
                                 color = if (isSelected) {
-                                    MaterialTheme.colorScheme.onPrimary
+                                    MaterialTheme.colorScheme.primary
                                 } else {
-                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                    SemanticColors.TextSecondary
                                 },
                                 maxLines = 1,
                                 softWrap = false,

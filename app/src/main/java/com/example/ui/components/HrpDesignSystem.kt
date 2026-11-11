@@ -21,13 +21,18 @@ import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -61,7 +66,9 @@ import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -969,6 +976,290 @@ fun HrpWeekStripDateSelector(
                     )
                 }
             }
+        }
+    }
+}
+
+data class HrpSegmentedTabItem(
+    val key: String,
+    val label: String,
+    val testTag: String? = null,
+    val badgeCount: Int? = null,
+    val showZeroBadge: Boolean = false,
+    val icon: ImageVector? = null
+)
+
+@Composable
+fun HrpSegmentedTabRow(
+    items: List<HrpSegmentedTabItem>,
+    selectedKey: String,
+    onSelect: (String) -> Unit,
+    modifier: Modifier = Modifier,
+    tabHeight: Dp = 34.dp
+) {
+    if (items.isEmpty()) return
+    val haptic = LocalHapticFeedback.current
+    val trackShape = RoundedCornerShape(11.dp)
+
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .height(IntrinsicSize.Min)
+            .clip(trackShape)
+            .background(SemanticColors.SurfaceSubtle, trackShape)
+            .border(1.dp, SemanticColors.SurfaceBorder.copy(alpha = 0.65f), trackShape)
+            .padding(3.dp),
+        horizontalArrangement = Arrangement.spacedBy(3.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        items.forEach { item ->
+            val selected = item.key == selectedKey
+            HrpSegmentedTabCell(
+                item = item,
+                selected = selected,
+                tabHeight = tabHeight,
+                compactText = items.size >= 3,
+                onClick = {
+                    HrpHaptics.tick(haptic)
+                    onSelect(item.key)
+                },
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxHeight()
+            )
+        }
+    }
+}
+
+@Composable
+fun HrpSegmentedTabGroup(
+    items: List<HrpSegmentedTabItem>,
+    selectedKey: String,
+    onSelect: (String) -> Unit,
+    modifier: Modifier = Modifier,
+    maxItemsPerRow: Int = 3,
+    tabHeight: Dp = 34.dp
+) {
+    if (items.isEmpty()) return
+    val haptic = LocalHapticFeedback.current
+    val trackShape = RoundedCornerShape(11.dp)
+    val effectiveRowSize = when {
+        items.size <= maxItemsPerRow -> items.size
+        items.size == 4 -> 2
+        else -> maxItemsPerRow.coerceAtLeast(1)
+    }
+    val rows = items.chunked(effectiveRowSize)
+
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(trackShape)
+            .background(SemanticColors.SurfaceSubtle, trackShape)
+            .border(1.dp, SemanticColors.SurfaceBorder.copy(alpha = 0.65f), trackShape)
+            .padding(3.dp),
+        verticalArrangement = Arrangement.spacedBy(3.dp)
+    ) {
+        rows.forEach { rowItems ->
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(IntrinsicSize.Min),
+                horizontalArrangement = Arrangement.spacedBy(3.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                rowItems.forEach { item ->
+                    val selected = item.key == selectedKey
+                    HrpSegmentedTabCell(
+                        item = item,
+                        selected = selected,
+                        tabHeight = tabHeight,
+                        compactText = rowItems.size >= 3,
+                        onClick = {
+                            HrpHaptics.tick(haptic)
+                            onSelect(item.key)
+                        },
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxHeight()
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun HrpSegmentedTabCell(
+    item: HrpSegmentedTabItem,
+    selected: Boolean,
+    tabHeight: Dp,
+    compactText: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val tabShape = RoundedCornerShape(8.dp)
+    val textColor = if (selected) {
+        MaterialTheme.colorScheme.primary
+    } else {
+        SemanticColors.TextSecondary
+    }
+    val showBadge = item.badgeCount != null && (item.badgeCount > 0 || item.showZeroBadge)
+    val baseModifier = modifier
+        .heightIn(min = tabHeight)
+        .let { m -> if (!item.testTag.isNullOrBlank()) m.testTag(item.testTag) else m }
+
+    Surface(
+        selected = selected,
+        onClick = onClick,
+        shape = tabShape,
+        color = if (selected) SemanticColors.SurfaceLight else Color.Transparent,
+        shadowElevation = if (selected) 1.dp else 0.dp,
+        border = if (selected) BorderStroke(0.5.dp, SemanticColors.SurfaceBorder) else null,
+        modifier = baseModifier
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = if (compactText) 4.dp else 8.dp, vertical = 4.dp),
+            horizontalArrangement = Arrangement.Center,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            if (item.icon != null) {
+                Icon(
+                    imageVector = item.icon,
+                    contentDescription = null,
+                    tint = textColor,
+                    modifier = Modifier.size(14.dp)
+                )
+                Spacer(modifier = Modifier.width(4.dp))
+            }
+            Text(
+                text = item.label,
+                style = MaterialTheme.typography.labelMedium.copy(
+                    fontSize = if (compactText) 11.5.sp else 12.5.sp
+                ),
+                fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                color = textColor,
+                textAlign = TextAlign.Center,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            if (showBadge) {
+                Spacer(modifier = Modifier.width(4.dp))
+                Surface(
+                    shape = RoundedCornerShape(999.dp),
+                    color = if (selected) {
+                        MaterialTheme.colorScheme.primaryContainer
+                    } else {
+                        SemanticColors.SurfaceBorder.copy(alpha = 0.75f)
+                    }
+                ) {
+                    Text(
+                        text = item.badgeCount.toString(),
+                        style = MaterialTheme.typography.labelSmall.tabularNums().copy(fontSize = 10.sp),
+                        fontWeight = FontWeight.Bold,
+                        color = if (selected) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            SemanticColors.TextSecondary
+                        },
+                        maxLines = 1,
+                        modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
+                    )
+                }
+            }
+        }
+    }
+}
+
+data class HrpFilterChipItem(
+    val key: String,
+    val label: String,
+    val testTag: String? = null
+)
+
+@Composable
+fun HrpCompactFilterChip(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    testTag: String? = null
+) {
+    val haptic = LocalHapticFeedback.current
+    val pillShape = RoundedCornerShape(percent = 50)
+    val chipModifier = modifier
+        .height(32.dp)
+        .let { m -> if (!testTag.isNullOrBlank()) m.testTag(testTag) else m }
+
+    Surface(
+        selected = selected,
+        onClick = {
+            HrpHaptics.tick(haptic)
+            onClick()
+        },
+        shape = pillShape,
+        color = if (selected) {
+            MaterialTheme.colorScheme.primaryContainer
+        } else {
+            SemanticColors.SurfaceLight
+        },
+        border = BorderStroke(
+            width = 1.dp,
+            color = if (selected) {
+                MaterialTheme.colorScheme.primary.copy(alpha = 0.4f)
+            } else {
+                SemanticColors.SurfaceBorder
+            }
+        ),
+        modifier = chipModifier
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxHeight()
+                .padding(horizontal = 10.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                color = if (selected) {
+                    MaterialTheme.colorScheme.primary
+                } else {
+                    SemanticColors.TextSecondary
+                },
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                textAlign = TextAlign.Center
+            )
+        }
+    }
+}
+
+@Composable
+fun HrpCompactFilterChipRow(
+    items: List<HrpFilterChipItem>,
+    selectedKey: String?,
+    onSelect: (String) -> Unit,
+    modifier: Modifier = Modifier,
+    equalWeight: Boolean = false
+) {
+    if (items.isEmpty()) return
+    Row(
+        modifier = modifier,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        items.forEach { item ->
+            val selected = item.key == selectedKey
+            HrpCompactFilterChip(
+                label = item.label,
+                selected = selected,
+                onClick = { onSelect(item.key) },
+                testTag = item.testTag,
+                modifier = if (equalWeight) Modifier.weight(1f) else Modifier
+            )
         }
     }
 }

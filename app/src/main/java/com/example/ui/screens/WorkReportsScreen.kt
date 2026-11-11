@@ -86,6 +86,8 @@ import com.example.ui.MiniBiViewModel
 import com.example.ui.components.HrpDesignTokens
 import com.example.ui.components.HrpHaptics
 import com.example.ui.components.HrpInitialsAvatar
+import com.example.ui.components.HrpSegmentedTabGroup
+import com.example.ui.components.HrpSegmentedTabItem
 import com.example.ui.components.HrpSkeletonCard
 import com.example.ui.components.HrpStatusBadge
 import com.example.ui.components.HrpWeekStripDateSelector
@@ -215,18 +217,48 @@ fun WorkReportsScreen(
         else reviewQueue.filter { matchesReviewItemFilterDate(it, filterDate) }
     }
 
-    val tabDefs = buildList {
-        add("active" to "Cần nộp (${activeObligations.size})")
-        add("history" to "Đã lưu / Đã nộp (${historyObligations.size})")
+    val tabItems = buildList {
+        add(
+            HrpSegmentedTabItem(
+                key = "active",
+                label = "Cần nộp",
+                testTag = "work_reports_subtab_obligations",
+                badgeCount = activeObligations.size,
+                showZeroBadge = true
+            )
+        )
+        add(
+            HrpSegmentedTabItem(
+                key = "history",
+                label = "Đã nộp",
+                testTag = "work_reports_subtab_history",
+                badgeCount = historyObligations.size,
+                showZeroBadge = true
+            )
+        )
         if (canReview) {
-            add("review" to "Chờ duyệt (${reviewQueue.size})")
+            add(
+                HrpSegmentedTabItem(
+                    key = "review",
+                    label = "Chờ duyệt",
+                    testTag = "work_reports_subtab_review",
+                    badgeCount = reviewQueue.size,
+                    showZeroBadge = true
+                )
+            )
         }
         if (canViewAnalytics) {
-            add("analytics" to "Tổng hợp báo cáo")
+            add(
+                HrpSegmentedTabItem(
+                    key = "analytics",
+                    label = "Tổng hợp",
+                    testTag = "work_reports_subtab_analytics"
+                )
+            )
         }
     }
-    val safeTab = selectedTab.coerceIn(0, (tabDefs.size - 1).coerceAtLeast(0))
-    val currentTabKey = tabDefs.getOrNull(safeTab)?.first ?: "active"
+    val safeTab = selectedTab.coerceIn(0, (tabItems.size - 1).coerceAtLeast(0))
+    val currentTabKey = tabItems.getOrNull(safeTab)?.key ?: "active"
 
     val currentTabMarkedDates = remember(currentTabKey, activeObligations, historyObligations, reviewQueue) {
         val dates = linkedSetOf<String>()
@@ -260,132 +292,49 @@ fun WorkReportsScreen(
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             item {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .hrpCardSurface(cornerRadius = HrpDesignTokens.RadiusHero)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Column(
+                    HrpSegmentedTabGroup(
+                        items = tabItems,
+                        selectedKey = currentTabKey,
+                        onSelect = { key ->
+                            val idx = tabItems.indexOfFirst { it.key == key }
+                            if (idx >= 0) {
+                                selectedTab = idx
+                            }
+                        },
+                        maxItemsPerRow = 3,
+                        tabHeight = if (tabItems.size >= 4) 32.dp else 34.dp,
                         modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(HrpDesignTokens.CardPadding),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = "BÁO CÁO CÔNG VIỆC",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = MaterialTheme.colorScheme.primary
-                                )
-                                Text(
-                                    text = "Báo cáo định kỳ",
-                                    style = MaterialTheme.typography.headlineSmall,
-                                    fontWeight = FontWeight.Bold
-                                )
-                            }
-                            OutlinedButton(
-                                onClick = {
-                                    HrpHaptics.tick(haptic)
-                                    viewModel.refreshWorkReportsData(actor)
-                                },
-                                enabled = !loading && !mutationBusy,
-                                shape = RoundedCornerShape(10.dp),
-                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
-                            ) {
-                                Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text(
-                                    text = "Làm mới",
-                                    style = MaterialTheme.typography.labelMedium,
-                                    maxLines = 1,
-                                    softWrap = false
-                                )
-                            }
-                        }
-                        Text(
-                            text = "Điền báo cáo công việc được giao, duyệt báo cáo nhóm và theo dõi kết quả tổng hợp.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                }
-            }
+                            .weight(1f)
+                            .testTag("work_reports_tab_grid")
+                    )
 
-            item {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .hrpCardSurface(cornerRadius = 14.dp)
-                        .padding(6.dp)
-                ) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .testTag("work_reports_tab_grid"),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = SemanticColors.SurfaceLight,
+                        shadowElevation = 0.5.dp,
+                        border = BorderStroke(1.dp, SemanticColors.SurfaceBorder)
                     ) {
-                        val indexedTabs = tabDefs.mapIndexed { index, pair -> Triple(index, pair.first, pair.second) }
-                        indexedTabs.chunked(2).forEach { rowItems ->
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(IntrinsicSize.Min),
-                                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                rowItems.forEach { (index, key, title) ->
-                                    val selected = safeTab == index
-                                    Surface(
-                                        selected = selected,
-                                        onClick = {
-                                            if (!selected) {
-                                                HrpHaptics.tick(haptic)
-                                                selectedTab = index
-                                            }
-                                        },
-                                        modifier = Modifier
-                                            .weight(1f)
-                                            .fillMaxHeight()
-                                            .heightIn(min = 38.dp)
-                                            .testTag("work_reports_subtab_$key"),
-                                        shape = RoundedCornerShape(10.dp),
-                                        color = if (selected) {
-                                            MaterialTheme.colorScheme.primary
-                                        } else {
-                                            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
-                                        }
-                                    ) {
-                                        Box(
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .fillMaxHeight()
-                                                .padding(horizontal = 8.dp, vertical = 8.dp),
-                                            contentAlignment = Alignment.Center
-                                        ) {
-                                            Text(
-                                                text = title,
-                                                style = MaterialTheme.typography.labelLarge.tabularNums(),
-                                                fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
-                                                color = if (selected) {
-                                                    MaterialTheme.colorScheme.onPrimary
-                                                } else {
-                                                    MaterialTheme.colorScheme.onSurfaceVariant
-                                                },
-                                                textAlign = TextAlign.Center,
-                                                maxLines = 1,
-                                                softWrap = false,
-                                                overflow = TextOverflow.Ellipsis
-                                            )
-                                        }
-                                    }
-                                }
-                            }
+                        IconButton(
+                            onClick = {
+                                HrpHaptics.tick(haptic)
+                                viewModel.refreshWorkReportsData(actor)
+                            },
+                            enabled = !loading && !mutationBusy,
+                            modifier = Modifier
+                                .size(34.dp)
+                                .testTag("work_reports_refresh_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Refresh,
+                                contentDescription = "Làm mới báo cáo",
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(17.dp)
+                            )
                         }
                     }
                 }

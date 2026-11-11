@@ -314,7 +314,7 @@ class WorkerUiAuthorizationRobolectricTest {
         )
         assertTrue(resolveVisibleWorkerTabs(ungrantedActor).isEmpty())
 
-        // Own-only actor ("Admin" in displayName must NOT grant team or all tabs!)
+        // Own-only actor ("Admin" in displayName must NOT grant team or all tabs, and "uploader" is excluded from visible worker tabs)
         val ownOnlyActor = AppActor(
             appUserId = "11111111-2222-4333-8444-555555555555",
             displayName = "Admin Team Leader Fake Name",
@@ -324,7 +324,8 @@ class WorkerUiAuthorizationRobolectricTest {
             allowedWorkerTabs = listOf("managed", "recruited", "uploader")
         )
         val tabs = resolveVisibleWorkerTabs(ownOnlyActor).map { it.key }
-        assertEquals(listOf("managed", "recruited", "uploader"), tabs)
+        assertEquals(listOf("managed", "recruited"), tabs)
+        assertFalse(tabs.contains("uploader"))
         assertFalse(tabs.contains("team"))
         assertFalse(tabs.contains("all"))
 
@@ -341,7 +342,7 @@ class WorkerUiAuthorizationRobolectricTest {
         assertEquals(listOf("managed", "recruited"), realTabs.map { it.key })
         assertEquals(listOf("DA tôi quản lý", "Tôi tuyển"), realTabs.map { it.label })
 
-        // Full-scope admin actor: ZERO "NLĐ" substring in any top scope tab label
+        // Full-scope admin actor: ZERO "NLĐ" substring in any top scope tab label, and "uploader" excluded
         val fullAdminActor = AppActor(
             appUserId = "88888888-2222-4333-8444-555555555555",
             displayName = "Quản trị HRP",
@@ -356,7 +357,7 @@ class WorkerUiAuthorizationRobolectricTest {
         )
         val allTabLabels = resolveVisibleWorkerTabs(fullAdminActor).map { it.label }
         assertEquals(
-            listOf("DA tôi quản lý", "Tôi tuyển", "Team tôi quản lý", "Tôi đã nhập", "Toàn hệ thống"),
+            listOf("DA tôi quản lý", "Tôi tuyển", "Team tôi quản lý", "Toàn hệ thống"),
             allTabLabels
         )
         assertTrue(allTabLabels.none { it.contains("NLĐ", ignoreCase = true) })
@@ -437,28 +438,29 @@ class WorkerUiAuthorizationRobolectricTest {
         }
 
         val projectBounds = composeTestRule
-            .onNodeWithText("Dự án: Công Ty Cổ Phần Điện Tử Mentech Việt Nam Khu Công Nghiệp Bình Dương")
+            .onNodeWithText(
+                "Công Ty Cổ Phần Điện Tử Mentech Việt Nam Khu Công Nghiệp Bình Dương",
+                useUnmergedTree = true
+            )
             .assertIsDisplayed()
             .fetchSemanticsNode()
             .boundsInRoot
-        val recruiterBounds = composeTestRule
-            .onNodeWithText("Người tuyển: Nguyễn Thị Tuyển Dụng Chuyên Trách Khu Vực Phía Bắc")
-            .assertIsDisplayed()
-            .fetchSemanticsNode()
-            .boundsInRoot
-        val dateBounds = composeTestRule
-            .onNodeWithText("Ngày đầu: 2026-10-01")
+        val metaBounds = composeTestRule
+            .onNodeWithText(
+                "NT: Nguyễn Thị Tuyển Dụng Chuyên Trách Khu Vực Phía Bắc · Vào: 2026-10-01",
+                useUnmergedTree = true
+            )
             .assertIsDisplayed()
             .fetchSemanticsNode()
             .boundsInRoot
 
-        val gapDp = with(composeTestRule.density) { (recruiterBounds.top - projectBounds.bottom).toDp().value }
-        val dateWidthDp = with(composeTestRule.density) { dateBounds.width.toDp().value }
-        val dateHeightDp = with(composeTestRule.density) { dateBounds.height.toDp().value }
+        val gapDp = with(composeTestRule.density) { (metaBounds.top - projectBounds.bottom).toDp().value }
+        val metaWidthDp = with(composeTestRule.density) { metaBounds.width.toDp().value }
+        val metaHeightDp = with(composeTestRule.density) { metaBounds.height.toDp().value }
 
         assertTrue("Expected zero huge blank gap below project row, actual=${gapDp}dp", gapDp < 16f)
-        assertTrue("Expected non-zero horizontal width for first work date, actual=${dateWidthDp}dp", dateWidthDp > 60f)
-        assertTrue("Expected single-line height for first work date, actual=${dateHeightDp}dp", dateHeightDp < 60f)
+        assertTrue("Expected non-zero horizontal width for meta line, actual=${metaWidthDp}dp", metaWidthDp > 60f)
+        assertTrue("Expected single-line height for meta line, actual=${metaHeightDp}dp", metaHeightDp < 60f)
     }
 
     @Test
@@ -1154,7 +1156,7 @@ class WorkerUiAuthorizationRobolectricTest {
         composeTestRule.onNodeWithText("Trung tâm Điều hành Tuyển dụng").assertDoesNotExist()
         composeTestRule.onNodeWithText("Chưa hỗ trợ trên ứng dụng").assertDoesNotExist()
         composeTestRule.onNodeWithTag("general_overview_section").assertIsDisplayed()
-        composeTestRule.onNodeWithText("Báo cáo Tổng quát Tuyển dụng").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Báo cáo tổng quát tuyển dụng").assertIsDisplayed()
         assertEquals("Báo cáo", com.example.ui.MainDestination.WORK_REPORTS.label)
         composeTestRule.onNodeWithTag("bottom_nav_work_reports").assertIsDisplayed()
 
@@ -1355,13 +1357,13 @@ class WorkerUiAuthorizationRobolectricTest {
         val rootWidth = composeTestRule.onNodeWithTag("workers_lazy_column")
             .fetchSemanticsNode().boundsInRoot.right
 
-        // All 4 scope buttons MUST be visible simultaneously inside the 360dp viewport with zero horizontal scroll
+        // All 3 scope buttons MUST be visible simultaneously inside the 360dp viewport with zero horizontal scroll
         val expectedTags = listOf(
             "worker_scope_tab_managed",
             "worker_scope_tab_recruited",
-            "worker_scope_tab_team",
-            "worker_scope_tab_uploader"
+            "worker_scope_tab_team"
         )
+        composeTestRule.onNodeWithTag("worker_scope_tab_uploader").assertDoesNotExist()
         for (tag in expectedTags) {
             val node = composeTestRule.onNodeWithTag(tag)
             node.assertIsDisplayed()
@@ -1664,19 +1666,19 @@ class WorkerUiAuthorizationRobolectricTest {
             org.robolectric.shadows.ShadowLooper.idleMainLooper()
             !vm.sessionBootstrapping.value &&
                 vm.generalOverview.value != null &&
-                vm.teamReport.value != null &&
-                vm.duplicateGroups.value.isNotEmpty()
+                vm.teamReport.value != null
         }
         composeTestRule.waitForIdle()
 
-        // 1. All 3 Dashboard tabs fit on 360dp screen simultaneously without horizontal scroll
+        // 1. Both Dashboard tabs ("Tổng quát" and "Theo nhóm") fit on 360dp screen simultaneously without horizontal scroll
         val dashWidth = composeTestRule.onNodeWithTag("dashboard_lazy_column")
             .fetchSemanticsNode().boundsInRoot.right
-        for (idx in 0..2) {
+        for (idx in 0..1) {
             val tabNode = composeTestRule.onNodeWithTag("dashboard_tab_$idx")
             tabNode.assertIsDisplayed()
             assertTrue(tabNode.fetchSemanticsNode().boundsInRoot.right <= dashWidth + 1f)
         }
+        composeTestRule.onNodeWithTag("dashboard_tab_2").assertDoesNotExist()
 
         // 2. General Overview has real paginated counts (3 total, 2 ON, 1 UNCONFIRMED), NOT 0 NLĐ!
         // Catalog is not eagerly fetched at session resume, so fallback scope/team labels are used.
@@ -1689,7 +1691,7 @@ class WorkerUiAuthorizationRobolectricTest {
         assertEquals("Nhóm & dự án phụ trách", overview.scopeDescription)
         composeTestRule.onNodeWithTag("general_overview_section").assertIsDisplayed()
 
-        // 3. Switch to "Báo cáo theo nhóm" -> auto-displays Team Leader's own team report with ZERO manual code input!
+        // 3. Switch to "Theo nhóm" -> auto-displays Team Leader's own team report with ZERO manual code input!
         composeTestRule.onNodeWithTag("dashboard_tab_1").performClick()
         composeTestRule.waitForIdle()
 
@@ -1709,27 +1711,6 @@ class WorkerUiAuthorizationRobolectricTest {
         composeTestRule.waitForIdle()
         assertNull(vm.teamReportError.value)
         assertEquals("Nhóm của tôi", vm.teamReport.value?.bucketDisplay)
-
-        // 4. Switch to "Cảnh báo CCCD trùng" -> compact toolbar, zero vertical button stretching / blank gap!
-        composeTestRule.onNodeWithTag("dashboard_tab_2").performClick()
-        composeTestRule.waitForIdle()
-
-        val toolbarBounds = composeTestRule.onNodeWithTag("duplicate_cccd_toolbar")
-            .fetchSemanticsNode().boundsInRoot
-        val density = composeTestRule.density.density
-        val toolbarHeightDp = (toolbarBounds.bottom - toolbarBounds.top) / density
-        assertTrue(
-            "Duplicate CCCD toolbar height ($toolbarHeightDp dp) must be compact (< 130dp), not vertically stretched",
-            toolbarHeightDp < 130f
-        )
-
-        val firstGroupTop = composeTestRule.onNodeWithText("CCCD đuôi ***6147 (2 hồ sơ)")
-            .fetchSemanticsNode().boundsInRoot.top
-        val gapBetweenToolbarAndGroupTextDp = (firstGroupTop - toolbarBounds.bottom) / density
-        assertTrue(
-            "Gap between toolbar and first duplicate card title ($gapBetweenToolbarAndGroupTextDp dp) must be compact (< 40dp)",
-            gapBetweenToolbarAndGroupTextDp < 40f
-        )
     }
 
     @Test
@@ -2114,12 +2095,12 @@ class WorkerUiAuthorizationRobolectricTest {
         }
         composeTestRule.waitForIdle()
 
-        // 1. Tab 1 uses short label "BC chuyên sâu", Tab 3 uses "Báo cáo CCCD trùng" (without count suffix), and banner timeout is 5s
+        // 1. Dashboard shows exactly 2 tabs ("Tổng quát" and "Theo nhóm") and banner timeout is 5s
         assertEquals(5_000L, MiniBiViewModel.BANNER_AUTO_DISMISS_MS)
-        composeTestRule.onNodeWithText("BC chuyên sâu").assertIsDisplayed()
-        composeTestRule.onNodeWithText("Báo cáo chuyên sâu").assertDoesNotExist()
-        composeTestRule.onNodeWithText("Báo cáo CCCD trùng").assertIsDisplayed()
-        composeTestRule.onNodeWithText("Cảnh báo CCCD trùng", substring = true).assertDoesNotExist()
+        composeTestRule.onNodeWithText("Tổng quát").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Theo nhóm").assertIsDisplayed()
+        composeTestRule.onNodeWithText("BC chuyên sâu").assertDoesNotExist()
+        composeTestRule.onNodeWithText("Báo cáo CCCD trùng").assertDoesNotExist()
         composeTestRule.onNodeWithText("Tỷ lệ đang làm: 82.7%").assertIsDisplayed()
         composeTestRule.onNodeWithText("Tỷ lệ vào làm", substring = true).assertDoesNotExist()
         val tab0Bounds = composeTestRule.onNodeWithTag("dashboard_tab_0").fetchSemanticsNode().boundsInRoot
@@ -2149,8 +2130,8 @@ class WorkerUiAuthorizationRobolectricTest {
         // 3. Project count uses pagination.totalCount (12), not pageSize (1)
         assertEquals(12, vm.generalOverview.value?.projectCount)
 
-        // 4. Switch to "Báo cáo theo nhóm" -> auto-loads Team 1 via canonical TEAM_1 code with zero INVALID_FILTER error
-        composeTestRule.onNodeWithTag("dashboard_tab_2").performClick()
+        // 4. Switch to "Theo nhóm" (dashboard_tab_1) -> auto-loads Team 1 via canonical TEAM_1 code with zero INVALID_FILTER error
+        composeTestRule.onNodeWithTag("dashboard_tab_1").performClick()
         composeTestRule.waitForIdle()
         assertNull(vm.teamReportError.value)
         assertEquals("Team 1", vm.teamReport.value?.bucketDisplay)
@@ -2642,35 +2623,22 @@ class WorkerUiAuthorizationRobolectricTest {
             }
         }
 
-        // 1. Verify "Chuẩn hoá thông tin NLĐ" tab appears in Dashboard and loads the CCCD review queue
-        composeTestRule.onNodeWithText("Chuẩn hoá thông tin NLĐ").assertIsDisplayed().performClick()
+        // 1. Verify Dashboard shows only 2 tabs ("Tổng quát" and "Theo nhóm") and omits "Chuẩn hoá thông tin NLĐ", while ViewModel still loads CCCD review queue on demand
+        composeTestRule.onNodeWithText("Chuẩn hoá thông tin NLĐ").assertDoesNotExist()
+        composeTestRule.runOnIdle { vm.refreshCccdReviewQueue() }
         composeTestRule.waitUntil(timeoutMillis = 5_000) {
             org.robolectric.shadows.ShadowLooper.idleMainLooper()
             vm.cccdReviewPage.value != null
         }
         composeTestRule.waitForIdle()
+        assertEquals(1, vm.cccdReviewPage.value?.rows?.size)
 
-        composeTestRule.onNodeWithTag("cccd_review_toolbar_card").assertIsDisplayed()
-        composeTestRule.onNodeWithTag("cccd_review_row_$entryId").assertIsDisplayed()
-        composeTestRule.onNodeWithTag("cccd_review_open_button_$entryId").performClick()
-        composeTestRule.waitForIdle()
-
-        composeTestRule.onNodeWithTag("cccd_review_detail_dialog").assertIsDisplayed()
-        composeTestRule.onNodeWithTag("cccd_review_mode_standardize_qr").performScrollTo().assertIsDisplayed()
-        composeTestRule.onNodeWithTag("cccd_review_mode_update_cccd").performScrollTo().assertIsDisplayed()
-        composeTestRule.onNodeWithTag("close_cccd_review_dialog_button").performClick()
-        composeTestRule.waitForIdle()
-
-        // 2. Switch to Workers screen -> "Tôi đã nhập" tab shows "Thời gian nhập: 17:24 · 25/10/2026"
+        // 2. Switch to Workers screen -> "uploader" tab is omitted from visible worker tabs
         composeTestRule.runOnIdle { activeScreen.value = "WORKERS" }
         composeTestRule.waitForIdle()
-        composeTestRule.onNodeWithTag("worker_scope_tab_uploader").performClick()
-        composeTestRule.waitUntil(timeoutMillis = 5_000) {
-            org.robolectric.shadows.ShadowLooper.idleMainLooper()
-            vm.ownSubmissions.value.isNotEmpty()
-        }
-        composeTestRule.waitForIdle()
-        composeTestRule.onNodeWithText("Thời gian nhập: 17:24 · 25/10/2026").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("worker_scope_tab_managed").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("worker_scope_tab_recruited").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("worker_scope_tab_uploader").assertDoesNotExist()
     }
 
     @Test
@@ -2886,9 +2854,11 @@ class WorkerUiAuthorizationRobolectricTest {
         }
         composeTestRule.waitForIdle()
 
-        // 1. Active tab ("Cần nộp (1)") contains ONLY the REJECTED obligation, not overdue items
-        composeTestRule.onNodeWithText("Cần nộp (1)").assertIsDisplayed()
-        composeTestRule.onNodeWithText("Đã lưu / Đã nộp (3)").assertIsDisplayed()
+        // 1. Active tab ("Cần nộp") contains ONLY the REJECTED obligation, not overdue items
+        composeTestRule.onNodeWithTag("work_reports_subtab_obligations").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("work_reports_subtab_history").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Cần nộp").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Đã nộp").assertIsDisplayed()
         composeTestRule.onNodeWithText("Báo cáo cần sửa lại").assertIsDisplayed()
         composeTestRule.onNodeWithText("Báo cáo ngày 20/10").assertDoesNotExist()
         composeTestRule.onNodeWithText("Báo cáo ngày 21/10").assertDoesNotExist()
@@ -5154,7 +5124,7 @@ class WorkerUiAuthorizationRobolectricTest {
         val vm = MiniBiViewModel(app, repo)
         registerTestResourcesCleanup(vm, db, server, cookieFile, prefsFile)
 
-        // Case A: allowed_worker_tabs = ["uploader", "managed"]
+        // Case A: allowed_worker_tabs = ["uploader", "managed"] -> "uploader" is excluded from visible tabs, so "managed" is selected directly
         val uploaderAndManagedActor = AppActor(
             appUserId = "66661111-2222-4333-8444-555555555555",
             displayName = "Uploader Và Managed",
@@ -5176,12 +5146,13 @@ class WorkerUiAuthorizationRobolectricTest {
         }
         composeTestRule.waitUntil(timeoutMillis = 5_000) {
             org.robolectric.shadows.ShadowLooper.idleMainLooper()
-            !vm.workerLoading.value && vm.ownSubmissions.value.size == 1
+            !vm.workerLoading.value && requestedPaths.any { it.startsWith("/api/direct-entry/workers") }
         }
         composeTestRule.waitForIdle()
 
-        assertEquals("uploader", vm.activeWorkerTabKey.value)
-        assertTrue(requestedPaths.any { it.startsWith("/api/direct-entry/submissions") })
+        assertEquals("managed", vm.activeWorkerTabKey.value)
+        composeTestRule.onNodeWithTag("worker_scope_tab_managed").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("worker_scope_tab_uploader").assertDoesNotExist()
         assertTrue(
             "Must NEVER call /api/direct-entry/workers?scope=uploader: $requestedPaths",
             requestedPaths.none { it.contains("scope=uploader") }
@@ -5191,7 +5162,7 @@ class WorkerUiAuthorizationRobolectricTest {
             requestedPaths.none { it.contains("workers/export") && it.contains("scope=all") }
         )
 
-        // Case B: allowed_worker_tabs = ["uploader"] only
+        // Case B: allowed_worker_tabs = ["uploader"] only -> no visible worker scope tabs, never calls /api/direct-entry/workers
         requestedPaths.clear()
         val uploaderOnlyActor = AppActor(
             appUserId = "66662222-2222-4333-8444-555555555555",
@@ -5204,11 +5175,11 @@ class WorkerUiAuthorizationRobolectricTest {
         currentActorState.value = uploaderOnlyActor
         composeTestRule.waitUntil(timeoutMillis = 5_000) {
             org.robolectric.shadows.ShadowLooper.idleMainLooper()
-            !vm.workerLoading.value && requestedPaths.any { it.startsWith("/api/direct-entry/submissions") }
+            !vm.workerLoading.value && vm.activeWorkerTabKey.value.isEmpty()
         }
         composeTestRule.waitForIdle()
 
-        composeTestRule.onNodeWithTag("worker_scope_tab_uploader").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("worker_scope_tab_uploader").assertDoesNotExist()
         composeTestRule.onNodeWithTag("worker_scope_tab_managed").assertDoesNotExist()
         composeTestRule.onNodeWithTag("export_workers_excel_button").assertDoesNotExist()
         assertTrue(
@@ -7706,9 +7677,8 @@ class WorkerUiAuthorizationRobolectricTest {
         composeTestRule.onNodeWithText("Đỗ Đức Thuận").assertIsDisplayed()
         composeTestRule.onNodeWithText("ĐT").assertIsDisplayed()
         composeTestRule.onNodeWithText("Đang làm").assertIsDisplayed()
-        composeTestRule.onNodeWithText("Dự án: Samsung Điện Tử Bắc Ninh").assertIsDisplayed()
-        composeTestRule.onNodeWithText("Người tuyển: Nguyễn Thị Hoa").assertIsDisplayed()
-        composeTestRule.onNodeWithText("Ngày đầu: 2026-10-15").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Samsung Điện Tử Bắc Ninh").assertIsDisplayed()
+        composeTestRule.onNodeWithText("NT: Nguyễn Thị Hoa · Vào: 2026-10-15").assertIsDisplayed()
         composeTestRule.onNodeWithText("Mã NLĐ:", substring = true).assertDoesNotExist()
         composeTestRule.onNodeWithText("hrp-2026-000189", substring = true).assertDoesNotExist()
 
@@ -8451,5 +8421,132 @@ class WorkerUiAuthorizationRobolectricTest {
 
         composeTestRule.onNodeWithText("Báo cáo Ngày Hôm Nay P2").assertIsDisplayed()
         composeTestRule.onNodeWithText("Báo cáo Ngày Khác Trong Tuần P2").assertIsDisplayed()
+    }
+
+    @Test
+    fun `direct edit button opens WorkerPrivilegedEditDialog when worker allowedActions directEdit is true even without entry_direct_edit capability and with blank submission_id`() {
+        val entryId = "77777777-8888-4999-8aaa-bbbbbbbbbbbb"
+        val requestedPaths = java.util.Collections.synchronizedList(mutableListOf<String>())
+        val server = MockWebServer()
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val path = request.path.orEmpty()
+                requestedPaths.add("${request.method}:$path")
+                return when {
+                    path.startsWith("/api/direct-entry/entries/$entryId") && request.method == "GET" -> MockResponse()
+                        .setResponseCode(200)
+                        .setHeader("Content-Type", "application/json")
+                        .setBody(
+                            """
+                            {
+                              "ok": true,
+                              "entry": {
+                                "entry_id": "$entryId",
+                                "submission_id": "",
+                                "version": 3,
+                                "project_id": "PRJ_SAMSUNG",
+                                "first_work_date": "2026-10-15",
+                                "employee_code": "HRP00999",
+                                "recruiter_id": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+                                "team_id": "11111111-2222-4333-8444-555555555555",
+                                "provider_type": "hrp",
+                                "labor_type": "SEASONAL",
+                                "labor_type_display": "Thời vụ",
+                                "worker_details": {
+                                  "display_name": "Lê Văn Sửa Trực Tiếp",
+                                  "gender": {"state": "provided", "value": "MALE"},
+                                  "phone": {"state": "provided", "value": "0912345678"}
+                                },
+                                "employment_status": {
+                                  "status": "ON",
+                                  "effective_date": "2026-10-15",
+                                  "version": 1
+                                },
+                                "documents": []
+                              }
+                            }
+                            """.trimIndent()
+                        )
+                    else -> MockResponse()
+                        .setResponseCode(200)
+                        .setHeader("Content-Type", "application/json")
+                        .setBody("""{"ok":true,"data":[]}""")
+                }
+            }
+        }
+        server.start()
+
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val db = buildTestDb(app)
+        val cookieFile = File(app.cacheDir, "de_fix_cookie_${System.nanoTime()}.enc")
+        val prefsFile = File(app.cacheDir, "de_fix_prefs_${System.nanoTime()}.preferences_pb")
+        val repo = MiniBiRepository(
+            context = app,
+            database = db,
+            defaultServerUrl = server.url("/").toString().trimEnd('/'),
+            allowDebugUrlOverride = true,
+            cookieStorageFile = cookieFile,
+            preferencesStorageFile = prefsFile,
+            cookieCipher = JvmAes256GcmCookieCipher()
+        )
+        val vm = MiniBiViewModel(app, repo)
+        registerTestResourcesCleanup(vm, db, server, cookieFile, prefsFile)
+
+        // Actor does NOT have "entry_direct_edit" in /api/auth/session capabilities,
+        // but backend row-level authorization granted worker.allowedActions.directEdit = true.
+        val actorWithoutCap = AppActor(
+            appUserId = "12121212-3434-4567-89ab-cdef01234567",
+            displayName = "Quản lý Dự án Thực tế",
+            capabilities = listOf("entry_read"),
+            scopes = listOf(ActorScope("own", "self", "2026-01-01", null)),
+            selfRecruiterSuggestion = null,
+            allowedWorkerTabs = listOf("managed")
+        )
+        val workerWithDirectEdit = sampleWorker(
+            entryId = entryId,
+            canView = true,
+            canProposeChange = false,
+            canDirectEdit = true
+        ).copy(
+            displayName = "Lê Văn Sửa Trực Tiếp",
+            employeeCode = "HRP00999"
+        )
+
+        composeTestRule.setContent {
+            MyApplicationTheme {
+                val target = vm.directEditTarget.collectAsState().value
+                val loadingId = vm.directEditLoadingEntryId.collectAsState().value
+                WorkerOperationsRowCard(
+                    worker = workerWithDirectEdit,
+                    onViewDetail = {},
+                    onDirectEdit = { vm.openDirectEdit(workerWithDirectEdit, actorOverride = actorWithoutCap) },
+                    isDirectEditLoading = loadingId == entryId
+                )
+                target?.let { (w, detail) ->
+                    com.example.ui.screens.WorkerPrivilegedEditDialog(
+                        worker = w,
+                        baselineDetail = detail,
+                        catalog = null,
+                        busy = false,
+                        error = null,
+                        onDismiss = { vm.closeDirectEdit() },
+                        onSubmit = { _, _, _ -> }
+                    )
+                }
+            }
+        }
+
+        // Click the compact direct edit button on the worker row card
+        composeTestRule.onNodeWithTag("worker_direct_edit_$entryId").assertIsDisplayed().performClick()
+
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            vm.directEditTarget.value != null
+        }
+        composeTestRule.waitForIdle()
+
+        assertTrue(requestedPaths.any { it.contains("/api/direct-entry/entries/$entryId") })
+        composeTestRule.onNodeWithText("Sửa trực tiếp hồ sơ").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Lê Văn Sửa Trực Tiếp (HRP00999) · v3").assertIsDisplayed()
     }
 }
