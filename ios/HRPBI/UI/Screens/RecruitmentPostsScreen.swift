@@ -12,7 +12,7 @@ public struct RecruitmentPostsScreen: View {
         let cards = viewModel.recruitmentPosts.map { RecruitmentPostContract.toCardViewModel($0) }
 
         VStack(spacing: 0) {
-            HStack(spacing: 10) {
+            HStack(spacing: 8) {
                 Image(systemName: "megaphone.fill")
                     .font(.system(size: 16, weight: .semibold))
                     .foregroundColor(theme.primary)
@@ -20,6 +20,16 @@ public struct RecruitmentPostsScreen: View {
                 Text("Tin tuyển dụng")
                     .font(.subheadline.weight(.bold))
                     .foregroundColor(SemanticColors.textPrimary)
+
+                if !cards.isEmpty {
+                    Text("\(cards.count)\(viewModel.recruitmentPostsHasMore ? "+" : "")")
+                        .font(.caption2.weight(.bold).monospacedDigit())
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(SemanticColors.infoBg)
+                        .foregroundColor(SemanticColors.infoText)
+                        .clipShape(Capsule())
+                }
 
                 Spacer()
 

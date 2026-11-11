@@ -14,80 +14,65 @@ public struct DashboardScreen: View {
 
     private var hasLoadedAnyOverviewData: Bool {
         viewModel.hasLoadedDashboardInSession
-            || viewModel.generalOverview.kpis.totalHeadcount > 0
-            || !viewModel.generalOverview.projects.isEmpty
     }
 
     public var body: some View {
         let theme = viewModel.selectedTheme
+        let activeTab: DashboardSubTab = DashboardSubTab.primaryTabs.contains(viewModel.selectedDashboardSubTab)
+            ? viewModel.selectedDashboardSubTab
+            : .overview
 
         VStack(spacing: 0) {
-            // Sub-tab selector
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
-                    ForEach(DashboardSubTab.allCases) { tab in
-                        let isSelected = viewModel.selectedDashboardSubTab == tab
-                        Button {
-                            KeyboardDismissal.dismiss()
-                            if !isSelected {
-                                HapticsManager.selection()
-                            }
-                            withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) {
-                                viewModel.selectedDashboardSubTab = tab
-                            }
-                        } label: {
-                            Text(tab.titleVi)
-                                .font(.subheadline.weight(isSelected ? .bold : .medium))
-                                .padding(.horizontal, 14)
-                                .padding(.vertical, 8)
-                                .frame(minHeight: 36)
-                                .background {
-                                    if isSelected {
-                                        Capsule()
-                                            .fill(theme.primary)
-                                            .matchedGeometryEffect(id: "dashboard_subtab_pill", in: dashboardTabNamespace)
-                                    } else {
-                                        Capsule()
-                                            .fill(SemanticColors.surfaceMuted)
-                                    }
+            // 1-row 50/50 Segmented Pill Bar (`Tổng quát` & `Theo nhóm`)
+            HStack(spacing: 4) {
+                ForEach(DashboardSubTab.primaryTabs) { tab in
+                    let isSelected = activeTab == tab
+                    Button {
+                        KeyboardDismissal.dismiss()
+                        if !isSelected {
+                            HapticsManager.selection()
+                        }
+                        withAnimation(.spring(response: 0.26, dampingFraction: 0.84)) {
+                            viewModel.selectedDashboardSubTab = tab
+                        }
+                    } label: {
+                        Text(tab.titleVi)
+                            .font(.subheadline.weight(isSelected ? .semibold : .medium))
+                            .lineLimit(1)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .background {
+                                if isSelected {
+                                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                        .fill(Color.white)
+                                        .shadow(color: Color.black.opacity(0.06), radius: 2, x: 0, y: 1)
+                                        .matchedGeometryEffect(id: "dashboard_subtab_pill", in: dashboardTabNamespace)
+                                } else {
+                                    Color.clear
                                 }
-                                .foregroundColor(isSelected ? .white : SemanticColors.textSecondary)
-                                .contentShape(Capsule())
-                        }
-                        .buttonStyle(.plain)
+                            }
+                            .foregroundColor(isSelected ? theme.primary : SemanticColors.textSecondary)
+                            .contentShape(Rectangle())
                     }
-
-                    if viewModel.isLoadingDashboard && hasLoadedAnyOverviewData {
-                        HStack(spacing: 6) {
-                            ProgressView()
-                                .scaleEffect(0.75)
-                            Text("Đồng bộ...")
-                                .font(.caption2.weight(.semibold))
-                                .foregroundColor(SemanticColors.textSecondary)
-                        }
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
-                        .background(SemanticColors.surfaceMuted)
-                        .clipShape(Capsule())
-                        .transition(.opacity)
-                    }
+                    .buttonStyle(.plain)
                 }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
             }
+            .padding(3)
+            .frame(height: 36)
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(Color(hex: 0xF1F5F9))
+            )
+            .padding(.horizontal, 14)
+            .padding(.top, 8)
+            .padding(.bottom, 6)
             .background(Color.white)
+
+            // Date & Scope Filter Bar
+            dateAndScopeFilterBar
 
             Rectangle()
                 .fill(SemanticColors.borderSubtle.opacity(0.65))
                 .frame(height: 0.5)
-
-            // Date & Scope Filter Bar (for Overview / Deep / Team tabs)
-            if viewModel.selectedDashboardSubTab != .cccdReview && viewModel.selectedDashboardSubTab != .duplicateCccd {
-                dateAndScopeFilterBar
-                Rectangle()
-                    .fill(SemanticColors.borderSubtle.opacity(0.65))
-                    .frame(height: 0.5)
-            }
 
             // Tab Content
             ScrollView {
@@ -107,7 +92,8 @@ public struct DashboardScreen: View {
                             Spacer()
                             Button("Thử lại") {
                                 HapticsManager.lightImpact()
-                                Task { await viewModel.loadDashboardData(includeCccdTabs: false) }
+                                viewModel.resetDashboardDisplayForFilterChange()
+                                Task { await viewModel.loadDashboardData(includeCccdTabs: false, force: true) }
                             }
                             .font(.caption.weight(.bold))
                             .foregroundColor(theme.primary)
@@ -120,20 +106,11 @@ public struct DashboardScreen: View {
                     }
 
                     if viewModel.isLoadingDashboard && !hasLoadedAnyOverviewData {
-                        dashboardSkeletonPlaceholder(theme: theme)
+                        dashboardSkeletonPlaceholder(theme: theme, activeTab: activeTab)
+                    } else if activeTab == .teamReport {
+                        teamReportSection
                     } else {
-                        switch viewModel.selectedDashboardSubTab {
-                        case .overview:
-                            overviewSection
-                        case .deepMetrics:
-                            deepMetricsSection
-                        case .teamReport:
-                            teamReportSection
-                        case .duplicateCccd:
-                            duplicateCccdSection
-                        case .cccdReview:
-                            CccdReviewSectionView(viewModel: viewModel)
-                        }
+                        overviewSection
                     }
                 }
                 .padding(14)
@@ -147,6 +124,7 @@ public struct DashboardScreen: View {
         .background(theme.background)
         .dismissKeyboardOnTapOutside()
         .onAppear {
+            viewModel.normalizeSelectedDashboardSubTab()
             if viewModel.dashboardScope != "all" {
                 viewModel.dashboardScope = "all"
             }
@@ -156,54 +134,88 @@ public struct DashboardScreen: View {
                 Task { await viewModel.loadDashboardData(includeCccdTabs: false) }
             }
         }
-        .sheet(item: $viewModel.selectedCccdReviewItem) { item in
-            CccdReviewDetailSheet(viewModel: viewModel, item: item)
-                .hrpSheetPresentation(detents: [.medium, .large])
-        }
     }
 
     // MARK: - Skeleton Placeholder (Perceived Performance Law #1)
 
-    private func dashboardSkeletonPlaceholder(theme: MiniBiThemePalette) -> some View {
-        VStack(alignment: .leading, spacing: 14) {
-            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
-                kpiCard(title: "Tổng nhân sự", value: "1.280", subtitle: "+48 mới", iconName: "person.3.fill", accentColor: theme.primary)
-                kpiCard(title: "Đang làm việc", value: "1.045", subtitle: "Giữ chân 81,6%", iconName: "checkmark.seal.fill", accentColor: SemanticColors.successText)
-                kpiCard(title: "Đã nghỉ việc", value: "185", subtitle: "Trong kỳ: 12", iconName: "person.crop.circle.badge.minus", accentColor: SemanticColors.dangerText)
-                kpiCard(title: "Phỏng vấn / Chờ nhận", value: "50", subtitle: "Biến động 14,4%", iconName: "clock.badge.questionmark", accentColor: SemanticColors.warningText)
-            }
-
-            VStack(alignment: .leading, spacing: 10) {
-                HStack {
-                    Text("Thống kê nhân sự theo Dự án")
-                        .font(.headline)
-                    Spacer()
-                    Text("6 dự án")
-                        .font(.caption)
-                }
-                ForEach(0..<3, id: \.self) { _ in
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack {
-                            Text("Dự án Sản xuất Điện tử")
-                                .font(.subheadline.weight(.semibold))
-                            Spacer()
-                            Text("320")
-                                .font(.subheadline.weight(.bold))
+    private func dashboardSkeletonPlaceholder(theme: MiniBiThemePalette, activeTab: DashboardSubTab) -> some View {
+        Group {
+            if activeTab == .teamReport {
+                VStack(alignment: .leading, spacing: 12) {
+                    ForEach(0..<3, id: \.self) { _ in
+                        VStack(alignment: .leading, spacing: 10) {
+                            HStack {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text("Nhóm Tuyển dụng Miền Bắc")
+                                        .font(.headline)
+                                    Text("Trưởng nhóm: Nguyễn Văn A · 8 thành viên")
+                                        .font(.caption)
+                                }
+                                Spacer()
+                                Text("84,5%")
+                                    .font(.caption.weight(.bold))
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 4)
+                                    .background(theme.primaryLight)
+                                    .clipShape(Capsule())
+                            }
+                            HrpSegmentedBar(activeCount: 160, inactiveCount: 30)
+                            HStack(spacing: 14) {
+                                Text("160 đang làm")
+                                    .font(.caption2)
+                                Text("30 nghỉ")
+                                    .font(.caption2)
+                                Spacer()
+                                Text("Tổng: 190")
+                                    .font(.caption2.weight(.bold))
+                            }
                         }
-                        HrpSegmentedBar(activeCount: 280, inactiveCount: 40)
-                        HStack(spacing: 12) {
-                            Text("280 đang làm")
-                                .font(.caption2)
-                            Text("40 nghỉ")
-                                .font(.caption2)
+                        .padding(14)
+                        .hrpCardSurface(cornerRadius: HrpDesignTokens.radiusCard)
+                    }
+                }
+            } else {
+                VStack(alignment: .leading, spacing: 14) {
+                    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
+                        kpiCard(title: "Tổng nhân sự", value: "1.280", subtitle: "+48 mới", iconName: "person.3.fill", accentColor: theme.primary)
+                        kpiCard(title: "Đang làm việc", value: "1.045", subtitle: "Giữ chân 81,6%", iconName: "checkmark.seal.fill", accentColor: SemanticColors.successText)
+                        kpiCard(title: "Đã nghỉ việc", value: "185", subtitle: "Trong kỳ: 12", iconName: "person.crop.circle.badge.minus", accentColor: SemanticColors.dangerText)
+                        kpiCard(title: "Phỏng vấn / Chờ nhận", value: "50", subtitle: "Biến động 14,4%", iconName: "clock.badge.questionmark", accentColor: SemanticColors.warningText)
+                    }
+
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack {
+                            Text("Thống kê nhân sự theo Dự án")
+                                .font(.headline)
+                            Spacer()
+                            Text("6 dự án")
+                                .font(.caption)
+                        }
+                        ForEach(0..<3, id: \.self) { _ in
+                            VStack(alignment: .leading, spacing: 8) {
+                                HStack {
+                                    Text("Dự án Sản xuất Điện tử")
+                                        .font(.subheadline.weight(.semibold))
+                                    Spacer()
+                                    Text("320")
+                                        .font(.subheadline.weight(.bold))
+                                }
+                                HrpSegmentedBar(activeCount: 280, inactiveCount: 40)
+                                HStack(spacing: 12) {
+                                    Text("280 đang làm")
+                                        .font(.caption2)
+                                    Text("40 nghỉ")
+                                        .font(.caption2)
+                                }
+                            }
+                            .padding(10)
+                            .hrpMutedTile(cornerRadius: HrpDesignTokens.radiusMD)
                         }
                     }
-                    .padding(10)
-                    .hrpMutedTile(cornerRadius: HrpDesignTokens.radiusMD)
+                    .padding(14)
+                    .hrpCardSurface(cornerRadius: HrpDesignTokens.radiusCard)
                 }
             }
-            .padding(14)
-            .hrpCardSurface(cornerRadius: HrpDesignTokens.radiusCard)
         }
         .redacted(reason: .placeholder)
     }
@@ -217,8 +229,10 @@ public struct DashboardScreen: View {
                 ForEach(DateFilterPreset.allCases) { preset in
                     let selected = viewModel.selectedDatePreset == preset
                     Button {
+                        KeyboardDismissal.dismiss()
                         HapticsManager.selection()
-                        viewModel.applyDatePreset(preset)
+                        visibleProjectsCount = 10
+                        viewModel.applyDatePreset(preset, reload: true)
                     } label: {
                         Text(preset.titleVi)
                             .font(.caption.weight(selected ? .bold : .medium))
@@ -409,22 +423,7 @@ public struct DashboardScreen: View {
         }
     }
 
-    // MARK: - 2. Workforce Deep Metrics Section
-
-    private var deepMetricsSection: some View {
-        let deep = viewModel.workforceDeepMetrics
-        let hasDateFilter = viewModel.selectedDatePreset != .all
-        let periodSuffix = hasDateFilter ? " (\(viewModel.selectedDatePreset.titleVi))" : ""
-        return VStack(alignment: .leading, spacing: 14) {
-            bucketDistributionCard(title: "Phân bổ Thâm niên & Giữ chân\(periodSuffix)", buckets: deep.tenureBuckets)
-            bucketDistributionCard(title: "Cơ cấu Theo Nhóm Tuyển dụng\(periodSuffix)", buckets: deep.ageBuckets)
-            bucketDistributionCard(title: "Cơ cấu Nguồn Tuyển dụng (HRP / Vendor)\(periodSuffix)", buckets: deep.genderBuckets)
-            bucketDistributionCard(title: "Biến động & Trạng thái Nhân sự\(periodSuffix)", buckets: deep.contractBuckets)
-            bucketDistributionCard(title: "Phân tích Lý do nghỉ việc\(periodSuffix)", buckets: deep.resignReasonBuckets)
-        }
-    }
-
-    // MARK: - 3. Team Report Section
+    // MARK: - 2. Team Report Section
 
     private var teamReportSection: some View {
         let teams = viewModel.teamReport.teams
@@ -530,124 +529,6 @@ public struct DashboardScreen: View {
         }
     }
 
-    // MARK: - 4. Duplicate CCCD Section
-
-    private var duplicateCccdSection: some View {
-        let dupData = viewModel.duplicateCccdReport
-        let theme = viewModel.selectedTheme
-
-        return VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Image(systemName: "magnifyingglass")
-                    .foregroundColor(SemanticColors.textMuted)
-                TextField("Tìm theo số CCCD hoặc họ tên...", text: $viewModel.duplicateSearchQuery)
-                    .submitLabel(.search)
-                    .foregroundColor(SemanticColors.textPrimary)
-                    .onSubmit {
-                        KeyboardDismissal.dismiss()
-                        Task { await viewModel.loadDashboardData() }
-                    }
-                Button("Tìm") {
-                    HapticsManager.lightImpact()
-                    KeyboardDismissal.dismiss()
-                    Task { await viewModel.loadDashboardData() }
-                }
-                .font(.caption.weight(.bold))
-                .padding(.horizontal, 12)
-                .padding(.vertical, 7)
-                .frame(minHeight: 34)
-                .background(theme.primary)
-                .foregroundColor(.white)
-                .clipShape(RoundedRectangle(cornerRadius: HrpDesignTokens.radiusXS, style: .continuous))
-            }
-            .padding(10)
-            .hrpCardSurface(cornerRadius: HrpDesignTokens.radiusMD)
-
-            if dupData.groups.isEmpty {
-                Text("Không phát hiện hồ sơ CCCD trùng lặp.")
-                    .font(.subheadline)
-                    .foregroundColor(SemanticColors.textSecondary)
-                    .frame(maxWidth: .infinity)
-                    .padding(24)
-                    .hrpCardSurface(cornerRadius: HrpDesignTokens.radiusCard)
-            } else {
-                LazyVStack(spacing: 12) {
-                    ForEach(dupData.groups) { group in
-                        VStack(alignment: .leading, spacing: 10) {
-                            HStack {
-                                Text("CCCD: \(group.cccd)")
-                                    .font(.subheadline.weight(.bold))
-                                    .monospacedDigit()
-                                    .foregroundColor(SemanticColors.textPrimary)
-                                Spacer()
-                                Text("\(group.workerCount) hồ sơ · \(group.activeCount) đang làm")
-                                    .font(.caption.weight(.semibold))
-                                    .monospacedDigit()
-                                    .padding(.horizontal, 8)
-                                    .padding(.vertical, 4)
-                                    .background(SemanticColors.warningBg)
-                                    .foregroundColor(SemanticColors.warningText)
-                                    .clipShape(Capsule())
-                            }
-
-                            ForEach(group.episodes) { ep in
-                                HStack(alignment: .top) {
-                                    VStack(alignment: .leading, spacing: 3) {
-                                        Text(WorkerItem.isUuidLike(ep.maNld) || ep.maNld.isEmpty ? ep.hoTen : "\(ep.hoTen) (\(ep.maNld))")
-                                            .font(.caption.weight(.semibold))
-                                            .foregroundColor(SemanticColors.textPrimary)
-                                        Text("Dự án: \(ep.duAn) · QL: \(ep.quanLy) · Tuyển: \(ep.nguoiTuyen)")
-                                            .font(.caption2)
-                                            .foregroundColor(SemanticColors.textSecondary)
-                                        Text("Trạng thái: \(ep.trangThai) · Ngày vào: \(ep.ngayVaoLam)")
-                                            .font(.caption2)
-                                            .monospacedDigit()
-                                            .foregroundColor(SemanticColors.textMuted)
-                                    }
-                                    Spacer()
-                                    if ep.canSelfWithdraw {
-                                        Button {
-                                            HapticsManager.warning()
-                                            Task {
-                                                await viewModel.withdrawDuplicateCccdEpisode(ep, cccd: group.cccd)
-                                            }
-                                        } label: {
-                                            Text("Tự rút hồ sơ")
-                                                .font(.caption2.weight(.bold))
-                                                .padding(.horizontal, 8)
-                                                .padding(.vertical, 5)
-                                                .frame(minHeight: 32)
-                                                .background(SemanticColors.dangerBg)
-                                                .foregroundColor(SemanticColors.dangerText)
-                                                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-                                        }
-                                        .buttonStyle(.plain)
-                                    }
-                                }
-                                .padding(8)
-                                .hrpMutedTile(cornerRadius: HrpDesignTokens.radiusXS)
-                            }
-                        }
-                        .padding(14)
-                        .hrpCardSurface(cornerRadius: HrpDesignTokens.radiusCard)
-                    }
-
-                    if dupData.page < dupData.totalPages || dupData.groups.count < dupData.totalGroups {
-                        HrpLoadMoreButton(
-                            title: "Tải thêm nhóm CCCD trùng",
-                            loadedCount: dupData.groups.count,
-                            totalCount: dupData.totalGroups,
-                            isLoading: viewModel.isLoadingMoreDuplicateCccd,
-                            theme: theme
-                        ) {
-                            Task { await viewModel.loadMoreDuplicateCccdReport() }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
     // MARK: - Helper Cards
 
     private func kpiCard(
@@ -686,50 +567,6 @@ public struct DashboardScreen: View {
                 .lineLimit(1)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(14)
-        .hrpCardSurface(cornerRadius: HrpDesignTokens.radiusCard)
-    }
-
-    private func bucketDistributionCard(title: String, buckets: [DistributionBucket]) -> some View {
-        let theme = viewModel.selectedTheme
-        return VStack(alignment: .leading, spacing: 10) {
-            Text(title)
-                .font(.headline)
-                .foregroundColor(SemanticColors.textPrimary)
-
-            if buckets.isEmpty {
-                Text("Chưa có dữ liệu thống kê.")
-                    .font(.caption)
-                    .foregroundColor(SemanticColors.textMuted)
-            } else {
-                ForEach(buckets) { b in
-                    VStack(alignment: .leading, spacing: 4) {
-                        HStack {
-                            Text(b.label)
-                                .font(.caption.weight(.medium))
-                            Spacer()
-                            Text("\(b.count) (\(WorkReportsContract.formatPercentVi(b.percentage)))")
-                                .font(.caption.weight(.semibold))
-                                .monospacedDigit()
-                                .contentTransition(.numericText())
-                                .foregroundColor(theme.primary)
-                        }
-                        GeometryReader { geo in
-                            let ratio = min(1.0, max(0.0, b.percentage > 1.0 ? b.percentage / 100.0 : b.percentage))
-                            ZStack(alignment: .leading) {
-                                RoundedRectangle(cornerRadius: 4, style: .continuous)
-                                    .fill(Color(hex: 0xE2E8F0))
-                                    .frame(height: 6)
-                                RoundedRectangle(cornerRadius: 4, style: .continuous)
-                                    .fill(theme.primary)
-                                    .frame(width: geo.size.width * ratio, height: 6)
-                            }
-                        }
-                        .frame(height: 6)
-                    }
-                }
-            }
-        }
         .padding(14)
         .hrpCardSurface(cornerRadius: HrpDesignTokens.radiusCard)
     }

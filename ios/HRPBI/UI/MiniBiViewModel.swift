@@ -62,7 +62,13 @@ public final class MiniBiViewModel: ObservableObject {
     }
 
     // MARK: - Dashboard & CCCD Review State
-    @Published public var selectedDashboardSubTab: DashboardSubTab = .overview
+    @Published public var selectedDashboardSubTab: DashboardSubTab = .overview {
+        didSet {
+            if !DashboardSubTab.primaryTabs.contains(selectedDashboardSubTab) {
+                selectedDashboardSubTab = .overview
+            }
+        }
+    }
     @Published public var selectedDatePreset: DateFilterPreset = .thisMonth
     @Published public var filterStartDate: String = ""
     @Published public var filterEndDate: String = ""
@@ -114,6 +120,7 @@ public final class MiniBiViewModel: ObservableObject {
     public private(set) var sessionGeneration: Int64 = 0
     private var inFlightTasks: [String: Task<Void, Never>] = [:]
     private var salaryAdvanceContextLoadedGeneration: Int64?
+    private var dashboardLoadGeneration: Int64 = 0
     private var ownSubmissionsFetchGeneration: Int64 = 0
     private var openDirectEditGeneration: Int64 = 0
 
@@ -195,12 +202,11 @@ public final class MiniBiViewModel: ObservableObject {
 
     public static func resolveVisibleWorkerTabs(for user: MiniBiUser?) -> [(key: String, label: String)] {
         guard let user else { return [] }
-        return user.safeAllowedWorkerTabs.compactMap { rawKey in
+        return user.safeAllowedWorkerDirectoryScopes.compactMap { rawKey in
             switch rawKey {
-            case "managed": return ("managed", "Dự án phụ trách")
-            case "recruited": return ("recruited", "Do tôi tuyển")
-            case "team": return ("team", "Theo nhóm")
-            case "uploader": return ("uploader", "Tôi nhập")
+            case "managed": return ("managed", "Dự án quản lý")
+            case "recruited": return ("recruited", "Tôi tuyển")
+            case "team": return ("team", "Nhóm quản lý")
             case "all": return ("all", "Toàn hệ thống")
             default: return nil
             }
@@ -567,7 +573,7 @@ public final class MiniBiViewModel: ObservableObject {
             closeSalaryAdvanceSheet()
             return
         }
-        if destination == .workers && (!isAuthenticated || visibleWorkerTabs.isEmpty) {
+        if destination == .workers && (!isAuthenticated || (visibleWorkerTabs.isEmpty && !canAccessNewWorkerEntry)) {
             return
         }
         if destination == .newEntry && (!isAuthenticated || !canAccessNewWorkerEntry) {
@@ -594,9 +600,11 @@ public final class MiniBiViewModel: ObservableObject {
                 }
             }
         } else if destination == .dashboard {
+            normalizeSelectedDashboardSubTab()
             if isAuthenticated
                 && !isLoadingDashboard
                 && !hasLoadedDashboardInSession {
+                isLoadingDashboard = true
                 Task { await loadDashboardData(includeCccdTabs: false) }
             }
         } else if destination == .workers {
@@ -697,6 +705,7 @@ public final class MiniBiViewModel: ObservableObject {
     private func resetSessionScopedState(clearDraftRows: Bool) {
         cancelAllSessionTasks()
         salaryAdvanceContextLoadedGeneration = nil
+        dashboardLoadGeneration &+= 1
         initialAttendanceLoadedGeneration = nil
         hasLoadedAttendanceHistoryInSession = false
         hasLoadedDashboardInSession = false
@@ -990,8 +999,8 @@ public final class MiniBiViewModel: ObservableObject {
         } else if typeUpper.contains("CCCD") || routeLower.contains("cccd") {
             hasExplicitDestinationOverride = true
             currentDestination = .dashboard
-            selectedDashboardSubTab = .cccdReview
-            await loadCccdReviewItems()
+            selectedDashboardSubTab = .overview
+            await loadDashboardData(includeCccdTabs: false)
         } else if typeUpper.contains("LEAVE") || routeLower.contains("leave") {
             hasExplicitDestinationOverride = true
             currentDestination = .attendance
@@ -1030,6 +1039,35 @@ public final class MiniBiViewModel: ObservableObject {
 
     private var dashboardReloadTask: Task<Void, Never>?
 
+    public func normalizeSelectedDashboardSubTab() {
+        if !DashboardSubTab.primaryTabs.contains(selectedDashboardSubTab) {
+            selectedDashboardSubTab = .overview
+        }
+    }
+
+    public func resetDashboardDisplayForFilterChange() {
+        dashboardLoadGeneration &+= 1
+        hasLoadedDashboardInSession = false
+        generalOverview = GeneralOverviewData()
+        teamReport = TeamReportData()
+        dashboardErrorMessage = ""
+        isLoadingDashboard = captureSessionToken() != nil
+    }
+
+    public func setDashboardScope(_ scope: String, reload: Bool = true) {
+        let trimmed = scope.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let normalized = trimmed.isEmpty ? "all" : trimmed
+        dashboardScope = normalized
+        if reload {
+            resetDashboardDisplayForFilterChange()
+            dashboardReloadTask?.cancel()
+            cancelInFlightTasksWithPrefix("dashboard:")
+            dashboardReloadTask = Task { [weak self] in
+                await self?.loadDashboardData(includeCccdTabs: false, force: true)
+            }
+        }
+    }
+
     public func applyDatePreset(_ preset: DateFilterPreset, reload: Bool = true) {
         selectedDatePreset = preset
         var cal = Calendar(identifier: .gregorian)
@@ -1066,40 +1104,37 @@ public final class MiniBiViewModel: ObservableObject {
         }
 
         if reload {
+            resetDashboardDisplayForFilterChange()
             dashboardReloadTask?.cancel()
             cancelInFlightTasksWithPrefix("dashboard:")
             dashboardReloadTask = Task { [weak self] in
-                await self?.loadDashboardData(includeCccdTabs: false)
+                await self?.loadDashboardData(includeCccdTabs: false, force: true)
             }
         }
     }
 
     public func loadDashboardData(includeCccdTabs: Bool = false, force: Bool = false) async {
         guard captureSessionToken() != nil else { return }
+        normalizeSelectedDashboardSubTab()
         let targetScope = dashboardScope
         let targetStart = filterStartDate
         let targetEnd = filterEndDate
         let allowedScopes = currentUser?.safeAllowedWorkerTabs ?? []
-        let dedupeKey = "dashboard:\(targetScope):\(targetStart):\(targetEnd):\(includeCccdTabs)"
+        let dedupeKey = "dashboard:\(targetScope):\(targetStart):\(targetEnd)"
 
         await runDeduplicatedSessionTask(key: dedupeKey, force: force) { [weak self] token in
             guard let self, self.isSessionValid(token) else { return }
+            self.dashboardLoadGeneration &+= 1
+            let loadGen = self.dashboardLoadGeneration
             self.isLoadingDashboard = true
-            self.hasLoadedDashboardInSession = true
             self.dashboardErrorMessage = ""
             defer {
-                if self.isSessionValid(token) {
+                if self.isSessionValid(token), self.dashboardLoadGeneration == loadGen {
                     self.isLoadingDashboard = false
                 }
             }
 
             async let overviewTask = self.workReportsService.fetchGeneralOverview(
-                scope: targetScope,
-                allowedWorkerScopes: allowedScopes,
-                startDate: targetStart,
-                endDate: targetEnd
-            )
-            async let deepTask = self.workReportsService.fetchWorkforceDeepMetrics(
                 scope: targetScope,
                 allowedWorkerScopes: allowedScopes,
                 startDate: targetStart,
@@ -1112,14 +1147,18 @@ public final class MiniBiViewModel: ObservableObject {
             )
 
             let overviewRes = await overviewTask
-            let deepRes = await deepTask
             let teamRes = await teamTask
 
             guard !Task.isCancelled,
                   self.isSessionValid(token),
+                  self.dashboardLoadGeneration == loadGen,
                   self.dashboardScope == targetScope,
                   self.filterStartDate == targetStart,
                   self.filterEndDate == targetEnd else {
+                return
+            }
+
+            if overviewRes.isCancelledRequest && teamRes.isCancelledRequest {
                 return
             }
 
@@ -1133,45 +1172,19 @@ public final class MiniBiViewModel: ObservableObject {
                 }
             }
 
-            switch deepRes {
-            case .success(let dp, _):
-                self.workforceDeepMetrics = dp
+            switch teamRes {
+            case .success(let tm, _):
+                self.teamReport = tm
             case .failure(let message, _, _, _):
-                if !deepRes.isCancelledRequest, firstError == nil {
+                if !teamRes.isCancelledRequest, firstError == nil, self.selectedDashboardSubTab == .teamReport {
                     firstError = message
                 }
-            }
-
-            if case .success(let tm, _) = teamRes {
-                self.teamReport = tm
             }
 
             if let firstError, !firstError.isEmpty {
                 self.dashboardErrorMessage = firstError
             }
-
-            if includeCccdTabs {
-                async let dupTask = self.workReportsService.fetchDuplicateCccdReport(
-                    search: self.duplicateSearchQuery,
-                    page: 1,
-                    pageSize: Self.leaveInboxPageSize
-                )
-                async let cccdTask = self.directEntryService.fetchCccdReviewList(
-                    status: self.cccdReviewFilterStatus,
-                    search: self.cccdReviewSearchQuery,
-                    page: 1,
-                    pageSize: Self.leaveInboxPageSize
-                )
-                let dupRes = await dupTask
-                let cccdRes = await cccdTask
-                guard !Task.isCancelled, self.isSessionValid(token) else { return }
-                if case .success(let dup, _) = dupRes { self.duplicateCccdReport = dup }
-                if case .success(let cccd, _) = cccdRes {
-                    self.cccdReviewItems = cccd.items
-                    self.cccdReviewTotal = cccd.total
-                    self.cccdReviewPage = 1
-                }
-            }
+            self.hasLoadedDashboardInSession = true
         }
     }
 
@@ -1667,6 +1680,15 @@ public final class MiniBiViewModel: ObservableObject {
 
     // MARK: - Workers Management Actions
 
+    public func selectWorkerScope(_ scope: String) {
+        let allowedKeys = visibleWorkerTabs.map(\.key)
+        let trimmed = scope.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard allowedKeys.contains(trimmed) else { return }
+        guard selectedWorkerScope != trimmed else { return }
+        selectedWorkerScope = trimmed
+        Task { await loadWorkers(resetPage: true) }
+    }
+
     public func loadWorkers(resetPage: Bool = false, force: Bool = false) async {
         guard captureSessionToken() != nil else {
             selectedWorkerScope = ""
@@ -1706,19 +1728,6 @@ public final class MiniBiViewModel: ObservableObject {
             workersHasMore = false
             workersNextCursor = nil
             isLoadingWorkers = false
-            return
-        }
-
-        // `uploader` is a submission history tab (`GET /api/direct-entry/submissions`), NOT a worker-directory scope.
-        if resolvedScope == "uploader" {
-            workers = []
-            workersTotalCount = 0
-            workersPage = 1
-            workersTotalPages = 1
-            workersHasMore = false
-            workersNextCursor = nil
-            isLoadingWorkers = false
-            await refreshOwnSubmissions(reset: resetPage)
             return
         }
 
@@ -1776,11 +1785,9 @@ public final class MiniBiViewModel: ObservableObject {
     }
 
     public func loadMoreWorkers() async {
-        guard let token = captureSessionToken(),
-              let user = currentUser else { return }
-        let allowedTabs = user.safeAllowedWorkerTabs
-        guard !allowedTabs.isEmpty,
-              selectedWorkerScope != "uploader",
+        guard let token = captureSessionToken() else { return }
+        let allowedTabs = visibleWorkerTabs.map(\.key)
+        guard allowedTabs.contains(selectedWorkerScope),
               !isLoadingWorkers,
               !isLoadingMoreWorkers,
               workersHasMore,

@@ -1578,6 +1578,7 @@ public struct AuthenticatedRemoteImageView: View {
 
 public struct WorkersScreen: View {
     @ObservedObject var viewModel: MiniBiViewModel
+    @Namespace private var workerScopeNamespace
     @State private var exportedShareUrl: URL?
 
     public init(viewModel: MiniBiViewModel) {
@@ -1596,62 +1597,159 @@ public struct WorkersScreen: View {
         }
     }
 
+    @ViewBuilder
+    private func workerScopePillButton(
+        tab: (key: String, label: String),
+        selected: Bool,
+        expandEqually: Bool,
+        theme: MiniBiThemePalette
+    ) -> some View {
+        Button {
+            KeyboardDismissal.dismiss()
+            if !selected {
+                HapticsManager.selection()
+            }
+            withAnimation(.spring(response: 0.26, dampingFraction: 0.84)) {
+                viewModel.selectWorkerScope(tab.key)
+            }
+        } label: {
+            Text(tab.label)
+                .font(.caption.weight(selected ? .bold : .semibold))
+                .lineLimit(1)
+                .padding(.horizontal, expandEqually ? 6 : 12)
+                .frame(maxWidth: expandEqually ? .infinity : nil, maxHeight: .infinity)
+                .background {
+                    if selected {
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .fill(Color.white)
+                            .shadow(color: Color.black.opacity(0.06), radius: 2, x: 0, y: 1)
+                            .matchedGeometryEffect(id: "worker_scope_pill", in: workerScopeNamespace)
+                    } else {
+                        Color.clear
+                    }
+                }
+                .foregroundColor(selected ? theme.primary : SemanticColors.textSecondary)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
     public var body: some View {
         let theme = viewModel.selectedTheme
         let visibleTabs = viewModel.visibleWorkerTabs
 
         Group {
             if visibleTabs.isEmpty {
-                VStack(spacing: 10) {
-                    Image(systemName: "lock.shield")
-                        .font(.system(size: 32, weight: .semibold))
-                        .foregroundColor(SemanticColors.textMuted)
-                    Text("Bạn không có quyền truy cập danh mục người lao động.")
-                        .font(.subheadline.weight(.bold))
-                        .foregroundColor(SemanticColors.textPrimary)
-                        .multilineTextAlignment(.center)
-                    Text("Tài khoản hiện tại không được phân quyền xem các phạm vi người lao động.")
-                        .font(.caption)
-                        .foregroundColor(SemanticColors.textSecondary)
-                        .multilineTextAlignment(.center)
+                if viewModel.canAccessNewWorkerEntry {
+                    VStack(spacing: 14) {
+                        ZStack {
+                            Circle()
+                                .fill(theme.primaryLight)
+                                .frame(width: 56, height: 56)
+                            Image(systemName: "person.badge.plus")
+                                .font(.system(size: 24, weight: .semibold))
+                                .foregroundColor(theme.primary)
+                        }
+
+                        Text("Cấp mới hồ sơ nhân sự")
+                            .font(.headline)
+                            .foregroundColor(SemanticColors.textPrimary)
+                            .multilineTextAlignment(.center)
+
+                        Text("Tài khoản của bạn được phân quyền tạo mới hồ sơ người lao động. Bấm nút bên dưới để mở biểu mẫu nhập liệu.")
+                            .font(.caption)
+                            .foregroundColor(SemanticColors.textSecondary)
+                            .multilineTextAlignment(.center)
+
+                        Button {
+                            HapticsManager.selection()
+                            KeyboardDismissal.dismiss()
+                            viewModel.navigateTo(.newEntry)
+                        } label: {
+                            HStack(spacing: 6) {
+                                Image(systemName: "plus")
+                                    .font(.system(size: 13, weight: .bold))
+                                Text("Cấp mới")
+                                    .font(.subheadline.weight(.bold))
+                            }
+                            .padding(.horizontal, 22)
+                            .frame(minHeight: 38, maxHeight: 38)
+                            .background(theme.primary)
+                            .foregroundColor(.white)
+                            .clipShape(Capsule())
+                        }
+                        .buttonStyle(HrpPressableButtonStyle())
+                        .accessibilityIdentifier("go_to_new_entry_from_workers")
+                    }
+                    .padding(24)
+                    .frame(maxWidth: .infinity)
+                    .hrpCardSurface(cornerRadius: HrpDesignTokens.radiusCard)
+                    .padding(.horizontal, 20)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    VStack(spacing: 10) {
+                        Image(systemName: "lock.shield")
+                            .font(.system(size: 32, weight: .semibold))
+                            .foregroundColor(SemanticColors.textMuted)
+                        Text("Bạn không có quyền truy cập danh mục người lao động.")
+                            .font(.subheadline.weight(.bold))
+                            .foregroundColor(SemanticColors.textPrimary)
+                            .multilineTextAlignment(.center)
+                        Text("Tài khoản hiện tại không được phân quyền xem các phạm vi người lao động.")
+                            .font(.caption)
+                            .foregroundColor(SemanticColors.textSecondary)
+                            .multilineTextAlignment(.center)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .padding(24)
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .padding(24)
             } else if viewModel.salaryAdvanceSheetOpen {
                 SalaryAdvanceWorkspaceView(viewModel: viewModel)
             } else {
                 VStack(spacing: 0) {
-                    // Scope Chips (strictly from server-confirmed `allowed_worker_tabs`)
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 8) {
-                            ForEach(visibleTabs, id: \.key) { tab in
-                                let selected = viewModel.selectedWorkerScope == tab.key
-                                Button {
-                                    HapticsManager.selection()
-                                    viewModel.selectedWorkerScope = tab.key
-                                    Task { await viewModel.loadWorkers(resetPage: true) }
-                                } label: {
-                                    Text(tab.label)
-                                        .font(.caption.weight(selected ? .bold : .semibold))
-                                        .padding(.horizontal, 14)
-                                        .padding(.vertical, 9)
-                                        .frame(minHeight: 36)
-                                        .background(selected ? theme.primary : SemanticColors.surfaceMuted)
-                                        .foregroundColor(selected ? .white : SemanticColors.textSecondary)
-                                        .clipShape(Capsule())
-                                        .contentShape(Capsule())
+                    // Compact Segmented / Pill Strip (35pt height, #F1F5F9 tray, #FFFFFF selected pill)
+                    Group {
+                        if visibleTabs.count <= 3 {
+                            HStack(spacing: 3) {
+                                ForEach(visibleTabs, id: \.key) { tab in
+                                    workerScopePillButton(
+                                        tab: tab,
+                                        selected: viewModel.selectedWorkerScope == tab.key,
+                                        expandEqually: true,
+                                        theme: theme
+                                    )
                                 }
-                                .buttonStyle(.plain)
+                            }
+                            .padding(3)
+                        } else {
+                            ScrollView(.horizontal, showsIndicators: false) {
+                                HStack(spacing: 3) {
+                                    ForEach(visibleTabs, id: \.key) { tab in
+                                        workerScopePillButton(
+                                            tab: tab,
+                                            selected: viewModel.selectedWorkerScope == tab.key,
+                                            expandEqually: false,
+                                            theme: theme
+                                        )
+                                    }
+                                }
+                                .padding(3)
                             }
                         }
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 10)
                     }
+                    .frame(height: 35)
+                    .background(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .fill(Color(hex: 0xF1F5F9))
+                    )
+                    .padding(.horizontal, 14)
+                    .padding(.top, 8)
+                    .padding(.bottom, 8)
                     .background(Color.white)
 
-                    // Side-by-side 50/50 row for "Ứng lương" and "Cấp mới" with taller touch target
+                    // Compact 38pt Action Row: Secondary Tinted/Outlined Pill ("Ứng lương") + Primary Solid Pill ("Cấp mới")
                     if viewModel.canShowPmSalaryAdvanceButton || viewModel.canAccessNewWorkerEntry {
-                        HStack(spacing: 10) {
+                        HStack(spacing: 8) {
                             if viewModel.canShowPmSalaryAdvanceButton {
                                 Button {
                                     HapticsManager.selection()
@@ -1660,9 +1758,9 @@ public struct WorkersScreen: View {
                                 } label: {
                                     HStack(spacing: 6) {
                                         Image(systemName: "banknote.fill")
-                                            .font(.system(size: 14, weight: .semibold))
+                                            .font(.system(size: 13, weight: .semibold))
                                         Text("Ứng lương")
-                                            .font(.subheadline.weight(.bold))
+                                            .font(.subheadline.weight(.semibold))
                                             .lineLimit(1)
                                         if viewModel.salaryAdvancePmBadgeCount > 0 {
                                             Text("\(viewModel.salaryAdvancePmBadgeCount)")
@@ -1671,15 +1769,19 @@ public struct WorkersScreen: View {
                                                 .contentTransition(.numericText())
                                                 .padding(.horizontal, 6)
                                                 .padding(.vertical, 2)
-                                                .background(Color.white.opacity(0.24))
+                                                .background(theme.primary)
                                                 .foregroundColor(.white)
                                                 .clipShape(Capsule())
                                         }
                                     }
-                                    .frame(maxWidth: .infinity, minHeight: 46)
-                                    .background(theme.primary)
-                                    .foregroundColor(.white)
-                                    .clipShape(RoundedRectangle(cornerRadius: HrpDesignTokens.radiusMD, style: .continuous))
+                                    .frame(maxWidth: .infinity, minHeight: 38, maxHeight: 38)
+                                    .background(theme.primaryLight)
+                                    .foregroundColor(theme.primary)
+                                    .clipShape(Capsule())
+                                    .overlay(
+                                        Capsule()
+                                            .stroke(theme.primary.opacity(0.28), lineWidth: 1)
+                                    )
                                 }
                                 .buttonStyle(HrpPressableButtonStyle())
                                 .accessibilityIdentifier("salary_advance_open_button")
@@ -1693,129 +1795,26 @@ public struct WorkersScreen: View {
                                 } label: {
                                     HStack(spacing: 6) {
                                         Image(systemName: "person.badge.plus")
-                                            .font(.system(size: 14, weight: .semibold))
+                                            .font(.system(size: 13, weight: .bold))
                                         Text("Cấp mới")
                                             .font(.subheadline.weight(.bold))
                                             .lineLimit(1)
                                     }
-                                    .frame(maxWidth: .infinity, minHeight: 46)
+                                    .frame(maxWidth: .infinity, minHeight: 38, maxHeight: 38)
                                     .background(theme.primary)
                                     .foregroundColor(.white)
-                                    .clipShape(RoundedRectangle(cornerRadius: HrpDesignTokens.radiusMD, style: .continuous))
+                                    .clipShape(Capsule())
                                 }
                                 .buttonStyle(HrpPressableButtonStyle())
                                 .accessibilityIdentifier("go_to_new_entry_from_workers")
                             }
                         }
                         .padding(.horizontal, 14)
-                        .padding(.bottom, 10)
+                        .padding(.bottom, 8)
                         .background(Color.white)
                     }
 
-                    if viewModel.selectedWorkerScope == "uploader" {
-                        Rectangle()
-                            .fill(SemanticColors.borderSubtle.opacity(0.65))
-                            .frame(height: 0.5)
-
-                        ScrollView {
-                            VStack(spacing: 10) {
-                                if viewModel.isLoadingOwnSubmissions && viewModel.ownSubmissions.isEmpty {
-                                    VStack(spacing: 10) {
-                                        ForEach(0..<3, id: \.self) { _ in
-                                            VStack(alignment: .leading, spacing: 6) {
-                                                HStack {
-                                                    Text("Lô #1024")
-                                                        .font(.subheadline.weight(.bold))
-                                                    Spacer()
-                                                    Text("APPROVED")
-                                                        .font(.caption2.weight(.bold))
-                                                }
-                                                Text("Tổng dòng: 5 · Đã duyệt: 5 · Chờ: 0")
-                                                    .font(.caption)
-                                                Text("Thời gian: 10:30 11/11/2026")
-                                                    .font(.caption2)
-                                            }
-                                            .padding(14)
-                                            .hrpCardSurface(cornerRadius: HrpDesignTokens.radiusCard)
-                                        }
-                                    }
-                                    .redacted(reason: .placeholder)
-                                } else if let err = viewModel.ownSubmissionsErrorMessage, viewModel.ownSubmissions.isEmpty {
-                                    VStack(spacing: 8) {
-                                        Text(err)
-                                            .font(.caption)
-                                            .foregroundColor(SemanticColors.dangerText)
-                                            .multilineTextAlignment(.center)
-                                        Button("Thử lại") {
-                                            HapticsManager.lightImpact()
-                                            Task { await viewModel.refreshOwnSubmissions(reset: true) }
-                                        }
-                                        .font(.caption.weight(.bold))
-                                        .padding(.horizontal, 14)
-                                        .frame(minHeight: 36)
-                                        .background(theme.primary)
-                                        .foregroundColor(.white)
-                                        .clipShape(RoundedRectangle(cornerRadius: HrpDesignTokens.radiusXS, style: .continuous))
-                                    }
-                                    .padding(.vertical, 28)
-                                } else if viewModel.ownSubmissions.isEmpty {
-                                    Text("Chưa có lô hồ sơ nhập hộ nào.")
-                                        .font(.subheadline)
-                                        .foregroundColor(SemanticColors.textSecondary)
-                                        .padding(.vertical, 32)
-                                } else {
-                                    LazyVStack(spacing: 10) {
-                                        ForEach(viewModel.ownSubmissions) { batch in
-                                            VStack(alignment: .leading, spacing: 6) {
-                                                HStack {
-                                                    Text(batch.batchId > 0 ? "Lô #\(batch.batchId)" : "Lô hồ sơ")
-                                                        .font(.subheadline.weight(.bold))
-                                                        .monospacedDigit()
-                                                        .foregroundColor(SemanticColors.textPrimary)
-                                                    Spacer()
-                                                    Text(batch.status)
-                                                        .font(.caption2.weight(.bold))
-                                                        .padding(.horizontal, 8)
-                                                        .padding(.vertical, 4)
-                                                        .background(SemanticColors.successBg)
-                                                        .foregroundColor(SemanticColors.successText)
-                                                        .clipShape(Capsule())
-                                                }
-                                                Text("Tổng dòng: \(batch.totalRows) · Đã duyệt: \(batch.approvedRows) · Chờ: \(batch.pendingRows)")
-                                                    .font(.caption)
-                                                    .monospacedDigit()
-                                                    .foregroundColor(SemanticColors.textSecondary)
-                                                if !batch.createdAt.isEmpty {
-                                                    Text("Thời gian: \(WorkReportsContract.formatIsoDateTimeVi(batch.createdAt))")
-                                                        .font(.caption2)
-                                                        .monospacedDigit()
-                                                        .foregroundColor(SemanticColors.textMuted)
-                                                }
-                                            }
-                                            .padding(14)
-                                            .hrpCardSurface(cornerRadius: HrpDesignTokens.radiusCard)
-                                        }
-                                    }
-
-                                    if viewModel.ownSubmissionsHasMore {
-                                        HrpLoadMoreButton(
-                                            isLoading: viewModel.isLoadingOwnSubmissions,
-                                            theme: theme
-                                        ) {
-                                            Task { await viewModel.loadMoreOwnSubmissions() }
-                                        }
-                                    }
-                                }
-                            }
-                            .padding(14)
-                        }
-                        .refreshable {
-                            await viewModel.performRefreshable {
-                                await viewModel.refreshOwnSubmissions(reset: true)
-                            }
-                        }
-                    } else {
-                        // Search & Export Bar
+                    // Search & Export Bar
                         HStack(spacing: 8) {
                             HStack {
                                 Image(systemName: "magnifyingglass")
@@ -2024,7 +2023,6 @@ public struct WorkersScreen: View {
                                 await viewModel.loadWorkers(resetPage: true, force: true)
                             }
                         }
-                    }
                 }
             }
         }
@@ -2032,11 +2030,7 @@ public struct WorkersScreen: View {
         .dismissKeyboardOnTapOutside()
         .onAppear {
             guard !viewModel.visibleWorkerTabs.isEmpty else { return }
-            if viewModel.selectedWorkerScope == "uploader" {
-                if viewModel.ownSubmissions.isEmpty {
-                    Task { await viewModel.loadWorkers(resetPage: true) }
-                }
-            } else if viewModel.workers.isEmpty {
+            if viewModel.workers.isEmpty {
                 Task { await viewModel.loadWorkers(resetPage: true) }
             }
             if viewModel.currentUser?.canAttemptPmSalaryAdvanceContext == true && viewModel.salaryAdvanceContext == nil {
