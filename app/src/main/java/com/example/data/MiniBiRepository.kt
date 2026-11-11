@@ -142,6 +142,47 @@ object ActorContractParser {
         return parseAllowedWorkerTabs(rawTabs)
     }
 
+    /**
+     * Parses optional `capabilities` from `/api/direct-entry/session` when `app_user_id` matches `expectedAppUserId`.
+     */
+    fun parseDirectEntrySessionCapabilities(
+        json: JSONObject,
+        expectedAppUserId: String
+    ): List<String> {
+        val cleanExpectedId = expectedAppUserId.trim()
+        if (!UUID_REGEX.matches(cleanExpectedId)) return emptyList()
+        if (!json.optBoolean("ok", false)) return emptyList()
+
+        val container = json.optJSONObject("actor")
+            ?: json.optJSONObject("session")
+            ?: json.optJSONObject("data")
+            ?: json
+
+        val sessionUserId = container.optString("app_user_id", "").trim()
+            .ifEmpty { json.optString("app_user_id", "").trim() }
+        if (!UUID_REGEX.matches(sessionUserId) || !sessionUserId.equals(cleanExpectedId, ignoreCase = true)) {
+            return emptyList()
+        }
+
+        val rawCaps = when {
+            container.has("capabilities") && !container.isNull("capabilities") ->
+                container.optJSONArray("capabilities")
+            json.has("capabilities") && !json.isNull("capabilities") ->
+                json.optJSONArray("capabilities")
+            else -> null
+        } ?: return emptyList()
+
+        val result = mutableListOf<String>()
+        for (i in 0 until rawCaps.length()) {
+            if (rawCaps.isNull(i)) continue
+            val elem = (rawCaps.opt(i) as? String)?.trim().orEmpty()
+            if (elem.isNotEmpty()) {
+                result.add(elem)
+            }
+        }
+        return result.distinct()
+    }
+
     fun parseEnvelopeActor(json: JSONObject, displayIdentifier: String? = null): AppActor {
         if (!json.optBoolean("ok", false)) {
             throw BackendApiException(
@@ -737,8 +778,13 @@ class MiniBiRepository(
     suspend fun syncDirectEntrySession(actor: AppActor? = _activeActor.value): AppActor? = withContext(Dispatchers.IO) {
         val baseActor = actor ?: return@withContext null
         val startEpoch = authSessionEpoch.get()
+        var sessionCapabilities: List<String> = emptyList()
         val resolvedTabs = try {
             val json = directEntryService.fetchDirectEntrySession()
+            sessionCapabilities = ActorContractParser.parseDirectEntrySessionCapabilities(
+                json = json,
+                expectedAppUserId = baseActor.appUserId
+            )
             ActorContractParser.parseDirectEntrySessionAllowedWorkerTabs(
                 json = json,
                 expectedAppUserId = baseActor.appUserId
@@ -754,7 +800,11 @@ class MiniBiRepository(
         if (current == null || !current.appUserId.equals(baseActor.appUserId, ignoreCase = true)) {
             return@withContext current
         }
-        val updated = baseActor.copy(allowedWorkerTabs = resolvedTabs)
+        val mergedCapabilities = (baseActor.capabilities + sessionCapabilities).distinct()
+        val updated = baseActor.copy(
+            allowedWorkerTabs = resolvedTabs,
+            capabilities = mergedCapabilities
+        )
         _activeActor.value = updated
         updated
     }

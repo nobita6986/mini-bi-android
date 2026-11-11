@@ -220,6 +220,7 @@ class MiniBiViewModel internal constructor(
     private var cachedAdminTeamCodeMap: Map<String, String>? = null
     private var cachedTeamScopeWorkers: List<WorkerProfileEntity> = emptyList()
     private var cachedTeamTotalSummary: Int = 0
+    private var lastSelectedTeamBucketKey: String? = null
 
     private val _duplicateGroups = MutableStateFlow<List<DuplicateCccdGroupItem>>(emptyList())
     val duplicateGroups: StateFlow<List<DuplicateCccdGroupItem>> = _duplicateGroups.asStateFlow()
@@ -307,6 +308,9 @@ class MiniBiViewModel internal constructor(
 
     private val _directEditTarget = MutableStateFlow<Pair<WorkerProfileEntity, WorkerEntryDetail>?>(null)
     val directEditTarget: StateFlow<Pair<WorkerProfileEntity, WorkerEntryDetail>?> = _directEditTarget.asStateFlow()
+
+    private val _directEditLoadingEntryId = MutableStateFlow<String?>(null)
+    val directEditLoadingEntryId: StateFlow<String?> = _directEditLoadingEntryId.asStateFlow()
 
     private val _directEditProfileSaveMessage = MutableStateFlow<String?>(null)
     val directEditProfileSaveMessage: StateFlow<String?> = _directEditProfileSaveMessage.asStateFlow()
@@ -1234,6 +1238,7 @@ class MiniBiViewModel internal constructor(
         cachedAdminTeamCodeMap = null
         cachedTeamScopeWorkers = emptyList()
         cachedTeamTotalSummary = 0
+        lastSelectedTeamBucketKey = null
         _duplicateGroups.value = emptyList()
         _duplicateError.value = null
         _duplicatePage.value = 1
@@ -1267,6 +1272,7 @@ class MiniBiViewModel internal constructor(
         _proposeChangeTarget.value = null
         cleanupAllDirectEditStagedFiles()
         _directEditProfileSaveMessage.value = null
+        _directEditLoadingEntryId.value = null
         _directEditTarget.value = null
         _workerMutationBusy.value = false
         _workerMutationError.value = null
@@ -1408,24 +1414,19 @@ class MiniBiViewModel internal constructor(
         ) {
             return
         }
+        if (_dashboardDatePreset.value != preset) {
+            _teamReport.value?.bucketKey?.let { lastSelectedTeamBucketKey = it }
+            _generalOverview.value = null
+            _teamReport.value = null
+            _generalOverviewError.value = null
+            _teamReportError.value = null
+        }
         _dashboardDatePreset.value = preset
         refreshDashboardData(actor)
     }
 
     fun refreshDashboardData(actor: AppActor? = currentActor.value) {
         val resolvedActor = actor ?: return
-        if (
-            resolvedActor.hasCapability("reporting_duplicate_cccd") ||
-            resolvedActor.hasScopeKind("all") ||
-            resolvedActor.safeAllowedWorkerTabs.isNotEmpty()
-        ) {
-            refreshDuplicateCccdReport(page = _duplicatePage.value, managedOnly = _duplicateManagedOnly.value)
-        } else {
-            _duplicateGroups.value = emptyList()
-            _duplicateHasMore.value = false
-            _duplicateError.value = null
-            _duplicateLoading.value = false
-        }
         if (resolvedActor.hasScopeKind("all")) {
             refreshWorkforceDeep()
         } else {
@@ -1588,11 +1589,12 @@ class MiniBiViewModel internal constructor(
                 _generalOverviewLoading.value = false
 
                 val prevReport = _teamReport.value
-                val matchedExistingBucket = if (prevReport != null) {
+                val targetPrevKey = prevReport?.bucketKey ?: lastSelectedTeamBucketKey
+                val matchedExistingBucket = if (!targetPrevKey.isNullOrBlank()) {
                     normalizedTeams.firstOrNull { b ->
-                        b.key == prevReport.bucketKey ||
-                            b.display == prevReport.bucketDisplay ||
-                            runCatching { WorkReportsContract.encodeTeamBucketKey(b.key) == prevReport.bucketKey }
+                        b.key == targetPrevKey ||
+                            (prevReport != null && b.display == prevReport.bucketDisplay) ||
+                            runCatching { WorkReportsContract.encodeTeamBucketKey(b.key) == targetPrevKey }
                                 .getOrDefault(false)
                     }
                 } else {
@@ -1928,9 +1930,11 @@ class MiniBiViewModel internal constructor(
                             } else {
                                 emptyList()
                             }
-                            val existingKey = _teamReport.value?.bucketKey
-                            _teamReport.value = grantSnapshots.firstOrNull { it.bucketKey == existingKey }
+                            val existingKey = _teamReport.value?.bucketKey ?: lastSelectedTeamBucketKey
+                            val chosenSnap = grantSnapshots.firstOrNull { it.bucketKey == existingKey }
                                 ?: grantSnapshots.first()
+                            lastSelectedTeamBucketKey = chosenSnap.bucketKey
+                            _teamReport.value = chosenSnap
                         }
 
                         else -> {
@@ -3895,7 +3899,10 @@ class MiniBiViewModel internal constructor(
         val cleanEntryId = worker.entryId.trim()
         if (cleanEntryId.isEmpty()) return
         val actor = resolveSessionActor(actorOverride) ?: return
-        if (!worker.allowedActions.directEdit || !actor.hasCapability("entry_direct_edit")) return
+        if (!worker.allowedActions.directEdit) {
+            showBanner("Bạn không có quyền sửa trực tiếp hồ sơ này.", isError = true)
+            return
+        }
         val expectedGen = bindActorGeneration(actor)
         val expectedActorId = actor.appUserId
         val reqToken = ++openDirectEditToken
@@ -3904,7 +3911,10 @@ class MiniBiViewModel internal constructor(
         cleanupAllDirectEditStagedFiles()
         _directEditProfileSaveMessage.value = null
         _workerMutationError.value = null
-        loadCatalogIfNeeded(actor = actor)
+        _directEditLoadingEntryId.value = cleanEntryId
+        if (_catalog.value == null && actor.canLoadDirectEntryCatalog()) {
+            loadCatalogIfNeeded(actor = actor)
+        }
         openDirectEditJob = viewModelScope.launch {
             try {
                 val detail = repository.directEntryService.getEntryDetail(cleanEntryId)
@@ -3928,6 +3938,10 @@ class MiniBiViewModel internal constructor(
                     (e as? BackendApiException)?.message ?: "Không thể tải hồ sơ gốc để sửa trực tiếp.",
                     isError = true
                 )
+            } finally {
+                if (_directEditLoadingEntryId.value.equals(cleanEntryId, ignoreCase = true)) {
+                    _directEditLoadingEntryId.value = null
+                }
             }
         }
     }
@@ -3939,6 +3953,7 @@ class MiniBiViewModel internal constructor(
         openDirectEditJob = null
         cleanupAllDirectEditStagedFiles()
         _directEditProfileSaveMessage.value = null
+        _directEditLoadingEntryId.value = null
         _directEditTarget.value = null
         _workerMutationError.value = null
     }
@@ -4098,7 +4113,8 @@ class MiniBiViewModel internal constructor(
     ) {
         val actor = currentActor.value ?: return
         if (_workerMutationBusy.value) return
-        val canDirectEdit = actor.hasCapability("entry_direct_edit")
+        val canDirectEdit = actor.hasCapability("entry_direct_edit") ||
+            _directEditTarget.value?.first?.allowedActions?.directEdit == true
         val canUploadDocs = actor.hasCapability("document_upload")
         val hasProfilePatch = patch.length() > 0
         if (hasProfilePatch && !canDirectEdit) return

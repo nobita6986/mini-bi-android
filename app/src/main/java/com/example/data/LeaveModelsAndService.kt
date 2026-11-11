@@ -16,8 +16,8 @@ import java.util.UUID
 enum class AttendanceAreaTab(val key: String, val label: String) {
     CHECK_IN("CHECK_IN", "Chấm công"),
     EXPLANATION("EXPLANATION", "Giải trình"),
-    LEAVE_REQUEST("LEAVE_REQUEST", "Xin nghỉ phép"),
-    EXPLANATION_APPROVAL("EXPLANATION_APPROVAL", "Xét duyệt giải trình"),
+    LEAVE_REQUEST("LEAVE_REQUEST", "Nghỉ phép"),
+    EXPLANATION_APPROVAL("EXPLANATION_APPROVAL", "Duyệt giải trình"),
     LEAVE_APPROVAL("LEAVE_APPROVAL", "Duyệt nghỉ")
 }
 

@@ -6,6 +6,8 @@ import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
@@ -16,6 +18,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -90,6 +93,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
@@ -108,6 +112,12 @@ import com.example.data.TaskReminderManager
 import com.example.ui.MainDestination
 import com.example.ui.MiniBiViewModel
 import com.example.ui.resolveMainNavigationDestinations
+import com.example.ui.components.HrpDesignTokens
+import com.example.ui.components.HrpHaptics
+import com.example.ui.components.HrpInitialsAvatar
+import com.example.ui.components.HrpStatusBadge
+import com.example.ui.components.hrpCardSurface
+import com.example.ui.components.hrpMutedTile
 import com.example.ui.screens.AttendanceScreen
 import com.example.ui.screens.DashboardScreen
 import com.example.ui.screens.DirectEntryNewWorkersScreen
@@ -121,6 +131,7 @@ import com.example.ui.theme.LocalMiniBiPalette
 import com.example.ui.theme.MiniBiThemes
 import com.example.ui.theme.MyApplicationTheme
 import com.example.ui.theme.SemanticColors
+import com.example.ui.theme.tabularNums
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
@@ -185,6 +196,7 @@ fun MiniBiAppRoot(viewModel: MiniBiViewModel) {
     val palette = LocalMiniBiPalette.current
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
+    val hapticFeedback = LocalHapticFeedback.current
 
     if (sessionBootstrapping) {
         Scaffold(
@@ -200,15 +212,19 @@ fun MiniBiAppRoot(viewModel: MiniBiViewModel) {
                 contentAlignment = Alignment.Center
             ) {
                 Column(
+                    modifier = Modifier
+                        .padding(horizontal = 32.dp)
+                        .hrpCardSurface(cornerRadius = HrpDesignTokens.RadiusHero, shadowElevation = 1.dp)
+                        .padding(horizontal = 28.dp, vertical = 26.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(14.dp)
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     Surface(
-                        shape = RoundedCornerShape(20.dp),
-                        color = Color.White,
-                        border = BorderStroke(1.dp, palette.lightTopBarBorder),
-                        shadowElevation = 3.dp,
-                        modifier = Modifier.size(76.dp)
+                        shape = RoundedCornerShape(18.dp),
+                        color = SemanticColors.SurfaceLight,
+                        border = BorderStroke(1.dp, SemanticColors.SurfaceBorder),
+                        shadowElevation = 1.dp,
+                        modifier = Modifier.size(68.dp)
                     ) {
                         Image(
                             painter = painterResource(id = R.drawable.img_hrpartner_logo),
@@ -216,18 +232,42 @@ fun MiniBiAppRoot(viewModel: MiniBiViewModel) {
                             contentScale = ContentScale.Fit,
                             modifier = Modifier
                                 .fillMaxSize()
-                                .padding(10.dp)
+                                .padding(9.dp)
                         )
+                    }
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Text(
+                            text = "HRP",
+                            style = MaterialTheme.typography.headlineMedium,
+                            fontWeight = FontWeight.ExtraBold,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Surface(
+                            shape = RoundedCornerShape(7.dp),
+                            color = MaterialTheme.colorScheme.primary
+                        ) {
+                            Text(
+                                text = brandBadgeLabel,
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White,
+                                modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
+                            )
+                        }
                     }
                     CircularProgressIndicator(
                         color = MaterialTheme.colorScheme.primary,
-                        strokeWidth = 2.5.dp,
-                        modifier = Modifier.size(28.dp)
+                        strokeWidth = 2.dp,
+                        modifier = Modifier.size(22.dp)
                     )
                     Text(
-                        text = "Đang xác thực phiên làm việc với máy chủ…",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        text = "Đang xác thực phiên làm việc…",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center
                     )
                 }
             }
@@ -300,10 +340,10 @@ fun MiniBiAppRoot(viewModel: MiniBiViewModel) {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .background(palette.lightTopBar)
+                        .background(MaterialTheme.colorScheme.surface)
                         .statusBarsPadding()
-                        .padding(horizontal = 20.dp, vertical = 18.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                        .padding(horizontal = 18.dp, vertical = 16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
@@ -311,9 +351,9 @@ fun MiniBiAppRoot(viewModel: MiniBiViewModel) {
                     ) {
                         Surface(
                             shape = RoundedCornerShape(12.dp),
-                            color = Color.White,
-                            border = BorderStroke(1.dp, palette.lightTopBarBorder),
-                            modifier = Modifier.size(46.dp)
+                            color = SemanticColors.SurfaceLight,
+                            border = BorderStroke(1.dp, SemanticColors.SurfaceBorder),
+                            modifier = Modifier.size(44.dp)
                         ) {
                             Image(
                                 painter = painterResource(id = R.drawable.img_hrpartner_logo),
@@ -362,50 +402,62 @@ fun MiniBiAppRoot(viewModel: MiniBiViewModel) {
                         }
                     }
 
-                    HorizontalDivider(color = palette.lightTopBarBorder)
-
-                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Text(
-                            text = authenticatedActor.displayName,
-                            style = MaterialTheme.typography.titleSmall,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onSurface
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .hrpMutedTile(cornerRadius = HrpDesignTokens.RadiusMD)
+                            .padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        HrpInitialsAvatar(
+                            fullName = authenticatedActor.displayName,
+                            size = 40.dp
                         )
-                        authenticatedActor.displayIdentifier?.let { identifierText ->
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(3.dp)
+                        ) {
                             Text(
-                                text = identifierText,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                text = authenticatedActor.displayName,
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
-                        }
-                        if (authenticatedActor.scopes.isNotEmpty()) {
-                            val localizedScopes = authenticatedActor.scopes
-                                .map { sc ->
-                                    when (sc.kind) {
-                                        "all" -> "Toàn hệ thống"
-                                        "team" -> "Đội nhóm"
-                                        "own" -> "Cá nhân"
-                                        else -> sc.kind
-                                    }
-                                }
-                                .distinct()
-                                .joinToString(", ")
-                            Surface(
-                                shape = RoundedCornerShape(6.dp),
-                                color = MaterialTheme.colorScheme.primaryContainer
-                            ) {
+                            authenticatedActor.displayIdentifier?.let { identifierText ->
                                 Text(
+                                    text = identifierText,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                            if (authenticatedActor.scopes.isNotEmpty()) {
+                                val localizedScopes = authenticatedActor.scopes
+                                    .map { sc ->
+                                        when (sc.kind) {
+                                            "all" -> "Toàn hệ thống"
+                                            "team" -> "Đội nhóm"
+                                            "own" -> "Cá nhân"
+                                            else -> sc.kind
+                                        }
+                                    }
+                                    .distinct()
+                                    .joinToString(", ")
+                                HrpStatusBadge(
                                     text = "Phạm vi: $localizedScopes",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onPrimaryContainer,
-                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                                    containerColor = MaterialTheme.colorScheme.primaryContainer,
+                                    contentColor = MaterialTheme.colorScheme.onPrimaryContainer
                                 )
                             }
                         }
                     }
                 }
 
-                HorizontalDivider(color = palette.lightTopBarBorder)
+                HorizontalDivider(color = SemanticColors.SurfaceBorder)
                 Spacer(modifier = Modifier.height(8.dp))
 
                 Text(
@@ -425,9 +477,11 @@ fun MiniBiAppRoot(viewModel: MiniBiViewModel) {
                         },
                         selected = currentDestination == dest,
                         onClick = {
+                            HrpHaptics.tick(hapticFeedback)
                             viewModel.navigateTo(dest)
                             scope.launch { drawerState.close() }
                         },
+                        shape = RoundedCornerShape(12.dp),
                         icon = { Icon(icon, contentDescription = null) },
                         colors = NavigationDrawerItemDefaults.colors(
                             selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
@@ -435,12 +489,15 @@ fun MiniBiAppRoot(viewModel: MiniBiViewModel) {
                             selectedTextColor = MaterialTheme.colorScheme.primary
                         ),
                         modifier = Modifier
-                            .padding(NavigationDrawerItemDefaults.ItemPadding)
+                            .padding(horizontal = 12.dp, vertical = 2.dp)
                             .testTag("drawer_item_${dest.route}")
                     )
                 }
 
-                HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp))
+                HorizontalDivider(
+                    color = SemanticColors.SurfaceBorder,
+                    modifier = Modifier.padding(vertical = 12.dp)
+                )
 
                 Text(
                     text = "CHỦ ĐỀ MÀU SẮC",
@@ -477,32 +534,37 @@ fun MiniBiAppRoot(viewModel: MiniBiViewModel) {
 
                 Spacer(modifier = Modifier.weight(1f))
 
-                HorizontalDivider()
+                HorizontalDivider(color = SemanticColors.SurfaceBorder)
 
                 NavigationDrawerItem(
                     label = {
                         Text(
                             text = "Đăng xuất",
-                            color = MaterialTheme.colorScheme.error,
+                            color = SemanticColors.ErrorText,
                             fontWeight = FontWeight.SemiBold
                         )
                     },
                     selected = false,
                     onClick = {
+                        HrpHaptics.tick(hapticFeedback)
                         scope.launch { drawerState.close() }
                         viewModel.logout()
                     },
+                    shape = RoundedCornerShape(12.dp),
+                    colors = NavigationDrawerItemDefaults.colors(
+                        unselectedContainerColor = SemanticColors.ErrorBg.copy(alpha = 0.45f)
+                    ),
                     icon = {
                         Icon(
                             imageVector = Icons.AutoMirrored.Filled.Logout,
                             contentDescription = "Đăng xuất",
-                            tint = MaterialTheme.colorScheme.error
+                            tint = SemanticColors.ErrorText
                         )
                     },
                     modifier = Modifier
-                        .padding(NavigationDrawerItemDefaults.ItemPadding)
+                        .padding(horizontal = 12.dp, vertical = 8.dp)
                         .navigationBarsPadding()
-                        .padding(bottom = 12.dp)
+                        .padding(bottom = 8.dp)
                         .testTag("drawer_logout_button")
                 )
             }
@@ -514,7 +576,7 @@ fun MiniBiAppRoot(viewModel: MiniBiViewModel) {
             contentWindowInsets = WindowInsets.safeDrawing,
             topBar = {
                 Surface(
-                    color = palette.lightTopBar,
+                    color = MaterialTheme.colorScheme.surface,
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Column(modifier = Modifier.fillMaxWidth()) {
@@ -522,31 +584,40 @@ fun MiniBiAppRoot(viewModel: MiniBiViewModel) {
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .statusBarsPadding()
-                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                                .padding(horizontal = 12.dp, vertical = 9.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             IconButton(
-                                onClick = { scope.launch { drawerState.open() } },
+                                onClick = {
+                                    HrpHaptics.tick(hapticFeedback)
+                                    scope.launch { drawerState.open() }
+                                },
                                 modifier = Modifier
                                     .size(36.dp)
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(SemanticColors.SurfaceSubtle.copy(alpha = 0.7f))
                                     .testTag("open_drawer_menu_button")
                             ) {
                                 Icon(
                                     imageVector = Icons.Default.Menu,
                                     contentDescription = "Mở menu điều hướng",
-                                    tint = MaterialTheme.colorScheme.onSurface
+                                    tint = MaterialTheme.colorScheme.onSurface,
+                                    modifier = Modifier.size(20.dp)
                                 )
                             }
 
-                            Spacer(modifier = Modifier.width(6.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
 
                             Surface(
                                 shape = RoundedCornerShape(11.dp),
-                                color = Color.White,
-                                border = BorderStroke(1.dp, palette.lightTopBarBorder),
+                                color = SemanticColors.SurfaceLight,
+                                border = BorderStroke(1.dp, SemanticColors.SurfaceBorder),
                                 modifier = Modifier
-                                    .size(42.dp)
-                                    .clickable { scope.launch { drawerState.open() } }
+                                    .size(40.dp)
+                                    .clickable {
+                                        HrpHaptics.tick(hapticFeedback)
+                                        scope.launch { drawerState.open() }
+                                    }
                                     .testTag("topbar_brand_logo")
                             ) {
                                 Image(
@@ -616,15 +687,26 @@ fun MiniBiAppRoot(viewModel: MiniBiViewModel) {
                             ) {
                                 Surface(
                                     shape = CircleShape,
-                                    color = Color.White.copy(alpha = 0.88f),
+                                    color = if (enabledReminderCount > 0) {
+                                        MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.65f)
+                                    } else {
+                                        SemanticColors.SurfaceSubtle
+                                    },
                                     border = BorderStroke(
                                         width = 1.dp,
-                                        color = palette.lightTopBarBorder
+                                        color = if (enabledReminderCount > 0) {
+                                            MaterialTheme.colorScheme.primary.copy(alpha = 0.25f)
+                                        } else {
+                                            SemanticColors.SurfaceBorder
+                                        }
                                     ),
                                     modifier = Modifier
                                         .size(36.dp)
                                         .clip(CircleShape)
-                                        .clickable { reminderDialogOpen = true }
+                                        .clickable {
+                                            HrpHaptics.tick(hapticFeedback)
+                                            reminderDialogOpen = true
+                                        }
                                         .testTag("topbar_bell_reminder_button")
                                 ) {
                                     Box(
@@ -642,15 +724,16 @@ fun MiniBiAppRoot(viewModel: MiniBiViewModel) {
 
                                 if (enabledReminderCount > 0) {
                                     Surface(
-                                        shape = RoundedCornerShape(50),
+                                        shape = CircleShape,
                                         color = SemanticColors.ErrorLight,
+                                        border = BorderStroke(1.dp, SemanticColors.SurfaceLight),
                                         modifier = Modifier
                                             .align(Alignment.TopEnd)
                                             .testTag("topbar_bell_reminder_badge")
                                     ) {
                                         Text(
                                             text = enabledReminderCount.coerceAtMost(99).toString(),
-                                            style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp),
+                                            style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp).tabularNums(),
                                             fontWeight = FontWeight.Bold,
                                             color = Color.White,
                                             maxLines = 1,
@@ -660,13 +743,13 @@ fun MiniBiAppRoot(viewModel: MiniBiViewModel) {
                                 }
                             }
                         }
-                        HorizontalDivider(thickness = 1.dp, color = palette.lightTopBarBorder)
+                        HorizontalDivider(thickness = 1.dp, color = SemanticColors.SurfaceBorder)
                     }
                 }
             },
             bottomBar = {
                 Column(modifier = Modifier.fillMaxWidth()) {
-                    HorizontalDivider(thickness = 1.dp, color = MaterialTheme.colorScheme.outline)
+                    HorizontalDivider(thickness = 1.dp, color = SemanticColors.SurfaceBorder)
                     val currentDensity = LocalDensity.current
                     val bottomBarDensity = Density(
                         density = currentDensity.density,
@@ -682,20 +765,46 @@ fun MiniBiAppRoot(viewModel: MiniBiViewModel) {
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .windowInsetsPadding(NavigationBarDefaults.windowInsets)
-                                    .height(68.dp)
+                                    .height(66.dp)
                                     .selectableGroup()
                                     .padding(horizontal = 2.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 navDestinations.forEach { (dest, filledIcon, outlinedIcon) ->
                                     val selected = currentDestination == dest
+                                    val pillColor by animateColorAsState(
+                                        targetValue = if (selected) {
+                                            MaterialTheme.colorScheme.primaryContainer
+                                        } else {
+                                            Color.Transparent
+                                        },
+                                        animationSpec = tween(durationMillis = 180),
+                                        label = "bottom_nav_pill_${dest.route}"
+                                    )
+                                    val itemTint by animateColorAsState(
+                                        targetValue = if (selected) {
+                                            MaterialTheme.colorScheme.primary
+                                        } else {
+                                            MaterialTheme.colorScheme.onSurfaceVariant
+                                        },
+                                        animationSpec = tween(durationMillis = 180),
+                                        label = "bottom_nav_tint_${dest.route}"
+                                    )
+                                    val interactionSource = remember { MutableInteractionSource() }
                                     Column(
                                         modifier = Modifier
                                             .weight(1f)
                                             .fillMaxHeight()
                                             .selectable(
                                                 selected = selected,
-                                                onClick = { viewModel.navigateTo(dest) },
+                                                interactionSource = interactionSource,
+                                                indication = null,
+                                                onClick = {
+                                                    if (!selected) {
+                                                        HrpHaptics.tick(hapticFeedback)
+                                                        viewModel.navigateTo(dest)
+                                                    }
+                                                },
                                                 role = Role.Tab
                                             )
                                             .padding(horizontal = 1.dp, vertical = 6.dp)
@@ -705,24 +814,17 @@ fun MiniBiAppRoot(viewModel: MiniBiViewModel) {
                                     ) {
                                         Box(
                                             modifier = Modifier
-                                                .width(52.dp)
-                                                .height(30.dp)
-                                                .clip(RoundedCornerShape(15.dp))
-                                                .background(
-                                                    if (selected) MaterialTheme.colorScheme.primaryContainer
-                                                    else Color.Transparent
-                                                ),
+                                                .width(50.dp)
+                                                .height(28.dp)
+                                                .clip(RoundedCornerShape(14.dp))
+                                                .background(pillColor),
                                             contentAlignment = Alignment.Center
                                         ) {
                                             Icon(
                                                 imageVector = if (selected) filledIcon else outlinedIcon,
                                                 contentDescription = dest.label,
-                                                tint = if (selected) {
-                                                    MaterialTheme.colorScheme.primary
-                                                } else {
-                                                    MaterialTheme.colorScheme.onSurfaceVariant
-                                                },
-                                                modifier = Modifier.size(22.dp)
+                                                tint = itemTint,
+                                                modifier = Modifier.size(21.dp)
                                             )
                                         }
                                         Spacer(modifier = Modifier.height(4.dp))
@@ -734,11 +836,7 @@ fun MiniBiAppRoot(viewModel: MiniBiViewModel) {
                                                 letterSpacing = (-0.15).sp
                                             ),
                                             fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
-                                            color = if (selected) {
-                                                MaterialTheme.colorScheme.primary
-                                            } else {
-                                                MaterialTheme.colorScheme.onSurfaceVariant
-                                            },
+                                            color = itemTint,
                                             maxLines = 1,
                                             softWrap = false,
                                             overflow = TextOverflow.Visible,

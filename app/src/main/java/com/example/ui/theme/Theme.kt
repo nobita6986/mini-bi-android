@@ -53,14 +53,16 @@ fun MyApplicationTheme(
             tertiary = palette.lightAccent,
             onTertiary = Color.White,
             background = palette.lightBg,
-            onBackground = Color(0xFF0F172A),
+            onBackground = SemanticColors.TextPrimary,
             surface = palette.lightSurface,
-            onSurface = Color(0xFF0F172A),
-            surfaceVariant = Color(0xFFF3F4F6),
-            onSurfaceVariant = Color(0xFF5B6B7F),
-            outline = Color(0xFFE5E7EB),
+            onSurface = SemanticColors.TextPrimary,
+            surfaceVariant = SemanticColors.SurfaceSubtle,
+            onSurfaceVariant = SemanticColors.TextSecondary,
+            outline = SemanticColors.SurfaceBorder,
             outlineVariant = palette.lightTopBarBorder,
             error = SemanticColors.ErrorLight,
+            errorContainer = SemanticColors.ErrorBg,
+            onErrorContainer = SemanticColors.ErrorText,
             onError = Color.White
         )
     }

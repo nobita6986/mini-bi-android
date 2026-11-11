@@ -38,6 +38,15 @@ val GeistMono = GeistSans
 /** Alias preserved for call-sites, unified to GeistSans for consistent typography. */
 val JetBrainsMono = GeistSans
 
+/** Reusable style with OpenType tabular figures (`tnum`) enabled for aligned numbers. */
+val TabularDigitStyle = TextStyle(
+    fontFamily = GeistSans,
+    fontFeatureSettings = "tnum"
+)
+
+/** Enables OpenType tabular figures (`tnum`) so KPIs, salaries, IDs, dates, and timers never jitter horizontally. */
+fun TextStyle.tabularNums(): TextStyle = copy(fontFeatureSettings = "tnum")
+
 val Typography = Typography(
     displayLarge = TextStyle(
         fontFamily = GeistSans,
@@ -124,6 +133,7 @@ val Typography = Typography(
         fontWeight = FontWeight.Medium,
         fontSize = 11.sp,
         lineHeight = 14.sp,
-        letterSpacing = 0.15.sp
+        letterSpacing = 0.15.sp,
+        fontFeatureSettings = "tnum"
     )
 )
