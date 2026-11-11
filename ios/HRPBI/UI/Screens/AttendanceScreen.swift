@@ -635,7 +635,7 @@ public struct AttendanceScreen: View {
                         .buttonStyle(HrpPressableButtonStyle())
                         .disabled(!canSubmitAttendance)
                     } else {
-                        // Primary Hero Action Button ("Chấm công ngay" + "Hôm nay: X lượt" badge)
+                        // Primary Hero Action Button ("CHẤM CÔNG NGAY" + "Hôm nay: X lượt" centered 2-line VStack)
                         Button {
                             HapticsManager.lightImpact()
                             locationManager.requestLocationUpdate()
@@ -644,24 +644,27 @@ public struct AttendanceScreen: View {
                             }
                             isShowingCamera = true
                         } label: {
-                            HStack(spacing: 10) {
-                                Image(systemName: "camera.fill")
-                                    .font(.system(size: 16, weight: .bold))
-                                Text("Chấm công ngay")
-                                    .font(.subheadline.weight(.bold))
-                                Spacer()
+                            VStack(alignment: .center, spacing: 4) {
+                                HStack(spacing: 8) {
+                                    Image(systemName: "camera.fill")
+                                        .font(.system(size: 18, weight: .bold))
+                                    Text("CHẤM CÔNG NGAY")
+                                        .font(.system(size: 17, weight: .heavy, design: .rounded))
+                                        .tracking(0.4)
+                                        .lineLimit(1)
+                                }
                                 Text("Hôm nay: \(viewModel.todayServerAttendanceCount) lượt")
-                                    .font(.caption.weight(.bold))
+                                    .font(.caption.weight(.semibold))
                                     .monospacedDigit()
                                     .contentTransition(.numericText())
-                                    .padding(.horizontal, 10)
-                                    .padding(.vertical, 5)
-                                    .background(Color.white.opacity(0.22))
-                                    .clipShape(Capsule())
+                                    .foregroundColor(Color.white.opacity(0.92))
+                                    .lineLimit(1)
                             }
+                            .multilineTextAlignment(.center)
+                            .padding(.vertical, 12)
                             .padding(.horizontal, 16)
                             .foregroundColor(.white)
-                            .frame(maxWidth: .infinity, minHeight: 52)
+                            .frame(maxWidth: .infinity, minHeight: 62)
                             .background(theme.primary)
                             .clipShape(RoundedRectangle(cornerRadius: HrpDesignTokens.radiusMD, style: .continuous))
                         }
@@ -869,7 +872,7 @@ public struct AttendanceScreen: View {
                                     )
 
                                     VStack(alignment: .leading, spacing: 3) {
-                                        Text(item.note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Chấm công xác thực" : item.note)
+                                        Text(item.note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Đã chấm công" : item.note)
                                             .font(.subheadline.weight(.semibold))
                                             .foregroundColor(SemanticColors.textPrimary)
                                             .lineLimit(1)
@@ -893,6 +896,7 @@ public struct AttendanceScreen: View {
                                             .font(.system(size: 11, weight: .semibold))
                                             .foregroundColor(SemanticColors.textMuted)
                                     }
+                                    .fixedSize(horizontal: true, vertical: false)
                                 }
                                 .padding(.vertical, 10)
                                 .padding(.horizontal, 12)
@@ -3248,7 +3252,7 @@ public struct AttendanceScreen: View {
                                 Text("HỘP THƯ PHÊ DUYỆT GIẢI TRÌNH")
                                     .font(.caption2.weight(.bold))
                                     .foregroundColor(theme.primary)
-                                Text("Xét duyệt giải trình")
+                                Text("Duyệt giải trình")
                                     .font(.headline.weight(.bold))
                                     .foregroundColor(SemanticColors.textPrimary)
                             }

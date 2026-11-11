@@ -145,6 +145,9 @@ public struct DashboardScreen: View {
         .background(theme.background)
         .dismissKeyboardOnTapOutside()
         .onAppear {
+            if viewModel.dashboardScope != "all" {
+                viewModel.dashboardScope = "all"
+            }
             if viewModel.isAuthenticated
                 && !viewModel.isLoadingDashboard
                 && !viewModel.hasLoadedDashboardInSession {
@@ -203,54 +206,12 @@ public struct DashboardScreen: View {
         .redacted(reason: .placeholder)
     }
 
-    // MARK: - Date & Scope Filter Bar (Compact Single Row: Scope Menu + Period Chips)
-
-    private var currentScopeLabel: String {
-        switch viewModel.dashboardScope {
-        case "team": return "Theo nhóm"
-        case "own": return "Cá nhân"
-        default: return "Toàn công ty"
-        }
-    }
+    // MARK: - Date Filter Bar (Full-Width Period Chips)
 
     private var dateAndScopeFilterBar: some View {
         let theme = viewModel.selectedTheme
         return ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
-                Menu {
-                    ForEach([("all", "Toàn công ty"), ("team", "Theo nhóm"), ("own", "Cá nhân")], id: \.0) { scopeCode, label in
-                        Button {
-                            HapticsManager.selection()
-                            viewModel.dashboardScope = scopeCode
-                            Task { await viewModel.loadDashboardData() }
-                        } label: {
-                            HStack {
-                                Text(label)
-                                if viewModel.dashboardScope == scopeCode {
-                                    Image(systemName: "checkmark")
-                                }
-                            }
-                        }
-                    }
-                } label: {
-                    HStack(spacing: 5) {
-                        Image(systemName: "building.2.fill")
-                            .font(.system(size: 11, weight: .semibold))
-                        Text(currentScopeLabel)
-                            .font(.caption.weight(.bold))
-                        Image(systemName: "chevron.down")
-                            .font(.system(size: 9, weight: .bold))
-                    }
-                    .padding(.horizontal, 11)
-                    .padding(.vertical, 6)
-                    .frame(minHeight: 32)
-                    .background(theme.primary)
-                    .foregroundColor(.white)
-                    .clipShape(Capsule())
-                }
-
-                Divider().frame(height: 18)
-
                 ForEach(DateFilterPreset.allCases) { preset in
                     let selected = viewModel.selectedDatePreset == preset
                     Button {
@@ -259,11 +220,15 @@ public struct DashboardScreen: View {
                     } label: {
                         Text(preset.titleVi)
                             .font(.caption.weight(selected ? .bold : .medium))
-                            .padding(.horizontal, 11)
+                            .padding(.horizontal, 12)
                             .padding(.vertical, 6)
                             .frame(minHeight: 32)
                             .background(selected ? theme.primaryLight : SemanticColors.surfaceMuted)
                             .foregroundColor(selected ? theme.primary : SemanticColors.textSecondary)
+                            .overlay(
+                                Capsule()
+                                    .stroke(selected ? theme.primary.opacity(0.35) : Color.clear, lineWidth: 1)
+                            )
                             .clipShape(Capsule())
                             .contentShape(Capsule())
                     }

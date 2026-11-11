@@ -1582,6 +1582,18 @@ public struct WorkersScreen: View {
         self.viewModel = viewModel
     }
 
+    public static func compactWorkerStatusLabel(_ rawStatus: String) -> String {
+        let trimmed = rawStatus.trimmingCharacters(in: .whitespacesAndNewlines)
+        switch trimmed.lowercased() {
+        case "đang làm việc":
+            return "Đang làm"
+        case "đã nghỉ việc":
+            return "Đã nghỉ"
+        default:
+            return trimmed
+        }
+    }
+
     public var body: some View {
         let theme = viewModel.selectedTheme
         let visibleTabs = viewModel.visibleWorkerTabs
@@ -1869,18 +1881,18 @@ public struct WorkersScreen: View {
                                 if viewModel.isLoadingWorkers && viewModel.workers.isEmpty {
                                     VStack(spacing: 10) {
                                         ForEach(0..<3, id: \.self) { _ in
-                                            HStack(spacing: 12) {
+                                            HStack(spacing: 10) {
                                                 Circle()
                                                     .fill(SemanticColors.surfaceMuted)
-                                                    .frame(width: 40, height: 40)
+                                                    .frame(width: 38, height: 38)
                                                 VStack(alignment: .leading, spacing: 4) {
-                                                    Text("Nguyễn Văn A · HRP-1024")
+                                                    Text("Nguyễn Văn A")
                                                         .font(.subheadline.weight(.semibold))
-                                                    Text("Sản xuất Điện tử · 0912345678")
+                                                    Text("Sản xuất Điện tử")
                                                         .font(.caption)
                                                 }
                                                 Spacer()
-                                                Text("Đang làm việc")
+                                                Text("Đang làm")
                                                     .font(.caption2.weight(.bold))
                                             }
                                             .padding(14)
@@ -1896,35 +1908,37 @@ public struct WorkersScreen: View {
                                 } else {
                                     LazyVStack(spacing: 10) {
                                         ForEach(viewModel.workers) { worker in
-                                            let subtitleParts = [worker.duAn, worker.sdt, worker.nguoiTuyen]
+                                            let trimmedProject = worker.duAn.trimmingCharacters(in: .whitespacesAndNewlines)
+                                            let fallbackParts = [worker.sdt, worker.nguoiTuyen]
                                                 .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
                                                 .filter { !$0.isEmpty }
+                                            let subtitleText: String = {
+                                                if !trimmedProject.isEmpty {
+                                                    return trimmedProject
+                                                }
+                                                if !fallbackParts.isEmpty {
+                                                    return fallbackParts.joined(separator: " · ")
+                                                }
+                                                return "Chưa phân dự án"
+                                            }()
+                                            let compactStatus = Self.compactWorkerStatusLabel(worker.trangThai)
 
-                                            HStack(spacing: 12) {
+                                            HStack(spacing: 10) {
                                                 HrpInitialsAvatar(
                                                     fullName: worker.hoTen,
                                                     tint: theme.primary,
-                                                    size: 40
+                                                    size: 38
                                                 )
 
                                                 VStack(alignment: .leading, spacing: 3) {
-                                                    HStack(spacing: 6) {
-                                                        Text(worker.hoTen)
-                                                            .font(.subheadline.weight(.semibold))
-                                                            .foregroundColor(SemanticColors.textPrimary)
-                                                            .lineLimit(1)
-                                                        if !worker.displayEmployeeCode.isEmpty {
-                                                            Text(worker.displayEmployeeCode)
-                                                                .font(.caption2.weight(.semibold))
-                                                                .monospacedDigit()
-                                                                .foregroundColor(SemanticColors.textMuted)
-                                                                .lineLimit(1)
-                                                        }
-                                                    }
+                                                    Text(worker.hoTen)
+                                                        .font(.subheadline.weight(.semibold))
+                                                        .foregroundColor(SemanticColors.textPrimary)
+                                                        .lineLimit(1)
+                                                        .minimumScaleFactor(0.92)
 
-                                                    Text(subtitleParts.isEmpty ? "Chưa phân dự án" : subtitleParts.joined(separator: " · "))
+                                                    Text(subtitleText)
                                                         .font(.caption)
-                                                        .monospacedDigit()
                                                         .foregroundColor(SemanticColors.textSecondary)
                                                         .lineLimit(1)
                                                 }
@@ -1932,10 +1946,10 @@ public struct WorkersScreen: View {
                                                 Spacer(minLength: 6)
 
                                                 VStack(alignment: .trailing, spacing: 6) {
-                                                    Text(worker.trangThai)
+                                                    Text(compactStatus)
                                                         .font(.caption2.weight(.bold))
-                                                        .padding(.horizontal, 8)
-                                                        .padding(.vertical, 3)
+                                                        .padding(.horizontal, 7)
+                                                        .padding(.vertical, 2.5)
                                                         .background(worker.trangThai.contains("Đang") ? SemanticColors.successBg : SemanticColors.warningBg)
                                                         .foregroundColor(worker.trangThai.contains("Đang") ? SemanticColors.successText : SemanticColors.warningText)
                                                         .clipShape(Capsule())
@@ -1972,6 +1986,7 @@ public struct WorkersScreen: View {
                                                         }
                                                     }
                                                 }
+                                                .fixedSize(horizontal: true, vertical: false)
                                             }
                                             .padding(14)
                                             .contentShape(Rectangle())

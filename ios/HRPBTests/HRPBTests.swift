@@ -444,7 +444,7 @@ final class HRPBTests: XCTestCase {
         )
         let empTabs = LeaveContract.resolveVisibleAttendanceTabs(authority: employeeAuth, errorCode: nil)
         XCTAssertEqual(empTabs, [.checkIn, .explanation, .leaveRequest])
-        XCTAssertEqual(empTabs.map(\.label), ["Chấm công", "Giải trình", "Xin nghỉ phép"])
+        XCTAssertEqual(empTabs.map(\.label), ["Chấm công", "Giải trình", "Nghỉ phép"])
 
         // 2. Approver (Team Leader / Department Head / Admin / BoD) -> sees all 5 tabs in exact order
         let approverAuth = LeaveAuthorityProjection(
@@ -461,7 +461,7 @@ final class HRPBTests: XCTestCase {
         )
         XCTAssertEqual(
             approverTabs.map(\.label),
-            ["Chấm công", "Giải trình", "Xin nghỉ phép", "Xét duyệt giải trình", "Duyệt nghỉ"]
+            ["Chấm công", "Giải trình", "Nghỉ phép", "Duyệt giải trình", "Duyệt nghỉ"]
         )
 
         // 3. Shared non-employee account -> sees only Check-in
@@ -4143,8 +4143,19 @@ final class HRPBTests: XCTestCase {
     }
 
     func testAppllamaRound2LabelInitialsAndPaginationDefaults() async throws {
-        // 1. Shortened tab label ("Giải trình chấm công" -> "Giải trình")
+        // 1. Shortened tab labels ("Giải trình", "Nghỉ phép", "Duyệt giải trình")
         XCTAssertEqual(AttendanceAreaTab.explanation.label, "Giải trình")
+        XCTAssertEqual(AttendanceAreaTab.leaveRequest.label, "Nghỉ phép")
+        XCTAssertEqual(AttendanceAreaTab.explanationApproval.label, "Duyệt giải trình")
+
+        // 1b. Compact worker status helper ("Đang làm việc" -> "Đang làm", "Đã nghỉ việc" -> "Đã nghỉ")
+        XCTAssertEqual(WorkersScreen.compactWorkerStatusLabel("Đang làm việc"), "Đang làm")
+        XCTAssertEqual(WorkersScreen.compactWorkerStatusLabel("Đã nghỉ việc"), "Đã nghỉ")
+        XCTAssertEqual(WorkersScreen.compactWorkerStatusLabel("Chờ nhận việc"), "Chờ nhận việc")
+
+        // 1c. RecruitmentPostContract page size & security invariants preserved
+        XCTAssertEqual(RecruitmentPostContract.defaultPageSize, 10)
+        XCTAssertEqual(RecruitmentPostContract.maxPageSize, 10)
 
         // 2. Explanation default page limit is 15
         XCTAssertEqual(AttendanceExplanationContract.defaultPageLimit, 15)

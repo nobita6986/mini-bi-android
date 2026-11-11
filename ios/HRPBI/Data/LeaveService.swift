@@ -19,9 +19,9 @@ public enum AttendanceAreaTab: String, CaseIterable, Identifiable, Equatable, Se
         case .explanation:
             return "Giải trình"
         case .leaveRequest:
-            return "Xin nghỉ phép"
+            return "Nghỉ phép"
         case .explanationApproval:
-            return "Xét duyệt giải trình"
+            return "Duyệt giải trình"
         case .leaveApproval:
             return "Duyệt nghỉ"
         }
