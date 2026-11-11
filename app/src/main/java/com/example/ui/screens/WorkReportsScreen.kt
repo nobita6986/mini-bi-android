@@ -33,7 +33,6 @@ import androidx.compose.material.icons.filled.AssignmentTurnedIn
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.EditNote
-import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -292,52 +291,21 @@ fun WorkReportsScreen(
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             item {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    HrpSegmentedTabGroup(
-                        items = tabItems,
-                        selectedKey = currentTabKey,
-                        onSelect = { key ->
-                            val idx = tabItems.indexOfFirst { it.key == key }
-                            if (idx >= 0) {
-                                selectedTab = idx
-                            }
-                        },
-                        maxItemsPerRow = 3,
-                        tabHeight = if (tabItems.size >= 4) 32.dp else 34.dp,
-                        modifier = Modifier
-                            .weight(1f)
-                            .testTag("work_reports_tab_grid")
-                    )
-
-                    Surface(
-                        shape = RoundedCornerShape(10.dp),
-                        color = SemanticColors.SurfaceLight,
-                        shadowElevation = 0.5.dp,
-                        border = BorderStroke(1.dp, SemanticColors.SurfaceBorder)
-                    ) {
-                        IconButton(
-                            onClick = {
-                                HrpHaptics.tick(haptic)
-                                viewModel.refreshWorkReportsData(actor)
-                            },
-                            enabled = !loading && !mutationBusy,
-                            modifier = Modifier
-                                .size(34.dp)
-                                .testTag("work_reports_refresh_button")
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Refresh,
-                                contentDescription = "Làm mới báo cáo",
-                                tint = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.size(17.dp)
-                            )
+                HrpSegmentedTabGroup(
+                    items = tabItems,
+                    selectedKey = currentTabKey,
+                    onSelect = { key ->
+                        val idx = tabItems.indexOfFirst { it.key == key }
+                        if (idx >= 0) {
+                            selectedTab = idx
                         }
-                    }
-                }
+                    },
+                    maxItemsPerRow = 3,
+                    tabHeight = if (tabItems.size >= 4) 32.dp else 34.dp,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("work_reports_tab_grid")
+                )
             }
 
             if (currentTabKey != "analytics") {
