@@ -4107,4 +4107,38 @@ final class HRPBTests: XCTestCase {
         XCTAssertEqual(vm.taskReminders.count, countBeforeDelete - 1)
         XCTAssertNil(vm.taskReminders.first(where: { $0.id == edited.id }))
     }
+
+    // MARK: - 14. Appllama UI Design Tokens & Tab Icon Contract Tests
+
+    func testAppllamaNavTabIconNameOutlineVsFillAndDesignTokens() {
+        // Outline when unselected (`isSelected: false`)
+        XCTAssertEqual(MiniBiNavDestination.dashboard.tabIconName(isSelected: false), "chart.bar")
+        XCTAssertEqual(MiniBiNavDestination.workReports.tabIconName(isSelected: false), "doc.text")
+        XCTAssertEqual(MiniBiNavDestination.attendance.tabIconName(isSelected: false), "camera.viewfinder")
+        XCTAssertEqual(MiniBiNavDestination.workers.tabIconName(isSelected: false), "person.3")
+        XCTAssertEqual(MiniBiNavDestination.recruitment.tabIconName(isSelected: false), "megaphone")
+        XCTAssertEqual(MiniBiNavDestination.newEntry.tabIconName(isSelected: false), "person.badge.plus")
+
+        // Filled when selected (`isSelected: true`)
+        XCTAssertEqual(MiniBiNavDestination.dashboard.tabIconName(isSelected: true), "chart.bar.fill")
+        XCTAssertEqual(MiniBiNavDestination.workReports.tabIconName(isSelected: true), "doc.text.fill")
+        XCTAssertEqual(MiniBiNavDestination.attendance.tabIconName(isSelected: true), "camera.fill")
+        XCTAssertEqual(MiniBiNavDestination.workers.tabIconName(isSelected: true), "person.3.fill")
+        XCTAssertEqual(MiniBiNavDestination.recruitment.tabIconName(isSelected: true), "megaphone.fill")
+        XCTAssertEqual(MiniBiNavDestination.newEntry.tabIconName(isSelected: true), "person.badge.plus.fill")
+
+        // Backward-compatible `systemIconName` preserved
+        XCTAssertEqual(MiniBiNavDestination.dashboard.systemIconName, "chart.bar.fill")
+        XCTAssertEqual(MiniBiNavDestination.workReports.systemIconName, "doc.text.fill")
+        XCTAssertEqual(MiniBiNavDestination.attendance.systemIconName, "camera.viewfinder")
+        XCTAssertEqual(MiniBiNavDestination.workers.systemIconName, "person.3.fill")
+        XCTAssertEqual(MiniBiNavDestination.recruitment.systemIconName, "megaphone.fill")
+        XCTAssertEqual(MiniBiNavDestination.newEntry.systemIconName, "person.badge.plus")
+
+        // 4-step continuous corner radius scale (`HrpDesignTokens`)
+        XCTAssertEqual(HrpDesignTokens.radiusXS, 8)
+        XCTAssertEqual(HrpDesignTokens.radiusMD, 12)
+        XCTAssertEqual(HrpDesignTokens.radiusCard, 16)
+        XCTAssertEqual(HrpDesignTokens.radiusHero, 22)
+    }
 }

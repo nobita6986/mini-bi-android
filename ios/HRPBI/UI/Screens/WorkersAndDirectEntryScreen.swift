@@ -37,40 +37,57 @@ public struct DirectEntryNewWorkersScreen: View {
                 .padding(24)
             } else {
                 VStack(spacing: 0) {
-                    // Top Action Bar
+                    // Clean Top Header (Back + Title & Row Badge + History)
                     HStack(spacing: 10) {
                         if !viewModel.visibleWorkerTabs.isEmpty {
                             Button {
+                                HapticsManager.selection()
                                 KeyboardDismissal.dismiss()
                                 viewModel.navigateTo(.workers)
                             } label: {
                                 HStack(spacing: 4) {
                                     Image(systemName: "chevron.left")
+                                        .font(.system(size: 12, weight: .bold))
                                     Text("Nhân sự")
                                 }
                                 .font(.caption.weight(.bold))
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 8)
-                                .background(Color(hex: 0xF1F5F9))
+                                .padding(.horizontal, 12)
+                                .frame(minHeight: 44)
+                                .background(SemanticColors.surfaceMuted)
                                 .foregroundColor(SemanticColors.textPrimary)
-                                .cornerRadius(8)
+                                .clipShape(RoundedRectangle(cornerRadius: HrpDesignTokens.radiusXS, style: .continuous))
+                                .contentShape(Rectangle())
                             }
-                            .buttonStyle(.plain)
+                            .buttonStyle(HrpPressableButtonStyle())
                             .accessibilityIdentifier("back_to_workers_from_new_entry")
                         }
 
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("Cấp mới hồ sơ NLĐ (\(viewModel.newWorkerDraftRows.count) dòng)")
-                                .font(.subheadline.weight(.bold))
-                                .foregroundColor(SemanticColors.textPrimary)
+                            HStack(spacing: 6) {
+                                Text("Cấp mới hồ sơ NLĐ")
+                                    .font(.subheadline.weight(.bold))
+                                    .foregroundColor(SemanticColors.textPrimary)
+                                    .lineLimit(1)
+                                Text("\(viewModel.newWorkerDraftRows.count) dòng")
+                                    .font(.caption2.weight(.bold))
+                                    .monospacedDigit()
+                                    .contentTransition(.numericText())
+                                    .padding(.horizontal, 7)
+                                    .padding(.vertical, 2)
+                                    .background(theme.primaryLight)
+                                    .foregroundColor(theme.primary)
+                                    .clipShape(Capsule())
+                            }
                             Text("Dữ liệu đang nhập được giữ nguyên khi chuyển menu")
                                 .font(.caption2)
                                 .foregroundColor(SemanticColors.successText)
+                                .lineLimit(1)
                         }
 
                         Spacer()
 
                         Button {
+                            HapticsManager.selection()
                             KeyboardDismissal.dismiss()
                             Task {
                                 await viewModel.loadDirectEntryBatchHistory()
@@ -82,66 +99,32 @@ public struct DirectEntryNewWorkersScreen: View {
                                 Text("Lịch sử")
                             }
                             .font(.caption.weight(.semibold))
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 8)
+                            .padding(.horizontal, 12)
+                            .frame(minHeight: 44)
                             .background(theme.primaryLight)
                             .foregroundColor(theme.primary)
-                            .cornerRadius(8)
+                            .clipShape(RoundedRectangle(cornerRadius: HrpDesignTokens.radiusXS, style: .continuous))
+                            .contentShape(Rectangle())
                         }
-
-                        Button {
-                            KeyboardDismissal.dismiss()
-                            viewModel.addNewWorkerDraftRow()
-                        } label: {
-                            HStack(spacing: 4) {
-                                Image(systemName: "plus")
-                                Text("Thêm dòng")
-                            }
-                            .font(.caption.weight(.bold))
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 8)
-                            .background(Color(hex: 0xF1F5F9))
-                            .foregroundColor(SemanticColors.textPrimary)
-                            .cornerRadius(8)
-                        }
-
-                        Button {
-                            KeyboardDismissal.dismiss()
-                            Task {
-                                await viewModel.submitNewWorkerDraftBatch(confirmedDuplicates: false)
-                            }
-                        } label: {
-                            HStack(spacing: 4) {
-                                if viewModel.isSubmittingNewWorkers {
-                                    ProgressView().tint(.white).scaleEffect(0.8)
-                                } else {
-                                    Image(systemName: "checkmark.circle.fill")
-                                }
-                                Text("Lưu cấp mới")
-                            }
-                            .font(.caption.weight(.bold))
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 8)
-                            .background(theme.primary)
-                            .foregroundColor(.white)
-                            .cornerRadius(8)
-                        }
-                        .disabled(viewModel.isSubmittingNewWorkers)
+                        .buttonStyle(HrpPressableButtonStyle())
                     }
                     .padding(.horizontal, 14)
-                    .padding(.vertical, 10)
+                    .padding(.vertical, 8)
                     .background(Color.white)
 
-                    Divider()
+                    Rectangle()
+                        .fill(SemanticColors.borderSubtle.opacity(0.65))
+                        .frame(height: 0.5)
 
                     ScrollView {
-                        VStack(spacing: 14) {
+                        LazyVStack(spacing: 14) {
                             ForEach(Array(viewModel.newWorkerDraftRows.enumerated()), id: \.element.rowId) { index, draft in
                                 NewWorkerDraftRowCard(
                                     index: index,
                                     draft: draft,
                                     viewModel: viewModel,
                                     onScanQrTap: {
+                                        HapticsManager.selection()
                                         KeyboardDismissal.dismiss()
                                         activeQrScannerRowId = draft.rowId
                                     }
@@ -153,6 +136,61 @@ public struct DirectEntryNewWorkersScreen: View {
                     .refreshable {
                         await viewModel.loadDirectEntryAssigneeOptions(force: true)
                     }
+
+                    // Sticky Bottom Action Bar (`.ultraThinMaterial`)
+                    VStack(spacing: 0) {
+                        Rectangle()
+                            .fill(SemanticColors.borderSubtle.opacity(0.65))
+                            .frame(height: 0.5)
+
+                        HStack(spacing: 10) {
+                            Button {
+                                HapticsManager.lightImpact()
+                                KeyboardDismissal.dismiss()
+                                withAnimation(.spring(response: 0.3, dampingFraction: 0.82)) {
+                                    viewModel.addNewWorkerDraftRow()
+                                }
+                            } label: {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "plus.circle.fill")
+                                    Text("Thêm dòng")
+                                }
+                                .font(.subheadline.weight(.bold))
+                                .frame(maxWidth: .infinity, minHeight: 48)
+                                .background(SemanticColors.surfaceMuted)
+                                .foregroundColor(SemanticColors.textPrimary)
+                                .clipShape(RoundedRectangle(cornerRadius: HrpDesignTokens.radiusMD, style: .continuous))
+                            }
+                            .buttonStyle(HrpPressableButtonStyle())
+
+                            Button {
+                                HapticsManager.success()
+                                KeyboardDismissal.dismiss()
+                                Task {
+                                    await viewModel.submitNewWorkerDraftBatch(confirmedDuplicates: false)
+                                }
+                            } label: {
+                                HStack(spacing: 6) {
+                                    if viewModel.isSubmittingNewWorkers {
+                                        ProgressView().tint(.white).scaleEffect(0.85)
+                                    } else {
+                                        Image(systemName: "checkmark.circle.fill")
+                                    }
+                                    Text("Lưu cấp mới")
+                                }
+                                .font(.subheadline.weight(.bold))
+                                .frame(maxWidth: .infinity, minHeight: 48)
+                                .background(theme.primary)
+                                .foregroundColor(.white)
+                                .clipShape(RoundedRectangle(cornerRadius: HrpDesignTokens.radiusMD, style: .continuous))
+                            }
+                            .buttonStyle(HrpPressableButtonStyle())
+                            .disabled(viewModel.isSubmittingNewWorkers)
+                        }
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 10)
+                    }
+                    .background(.ultraThinMaterial)
                 }
             }
         }
@@ -178,6 +216,7 @@ public struct DirectEntryNewWorkersScreen: View {
         }
         .sheet(isPresented: $showBatchHistorySheet) {
             DirectEntryBatchHistorySheet(viewModel: viewModel)
+                .hrpSheetPresentation(detents: [.medium, .large])
         }
         .alert("Phát hiện CCCD đã tồn tại trong hệ thống", isPresented: $viewModel.showDuplicateConfirmDialog) {
             Button("Huỷ kiểm tra", role: .cancel) {
@@ -906,12 +945,7 @@ struct NewWorkerDraftRowCard: View {
             }
         }
         .padding(14)
-        .background(Color.white)
-        .cornerRadius(14)
-        .overlay(
-            RoundedRectangle(cornerRadius: 14)
-                .stroke(SemanticColors.borderSubtle, lineWidth: 1)
-        )
+        .hrpCardSurface(cornerRadius: HrpDesignTokens.radiusCard)
         .sheet(isPresented: $showProjectSearchSheet) {
             DirectEntrySearchablePickerSheet(
                 title: "Chọn Dự án",
@@ -927,6 +961,7 @@ struct NewWorkerDraftRowCard: View {
                     }
                 }
             )
+            .hrpSheetPresentation(detents: [.medium, .large])
         }
         .sheet(isPresented: $showRecruiterSearchSheet) {
             DirectEntrySearchablePickerSheet(
@@ -943,6 +978,7 @@ struct NewWorkerDraftRowCard: View {
                     }
                 }
             )
+            .hrpSheetPresentation(detents: [.medium, .large])
         }
         .sheet(isPresented: $showBankSearchSheet) {
             DirectEntrySearchablePickerSheet(
@@ -958,6 +994,7 @@ struct NewWorkerDraftRowCard: View {
                     }
                 }
             )
+            .hrpSheetPresentation(detents: [.medium, .large])
         }
         .sheet(item: $activeCameraTarget) { target in
             CameraPhotoCaptureSheet { capturedData in
@@ -1576,6 +1613,7 @@ public struct WorkersScreen: View {
                             ForEach(visibleTabs, id: \.key) { tab in
                                 let selected = viewModel.selectedWorkerScope == tab.key
                                 Button {
+                                    HapticsManager.selection()
                                     viewModel.selectedWorkerScope = tab.key
                                     Task { await viewModel.loadWorkers(resetPage: true) }
                                 } label: {
@@ -1583,9 +1621,11 @@ public struct WorkersScreen: View {
                                         .font(.caption.weight(selected ? .bold : .semibold))
                                         .padding(.horizontal, 14)
                                         .padding(.vertical, 9)
-                                        .background(selected ? theme.primary : Color(hex: 0xF1F5F9))
+                                        .frame(minHeight: 36)
+                                        .background(selected ? theme.primary : SemanticColors.surfaceMuted)
                                         .foregroundColor(selected ? .white : SemanticColors.textSecondary)
                                         .clipShape(Capsule())
+                                        .contentShape(Capsule())
                                 }
                                 .buttonStyle(.plain)
                             }
@@ -1600,6 +1640,7 @@ public struct WorkersScreen: View {
                         HStack(spacing: 10) {
                             if viewModel.canShowPmSalaryAdvanceButton {
                                 Button {
+                                    HapticsManager.selection()
                                     KeyboardDismissal.dismiss()
                                     Task { await viewModel.openSalaryAdvanceSheet() }
                                 } label: {
@@ -1612,6 +1653,8 @@ public struct WorkersScreen: View {
                                         if viewModel.salaryAdvancePmBadgeCount > 0 {
                                             Text("\(viewModel.salaryAdvancePmBadgeCount)")
                                                 .font(.caption2.weight(.bold))
+                                                .monospacedDigit()
+                                                .contentTransition(.numericText())
                                                 .padding(.horizontal, 6)
                                                 .padding(.vertical, 2)
                                                 .background(Color.white.opacity(0.24))
@@ -1622,14 +1665,15 @@ public struct WorkersScreen: View {
                                     .frame(maxWidth: .infinity, minHeight: 46)
                                     .background(theme.primary)
                                     .foregroundColor(.white)
-                                    .cornerRadius(12)
+                                    .clipShape(RoundedRectangle(cornerRadius: HrpDesignTokens.radiusMD, style: .continuous))
                                 }
-                                .buttonStyle(.plain)
+                                .buttonStyle(HrpPressableButtonStyle())
                                 .accessibilityIdentifier("salary_advance_open_button")
                             }
 
                             if viewModel.canAccessNewWorkerEntry {
                                 Button {
+                                    HapticsManager.selection()
                                     KeyboardDismissal.dismiss()
                                     viewModel.navigateTo(.newEntry)
                                 } label: {
@@ -1643,9 +1687,9 @@ public struct WorkersScreen: View {
                                     .frame(maxWidth: .infinity, minHeight: 46)
                                     .background(theme.primary)
                                     .foregroundColor(.white)
-                                    .cornerRadius(12)
+                                    .clipShape(RoundedRectangle(cornerRadius: HrpDesignTokens.radiusMD, style: .continuous))
                                 }
-                                .buttonStyle(.plain)
+                                .buttonStyle(HrpPressableButtonStyle())
                                 .accessibilityIdentifier("go_to_new_entry_from_workers")
                             }
                         }
@@ -1655,13 +1699,33 @@ public struct WorkersScreen: View {
                     }
 
                     if viewModel.selectedWorkerScope == "uploader" {
-                        Divider()
+                        Rectangle()
+                            .fill(SemanticColors.borderSubtle.opacity(0.65))
+                            .frame(height: 0.5)
 
                         ScrollView {
                             VStack(spacing: 10) {
                                 if viewModel.isLoadingOwnSubmissions && viewModel.ownSubmissions.isEmpty {
-                                    ProgressView("Đang tải danh sách lô hồ sơ đã gửi...")
-                                        .padding(.vertical, 20)
+                                    VStack(spacing: 10) {
+                                        ForEach(0..<3, id: \.self) { _ in
+                                            VStack(alignment: .leading, spacing: 6) {
+                                                HStack {
+                                                    Text("Lô #1024")
+                                                        .font(.subheadline.weight(.bold))
+                                                    Spacer()
+                                                    Text("APPROVED")
+                                                        .font(.caption2.weight(.bold))
+                                                }
+                                                Text("Tổng dòng: 5 · Đã duyệt: 5 · Chờ: 0")
+                                                    .font(.caption)
+                                                Text("Thời gian: 10:30 11/11/2026")
+                                                    .font(.caption2)
+                                            }
+                                            .padding(14)
+                                            .hrpCardSurface(cornerRadius: HrpDesignTokens.radiusCard)
+                                        }
+                                    }
+                                    .redacted(reason: .placeholder)
                                 } else if let err = viewModel.ownSubmissionsErrorMessage, viewModel.ownSubmissions.isEmpty {
                                     VStack(spacing: 8) {
                                         Text(err)
@@ -1669,14 +1733,15 @@ public struct WorkersScreen: View {
                                             .foregroundColor(SemanticColors.dangerText)
                                             .multilineTextAlignment(.center)
                                         Button("Thử lại") {
+                                            HapticsManager.lightImpact()
                                             Task { await viewModel.refreshOwnSubmissions(reset: true) }
                                         }
                                         .font(.caption.weight(.bold))
-                                        .padding(.horizontal, 12)
-                                        .padding(.vertical, 7)
+                                        .padding(.horizontal, 14)
+                                        .frame(minHeight: 36)
                                         .background(theme.primary)
                                         .foregroundColor(.white)
-                                        .cornerRadius(8)
+                                        .clipShape(RoundedRectangle(cornerRadius: HrpDesignTokens.radiusXS, style: .continuous))
                                     }
                                     .padding(.vertical, 28)
                                 } else if viewModel.ownSubmissions.isEmpty {
@@ -1685,37 +1750,42 @@ public struct WorkersScreen: View {
                                         .foregroundColor(SemanticColors.textSecondary)
                                         .padding(.vertical, 32)
                                 } else {
-                                    ForEach(viewModel.ownSubmissions) { batch in
-                                        VStack(alignment: .leading, spacing: 6) {
-                                            HStack {
-                                                Text(batch.batchId > 0 ? "Lô #\(batch.batchId)" : "Lô hồ sơ")
-                                                    .font(.subheadline.weight(.bold))
-                                                    .foregroundColor(SemanticColors.textPrimary)
-                                                Spacer()
-                                                Text(batch.status)
-                                                    .font(.caption2.weight(.bold))
-                                                    .padding(.horizontal, 8)
-                                                    .padding(.vertical, 4)
-                                                    .background(SemanticColors.successBg)
-                                                    .foregroundColor(SemanticColors.successText)
-                                                    .clipShape(Capsule())
+                                    LazyVStack(spacing: 10) {
+                                        ForEach(viewModel.ownSubmissions) { batch in
+                                            VStack(alignment: .leading, spacing: 6) {
+                                                HStack {
+                                                    Text(batch.batchId > 0 ? "Lô #\(batch.batchId)" : "Lô hồ sơ")
+                                                        .font(.subheadline.weight(.bold))
+                                                        .monospacedDigit()
+                                                        .foregroundColor(SemanticColors.textPrimary)
+                                                    Spacer()
+                                                    Text(batch.status)
+                                                        .font(.caption2.weight(.bold))
+                                                        .padding(.horizontal, 8)
+                                                        .padding(.vertical, 4)
+                                                        .background(SemanticColors.successBg)
+                                                        .foregroundColor(SemanticColors.successText)
+                                                        .clipShape(Capsule())
+                                                }
+                                                Text("Tổng dòng: \(batch.totalRows) · Đã duyệt: \(batch.approvedRows) · Chờ: \(batch.pendingRows)")
+                                                    .font(.caption)
+                                                    .monospacedDigit()
+                                                    .foregroundColor(SemanticColors.textSecondary)
+                                                if !batch.createdAt.isEmpty {
+                                                    Text("Thời gian: \(WorkReportsContract.formatIsoDateTimeVi(batch.createdAt))")
+                                                        .font(.caption2)
+                                                        .monospacedDigit()
+                                                        .foregroundColor(SemanticColors.textMuted)
+                                                }
                                             }
-                                            Text("Tổng dòng: \(batch.totalRows) · Đã duyệt: \(batch.approvedRows) · Chờ: \(batch.pendingRows)")
-                                                .font(.caption)
-                                                .foregroundColor(SemanticColors.textSecondary)
-                                            if !batch.createdAt.isEmpty {
-                                                Text("Thời gian: \(WorkReportsContract.formatIsoDateTimeVi(batch.createdAt))")
-                                                    .font(.caption2)
-                                                    .foregroundColor(SemanticColors.textMuted)
-                                            }
+                                            .padding(14)
+                                            .hrpCardSurface(cornerRadius: HrpDesignTokens.radiusCard)
                                         }
-                                        .padding(14)
-                                        .background(Color.white)
-                                        .cornerRadius(12)
                                     }
 
                                     if viewModel.ownSubmissionsHasMore {
                                         Button {
+                                            HapticsManager.lightImpact()
                                             Task { await viewModel.loadMoreOwnSubmissions() }
                                         } label: {
                                             HStack(spacing: 6) {
@@ -1725,13 +1795,12 @@ public struct WorkersScreen: View {
                                                 Text("Tải thêm")
                                                     .font(.caption.weight(.bold))
                                             }
-                                            .frame(maxWidth: .infinity)
-                                            .padding(.vertical, 10)
+                                            .frame(maxWidth: .infinity, minHeight: 44)
                                             .background(Color.white)
                                             .foregroundColor(theme.primary)
-                                            .cornerRadius(10)
+                                            .clipShape(RoundedRectangle(cornerRadius: HrpDesignTokens.radiusMD, style: .continuous))
                                         }
-                                        .buttonStyle(.plain)
+                                        .buttonStyle(HrpPressableButtonStyle())
                                         .disabled(viewModel.isLoadingOwnSubmissions)
                                     }
                                 }
@@ -1757,22 +1826,24 @@ public struct WorkersScreen: View {
                                     }
                             }
                             .padding(9)
-                            .background(Color(hex: 0xF8FAFC))
-                            .cornerRadius(8)
+                            .background(SemanticColors.surfaceMuted)
+                            .clipShape(RoundedRectangle(cornerRadius: HrpDesignTokens.radiusXS, style: .continuous))
 
                             Button("Tìm") {
+                                HapticsManager.lightImpact()
                                 KeyboardDismissal.dismiss()
                                 Task { await viewModel.loadWorkers(resetPage: true) }
                             }
                             .font(.caption.weight(.bold))
                             .padding(.horizontal, 12)
-                            .padding(.vertical, 9)
+                            .frame(minHeight: 36)
                             .background(theme.primary)
                             .foregroundColor(.white)
-                            .cornerRadius(8)
+                            .clipShape(RoundedRectangle(cornerRadius: HrpDesignTokens.radiusXS, style: .continuous))
 
                             if MiniBiUser.canonicalWorkerDirectoryScopes.contains(viewModel.selectedWorkerScope) {
                                 Button {
+                                    HapticsManager.lightImpact()
                                     Task {
                                         let res = await viewModel.repository.exportWorkersExcel(
                                             scope: viewModel.selectedWorkerScope,
@@ -1788,113 +1859,143 @@ public struct WorkersScreen: View {
                                 } label: {
                                     Image(systemName: "square.and.arrow.up")
                                         .font(.caption.weight(.bold))
-                                        .padding(9)
+                                        .frame(width: 36, height: 36)
                                         .background(theme.primaryLight)
                                         .foregroundColor(theme.primary)
-                                        .cornerRadius(8)
+                                        .clipShape(RoundedRectangle(cornerRadius: HrpDesignTokens.radiusXS, style: .continuous))
                                 }
+                                .buttonStyle(HrpPressableButtonStyle())
                             }
                         }
                         .padding(.horizontal, 14)
                         .padding(.bottom, 10)
                         .background(Color.white)
 
-                        Divider()
+                        Rectangle()
+                            .fill(SemanticColors.borderSubtle.opacity(0.65))
+                            .frame(height: 0.5)
 
                         // Workers List
                         ScrollView {
                             VStack(spacing: 10) {
-                                if viewModel.isLoadingWorkers {
-                                    ProgressView("Đang tải danh sách nhân sự...")
-                                        .padding(.vertical, 20)
+                                if viewModel.isLoadingWorkers && viewModel.workers.isEmpty {
+                                    VStack(spacing: 10) {
+                                        ForEach(0..<3, id: \.self) { _ in
+                                            VStack(alignment: .leading, spacing: 8) {
+                                                HStack {
+                                                    Text("Nguyễn Văn A (HRP-1024)")
+                                                        .font(.subheadline.weight(.bold))
+                                                    Spacer()
+                                                    Text("Đang làm việc")
+                                                        .font(.caption2.weight(.bold))
+                                                }
+                                                Text("Dự án: Sản xuất Điện tử · Tuyển: Nguyễn Thị B")
+                                                    .font(.caption)
+                                                HStack(spacing: 12) {
+                                                    Text("CCCD: 001099012345")
+                                                        .font(.caption2)
+                                                    Text("SĐT: 0912345678")
+                                                        .font(.caption2)
+                                                }
+                                            }
+                                            .padding(14)
+                                            .hrpCardSurface(cornerRadius: HrpDesignTokens.radiusCard)
+                                        }
+                                    }
+                                    .redacted(reason: .placeholder)
                                 } else if viewModel.workers.isEmpty {
                                     Text("Không tìm thấy hồ sơ người lao động phù hợp.")
                                         .font(.subheadline)
                                         .foregroundColor(SemanticColors.textSecondary)
                                         .padding(.vertical, 32)
                                 } else {
-                                    ForEach(viewModel.workers) { worker in
-                                        VStack(alignment: .leading, spacing: 8) {
-                                            HStack {
-                                                Text(worker.displayEmployeeCode.isEmpty ? worker.hoTen : "\(worker.hoTen) (\(worker.displayEmployeeCode))")
-                                                    .font(.subheadline.weight(.bold))
-                                                    .foregroundColor(SemanticColors.textPrimary)
-                                                Spacer()
-                                                Text(worker.trangThai)
-                                                    .font(.caption2.weight(.bold))
-                                                    .padding(.horizontal, 8)
-                                                    .padding(.vertical, 4)
-                                                    .background(worker.trangThai.contains("Đang") ? SemanticColors.successBg : SemanticColors.warningBg)
-                                                    .foregroundColor(worker.trangThai.contains("Đang") ? SemanticColors.successText : SemanticColors.warningText)
-                                                    .clipShape(Capsule())
-                                            }
-
-                                            Text("Dự án: \(worker.duAn.isEmpty ? "—" : worker.duAn) · Tuyển: \(worker.nguoiTuyen.isEmpty ? "—" : worker.nguoiTuyen)")
-                                                .font(.caption)
-                                                .foregroundColor(SemanticColors.textSecondary)
-
-                                            HStack(spacing: 12) {
-                                                Text("CCCD: \(worker.soCccd.isEmpty ? "—" : worker.soCccd)")
-                                                    .font(.caption2)
-                                                    .foregroundColor(SemanticColors.textMuted)
-                                                Text("SĐT: \(worker.sdt.isEmpty ? "—" : worker.sdt)")
-                                                    .font(.caption2)
-                                                    .foregroundColor(SemanticColors.textMuted)
-                                                Spacer()
-                                                if worker.contractFileUrl != nil {
-                                                    Label("Có HĐ", systemImage: "doc.text.fill")
-                                                        .font(.caption2.weight(.semibold))
-                                                        .foregroundColor(SemanticColors.successText)
-                                                }
-                                            }
-
-                                            Divider()
-
-                                            HStack(spacing: 8) {
-                                                if worker.canView {
-                                                    Button {
-                                                        KeyboardDismissal.dismiss()
-                                                        viewModel.selectedWorkerDetail = worker
-                                                    } label: {
-                                                        HStack(spacing: 4) {
-                                                            Image(systemName: "eye")
-                                                            Text("Xem chi tiết")
-                                                        }
-                                                        .font(.caption.weight(.semibold))
-                                                        .padding(.horizontal, 12)
-                                                        .padding(.vertical, 7)
-                                                        .background(Color(hex: 0xF1F5F9))
+                                    LazyVStack(spacing: 10) {
+                                        ForEach(viewModel.workers) { worker in
+                                            VStack(alignment: .leading, spacing: 8) {
+                                                HStack {
+                                                    Text(worker.displayEmployeeCode.isEmpty ? worker.hoTen : "\(worker.hoTen) (\(worker.displayEmployeeCode))")
+                                                        .font(.subheadline.weight(.bold))
                                                         .foregroundColor(SemanticColors.textPrimary)
-                                                        .cornerRadius(8)
-                                                    }
-                                                    .buttonStyle(.plain)
+                                                    Spacer()
+                                                    Text(worker.trangThai)
+                                                        .font(.caption2.weight(.bold))
+                                                        .padding(.horizontal, 8)
+                                                        .padding(.vertical, 4)
+                                                        .background(worker.trangThai.contains("Đang") ? SemanticColors.successBg : SemanticColors.warningBg)
+                                                        .foregroundColor(worker.trangThai.contains("Đang") ? SemanticColors.successText : SemanticColors.warningText)
+                                                        .clipShape(Capsule())
                                                 }
 
-                                                if worker.canDirectEdit {
-                                                    Button {
-                                                        KeyboardDismissal.dismiss()
-                                                        Task { await viewModel.openDirectEdit(worker) }
-                                                    } label: {
-                                                        HStack(spacing: 4) {
-                                                            Image(systemName: "square.and.pencil")
-                                                            Text("Sửa trực tiếp")
+                                                Text("Dự án: \(worker.duAn.isEmpty ? "—" : worker.duAn) · Tuyển: \(worker.nguoiTuyen.isEmpty ? "—" : worker.nguoiTuyen)")
+                                                    .font(.caption)
+                                                    .foregroundColor(SemanticColors.textSecondary)
+
+                                                HStack(spacing: 12) {
+                                                    Text("CCCD: \(worker.soCccd.isEmpty ? "—" : worker.soCccd)")
+                                                        .font(.caption2)
+                                                        .monospacedDigit()
+                                                        .foregroundColor(SemanticColors.textMuted)
+                                                    Text("SĐT: \(worker.sdt.isEmpty ? "—" : worker.sdt)")
+                                                        .font(.caption2)
+                                                        .monospacedDigit()
+                                                        .foregroundColor(SemanticColors.textMuted)
+                                                    Spacer()
+                                                    if worker.contractFileUrl != nil {
+                                                        Label("Có HĐ", systemImage: "doc.text.fill")
+                                                            .font(.caption2.weight(.semibold))
+                                                            .foregroundColor(SemanticColors.successText)
+                                                    }
+                                                }
+
+                                                Divider()
+
+                                                HStack(spacing: 8) {
+                                                    if worker.canView {
+                                                        Button {
+                                                            HapticsManager.selection()
+                                                            KeyboardDismissal.dismiss()
+                                                            viewModel.selectedWorkerDetail = worker
+                                                        } label: {
+                                                            HStack(spacing: 4) {
+                                                                Image(systemName: "eye")
+                                                                Text("Xem chi tiết")
+                                                            }
+                                                            .font(.caption.weight(.semibold))
+                                                            .padding(.horizontal, 12)
+                                                            .frame(minHeight: 34)
+                                                            .background(SemanticColors.surfaceMuted)
+                                                            .foregroundColor(SemanticColors.textPrimary)
+                                                            .clipShape(RoundedRectangle(cornerRadius: HrpDesignTokens.radiusXS, style: .continuous))
                                                         }
-                                                        .font(.caption.weight(.bold))
-                                                        .padding(.horizontal, 12)
-                                                        .padding(.vertical, 7)
-                                                        .background(theme.primary)
-                                                        .foregroundColor(.white)
-                                                        .cornerRadius(8)
+                                                        .buttonStyle(HrpPressableButtonStyle())
                                                     }
-                                                    .buttonStyle(.plain)
-                                                }
 
-                                                Spacer()
+                                                    if worker.canDirectEdit {
+                                                        Button {
+                                                            HapticsManager.selection()
+                                                            KeyboardDismissal.dismiss()
+                                                            Task { await viewModel.openDirectEdit(worker) }
+                                                        } label: {
+                                                            HStack(spacing: 4) {
+                                                                Image(systemName: "square.and.pencil")
+                                                                Text("Sửa trực tiếp")
+                                                            }
+                                                            .font(.caption.weight(.bold))
+                                                            .padding(.horizontal, 12)
+                                                            .frame(minHeight: 34)
+                                                            .background(theme.primary)
+                                                            .foregroundColor(.white)
+                                                            .clipShape(RoundedRectangle(cornerRadius: HrpDesignTokens.radiusXS, style: .continuous))
+                                                        }
+                                                        .buttonStyle(HrpPressableButtonStyle())
+                                                    }
+
+                                                    Spacer()
+                                                }
                                             }
+                                            .padding(14)
+                                            .hrpCardSurface(cornerRadius: HrpDesignTokens.radiusCard)
                                         }
-                                        .padding(14)
-                                        .background(Color.white)
-                                        .cornerRadius(12)
                                     }
                                 }
                             }
@@ -1924,9 +2025,11 @@ public struct WorkersScreen: View {
         }
         .sheet(item: $viewModel.selectedWorkerDetail) { worker in
             WorkerDetailSheet(viewModel: viewModel, worker: worker)
+                .hrpSheetPresentation(detents: [.medium, .large])
         }
         .sheet(item: $viewModel.directEditWorkerTarget) { worker in
             WorkerDirectEditSheet(viewModel: viewModel, worker: worker)
+                .hrpSheetPresentation(detents: [.medium, .large])
         }
         .sheet(isPresented: Binding(
             get: { exportedShareUrl != nil },
@@ -2051,8 +2154,7 @@ struct WorkerDetailSheet: View {
                         }
                     }
                     .padding(14)
-                    .background(Color.white)
-                    .cornerRadius(12)
+                    .hrpCardSurface(cornerRadius: HrpDesignTokens.radiusCard)
 
                     // Hồ sơ & Ảnh đính kèm
                     VStack(alignment: .leading, spacing: 12) {
@@ -2101,8 +2203,7 @@ struct WorkerDetailSheet: View {
                         )
                     }
                     .padding(14)
-                    .background(Color.white)
-                    .cornerRadius(12)
+                    .hrpCardSurface(cornerRadius: HrpDesignTokens.radiusCard)
                 }
                 .padding(14)
             }
@@ -2182,6 +2283,7 @@ struct WorkerDetailSheet: View {
             if hasFile && !downloadPath.isEmpty {
                 HStack {
                     Button {
+                        HapticsManager.lightImpact()
                         Task {
                             await downloadAndShareDocument(
                                 docType: docType,
@@ -2203,9 +2305,9 @@ struct WorkerDetailSheet: View {
                         .padding(.vertical, 6)
                         .background(Color.white)
                         .foregroundColor(viewModel.selectedTheme.primary)
-                        .cornerRadius(6)
+                        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
                         .overlay(
-                            RoundedRectangle(cornerRadius: 6)
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
                                 .stroke(viewModel.selectedTheme.primary.opacity(0.35), lineWidth: 1)
                         )
                     }
@@ -2217,8 +2319,7 @@ struct WorkerDetailSheet: View {
             }
         }
         .padding(10)
-        .background(Color(hex: 0xF8FAFC))
-        .cornerRadius(8)
+        .hrpMutedTile(cornerRadius: HrpDesignTokens.radiusXS)
     }
 
     private func downloadAndShareDocument(
@@ -2264,6 +2365,8 @@ struct WorkerDetailSheet: View {
             Spacer()
             Text(value.isEmpty ? "—" : value)
                 .font(.caption.weight(.medium))
+                .monospacedDigit()
+                .textSelection(.enabled)
                 .foregroundColor(SemanticColors.textPrimary)
                 .multilineTextAlignment(.trailing)
         }

@@ -11,9 +11,35 @@ public struct TaskReminderSheet: View {
     @State private var draftMinute: Int = 0
     @State private var draftRepeatMode: TaskReminderRepeatMode = .daily
     @State private var draftSoundId: String = TaskReminderSystemSound.defaultSound.id
+    @State private var reminderPendingDeletion: TaskReminderItem?
 
     public init(viewModel: MiniBiViewModel) {
         self.viewModel = viewModel
+    }
+
+    private var wheelTimeBinding: Binding<Date> {
+        Binding<Date>(
+            get: {
+                var cal = Calendar(identifier: .gregorian)
+                cal.timeZone = TimeZone(identifier: "Asia/Ho_Chi_Minh") ?? .current
+                var comps = cal.dateComponents([.year, .month, .day], from: Date())
+                comps.hour = min(23, max(0, draftHour))
+                comps.minute = min(59, max(0, draftMinute))
+                comps.second = 0
+                return cal.date(from: comps) ?? Date()
+            },
+            set: { newDate in
+                var cal = Calendar(identifier: .gregorian)
+                cal.timeZone = TimeZone(identifier: "Asia/Ho_Chi_Minh") ?? .current
+                let comps = cal.dateComponents([.hour, .minute], from: newDate)
+                let nextH = min(23, max(0, comps.hour ?? 8))
+                let nextM = min(59, max(0, comps.minute ?? 0))
+                if nextH != draftHour || nextM != draftMinute {
+                    draftHour = nextH
+                    draftMinute = nextM
+                }
+            }
+        )
     }
 
     public var body: some View {
@@ -23,10 +49,16 @@ public struct TaskReminderSheet: View {
             Group {
                 if isEditing {
                     reminderEditorView(theme: theme)
+                        .transition(.asymmetric(
+                            insertion: .move(edge: .trailing).combined(with: .opacity),
+                            removal: .move(edge: .leading).combined(with: .opacity)
+                        ))
                 } else {
                     reminderListView(theme: theme)
+                        .transition(.opacity)
                 }
             }
+            .animation(.spring(response: 0.3, dampingFraction: 0.86), value: isEditing)
             .background(theme.background.ignoresSafeArea())
             .navigationTitle(isEditing ? (editingId == nil ? "Thêm nhắc việc" : "Chỉnh sửa nhắc việc") : "Nhắc việc")
             .navigationBarTitleDisplayMode(.inline)
@@ -34,7 +66,10 @@ public struct TaskReminderSheet: View {
                 ToolbarItem(placement: .cancellationAction) {
                     if isEditing {
                         Button("Hủy") {
-                            isEditing = false
+                            HapticsManager.selection()
+                            withAnimation(.spring(response: 0.3, dampingFraction: 0.86)) {
+                                isEditing = false
+                            }
                         }
                     } else {
                         Button("Đóng") {
@@ -64,6 +99,29 @@ public struct TaskReminderSheet: View {
             .onAppear {
                 viewModel.refreshTaskReminders()
             }
+            .confirmationDialog(
+                "Xóa lịch nhắc việc?",
+                isPresented: Binding(
+                    get: { reminderPendingDeletion != nil },
+                    set: { if !$0 { reminderPendingDeletion = nil } }
+                ),
+                titleVisibility: .visible
+            ) {
+                if let pending = reminderPendingDeletion {
+                    Button("Xóa nhắc việc \(pending.formattedTime)", role: .destructive) {
+                        HapticsManager.lightImpact()
+                        viewModel.deleteTaskReminder(id: pending.id)
+                        reminderPendingDeletion = nil
+                    }
+                }
+                Button("Hủy", role: .cancel) {
+                    reminderPendingDeletion = nil
+                }
+            } message: {
+                if let pending = reminderPendingDeletion {
+                    Text("Bạn có chắc chắn muốn xóa lịch nhắc \"\(pending.title)\" lúc \(pending.formattedTime)?")
+                }
+            }
         }
     }
 
@@ -71,7 +129,7 @@ public struct TaskReminderSheet: View {
 
     private func reminderListView(theme: MiniBiThemePalette) -> some View {
         ScrollView {
-            VStack(spacing: 12) {
+            LazyVStack(spacing: 12) {
                 Button {
                     openCreateForm()
                 } label: {
@@ -82,11 +140,14 @@ public struct TaskReminderSheet: View {
                             .font(.subheadline.weight(.bold))
                     }
                     .frame(maxWidth: .infinity)
-                    .frame(height: 46)
-                    .background(theme.primary)
+                    .frame(minHeight: 48)
+                    .background(
+                        RoundedRectangle(cornerRadius: HrpDesignTokens.radiusMD, style: .continuous)
+                            .fill(theme.primary)
+                    )
                     .foregroundColor(.white)
-                    .cornerRadius(12)
                 }
+                .buttonStyle(HrpPressableButtonStyle())
                 .padding(.top, 4)
 
                 if viewModel.taskReminders.isEmpty {
@@ -105,12 +166,7 @@ public struct TaskReminderSheet: View {
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 36)
                     .padding(.horizontal, 16)
-                    .background(Color.white)
-                    .cornerRadius(14)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 14, style: .continuous)
-                            .stroke(theme.topBarBorder, lineWidth: 1)
-                    )
+                    .hrpCardSurface(cornerRadius: HrpDesignTokens.radiusCard)
                 } else {
                     ForEach(viewModel.taskReminders) { item in
                         reminderRowCard(item: item, theme: theme)
@@ -127,26 +183,29 @@ public struct TaskReminderSheet: View {
                 openEditForm(item)
             } label: {
                 VStack(alignment: .leading, spacing: 4) {
-                    HStack(spacing: 8) {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
                         Text(item.formattedTime)
-                            .font(.system(size: 22, weight: .heavy, design: .rounded))
-                            .foregroundColor(item.isEnabled ? theme.primary : SemanticColors.textMuted)
+                            .font(.system(size: 30, weight: .bold, design: .rounded).monospacedDigit())
+                            .contentTransition(.numericText())
+                            .foregroundColor(item.isEnabled ? SemanticColors.textPrimary : SemanticColors.textMuted.opacity(0.6))
 
                         Text(item.repeatMode.labelVi)
                             .font(.caption2.weight(.bold))
-                            .padding(.horizontal, 7)
+                            .padding(.horizontal, 8)
                             .padding(.vertical, 3)
                             .background(
-                                item.repeatMode == .daily
-                                    ? theme.primary.opacity(0.14)
-                                    : Color.orange.opacity(0.16)
+                                RoundedRectangle(cornerRadius: HrpDesignTokens.radiusXS, style: .continuous)
+                                    .fill(
+                                        item.repeatMode == .daily
+                                            ? theme.primary.opacity(0.14)
+                                            : Color.orange.opacity(0.16)
+                                    )
                             )
                             .foregroundColor(
                                 item.repeatMode == .daily
                                     ? theme.primary
                                     : Color.orange
                             )
-                            .cornerRadius(6)
                     }
 
                     Text(item.title)
@@ -160,6 +219,7 @@ public struct TaskReminderSheet: View {
                         .lineLimit(1)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
 
@@ -168,6 +228,7 @@ public struct TaskReminderSheet: View {
                 isOn: Binding(
                     get: { item.isEnabled },
                     set: { newValue in
+                        HapticsManager.selection()
                         viewModel.setTaskReminderEnabled(id: item.id, isEnabled: newValue)
                     }
                 )
@@ -176,29 +237,27 @@ public struct TaskReminderSheet: View {
             .tint(theme.primary)
 
             Button(role: .destructive) {
-                viewModel.deleteTaskReminder(id: item.id)
+                HapticsManager.warning()
+                reminderPendingDeletion = item
             } label: {
                 Image(systemName: "trash")
                     .font(.subheadline)
                     .foregroundColor(SemanticColors.dangerText)
-                    .padding(8)
+                    .frame(minWidth: 44, minHeight: 44)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 12)
-        .background(Color.white)
-        .cornerRadius(14)
-        .overlay(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(
-                    item.isEnabled ? theme.primary.opacity(0.32) : theme.topBarBorder,
-                    lineWidth: 1
-                )
+        .padding(.leading, 14)
+        .padding(.trailing, 6)
+        .padding(.vertical, 10)
+        .hrpCardSurface(
+            cornerRadius: HrpDesignTokens.radiusCard,
+            borderColor: item.isEnabled ? theme.primary.opacity(0.32) : SemanticColors.borderSubtle.opacity(0.85)
         )
     }
 
-    // MARK: - Editor View
+    // MARK: - Editor View (Apple Clock Native Wheel Picker)
 
     private func reminderEditorView(theme: MiniBiThemePalette) -> some View {
         ScrollView {
@@ -210,7 +269,8 @@ public struct TaskReminderSheet: View {
                         .foregroundColor(SemanticColors.textPrimary)
 
                     TextField("Ví dụ: Gửi báo cáo ca sáng", text: $draftTitle)
-                        .textFieldStyle(.roundedBorder)
+                        .padding(11)
+                        .hrpMutedTile(cornerRadius: HrpDesignTokens.radiusMD)
                         .onChange(of: draftTitle) { newValue in
                             if newValue.count > TaskReminderManager.maxTitleLength {
                                 draftTitle = String(newValue.prefix(TaskReminderManager.maxTitleLength))
@@ -218,70 +278,58 @@ public struct TaskReminderSheet: View {
                         }
                 }
                 .padding(14)
-                .background(Color.white)
-                .cornerRadius(14)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .stroke(theme.topBarBorder, lineWidth: 1)
-                )
+                .hrpCardSurface(cornerRadius: HrpDesignTokens.radiusCard)
 
-                // Time Picker (24h HH:mm)
+                // Time Picker (Native iOS Wheel DatePicker + Quick Presets)
                 VStack(alignment: .leading, spacing: 10) {
-                    Text("Thời gian báo nhắc (24h)")
-                        .font(.caption.weight(.bold))
-                        .foregroundColor(SemanticColors.textPrimary)
-
-                    HStack(spacing: 12) {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("Giờ")
-                                .font(.caption2)
-                                .foregroundColor(SemanticColors.textSecondary)
-                            Picker("Giờ", selection: $draftHour) {
-                                ForEach(0..<24, id: \.self) { h in
-                                    Text(String(format: "%02d giờ", h)).tag(h)
-                                }
-                            }
-                            .pickerStyle(.menu)
-                            .frame(maxWidth: .infinity)
+                    HStack {
+                        Text("Thời gian báo nhắc (24h)")
+                            .font(.caption.weight(.bold))
+                            .foregroundColor(SemanticColors.textPrimary)
+                        Spacer()
+                        Text(String(format: "%02d:%02d", draftHour, draftMinute))
+                            .font(.subheadline.weight(.bold).monospacedDigit())
+                            .contentTransition(.numericText())
+                            .foregroundColor(theme.primary)
+                            .padding(.horizontal, 10)
                             .padding(.vertical, 4)
-                            .background(theme.background)
-                            .cornerRadius(8)
-                        }
-
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("Phút")
-                                .font(.caption2)
-                                .foregroundColor(SemanticColors.textSecondary)
-                            Picker("Phút", selection: $draftMinute) {
-                                ForEach(0..<60, id: \.self) { m in
-                                    Text(String(format: "%02d phút", m)).tag(m)
-                                }
-                            }
-                            .pickerStyle(.menu)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 4)
-                            .background(theme.background)
-                            .cornerRadius(8)
-                        }
+                            .background(
+                                RoundedRectangle(cornerRadius: HrpDesignTokens.radiusXS, style: .continuous)
+                                    .fill(theme.primaryLight)
+                            )
                     }
+
+                    DatePicker(
+                        "",
+                        selection: wheelTimeBinding,
+                        displayedComponents: .hourAndMinute
+                    )
+                    .datePickerStyle(.wheel)
+                    .labelsHidden()
+                    .environment(\.locale, Locale(identifier: "vi_VN"))
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 168)
+                    .clipped()
 
                     // Quick Preset Buttons
                     HStack(spacing: 6) {
-                        ForEach([(7, 30), (8, 0), (12, 0), (17, 0), (20, 0)], id: \.0) { preset in
+                        ForEach([(7, 30), (8, 0), (12, 0), (13, 30), (17, 30)], id: \.0) { preset in
                             let isSelected = draftHour == preset.0 && draftMinute == preset.1
                             Button {
+                                HapticsManager.selection()
                                 draftHour = preset.0
                                 draftMinute = preset.1
                             } label: {
                                 Text(String(format: "%02d:%02d", preset.0, preset.1))
-                                    .font(.caption2.weight(.bold))
-                                    .frame(maxWidth: .infinity)
-                                    .padding(.vertical, 7)
-                                    .background(isSelected ? theme.primary.opacity(0.15) : theme.background)
+                                    .font(.caption2.weight(.bold).monospacedDigit())
+                                    .frame(maxWidth: .infinity, minHeight: 36)
+                                    .background(
+                                        RoundedRectangle(cornerRadius: HrpDesignTokens.radiusXS, style: .continuous)
+                                            .fill(isSelected ? theme.primary.opacity(0.15) : SemanticColors.surfaceMuted)
+                                    )
                                     .foregroundColor(isSelected ? theme.primary : SemanticColors.textSecondary)
-                                    .cornerRadius(8)
                                     .overlay(
-                                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                        RoundedRectangle(cornerRadius: HrpDesignTokens.radiusXS, style: .continuous)
                                             .stroke(isSelected ? theme.primary : Color.clear, lineWidth: 1)
                                     )
                             }
@@ -290,12 +338,7 @@ public struct TaskReminderSheet: View {
                     }
                 }
                 .padding(14)
-                .background(Color.white)
-                .cornerRadius(14)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .stroke(theme.topBarBorder, lineWidth: 1)
-                )
+                .hrpCardSurface(cornerRadius: HrpDesignTokens.radiusCard)
 
                 // Repeat Mode (DAILY / ONCE)
                 VStack(alignment: .leading, spacing: 8) {
@@ -307,18 +350,21 @@ public struct TaskReminderSheet: View {
                         ForEach(TaskReminderRepeatMode.allCases, id: \.rawValue) { mode in
                             let selected = draftRepeatMode == mode
                             Button {
+                                HapticsManager.selection()
                                 draftRepeatMode = mode
                             } label: {
                                 Text(mode.labelVi)
                                     .font(.subheadline.weight(selected ? .bold : .medium))
                                     .frame(maxWidth: .infinity)
-                                    .frame(height: 42)
-                                    .background(selected ? theme.primary.opacity(0.14) : theme.background)
+                                    .frame(minHeight: 44)
+                                    .background(
+                                        RoundedRectangle(cornerRadius: HrpDesignTokens.radiusMD, style: .continuous)
+                                            .fill(selected ? theme.primary.opacity(0.14) : SemanticColors.surfaceMuted)
+                                    )
                                     .foregroundColor(selected ? theme.primary : SemanticColors.textPrimary)
-                                    .cornerRadius(10)
                                     .overlay(
-                                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                            .stroke(selected ? theme.primary : theme.topBarBorder, lineWidth: 1)
+                                        RoundedRectangle(cornerRadius: HrpDesignTokens.radiusMD, style: .continuous)
+                                            .stroke(selected ? theme.primary : SemanticColors.borderSubtle, lineWidth: 1)
                                     )
                             }
                             .buttonStyle(.plain)
@@ -326,12 +372,7 @@ public struct TaskReminderSheet: View {
                     }
                 }
                 .padding(14)
-                .background(Color.white)
-                .cornerRadius(14)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .stroke(theme.topBarBorder, lineWidth: 1)
-                )
+                .hrpCardSurface(cornerRadius: HrpDesignTokens.radiusCard)
 
                 // System Sounds List
                 VStack(alignment: .leading, spacing: 8) {
@@ -342,6 +383,7 @@ public struct TaskReminderSheet: View {
                     ForEach(TaskReminderSystemSound.allSystemSounds) { sound in
                         let selected = draftSoundId == sound.id
                         Button {
+                            HapticsManager.selection()
                             draftSoundId = sound.id
                             viewModel.playTaskReminderSoundPreview(soundId: sound.id)
                         } label: {
@@ -357,11 +399,13 @@ public struct TaskReminderSheet: View {
                                     .foregroundColor(selected ? theme.primary : SemanticColors.textMuted)
                             }
                             .padding(.horizontal, 12)
-                            .padding(.vertical, 10)
-                            .background(selected ? theme.primary.opacity(0.1) : theme.background)
-                            .cornerRadius(10)
+                            .frame(minHeight: 44)
+                            .background(
+                                RoundedRectangle(cornerRadius: HrpDesignTokens.radiusMD, style: .continuous)
+                                    .fill(selected ? theme.primary.opacity(0.1) : SemanticColors.surfaceMuted)
+                            )
                             .overlay(
-                                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                RoundedRectangle(cornerRadius: HrpDesignTokens.radiusMD, style: .continuous)
                                     .stroke(selected ? theme.primary : Color.clear, lineWidth: 1)
                             )
                         }
@@ -369,31 +413,31 @@ public struct TaskReminderSheet: View {
                     }
                 }
                 .padding(14)
-                .background(Color.white)
-                .cornerRadius(14)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .stroke(theme.topBarBorder, lineWidth: 1)
-                )
+                .hrpCardSurface(cornerRadius: HrpDesignTokens.radiusCard)
 
                 // Save & Cancel Buttons
                 HStack(spacing: 10) {
                     Button {
-                        isEditing = false
+                        HapticsManager.selection()
+                        withAnimation(.spring(response: 0.3, dampingFraction: 0.86)) {
+                            isEditing = false
+                        }
                     } label: {
                         Text("Hủy")
                             .font(.subheadline.weight(.semibold))
                             .frame(maxWidth: .infinity)
-                            .frame(height: 46)
-                            .background(Color.white)
+                            .frame(minHeight: 48)
+                            .background(
+                                RoundedRectangle(cornerRadius: HrpDesignTokens.radiusMD, style: .continuous)
+                                    .fill(Color.white)
+                            )
                             .foregroundColor(SemanticColors.textPrimary)
-                            .cornerRadius(12)
                             .overlay(
-                                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                    .stroke(theme.topBarBorder, lineWidth: 1)
+                                RoundedRectangle(cornerRadius: HrpDesignTokens.radiusMD, style: .continuous)
+                                    .stroke(SemanticColors.borderSubtle, lineWidth: 1)
                             )
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(HrpPressableButtonStyle())
 
                     Button {
                         saveDraftReminder()
@@ -401,12 +445,14 @@ public struct TaskReminderSheet: View {
                         Text("Lưu nhắc việc")
                             .font(.subheadline.weight(.bold))
                             .frame(maxWidth: .infinity)
-                            .frame(height: 46)
-                            .background(theme.primary)
+                            .frame(minHeight: 48)
+                            .background(
+                                RoundedRectangle(cornerRadius: HrpDesignTokens.radiusMD, style: .continuous)
+                                    .fill(theme.primary)
+                            )
                             .foregroundColor(.white)
-                            .cornerRadius(12)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(HrpPressableButtonStyle())
                 }
             }
             .padding(14)
@@ -416,26 +462,33 @@ public struct TaskReminderSheet: View {
     // MARK: - Actions
 
     private func openCreateForm() {
+        HapticsManager.lightImpact()
         editingId = nil
         draftTitle = ""
         draftHour = 8
         draftMinute = 0
         draftRepeatMode = .daily
         draftSoundId = TaskReminderSystemSound.defaultSound.id
-        isEditing = true
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.86)) {
+            isEditing = true
+        }
     }
 
     private func openEditForm(_ item: TaskReminderItem) {
+        HapticsManager.selection()
         editingId = item.id
         draftTitle = item.title
         draftHour = item.hour
         draftMinute = item.minute
         draftRepeatMode = item.repeatMode
         draftSoundId = item.soundId
-        isEditing = true
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.86)) {
+            isEditing = true
+        }
     }
 
     private func saveDraftReminder() {
+        HapticsManager.success()
         _ = viewModel.saveTaskReminder(
             id: editingId,
             title: draftTitle,
@@ -445,6 +498,8 @@ public struct TaskReminderSheet: View {
             soundId: draftSoundId,
             isEnabled: true
         )
-        isEditing = false
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.86)) {
+            isEditing = false
+        }
     }
 }

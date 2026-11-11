@@ -24,6 +24,7 @@ public struct RecruitmentPostsScreen: View {
                 Spacer()
 
                 Button {
+                    HapticsManager.lightImpact()
                     Task { await viewModel.loadRecruitmentPosts(reset: true) }
                 } label: {
                     HStack(spacing: 4) {
@@ -33,21 +34,23 @@ public struct RecruitmentPostsScreen: View {
                             .font(.caption.weight(.semibold))
                     }
                     .foregroundColor(theme.primary)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
+                    .padding(.horizontal, 12)
+                    .frame(minHeight: 44)
                     .background(theme.primaryLight)
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .clipShape(RoundedRectangle(cornerRadius: HrpDesignTokens.radiusXS, style: .continuous))
+                    .contentShape(Rectangle())
                 }
+                .buttonStyle(HrpPressableButtonStyle())
                 .disabled(viewModel.recruitmentPostsLoading || viewModel.recruitmentPostsLoadingMore)
                 .accessibilityIdentifier("recruitment_posts_refresh_button")
             }
             .padding(.horizontal, 14)
-            .padding(.vertical, 10)
+            .padding(.vertical, 6)
             .background(Color.white)
             .overlay(
                 Rectangle()
-                    .frame(height: 1)
-                    .foregroundColor(SemanticColors.borderSubtle),
+                    .frame(height: 0.5)
+                    .foregroundColor(SemanticColors.borderSubtle.opacity(0.65)),
                 alignment: .bottom
             )
 
@@ -72,14 +75,30 @@ public struct RecruitmentPostsScreen: View {
                     }
                 )
             } else if viewModel.recruitmentPostsLoading && cards.isEmpty {
-                VStack(spacing: 12) {
-                    ProgressView()
-                        .tint(theme.primary)
-                    Text("Đang tải tin tuyển dụng…")
-                        .font(.caption)
-                        .foregroundColor(SemanticColors.textSecondary)
+                ScrollView {
+                    VStack(spacing: 12) {
+                        ForEach(0..<2, id: \.self) { _ in
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text("Dự án Sản xuất Linh kiện Điện tử")
+                                    .font(.headline.weight(.bold))
+                                Text("Khách hàng: Công ty TNHH Điện tử Việt Nam")
+                                    .font(.subheadline.weight(.semibold))
+                                Text("KCN Bắc Thăng Long · Hà Nội")
+                                    .font(.caption)
+                                Divider()
+                                Text("Công việc: Lắp ráp và kiểm tra ngoại quan linh kiện điện tử")
+                                    .font(.footnote)
+                                RecruitmentPostMetaRow(label: "Hình thức tuyển dụng", value: "Thời vụ / Chính thức")
+                                RecruitmentPostMetaRow(label: "Số lượng dự kiến", value: "150 người")
+                                RecruitmentPostMetaRow(label: "Lương & thu nhập", value: "9.500.000 - 13.000.000 đ")
+                            }
+                            .padding(14)
+                            .hrpCardSurface(cornerRadius: HrpDesignTokens.radiusCard)
+                        }
+                    }
+                    .padding(14)
+                    .redacted(reason: .placeholder)
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if let error = viewModel.recruitmentPostsError, cards.isEmpty {
                 RecruitmentPostStateView(
                     iconName: "wifi.exclamationmark",
@@ -112,6 +131,7 @@ public struct RecruitmentPostsScreen: View {
                                     .foregroundColor(SemanticColors.dangerText)
                                 Spacer()
                                 Button("Thử lại") {
+                                    HapticsManager.lightImpact()
                                     Task {
                                         if viewModel.recruitmentPostsHasMore {
                                             await viewModel.loadMoreRecruitmentPosts()
@@ -125,7 +145,7 @@ public struct RecruitmentPostsScreen: View {
                             }
                             .padding(12)
                             .background(SemanticColors.dangerBg)
-                            .clipShape(RoundedRectangle(cornerRadius: 10))
+                            .clipShape(RoundedRectangle(cornerRadius: HrpDesignTokens.radiusMD, style: .continuous))
                         }
 
                         ForEach(cards) { card in
@@ -133,6 +153,7 @@ public struct RecruitmentPostsScreen: View {
                                 card: card,
                                 theme: theme,
                                 onOpenDetail: {
+                                    HapticsManager.selection()
                                     Task { await viewModel.openRecruitmentPostDetail(briefId: card.briefId) }
                                 }
                             )
@@ -140,6 +161,7 @@ public struct RecruitmentPostsScreen: View {
 
                         if viewModel.recruitmentPostsHasMore {
                             Button {
+                                HapticsManager.lightImpact()
                                 Task { await viewModel.loadMoreRecruitmentPosts() }
                             } label: {
                                 HStack(spacing: 8) {
@@ -154,15 +176,15 @@ public struct RecruitmentPostsScreen: View {
                                 }
                                 .font(.subheadline.weight(.semibold))
                                 .foregroundColor(theme.primary)
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 10)
+                                .frame(maxWidth: .infinity, minHeight: 44)
                                 .background(Color.white)
-                                .clipShape(RoundedRectangle(cornerRadius: 10))
+                                .clipShape(RoundedRectangle(cornerRadius: HrpDesignTokens.radiusMD, style: .continuous))
                                 .overlay(
-                                    RoundedRectangle(cornerRadius: 10)
+                                    RoundedRectangle(cornerRadius: HrpDesignTokens.radiusMD, style: .continuous)
                                         .stroke(theme.primary.opacity(0.45), lineWidth: 1)
                                 )
                             }
+                            .buttonStyle(HrpPressableButtonStyle())
                             .disabled(viewModel.recruitmentPostsLoading || viewModel.recruitmentPostsLoadingMore)
                             .accessibilityIdentifier("recruitment_posts_load_more_button")
                         }
@@ -194,6 +216,7 @@ public struct RecruitmentPostsScreen: View {
             )
         ) {
             RecruitmentPostDetailSheet(viewModel: viewModel)
+                .hrpSheetPresentation(detents: [.medium, .large])
         }
     }
 }
@@ -220,15 +243,19 @@ private struct RecruitmentPostStateView: View {
                 .foregroundColor(SemanticColors.textSecondary)
                 .multilineTextAlignment(.center)
             if let actionTitle, let onAction {
-                Button(action: onAction) {
+                Button {
+                    HapticsManager.lightImpact()
+                    onAction()
+                } label: {
                     Text(actionTitle)
                         .font(.caption.weight(.bold))
                         .foregroundColor(.white)
                         .padding(.horizontal, 16)
-                        .padding(.vertical, 8)
+                        .frame(minHeight: 40)
                         .background(theme.primary)
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                        .clipShape(RoundedRectangle(cornerRadius: HrpDesignTokens.radiusXS, style: .continuous))
                 }
+                .buttonStyle(HrpPressableButtonStyle())
                 .accessibilityIdentifier("recruitment_posts_retry_button")
             }
         }
@@ -278,20 +305,16 @@ private struct RecruitmentPostSummaryCardView: View {
                         .font(.caption.weight(.bold))
                         .foregroundColor(theme.primary)
                         .padding(.horizontal, 12)
-                        .padding(.vertical, 7)
+                        .frame(minHeight: 36)
                         .background(theme.primaryLight)
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                        .clipShape(RoundedRectangle(cornerRadius: HrpDesignTokens.radiusXS, style: .continuous))
                 }
+                .buttonStyle(HrpPressableButtonStyle())
                 .accessibilityIdentifier("recruitment_post_detail_btn_\(card.briefId)")
             }
         }
         .padding(14)
-        .background(Color.white)
-        .clipShape(RoundedRectangle(cornerRadius: 14))
-        .overlay(
-            RoundedRectangle(cornerRadius: 14)
-                .stroke(SemanticColors.borderSubtle, lineWidth: 1)
-        )
+        .hrpCardSurface(cornerRadius: HrpDesignTokens.radiusCard)
     }
 }
 
@@ -307,6 +330,7 @@ private struct RecruitmentPostMetaRow: View {
                 .frame(width: 128, alignment: .leading)
             Text(value)
                 .font(.caption.weight(.medium))
+                .monospacedDigit()
                 .foregroundColor(SemanticColors.textPrimary)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }

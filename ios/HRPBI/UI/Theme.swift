@@ -245,6 +245,161 @@ public enum SemanticColors {
     public static let textSecondary = Color(hex: 0x475569)
     public static let textMuted = Color(hex: 0x64748B)
     public static let borderSubtle = Color(hex: 0xE2E8F0)
+    public static let surfaceMuted = Color(hex: 0xF5F4F2)
+}
+
+// MARK: - Appllama Design Tokens, Haptics & Reusable Modifiers
+
+public enum HrpDesignTokens {
+    /// Small chips, status badges (8pt continuous)
+    public static let radiusXS: CGFloat = 8
+    /// Inputs, secondary buttons, inner tiles (12pt continuous)
+    public static let radiusMD: CGFloat = 12
+    /// KPI, worker, report, and attendance cards (16pt continuous)
+    public static let radiusCard: CGFloat = 16
+    /// Login card, hero cards, bottom sheets (22pt continuous)
+    public static let radiusHero: CGFloat = 22
+}
+
+public enum HapticsManager {
+    public static func selection() {
+        runOnMain {
+            let generator = UISelectionFeedbackGenerator()
+            generator.prepare()
+            generator.selectionChanged()
+        }
+    }
+
+    public static func lightImpact() {
+        runOnMain {
+            let generator = UIImpactFeedbackGenerator(style: .light)
+            generator.prepare()
+            generator.impactOccurred()
+        }
+    }
+
+    public static func success() {
+        runOnMain {
+            let generator = UINotificationFeedbackGenerator()
+            generator.prepare()
+            generator.notificationOccurred(.success)
+        }
+    }
+
+    public static func warning() {
+        runOnMain {
+            let generator = UINotificationFeedbackGenerator()
+            generator.prepare()
+            generator.notificationOccurred(.warning)
+        }
+    }
+
+    public static func error() {
+        runOnMain {
+            let generator = UINotificationFeedbackGenerator()
+            generator.prepare()
+            generator.notificationOccurred(.error)
+        }
+    }
+
+    private static func runOnMain(_ block: @escaping () -> Void) {
+        if Thread.isMainThread {
+            block()
+        } else {
+            DispatchQueue.main.async(execute: block)
+        }
+    }
+}
+
+public struct HrpPressableButtonStyle: ButtonStyle {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    public var scaleAmount: CGFloat
+
+    public init(scaleAmount: CGFloat = 0.97) {
+        self.scaleAmount = scaleAmount
+    }
+
+    public func makeBody(configuration: Configuration) -> some View {
+        let isPressed = configuration.isPressed
+        return configuration.label
+            .scaleEffect(reduceMotion ? 1.0 : (isPressed ? scaleAmount : 1.0))
+            .opacity(reduceMotion ? (isPressed ? 0.85 : 1.0) : 1.0)
+            .brightness(reduceMotion ? 0 : (isPressed ? -0.02 : 0))
+            .animation(
+                reduceMotion
+                    ? .easeOut(duration: 0.12)
+                    : (isPressed
+                        ? .easeOut(duration: 0.12)
+                        : .spring(response: 0.28, dampingFraction: 0.78)),
+                value: isPressed
+            )
+    }
+}
+
+private struct HrpSheetCornerRadiusModifier: ViewModifier {
+    let cornerRadius: CGFloat
+
+    func body(content: Content) -> some View {
+        if #available(iOS 16.4, *) {
+            content.presentationCornerRadius(cornerRadius)
+        } else {
+            content
+        }
+    }
+}
+
+public extension View {
+    func hrpCardSurface(
+        cornerRadius: CGFloat = HrpDesignTokens.radiusCard,
+        fill: Color = .white,
+        borderColor: Color = SemanticColors.borderSubtle.opacity(0.85),
+        lineWidth: CGFloat = 0.65,
+        showShadow: Bool = true
+    ) -> some View {
+        self
+            .background(
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .fill(fill)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .stroke(borderColor, lineWidth: lineWidth)
+            )
+            .shadow(
+                color: showShadow ? Color.black.opacity(0.04) : .clear,
+                radius: 8,
+                x: 0,
+                y: 2
+            )
+    }
+
+    func hrpMutedTile(
+        cornerRadius: CGFloat = HrpDesignTokens.radiusMD,
+        fill: Color = SemanticColors.surfaceMuted,
+        borderColor: Color = SemanticColors.borderSubtle.opacity(0.7)
+    ) -> some View {
+        self
+            .background(
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .fill(fill)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .stroke(borderColor, lineWidth: 0.6)
+            )
+    }
+
+    func hrpSheetPresentation(
+        detents: Set<PresentationDetent> = [.medium, .large],
+        cornerRadius: CGFloat = HrpDesignTokens.radiusHero
+    ) -> some View {
+        self
+            .presentationDetents(detents)
+            .presentationDragIndicator(.visible)
+            .modifier(HrpSheetCornerRadiusModifier(cornerRadius: cornerRadius))
+    }
 }
 
 public extension Color {

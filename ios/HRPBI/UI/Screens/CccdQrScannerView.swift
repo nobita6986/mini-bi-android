@@ -32,40 +32,47 @@ public struct CccdQrScannerSheet: View {
                             handleRawCandidate(rawValue)
                         }
                     )
-                    .clipShape(RoundedRectangle(cornerRadius: 16))
+                    .clipShape(RoundedRectangle(cornerRadius: HrpDesignTokens.radiusHero, style: .continuous))
 
-                    // Reticle Overlay
-                    RoundedRectangle(cornerRadius: 14)
-                        .stroke(Color.green, lineWidth: 2.5)
-                        .frame(width: 230, height: 230)
+                    // Dimmed surrounding cutout & 4 Corner Brackets Reticle Overlay
+                    QrViewfinderOverlay(cutoutSize: 224)
 
                     VStack {
                         Spacer()
                         HStack(spacing: 10) {
                             ForEach([1.0, 1.5, 2.0], id: \.self) { zoom in
+                                let isSelected = selectedZoomFactor == CGFloat(zoom)
                                 Button {
-                                    selectedZoomFactor = CGFloat(zoom)
+                                    HapticsManager.selection()
+                                    withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
+                                        selectedZoomFactor = CGFloat(zoom)
+                                    }
                                 } label: {
                                     Text(String(format: "%.1fx", zoom))
                                         .font(.caption.weight(.bold))
-                                        .padding(.horizontal, 10)
-                                        .padding(.vertical, 6)
-                                        .background(selectedZoomFactor == CGFloat(zoom) ? Color.white : Color.black.opacity(0.55))
-                                        .foregroundColor(selectedZoomFactor == CGFloat(zoom) ? .black : .white)
-                                        .clipShape(Capsule())
+                                        .monospacedDigit()
+                                        .frame(width: 44, height: 44)
+                                        .background(isSelected ? Color.white : Color.black.opacity(0.55))
+                                        .foregroundColor(isSelected ? .black : .white)
+                                        .clipShape(Circle())
+                                        .contentShape(Circle())
                                 }
+                                .buttonStyle(HrpPressableButtonStyle())
                             }
 
                             Button {
+                                HapticsManager.selection()
                                 isTorchOn.toggle()
                             } label: {
                                 Image(systemName: isTorchOn ? "flashlight.on.fill" : "flashlight.off.fill")
-                                    .font(.caption.weight(.bold))
-                                    .padding(8)
+                                    .font(.system(size: 14, weight: .bold))
+                                    .frame(width: 44, height: 44)
                                     .background(isTorchOn ? Color.yellow : Color.black.opacity(0.55))
                                     .foregroundColor(isTorchOn ? .black : .white)
                                     .clipShape(Circle())
+                                    .contentShape(Circle())
                             }
+                            .buttonStyle(HrpPressableButtonStyle())
                         }
                         .padding(.bottom, 12)
                     }
@@ -86,11 +93,10 @@ public struct CccdQrScannerSheet: View {
                         Text("Chọn ảnh CCCD có mã QR từ Thư viện")
                             .font(.subheadline.weight(.semibold))
                     }
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 12)
+                    .frame(maxWidth: .infinity, minHeight: 46)
                     .background(Color(hex: 0xEBF3FB))
                     .foregroundColor(Color(hex: 0x1E6BB8))
-                    .cornerRadius(12)
+                    .clipShape(RoundedRectangle(cornerRadius: HrpDesignTokens.radiusMD, style: .continuous))
                 }
                 .padding(.horizontal, 16)
                 .onChange(of: selectedPhotoItem) { newItem in
@@ -100,6 +106,7 @@ public struct CccdQrScannerSheet: View {
                            let raw = Self.detectQrFromImageData(data) {
                             handleRawCandidate(raw)
                         } else {
+                            HapticsManager.error()
                             statusMessage = "Không tìm thấy mã QR hợp lệ trên ảnh đã chọn."
                         }
                     }
@@ -114,20 +121,21 @@ public struct CccdQrScannerSheet: View {
                         TextField("034098001234||Nguyễn Văn A|...", text: $manualQrInput)
                             .submitLabel(.done)
                             .font(.caption)
+                            .monospacedDigit()
                             .foregroundColor(SemanticColors.textPrimary)
                             .padding(10)
-                            .background(Color(hex: 0xF8FAFC))
-                            .cornerRadius(8)
+                            .background(SemanticColors.surfaceMuted)
+                            .clipShape(RoundedRectangle(cornerRadius: HrpDesignTokens.radiusXS, style: .continuous))
                         Button("Áp dụng") {
                             KeyboardDismissal.dismiss()
                             handleRawCandidate(manualQrInput)
                         }
                         .font(.caption.weight(.bold))
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 10)
+                        .padding(.horizontal, 14)
+                        .frame(minHeight: 40)
                         .background(Color(hex: 0x1E6BB8))
                         .foregroundColor(.white)
-                        .cornerRadius(8)
+                        .clipShape(RoundedRectangle(cornerRadius: HrpDesignTokens.radiusXS, style: .continuous))
                     }
                 }
                 .padding(.horizontal, 16)
@@ -147,13 +155,16 @@ public struct CccdQrScannerSheet: View {
                 }
             }
         }
+        .hrpSheetPresentation(detents: [.large])
     }
 
     private func handleRawCandidate(_ raw: String) {
         if let parsed = CccdQrDecoder.parse(raw) {
+            HapticsManager.success()
             onDecoded(raw, parsed)
             dismiss()
         } else {
+            HapticsManager.error()
             statusMessage = "Mã QR không đúng định dạng CCCD Việt Nam. Vui lòng thử lại."
         }
     }
@@ -292,5 +303,82 @@ final class CccdCameraViewController: UIViewController, AVCaptureMetadataOutputO
                 break
             }
         }
+    }
+}
+
+// MARK: - Viewfinder Overlay with Dimmed Cutout & 4 Corner Brackets
+
+private struct QrViewfinderOverlay: View {
+    let cutoutSize: CGFloat
+
+    var body: some View {
+        GeometryReader { geo in
+            let rect = CGRect(
+                x: (geo.size.width - cutoutSize) / 2,
+                y: (geo.size.height - cutoutSize) / 2 - 14,
+                width: cutoutSize,
+                height: cutoutSize
+            )
+
+            ZStack {
+                Path { path in
+                    path.addRect(CGRect(origin: .zero, size: geo.size))
+                    path.addRoundedRect(
+                        in: rect,
+                        cornerSize: CGSize(width: HrpDesignTokens.radiusCard, height: HrpDesignTokens.radiusCard)
+                    )
+                }
+                .fill(Color.black.opacity(0.42), style: FillStyle(eoFill: true))
+
+                RoundedRectangle(cornerRadius: HrpDesignTokens.radiusCard, style: .continuous)
+                    .stroke(Color.white.opacity(0.32), lineWidth: 1)
+                    .frame(width: cutoutSize, height: cutoutSize)
+                    .position(x: rect.midX, y: rect.midY)
+
+                QrCornerBracketsShape(cornerRadius: HrpDesignTokens.radiusCard, armLength: 28)
+                    .stroke(Color(hex: 0x22C55E), style: StrokeStyle(lineWidth: 3.5, lineCap: .round, lineJoin: .round))
+                    .frame(width: cutoutSize, height: cutoutSize)
+                    .position(x: rect.midX, y: rect.midY)
+            }
+        }
+        .allowsHitTesting(false)
+        .clipShape(RoundedRectangle(cornerRadius: HrpDesignTokens.radiusHero, style: .continuous))
+    }
+}
+
+private struct QrCornerBracketsShape: Shape {
+    let cornerRadius: CGFloat
+    let armLength: CGFloat
+
+    func path(in rect: CGRect) -> Path {
+        var p = Path()
+        let r = min(cornerRadius, min(rect.width, rect.height) / 4)
+        let l = min(armLength, min(rect.width, rect.height) / 2 - r)
+
+        // Top-Left
+        p.move(to: CGPoint(x: rect.minX, y: rect.minY + r + l))
+        p.addLine(to: CGPoint(x: rect.minX, y: rect.minY + r))
+        p.addQuadCurve(to: CGPoint(x: rect.minX + r, y: rect.minY), control: CGPoint(x: rect.minX, y: rect.minY))
+        p.addLine(to: CGPoint(x: rect.minX + r + l, y: rect.minY))
+
+        // Top-Right
+        p.move(to: CGPoint(x: rect.maxX - r - l, y: rect.minY))
+        p.addLine(to: CGPoint(x: rect.maxX - r, y: rect.minY))
+        p.addQuadCurve(to: CGPoint(x: rect.maxX, y: rect.minY + r), control: CGPoint(x: rect.maxX, y: rect.minY))
+        p.addLine(to: CGPoint(x: rect.maxX, y: rect.minY + r + l))
+
+        // Bottom-Right
+        p.move(to: CGPoint(x: rect.maxX, y: rect.maxY - r - l))
+        p.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY - r))
+        p.addQuadCurve(to: CGPoint(x: rect.maxX - r, y: rect.maxY), control: CGPoint(x: rect.maxX, y: rect.maxY))
+        p.addLine(to: CGPoint(x: rect.maxX - r - l, y: rect.maxY))
+
+        // Bottom-Left
+        p.move(to: CGPoint(x: rect.minX + r + l, y: rect.maxY))
+        p.addLine(to: CGPoint(x: rect.minX + r, y: rect.maxY))
+        p.addQuadCurve(to: CGPoint(x: rect.minX, y: rect.maxY - r), control: CGPoint(x: rect.minX, y: rect.maxY))
+        p.addLine(to: CGPoint(x: rect.minX, y: rect.maxY - r - l))
+
+        return p
     }
 }

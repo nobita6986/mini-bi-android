@@ -331,6 +331,23 @@ public enum MiniBiNavDestination: String, CaseIterable, Identifiable, Equatable,
             return "person.badge.plus"
         }
     }
+
+    public func tabIconName(isSelected: Bool) -> String {
+        switch self {
+        case .dashboard:
+            return isSelected ? "chart.bar.fill" : "chart.bar"
+        case .workReports:
+            return isSelected ? "doc.text.fill" : "doc.text"
+        case .attendance:
+            return isSelected ? "viewfinder.circle.fill" : "viewfinder.circle"
+        case .workers:
+            return isSelected ? "person.3.fill" : "person.3"
+        case .recruitment:
+            return isSelected ? "megaphone.fill" : "megaphone"
+        case .newEntry:
+            return isSelected ? "person.fill.badge.plus" : "person.badge.plus"
+        }
+    }
 }
 
 public enum DashboardSubTab: String, CaseIterable, Identifiable, Equatable, Sendable {

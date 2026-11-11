@@ -4,8 +4,15 @@ import SwiftUI
 // Mirrors Android's `ui/screens/LoginScreen.kt` 100%
 
 public struct LoginScreen: View {
+    private enum LoginFocusField: Hashable {
+        case identifier
+        case password
+    }
+
     @ObservedObject var viewModel: MiniBiViewModel
     @State private var isPasswordVisible: Bool = false
+    @State private var accountPendingDeletion: SavedLoginAccount?
+    @FocusState private var focusedField: LoginFocusField?
 
     public init(viewModel: MiniBiViewModel) {
         self.viewModel = viewModel
@@ -28,23 +35,23 @@ public struct LoginScreen: View {
             .ignoresSafeArea()
 
             ScrollView {
-                VStack(spacing: 16) {
+                VStack(spacing: 18) {
                     Spacer(minLength: 28)
 
-                    // Brand Header (`HRP BI` or `HRP BI 2`) — matches Android LoginScreen.kt
-                    VStack(spacing: 8) {
+                    // Brand Header (`HRP BI` or `HRP BI 2`) — Squircle Hero Logo
+                    VStack(spacing: 10) {
                         ZStack {
-                            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                            RoundedRectangle(cornerRadius: HrpDesignTokens.radiusHero, style: .continuous)
                                 .fill(Color.white)
-                                .frame(width: 64, height: 64)
-                                .shadow(color: Color.black.opacity(0.08), radius: 6, x: 0, y: 2)
+                                .frame(width: 68, height: 68)
+                                .shadow(color: Color.black.opacity(0.06), radius: 10, x: 0, y: 4)
                                 .overlay(
-                                    RoundedRectangle(cornerRadius: 18, style: .continuous)
-                                        .stroke(Color(hex: 0xE5E7EB), lineWidth: 1)
+                                    RoundedRectangle(cornerRadius: HrpDesignTokens.radiusHero, style: .continuous)
+                                        .stroke(SemanticColors.borderSubtle.opacity(0.85), lineWidth: 0.8)
                                 )
-                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            RoundedRectangle(cornerRadius: 14, style: .continuous)
                                 .fill(theme.primary)
-                                .frame(width: 48, height: 48)
+                                .frame(width: 50, height: 50)
                             Text(env.appBrandBadgeText)
                                 .font(.system(size: 20, weight: .heavy, design: .rounded))
                                 .foregroundColor(.white)
@@ -61,8 +68,8 @@ public struct LoginScreen: View {
                     }
                     .padding(.bottom, 4)
 
-                    // Login Card
-                    VStack(alignment: .leading, spacing: 14) {
+                    // Login Card (22pt continuous squircle)
+                    VStack(alignment: .leading, spacing: 16) {
                         VStack(alignment: .leading, spacing: 4) {
                             Text("Đăng Nhập Tài Khoản")
                                 .font(.title3.weight(.bold))
@@ -72,7 +79,7 @@ public struct LoginScreen: View {
                                 .foregroundColor(SemanticColors.textMuted)
                         }
 
-                        // Saved Login Accounts (1-tap login or remove)
+                        // Saved Login Accounts (1-tap login or confirmed remove)
                         if !viewModel.savedAccounts.isEmpty {
                             VStack(alignment: .leading, spacing: 8) {
                                 Text("Tài khoản đã lưu (chạm để đăng nhập nhanh)")
@@ -80,16 +87,22 @@ public struct LoginScreen: View {
                                     .foregroundColor(SemanticColors.textSecondary)
 
                                 ForEach(viewModel.savedAccounts) { account in
-                                    HStack(spacing: 10) {
+                                    HStack(spacing: 8) {
                                         Button {
+                                            HapticsManager.lightImpact()
                                             Task {
                                                 await viewModel.quickLoginWithSavedAccount(account)
+                                                if viewModel.isAuthenticated {
+                                                    HapticsManager.success()
+                                                } else if viewModel.loginErrorMessage != nil {
+                                                    HapticsManager.error()
+                                                }
                                             }
                                         } label: {
                                             HStack(spacing: 10) {
                                                 Circle()
                                                     .fill(theme.primaryLight)
-                                                    .frame(width: 36, height: 36)
+                                                    .frame(width: 38, height: 38)
                                                     .overlay(
                                                         Text(String(account.displayName.prefix(1)).uppercased())
                                                             .font(.subheadline.weight(.bold))
@@ -99,35 +112,38 @@ public struct LoginScreen: View {
                                                     Text(account.displayName)
                                                         .font(.subheadline.weight(.semibold))
                                                         .foregroundColor(SemanticColors.textPrimary)
+                                                        .lineLimit(1)
                                                     Text(account.identifier + (account.role.isEmpty ? "" : " · \(account.role)"))
                                                         .font(.caption)
                                                         .foregroundColor(SemanticColors.textMuted)
+                                                        .lineLimit(1)
                                                 }
                                                 Spacer()
                                                 Image(systemName: "arrow.right.circle.fill")
+                                                    .font(.body)
                                                     .foregroundColor(theme.primary)
                                             }
+                                            .padding(.leading, 10)
+                                            .padding(.vertical, 8)
+                                            .contentShape(Rectangle())
                                         }
-                                        .buttonStyle(.plain)
+                                        .buttonStyle(HrpPressableButtonStyle())
                                         .disabled(viewModel.isLoggingIn)
 
-                                        Button {
-                                            viewModel.removeSavedAccount(account)
+                                        Button(role: .destructive) {
+                                            HapticsManager.warning()
+                                            accountPendingDeletion = account
                                         } label: {
                                             Image(systemName: "xmark.circle.fill")
+                                                .font(.subheadline)
                                                 .foregroundColor(SemanticColors.textMuted)
-                                                .padding(4)
+                                                .frame(minWidth: 44, minHeight: 44)
+                                                .contentShape(Rectangle())
                                         }
                                         .buttonStyle(.plain)
                                         .accessibilityLabel("Xóa tài khoản đã lưu \(account.identifier)")
                                     }
-                                    .padding(10)
-                                    .background(Color(hex: 0xF8FAFC))
-                                    .overlay(
-                                        RoundedRectangle(cornerRadius: 10)
-                                            .stroke(SemanticColors.borderSubtle, lineWidth: 1)
-                                    )
-                                    .cornerRadius(10)
+                                    .hrpMutedTile(cornerRadius: HrpDesignTokens.radiusMD)
                                 }
                             }
                             Divider()
@@ -139,23 +155,36 @@ public struct LoginScreen: View {
                                 .font(.caption.weight(.semibold))
                                 .foregroundColor(SemanticColors.textSecondary)
 
-                            HStack {
+                            HStack(spacing: 10) {
                                 Image(systemName: "person.fill")
                                     .foregroundColor(theme.primary)
                                 TextField("Nhập email hoặc mã ID", text: $viewModel.loginIdentifierInput)
-                                    .submitLabel(.done)
+                                    .focused($focusedField, equals: .identifier)
+                                    .submitLabel(.next)
+                                    .onSubmit {
+                                        focusedField = .password
+                                    }
+                                    .textContentType(.username)
+                                    .keyboardType(.emailAddress)
                                     .textInputAutocapitalization(.never)
                                     .autocorrectionDisabled(true)
                                     .foregroundColor(SemanticColors.textPrimary)
                                     .tint(theme.primary)
                             }
-                            .padding(12)
-                            .background(Color.white)
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 14)
-                                    .stroke(Color(hex: 0xD8DEE6), lineWidth: 1)
+                            .padding(.horizontal, 12)
+                            .frame(minHeight: 48)
+                            .background(
+                                RoundedRectangle(cornerRadius: HrpDesignTokens.radiusMD, style: .continuous)
+                                    .fill(Color.white)
                             )
-                            .cornerRadius(14)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: HrpDesignTokens.radiusMD, style: .continuous)
+                                    .stroke(
+                                        focusedField == .identifier ? theme.primary : Color(hex: 0xD8DEE6),
+                                        lineWidth: focusedField == .identifier ? 1.5 : 1.0
+                                    )
+                            )
+                            .animation(.easeOut(duration: 0.15), value: focusedField)
                         }
 
                         // Password Input
@@ -164,46 +193,54 @@ public struct LoginScreen: View {
                                 .font(.caption.weight(.semibold))
                                 .foregroundColor(SemanticColors.textSecondary)
 
-                            HStack {
+                            HStack(spacing: 10) {
                                 Image(systemName: "lock.fill")
                                     .foregroundColor(theme.primary)
-                                if isPasswordVisible {
-                                    TextField("Nhập mật khẩu", text: $viewModel.loginPasswordInput)
-                                        .submitLabel(.go)
-                                        .onSubmit {
-                                            KeyboardDismissal.dismiss()
-                                            Task { await viewModel.performLogin() }
-                                        }
-                                        .textInputAutocapitalization(.never)
-                                        .autocorrectionDisabled(true)
-                                        .foregroundColor(SemanticColors.textPrimary)
-                                        .tint(theme.primary)
-                                } else {
-                                    SecureField("Nhập mật khẩu", text: $viewModel.loginPasswordInput)
-                                        .submitLabel(.go)
-                                        .onSubmit {
-                                            KeyboardDismissal.dismiss()
-                                            Task { await viewModel.performLogin() }
-                                        }
-                                        .textInputAutocapitalization(.never)
-                                        .foregroundColor(SemanticColors.textPrimary)
-                                        .tint(theme.primary)
+                                Group {
+                                    if isPasswordVisible {
+                                        TextField("Nhập mật khẩu", text: $viewModel.loginPasswordInput)
+                                            .textInputAutocapitalization(.never)
+                                            .autocorrectionDisabled(true)
+                                    } else {
+                                        SecureField("Nhập mật khẩu", text: $viewModel.loginPasswordInput)
+                                            .textInputAutocapitalization(.never)
+                                    }
                                 }
+                                .focused($focusedField, equals: .password)
+                                .textContentType(.password)
+                                .submitLabel(.go)
+                                .onSubmit {
+                                    submitLoginFromForm()
+                                }
+                                .foregroundColor(SemanticColors.textPrimary)
+                                .tint(theme.primary)
+
                                 Button {
+                                    HapticsManager.selection()
                                     isPasswordVisible.toggle()
                                 } label: {
                                     Image(systemName: isPasswordVisible ? "eye.slash.fill" : "eye.fill")
                                         .foregroundColor(SemanticColors.textMuted)
+                                        .frame(minWidth: 44, minHeight: 44)
+                                        .contentShape(Rectangle())
                                 }
                                 .buttonStyle(.plain)
                             }
-                            .padding(12)
-                            .background(Color.white)
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 14)
-                                    .stroke(Color(hex: 0xD8DEE6), lineWidth: 1)
+                            .padding(.leading, 12)
+                            .padding(.trailing, 4)
+                            .frame(minHeight: 48)
+                            .background(
+                                RoundedRectangle(cornerRadius: HrpDesignTokens.radiusMD, style: .continuous)
+                                    .fill(Color.white)
                             )
-                            .cornerRadius(14)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: HrpDesignTokens.radiusMD, style: .continuous)
+                                    .stroke(
+                                        focusedField == .password ? theme.primary : Color(hex: 0xD8DEE6),
+                                        lineWidth: focusedField == .password ? 1.5 : 1.0
+                                    )
+                            )
+                            .animation(.easeOut(duration: 0.15), value: focusedField)
                         }
 
                         // Remember Login Toggle
@@ -224,21 +261,20 @@ public struct LoginScreen: View {
                                     .foregroundColor(SemanticColors.dangerText)
                                 Spacer()
                             }
-                            .padding(10)
-                            .background(SemanticColors.dangerBg)
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 12)
-                                    .stroke(SemanticColors.dangerBorder, lineWidth: 1)
+                            .padding(12)
+                            .background(
+                                RoundedRectangle(cornerRadius: HrpDesignTokens.radiusMD, style: .continuous)
+                                    .fill(SemanticColors.dangerBg)
                             )
-                            .cornerRadius(12)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: HrpDesignTokens.radiusMD, style: .continuous)
+                                    .stroke(SemanticColors.dangerBorder, lineWidth: 0.8)
+                            )
                         }
 
-                        // Login Button
+                        // Login Button (50pt height + HrpPressableButtonStyle)
                         Button {
-                            KeyboardDismissal.dismiss()
-                            Task {
-                                await viewModel.performLogin()
-                            }
+                            submitLoginFromForm()
                         } label: {
                             HStack {
                                 Spacer()
@@ -252,24 +288,21 @@ public struct LoginScreen: View {
                                     .foregroundColor(.white)
                                 Spacer()
                             }
-                            .padding(.vertical, 14)
-                            .background(theme.primary)
-                            .cornerRadius(14)
+                            .frame(minHeight: 50)
+                            .background(
+                                RoundedRectangle(cornerRadius: HrpDesignTokens.radiusMD, style: .continuous)
+                                    .fill(theme.primary)
+                            )
                         }
+                        .buttonStyle(HrpPressableButtonStyle())
                         .disabled(viewModel.isLoggingIn || viewModel.isBootstrapping)
                     }
                     .padding(18)
-                    .background(Color.white)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 22)
-                            .stroke(Color(hex: 0xE5E7EB), lineWidth: 1)
-                    )
-                    .cornerRadius(22)
-                    .shadow(color: Color.black.opacity(0.06), radius: 10, x: 0, y: 4)
+                    .hrpCardSurface(cornerRadius: HrpDesignTokens.radiusHero)
                     .padding(.horizontal, 18)
 
                     Text("Phiên bản \(env.marketingVersion) (Build \(env.buildNumber))")
-                        .font(.caption)
+                        .font(.caption.monospacedDigit())
                         .foregroundColor(SemanticColors.textMuted)
                         .padding(.top, 8)
 
@@ -278,5 +311,42 @@ public struct LoginScreen: View {
             }
         }
         .dismissKeyboardOnTapOutside()
+        .confirmationDialog(
+            "Xóa tài khoản đã lưu?",
+            isPresented: Binding(
+                get: { accountPendingDeletion != nil },
+                set: { if !$0 { accountPendingDeletion = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            if let pending = accountPendingDeletion {
+                Button("Xóa \(pending.displayName)", role: .destructive) {
+                    HapticsManager.lightImpact()
+                    viewModel.removeSavedAccount(pending)
+                    accountPendingDeletion = nil
+                }
+            }
+            Button("Hủy", role: .cancel) {
+                accountPendingDeletion = nil
+            }
+        } message: {
+            if let pending = accountPendingDeletion {
+                Text("Tài khoản \(pending.identifier) sẽ được gỡ khỏi danh sách đăng nhập nhanh trên thiết bị này.")
+            }
+        }
+    }
+
+    private func submitLoginFromForm() {
+        focusedField = nil
+        KeyboardDismissal.dismiss()
+        HapticsManager.lightImpact()
+        Task {
+            await viewModel.performLogin()
+            if viewModel.isAuthenticated {
+                HapticsManager.success()
+            } else if viewModel.loginErrorMessage != nil {
+                HapticsManager.error()
+            }
+        }
     }
 }
