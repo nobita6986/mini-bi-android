@@ -4185,7 +4185,11 @@ final class HRPBTests: XCTestCase {
             page: 2,
             pageSize: 15
         )
-        XCTAssertTrue(synced.isEmpty)
+        if case .success(let payload, _) = synced {
+            XCTAssertTrue(payload.items.isEmpty)
+        } else {
+            XCTFail("Expected syncServerHistoryForUser to succeed")
+        }
         XCTAssertTrue(outboxService.lastHistorySyncHasMore)
         XCTAssertEqual(outboxService.lastHistorySyncTotalCount, 34)
 
