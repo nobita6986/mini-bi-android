@@ -84,8 +84,14 @@ import com.example.data.CccdReviewStatusFilter
 import com.example.data.CccdReviewSummary
 import com.example.data.DirectEntryContract
 import com.example.ui.MiniBiViewModel
+import com.example.ui.components.HrpDesignTokens
+import com.example.ui.components.HrpInitialsAvatar
+import com.example.ui.components.HrpStatusBadge
+import com.example.ui.components.hrpCardSurface
+import com.example.ui.components.hrpMutedTile
 import com.example.ui.theme.JetBrainsMono
 import com.example.ui.theme.SemanticColors
+import com.example.ui.theme.tabularNums
 import java.io.File
 
 internal fun reconciliationStatusUiLabel(status: String): String = when (status.trim().uppercase()) {
@@ -131,6 +137,14 @@ private fun countForStatusFilter(summary: CccdReviewSummary, filter: CccdReviewS
     CccdReviewStatusFilter.ALL -> summary.totalCount
 }
 
+internal fun reconciliationStatusBadgeColors(status: String): Triple<Color, Color, Color> =
+    when (status.trim().uppercase()) {
+        "MISMATCH" -> Triple(SemanticColors.ErrorBg, SemanticColors.ErrorText, SemanticColors.ErrorBorder)
+        "QR_UNREADABLE" -> Triple(SemanticColors.WarningBg, SemanticColors.WarningText, SemanticColors.WarningBorder)
+        "MATCHED_INITIAL", "RESOLVED" -> Triple(SemanticColors.SuccessBg, SemanticColors.SuccessText, SemanticColors.SuccessBorder)
+        else -> Triple(SemanticColors.SurfaceSubtle, SemanticColors.TextSecondary, SemanticColors.SurfaceBorder)
+    }
+
 @Composable
 fun CccdReviewToolbarAndFilterCard(
     page: CccdReviewQueuePage?,
@@ -149,106 +163,102 @@ fun CccdReviewToolbarAndFilterCard(
     val hasPrev = offset > 0
     val hasNext = offset + (page?.rows?.size ?: 0) < total
 
-    Card(
+    Column(
         modifier = Modifier
             .fillMaxWidth()
+            .hrpCardSurface()
+            .padding(12.dp)
             .testTag("cccd_review_toolbar_card"),
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
+        verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = "Chuẩn hoá thông tin NLĐ (Đối chiếu QR CCCD)",
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Text(
-                        text = "So sánh thông tin đã nhập với dữ liệu giải mã từ QR trên ảnh CCCD; sửa CCCD hoặc chuẩn hóa trực tiếp.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                IconButton(
-                    onClick = onRefresh,
-                    enabled = !loading,
-                    modifier = Modifier.testTag("cccd_review_refresh_button")
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Refresh,
-                        contentDescription = "Làm mới danh sách",
-                        tint = MaterialTheme.colorScheme.primary
-                    )
-                }
-            }
-
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                CccdReviewStatusFilter.entries.forEach { filter ->
-                    val selected = selectedFilterCode.equals(filter.code, ignoreCase = true)
-                    val count = countForStatusFilter(summary, filter)
-                    FilterChip(
-                        selected = selected,
-                        onClick = { onSelectFilter(filter.code) },
-                        label = {
-                            Text(
-                                text = "${filter.label} ($count)",
-                                maxLines = 1
-                            )
-                        },
-                        modifier = Modifier.testTag("cccd_review_filter_${filter.code}")
-                    )
-                }
-            }
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
+            Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = "Tổng: $total hồ sơ · Trang $currentPage",
-                    style = MaterialTheme.typography.labelMedium,
-                    fontFamily = JetBrainsMono,
+                    text = "Chuẩn hoá thông tin NLĐ (Đối chiếu QR CCCD)",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = "So sánh thông tin đã nhập với dữ liệu giải mã từ QR trên ảnh CCCD; sửa CCCD hoặc chuẩn hóa trực tiếp.",
+                    style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+            }
+            IconButton(
+                onClick = onRefresh,
+                enabled = !loading,
+                modifier = Modifier.testTag("cccd_review_refresh_button")
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Refresh,
+                    contentDescription = "Làm mới danh sách",
+                    tint = MaterialTheme.colorScheme.primary
+                )
+            }
+        }
 
-                if (hasPrev || hasNext) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedButton(
-                            onClick = onPreviousPage,
-                            enabled = !loading && hasPrev,
-                            shape = RoundedCornerShape(10.dp),
-                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                            modifier = Modifier.height(34.dp)
-                        ) {
-                            Text("Trang trước", style = MaterialTheme.typography.labelMedium)
-                        }
-                        OutlinedButton(
-                            onClick = onNextPage,
-                            enabled = !loading && hasNext,
-                            shape = RoundedCornerShape(10.dp),
-                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                            modifier = Modifier.height(34.dp)
-                        ) {
-                            Text("Trang sau", style = MaterialTheme.typography.labelMedium)
-                        }
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            CccdReviewStatusFilter.entries.forEach { filter ->
+                val selected = selectedFilterCode.equals(filter.code, ignoreCase = true)
+                val count = countForStatusFilter(summary, filter)
+                FilterChip(
+                    selected = selected,
+                    onClick = { onSelectFilter(filter.code) },
+                    label = {
+                        Text(
+                            text = "${filter.label} ($count)",
+                            style = MaterialTheme.typography.labelMedium.tabularNums(),
+                            maxLines = 1
+                        )
+                    },
+                    modifier = Modifier.testTag("cccd_review_filter_${filter.code}")
+                )
+            }
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "Tổng: $total hồ sơ · Trang $currentPage",
+                style = MaterialTheme.typography.labelMedium.tabularNums(),
+                fontFamily = JetBrainsMono,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            if (hasPrev || hasNext) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(
+                        onClick = onPreviousPage,
+                        enabled = !loading && hasPrev,
+                        shape = RoundedCornerShape(10.dp),
+                        border = BorderStroke(1.dp, SemanticColors.SurfaceBorder),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                        modifier = Modifier.height(34.dp)
+                    ) {
+                        Text("Trang trước", style = MaterialTheme.typography.labelMedium)
+                    }
+                    OutlinedButton(
+                        onClick = onNextPage,
+                        enabled = !loading && hasNext,
+                        shape = RoundedCornerShape(10.dp),
+                        border = BorderStroke(1.dp, SemanticColors.SurfaceBorder),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                        modifier = Modifier.height(34.dp)
+                    ) {
+                        Text("Trang sau", style = MaterialTheme.typography.labelMedium)
                     }
                 }
             }
@@ -261,158 +271,144 @@ fun CccdReviewQueueItemCard(
     item: CccdReviewQueueItem,
     onOpenReview: (CccdReviewQueueItem) -> Unit
 ) {
-    val badgeColor = reconciliationStatusColor(item.reconciliationStatus)
+    val (badgeBg, badgeFg, badgeBorder) = reconciliationStatusBadgeColors(item.reconciliationStatus)
     val badgeLabel = reconciliationStatusUiLabel(item.reconciliationStatus)
     val qrCccd = item.qrExtractedPayload?.cccd12
     val qrName = item.qrExtractedPayload?.fullName
 
-    Card(
+    Column(
         modifier = Modifier
             .fillMaxWidth()
+            .hrpCardSurface()
+            .padding(14.dp)
             .testTag("cccd_review_row_${item.entryId}"),
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
+        verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalAlignment = Alignment.Top
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.Top
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
+            HrpInitialsAvatar(
+                fullName = item.enteredDisplayName.ifBlank { qrName ?: "NL" },
+                size = 38.dp
+            )
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = item.enteredDisplayName.ifBlank { "(Chưa nhập họ tên)" },
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Text(
+                    text = "${item.employeeCode.ifBlank { "—" }} · ${item.projectDisplay.ifBlank { item.projectId }} · Ngày vào: ${DirectEntryContract.isoDateToUiDate(item.firstWorkDate)}",
+                    style = MaterialTheme.typography.bodySmall.tabularNums(),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                if (item.recruiterDisplay.isNotBlank()) {
                     Text(
-                        text = item.enteredDisplayName.ifBlank { "(Chưa nhập họ tên)" },
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Text(
-                        text = "${item.employeeCode.ifBlank { "—" }} · ${item.projectDisplay.ifBlank { item.projectId }} · Ngày vào: ${DirectEntryContract.isoDateToUiDate(item.firstWorkDate)}",
+                        text = "Người tuyển: ${item.recruiterDisplay}",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                    if (item.recruiterDisplay.isNotBlank()) {
-                        Text(
-                            text = "Người tuyển: ${item.recruiterDisplay}",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                }
-
-                Surface(
-                    shape = RoundedCornerShape(50),
-                    color = badgeColor.copy(alpha = 0.14f),
-                    border = BorderStroke(1.dp, badgeColor.copy(alpha = 0.35f))
-                ) {
-                    Text(
-                        text = badgeLabel,
-                        style = MaterialTheme.typography.labelSmall,
-                        fontWeight = FontWeight.Bold,
-                        color = badgeColor,
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
-                    )
                 }
             }
 
-            Surface(
-                shape = RoundedCornerShape(12.dp),
-                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
-                modifier = Modifier.fillMaxWidth()
+            HrpStatusBadge(
+                text = badgeLabel,
+                containerColor = badgeBg,
+                contentColor = badgeFg,
+                borderColor = badgeBorder.copy(alpha = 0.7f)
+            )
+        }
+
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .hrpMutedTile(cornerRadius = HrpDesignTokens.RadiusMD)
+                .padding(10.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(10.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                Text(
+                    text = "CCCD đã nhập:",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    text = item.enteredNationalId ?: "—",
+                    style = MaterialTheme.typography.labelMedium.tabularNums(),
+                    fontFamily = JetBrainsMono,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(
+                    text = "CCCD giải mã từ QR:",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    text = qrCccd ?: "Chưa đọc được QR",
+                    style = MaterialTheme.typography.labelMedium.tabularNums(),
+                    fontFamily = JetBrainsMono,
+                    fontWeight = FontWeight.Bold,
+                    color = when {
+                        qrCccd == null -> SemanticColors.WarningLight
+                        qrCccd != item.enteredNationalId -> SemanticColors.ErrorLight
+                        else -> SemanticColors.SuccessLight
+                    }
+                )
+            }
+            if (!qrName.isNullOrBlank()) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Text(
-                            text = "CCCD đã nhập:",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Text(
-                            text = item.enteredNationalId ?: "—",
-                            style = MaterialTheme.typography.labelMedium,
-                            fontFamily = JetBrainsMono,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Text(
-                            text = "CCCD giải mã từ QR:",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Text(
-                            text = qrCccd ?: "Chưa đọc được QR",
-                            style = MaterialTheme.typography.labelMedium,
-                            fontFamily = JetBrainsMono,
-                            fontWeight = FontWeight.Bold,
-                            color = when {
-                                qrCccd == null -> SemanticColors.WarningLight
-                                qrCccd != item.enteredNationalId -> SemanticColors.ErrorLight
-                                else -> SemanticColors.SuccessLight
-                            }
-                        )
-                    }
-                    if (!qrName.isNullOrBlank()) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Text(
-                                text = "Họ tên từ QR:",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                            Text(
-                                text = qrName,
-                                style = MaterialTheme.typography.labelSmall,
-                                fontWeight = FontWeight.SemiBold
-                            )
-                        }
-                    }
                     Text(
-                        text = "Ảnh CCCD: Mặt trước (${qrScanStatusUiLabel(item.cccdFrontQrStatus)}) · Mặt sau (${qrScanStatusUiLabel(item.cccdBackQrStatus)})",
+                        text = "Họ tên từ QR:",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+                    Text(
+                        text = qrName,
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.SemiBold
+                    )
                 }
             }
+            Text(
+                text = "Ảnh CCCD: Mặt trước (${qrScanStatusUiLabel(item.cccdFrontQrStatus)}) · Mặt sau (${qrScanStatusUiLabel(item.cccdBackQrStatus)})",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
 
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.End
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.End
+        ) {
+            Button(
+                onClick = { onOpenReview(item) },
+                shape = RoundedCornerShape(10.dp),
+                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
+                modifier = Modifier
+                    .height(36.dp)
+                    .testTag("cccd_review_open_button_${item.entryId}")
             ) {
-                Button(
-                    onClick = { onOpenReview(item) },
-                    shape = RoundedCornerShape(10.dp),
-                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
-                    modifier = Modifier
-                        .height(36.dp)
-                        .testTag("cccd_review_open_button_${item.entryId}")
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.RateReview,
-                        contentDescription = null,
-                        modifier = Modifier.size(16.dp)
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text("Xem & xử lý", style = MaterialTheme.typography.labelMedium)
-                }
+                Icon(
+                    imageVector = Icons.Default.RateReview,
+                    contentDescription = null,
+                    modifier = Modifier.size(16.dp)
+                )
+                Spacer(modifier = Modifier.width(6.dp))
+                Text("Xem & xử lý", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
             }
         }
     }
@@ -1040,7 +1036,7 @@ private fun CccdComparisonFieldRow(comp: CccdReviewComparisonField) {
                     )
                     Text(
                         text = comp.enteredValue?.ifBlank { "—" } ?: "—",
-                        style = MaterialTheme.typography.bodySmall,
+                        style = MaterialTheme.typography.bodySmall.tabularNums(),
                         fontWeight = FontWeight.Medium
                     )
                 }
@@ -1052,7 +1048,7 @@ private fun CccdComparisonFieldRow(comp: CccdReviewComparisonField) {
                     )
                     Text(
                         text = comp.qrValue?.ifBlank { "—" } ?: "—",
-                        style = MaterialTheme.typography.bodySmall,
+                        style = MaterialTheme.typography.bodySmall.tabularNums(),
                         fontWeight = FontWeight.SemiBold,
                         color = if (comp.status == "DIFFERENT") SemanticColors.ErrorLight else MaterialTheme.colorScheme.onSurface
                     )

@@ -73,9 +73,15 @@ import com.example.data.TeamReportSnapshot
 import com.example.data.WorkReportsContract
 import com.example.data.WorkforceDeepMetrics
 import com.example.ui.MiniBiViewModel
+import com.example.ui.components.HrpDesignTokens
+import com.example.ui.components.HrpSkeletonCard
+import com.example.ui.components.HrpStatusBadge
+import com.example.ui.components.hrpCardSurface
+import com.example.ui.components.hrpMutedTile
 import com.example.ui.theme.JetBrainsMono
 import com.example.ui.theme.LocalMiniBiPalette
 import com.example.ui.theme.SemanticColors
+import com.example.ui.theme.tabularNums
 import java.util.Locale
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -225,16 +231,16 @@ fun DashboardScreen(
                                         .fillMaxHeight()
                                         .heightIn(min = 40.dp)
                                         .testTag("dashboard_tab_$index"),
-                                    shape = RoundedCornerShape(12.dp),
+                                    shape = RoundedCornerShape(HrpDesignTokens.RadiusMD),
                                     color = if (selected) {
                                         MaterialTheme.colorScheme.primaryContainer
                                     } else {
-                                        MaterialTheme.colorScheme.surface
+                                        SemanticColors.SurfaceLight
                                     },
                                     border = if (selected) {
-                                        BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.35f))
+                                        BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.45f))
                                     } else {
-                                        BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.22f))
+                                        BorderStroke(1.dp, SemanticColors.SurfaceBorder)
                                     }
                                 ) {
                                     Box(
@@ -286,9 +292,12 @@ fun DashboardScreen(
             currentTabLabel.startsWith("Báo cáo tổng quát") -> {
                 item {
                     when {
-                        generalOverviewLoading ->
-                            LoadingSectionCard("Đang tải báo cáo tổng quát tuyển dụng…")
-                        generalOverviewError != null ->
+                        generalOverviewLoading && generalOverview == null ->
+                            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                HrpSkeletonCard(lineCount = 3)
+                                HrpSkeletonCard(lineCount = 3)
+                            }
+                        generalOverviewError != null && generalOverview == null ->
                             DashboardStatusCard(
                                 title = "Không thể tải báo cáo tổng quát",
                                 subtitle = generalOverviewError.orEmpty()
@@ -307,8 +316,11 @@ fun DashboardScreen(
                 item {
                     when {
                         workforceLoading && workforceDeep == null ->
-                            LoadingSectionCard("Đang tải báo cáo chuyên sâu lực lượng lao động…")
-                        workforceError != null -> DashboardStatusCard(
+                            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                HrpSkeletonCard(lineCount = 3)
+                                HrpSkeletonCard(lineCount = 3)
+                            }
+                        workforceError != null && workforceDeep == null -> DashboardStatusCard(
                             title = "Không thể tải báo cáo chuyên sâu",
                             subtitle = workforceError.orEmpty()
                         )
@@ -339,7 +351,10 @@ fun DashboardScreen(
                 item {
                     when {
                         teamReportLoading && teamReport == null ->
-                            LoadingSectionCard("Đang tải báo cáo nhóm quản lý…")
+                            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                HrpSkeletonCard(lineCount = 3)
+                                HrpSkeletonCard(lineCount = 3)
+                            }
                         teamReportError != null -> DashboardStatusCard(
                             title = "Không thể tải báo cáo theo nhóm",
                             subtitle = teamReportError.orEmpty()
@@ -395,7 +410,10 @@ fun DashboardScreen(
                 }
                 when {
                     cccdReviewLoading && curPage == null -> item {
-                        LoadingSectionCard("Đang tải danh sách chuẩn hoá thông tin NLĐ…")
+                        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                            HrpSkeletonCard(lineCount = 3, showAvatar = true)
+                            HrpSkeletonCard(lineCount = 3, showAvatar = true)
+                        }
                     }
                     cccdReviewError != null && curPage == null -> item {
                         DashboardStatusCard(
@@ -449,10 +467,13 @@ fun DashboardScreen(
                     )
                 }
                 when {
-                    duplicateLoading -> item {
-                        LoadingSectionCard("Đang tải báo cáo CCCD trùng…")
+                    duplicateLoading && duplicateGroups.isEmpty() -> item {
+                        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                            HrpSkeletonCard(lineCount = 3)
+                            HrpSkeletonCard(lineCount = 3)
+                        }
                     }
-                    duplicateError != null -> item {
+                    duplicateError != null && duplicateGroups.isEmpty() -> item {
                         DashboardStatusCard(
                             title = "Không thể tải báo cáo CCCD trùng",
                             subtitle = duplicateError.orEmpty()
@@ -556,12 +577,12 @@ private fun DashboardTimeFilterAndRefreshBar(
                     color = if (isSelected) {
                         MaterialTheme.colorScheme.primary
                     } else {
-                        MaterialTheme.colorScheme.surface
+                        SemanticColors.SurfaceLight
                     },
                     border = if (isSelected) {
                         null
                     } else {
-                        BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.22f))
+                        BorderStroke(1.dp, SemanticColors.SurfaceBorder)
                     }
                 ) {
                     Box(
@@ -591,9 +612,9 @@ private fun DashboardTimeFilterAndRefreshBar(
 
         Surface(
             shape = RoundedCornerShape(10.dp),
-            color = MaterialTheme.colorScheme.surface,
-            shadowElevation = 1.dp,
-            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.24f))
+            color = SemanticColors.SurfaceLight,
+            shadowElevation = 0.5.dp,
+            border = BorderStroke(1.dp, SemanticColors.SurfaceBorder)
         ) {
             IconButton(
                 onClick = onRefreshClick,
@@ -685,80 +706,75 @@ private fun DuplicateCccdToolbarCard(
     onPreviousPage: () -> Unit,
     onNextPage: () -> Unit
 ) {
-    Card(
+    Column(
         modifier = Modifier
             .fillMaxWidth()
+            .hrpCardSurface()
+            .padding(horizontal = 12.dp, vertical = 8.dp)
             .testTag("duplicate_cccd_toolbar"),
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
+        verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
         ) {
+            FilterChip(
+                selected = managedOnly,
+                onClick = onToggleManagedOnly,
+                label = {
+                    Text(
+                        text = "Chỉ dự án tôi phụ trách",
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            )
+            Text(
+                text = "Trang $page · $groupCount nhóm",
+                style = MaterialTheme.typography.labelMedium.tabularNums(),
+                fontFamily = JetBrainsMono,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                softWrap = false
+            )
+        }
+
+        if (page > 1 || hasMore) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                FilterChip(
-                    selected = managedOnly,
-                    onClick = onToggleManagedOnly,
-                    label = {
-                        Text(
-                            text = "Chỉ dự án tôi phụ trách",
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
-                )
-                Text(
-                    text = "Trang $page · $groupCount nhóm",
-                    style = MaterialTheme.typography.labelMedium,
-                    fontFamily = JetBrainsMono,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    softWrap = false
-                )
-            }
-
-            if (page > 1 || hasMore) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                OutlinedButton(
+                    onClick = onPreviousPage,
+                    enabled = !loading && page > 1,
+                    shape = RoundedCornerShape(10.dp),
+                    border = BorderStroke(1.dp, SemanticColors.SurfaceBorder),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                    modifier = Modifier.weight(1f)
                 ) {
-                    OutlinedButton(
-                        onClick = onPreviousPage,
-                        enabled = !loading && page > 1,
-                        shape = RoundedCornerShape(10.dp),
-                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Text(
-                            text = "Trang trước",
-                            maxLines = 1,
-                            softWrap = false,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
-                    OutlinedButton(
-                        onClick = onNextPage,
-                        enabled = !loading && hasMore,
-                        shape = RoundedCornerShape(10.dp),
-                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Text(
-                            text = "Trang sau",
-                            maxLines = 1,
-                            softWrap = false,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
+                    Text(
+                        text = "Trang trước",
+                        maxLines = 1,
+                        softWrap = false,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                OutlinedButton(
+                    onClick = onNextPage,
+                    enabled = !loading && hasMore,
+                    shape = RoundedCornerShape(10.dp),
+                    border = BorderStroke(1.dp, SemanticColors.SurfaceBorder),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text(
+                        text = "Trang sau",
+                        maxLines = 1,
+                        softWrap = false,
+                        overflow = TextOverflow.Ellipsis
+                    )
                 }
             }
         }
@@ -774,38 +790,34 @@ internal fun GeneralOverviewSection(snapshot: GeneralOverviewSnapshot) {
             .testTag("general_overview_section"),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(20.dp),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-            elevation = CardDefaults.cardElevation(defaultElevation = 1.5.dp)
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .hrpCardSurface()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                    Text(
-                        text = "Báo cáo Tổng quát Tuyển dụng",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold
-                    )
-                    val subtitleText = if (snapshot.isPeriodFiltered &&
-                        !snapshot.periodFromDate.isNullOrBlank() &&
-                        !snapshot.periodToDate.isNullOrBlank()
-                    ) {
-                        "Kỳ lọc: ${DirectEntryContract.isoDateToUiDate(snapshot.periodFromDate)} - ${DirectEntryContract.isoDateToUiDate(snapshot.periodToDate)} · Phạm vi: ${snapshot.scopeDescription}"
-                    } else {
-                        "Ngày dữ liệu: ${DirectEntryContract.isoDateToUiDate(snapshot.asOfDate)} · Phạm vi: ${snapshot.scopeDescription}"
-                    }
-                    Text(
-                        text = subtitleText,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+            Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                Text(
+                    text = "Báo cáo Tổng quát Tuyển dụng",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                val subtitleText = if (snapshot.isPeriodFiltered &&
+                    !snapshot.periodFromDate.isNullOrBlank() &&
+                    !snapshot.periodToDate.isNullOrBlank()
+                ) {
+                    "Kỳ lọc: ${DirectEntryContract.isoDateToUiDate(snapshot.periodFromDate)} - ${DirectEntryContract.isoDateToUiDate(snapshot.periodToDate)} · Phạm vi: ${snapshot.scopeDescription}"
+                } else {
+                    "Ngày dữ liệu: ${DirectEntryContract.isoDateToUiDate(snapshot.asOfDate)} · Phạm vi: ${snapshot.scopeDescription}"
                 }
+                Text(
+                    text = subtitleText,
+                    style = MaterialTheme.typography.bodySmall.tabularNums(),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
 
                 val profileHint = when {
                     snapshot.audienceKind == "team" && snapshot.teamTotal != null ->
@@ -927,42 +939,37 @@ internal fun GeneralOverviewSection(snapshot: GeneralOverviewSnapshot) {
                 }
 
                 if (snapshot.activeHiringDays > 0) {
-                    Surface(
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(14.dp),
-                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .hrpMutedTile(cornerRadius = HrpDesignTokens.RadiusMD)
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 12.dp, vertical = 10.dp),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            MiniStatColumn(
-                                modifier = Modifier.weight(1f),
-                                label = "Ngày có tuyển",
-                                value = "${snapshot.activeHiringDays} ngày"
-                            )
-                            MiniStatColumn(
-                                modifier = Modifier.weight(1f),
-                                label = "TB / ngày có số",
-                                value = snapshot.avgPerActiveDay?.let {
-                                    "${String.format(Locale.US, "%.1f", it)} NLĐ"
-                                } ?: "—"
-                            )
-                            MiniStatColumn(
-                                modifier = Modifier.weight(1f),
-                                label = "Đỉnh / ngày",
-                                value = snapshot.peakDailyCount?.let { peak ->
-                                    val dateLabel = snapshot.peakDateIso
-                                        ?.takeIf { it.isNotBlank() }
-                                        ?.let { " (${DirectEntryContract.isoDateToUiDate(it)})" }
-                                        .orEmpty()
-                                    "$peak$dateLabel"
-                                } ?: "—"
-                            )
-                        }
+                        MiniStatColumn(
+                            modifier = Modifier.weight(1f),
+                            label = "Ngày có tuyển",
+                            value = "${snapshot.activeHiringDays} ngày"
+                        )
+                        MiniStatColumn(
+                            modifier = Modifier.weight(1f),
+                            label = "TB / ngày có số",
+                            value = snapshot.avgPerActiveDay?.let {
+                                "${String.format(Locale.US, "%.1f", it)} NLĐ"
+                            } ?: "—"
+                        )
+                        MiniStatColumn(
+                            modifier = Modifier.weight(1f),
+                            label = "Đỉnh / ngày",
+                            value = snapshot.peakDailyCount?.let { peak ->
+                                val dateLabel = snapshot.peakDateIso
+                                    ?.takeIf { it.isNotBlank() }
+                                    ?.let { " (${DirectEntryContract.isoDateToUiDate(it)})" }
+                                    .orEmpty()
+                                "$peak$dateLabel"
+                            } ?: "—"
+                        )
                     }
                 }
 
@@ -977,7 +984,6 @@ internal fun GeneralOverviewSection(snapshot: GeneralOverviewSnapshot) {
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-            }
         }
 
         if (snapshot.byRecruiter.isNotEmpty() &&
@@ -1046,7 +1052,7 @@ private fun MiniStatColumn(
         )
         Text(
             text = value,
-            style = MaterialTheme.typography.labelLarge,
+            style = MaterialTheme.typography.labelLarge.tabularNums(),
             fontFamily = JetBrainsMono,
             fontWeight = FontWeight.SemiBold,
             color = MaterialTheme.colorScheme.onSurface,
@@ -1063,65 +1069,62 @@ private fun BucketBreakdownCard(
     buckets: List<BiBucketItem>,
     barColor: Color
 ) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(20.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .hrpCardSurface()
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
+            if (!subtitle.isNullOrBlank()) {
                 Text(
-                    text = title,
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold
+                    text = subtitle,
+                    style = MaterialTheme.typography.bodySmall.tabularNums(),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-                if (!subtitle.isNullOrBlank()) {
-                    Text(
-                        text = subtitle,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
             }
-            buckets.forEach { bucket ->
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = bucket.display,
-                            style = MaterialTheme.typography.bodyMedium,
-                            modifier = Modifier
-                                .weight(1f)
-                                .padding(end = 8.dp),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        Text(
-                            text = "${bucket.count} NLĐ (${String.format(Locale.US, "%.1f%%", bucket.sharePct)})",
-                            style = MaterialTheme.typography.labelSmall,
-                            fontFamily = JetBrainsMono,
-                            maxLines = 1,
-                            softWrap = false
-                        )
-                    }
-                    LinearProgressIndicator(
-                        progress = { (bucket.sharePct / 100f).coerceIn(0f, 1f) },
-                        color = barColor,
+        }
+        buckets.forEach { bucket ->
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = bucket.display,
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Medium,
                         modifier = Modifier
-                            .fillMaxWidth()
-                            .height(6.dp)
-                            .clip(RoundedCornerShape(50))
+                            .weight(1f)
+                            .padding(end = 8.dp),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        text = "${bucket.count} NLĐ (${String.format(Locale.US, "%.1f%%", bucket.sharePct)})",
+                        style = MaterialTheme.typography.labelSmall.tabularNums(),
+                        fontFamily = JetBrainsMono,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        softWrap = false
                     )
                 }
+                LinearProgressIndicator(
+                    progress = { (bucket.sharePct / 100f).coerceIn(0f, 1f) },
+                    color = barColor,
+                    trackColor = SemanticColors.SurfaceSubtle,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(6.dp)
+                        .clip(RoundedCornerShape(50))
+                )
             }
         }
     }
@@ -1129,22 +1132,7 @@ private fun BucketBreakdownCard(
 
 @Composable
 internal fun LoadingSectionCard(message: String) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(18.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(20.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.dp)
-            Text(text = message, style = MaterialTheme.typography.bodyMedium)
-        }
-    }
+    HrpSkeletonCard(lineCount = 3)
 }
 
 @Composable
@@ -1152,40 +1140,34 @@ internal fun DashboardStatusCard(
     title: String,
     subtitle: String
 ) {
-    Card(
+    Column(
         modifier = Modifier
             .fillMaxWidth()
+            .hrpCardSurface()
+            .padding(18.dp)
             .testTag("dashboard_status_card"),
-        shape = RoundedCornerShape(18.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+        verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(20.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Info,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary
-                )
-                Text(
-                    text = title,
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold
-                )
-            }
+            Icon(
+                imageVector = Icons.Default.Info,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary
+            )
             Text(
-                text = subtitle,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                text = title,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
             )
         }
+        Text(
+            text = subtitle,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
     }
 }
 
@@ -1198,59 +1180,62 @@ internal fun BiMetricKpiCard(
     hint: String,
     accentColor: Color
 ) {
-    Card(
-        modifier = modifier,
-        shape = RoundedCornerShape(18.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surface
-        ),
-        elevation = CardDefaults.cardElevation(defaultElevation = 1.5.dp)
+    val isSemanticRatePill = hint.startsWith("Tỷ lệ đang làm:")
+    Column(
+        modifier = modifier
+            .hrpMutedTile(cornerRadius = 14.dp)
+            .padding(13.dp),
+        verticalArrangement = Arrangement.spacedBy(5.dp)
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp)
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                Box(
-                    modifier = Modifier
-                        .size(8.dp)
-                        .clip(CircleShape)
-                        .background(accentColor)
-                )
-                Text(
-                    text = label,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
-            Row(
-                verticalAlignment = Alignment.Bottom,
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                Text(
-                    text = value,
-                    style = MaterialTheme.typography.headlineLarge,
-                    fontFamily = JetBrainsMono,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
-                Text(
-                    text = unit,
-                    style = MaterialTheme.typography.labelMedium,
-                    color = accentColor,
-                    modifier = Modifier.padding(bottom = 3.dp)
-                )
-            }
+            Box(
+                modifier = Modifier
+                    .size(8.dp)
+                    .clip(CircleShape)
+                    .background(accentColor)
+            )
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+        Row(
+            verticalAlignment = Alignment.Bottom,
+            horizontalArrangement = Arrangement.spacedBy(5.dp)
+        ) {
+            Text(
+                text = value,
+                style = MaterialTheme.typography.headlineLarge.tabularNums(),
+                fontFamily = JetBrainsMono,
+                fontWeight = FontWeight.ExtraBold,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            Text(
+                text = unit,
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = accentColor,
+                modifier = Modifier.padding(bottom = 4.dp)
+            )
+        }
+        if (isSemanticRatePill) {
+            HrpStatusBadge(
+                text = hint,
+                containerColor = SemanticColors.SuccessBg,
+                contentColor = SemanticColors.SuccessText,
+                borderColor = SemanticColors.SuccessBorder.copy(alpha = 0.6f)
+            )
+        } else {
             Text(
                 text = hint,
-                style = MaterialTheme.typography.bodySmall,
+                style = MaterialTheme.typography.bodySmall.tabularNums(),
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis
@@ -1268,19 +1253,18 @@ internal fun WorkforceDeepReportSection(
     val palette = LocalMiniBiPalette.current
     val hasPeriodFilter = !metrics.periodFromDate.isNullOrBlank() || !metrics.periodToDate.isNullOrBlank()
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(20.dp),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .hrpCardSurface()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            Column(
-                modifier = Modifier.padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                Text(
-                    text = "Báo cáo Chuyên sâu Lực lượng Lao động (${DirectEntryContract.isoDateToUiDate(metrics.asOfDate)})",
-                    style = MaterialTheme.typography.titleMedium
-                )
+            Text(
+                text = "Báo cáo Chuyên sâu Lực lượng Lao động (${DirectEntryContract.isoDateToUiDate(metrics.asOfDate)})",
+                style = MaterialTheme.typography.titleMedium.tabularNums(),
+                fontWeight = FontWeight.Bold
+            )
                 if (hasPeriodFilter) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -1376,98 +1360,96 @@ internal fun WorkforceDeepReportSection(
                     offInflow = metrics.periodOffInflow,
                     netOnChange = metrics.periodNetOnChange
                 )
-            }
         }
 
         if (metrics.byProject.isNotEmpty()) {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(20.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .hrpCardSurface()
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Column(
-                    modifier = Modifier.padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Text(
-                        text = "Phân bổ theo Dự án",
-                        style = MaterialTheme.typography.titleMedium
-                    )
-                    metrics.byProject.forEach { proj ->
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Text(
-                                text = proj.display,
-                                style = MaterialTheme.typography.bodyMedium,
-                                modifier = Modifier.weight(1f),
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                            Text(
-                                text = "${proj.count} (${proj.sharePct}%)",
-                                style = MaterialTheme.typography.labelSmall,
-                                fontFamily = JetBrainsMono
-                            )
-                        }
+                Text(
+                    text = "Phân bổ theo Dự án",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+                metrics.byProject.forEach { proj ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(
+                            text = proj.display,
+                            style = MaterialTheme.typography.bodyMedium,
+                            modifier = Modifier.weight(1f),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            text = "${proj.count} (${proj.sharePct}%)",
+                            style = MaterialTheme.typography.labelSmall.tabularNums(),
+                            fontFamily = JetBrainsMono
+                        )
                     }
-                    if (metrics.projectHasMore && onLoadMoreProjects != null) {
-                        OutlinedButton(
-                            onClick = onLoadMoreProjects,
-                            enabled = !loadingMore,
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Text(if (loadingMore) "Đang tải thêm…" else "Tải thêm dự án")
-                        }
+                }
+                if (metrics.projectHasMore && onLoadMoreProjects != null) {
+                    OutlinedButton(
+                        onClick = onLoadMoreProjects,
+                        enabled = !loadingMore,
+                        shape = RoundedCornerShape(HrpDesignTokens.RadiusMD),
+                        border = BorderStroke(1.dp, SemanticColors.SurfaceBorder),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(if (loadingMore) "Đang tải thêm…" else "Tải thêm dự án")
                     }
                 }
             }
         }
 
         if (metrics.leaveReasons.isNotEmpty()) {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(20.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .hrpCardSurface()
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                Column(
-                    modifier = Modifier.padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    Text(
-                        text = "Phân tích Lý do Nghỉ việc",
-                        style = MaterialTheme.typography.titleMedium
-                    )
-                    metrics.leaveReasons.forEach { reason ->
-                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                verticalAlignment = Alignment.Top
-                            ) {
-                                Text(
-                                    text = reason.display,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    modifier = Modifier.weight(1f)
-                                )
-                                Text(
-                                    "${reason.count} ca (${reason.sharePct}%)",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    fontFamily = JetBrainsMono,
-                                    maxLines = 1,
-                                    softWrap = false
-                                )
-                            }
-                            LinearProgressIndicator(
-                                progress = { (reason.sharePct / 100f).coerceIn(0f, 1f) },
-                                color = SemanticColors.WarningLight,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(7.dp)
-                                    .clip(RoundedCornerShape(50))
+                Text(
+                    text = "Phân tích Lý do Nghỉ việc",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+                metrics.leaveReasons.forEach { reason ->
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.Top
+                        ) {
+                            Text(
+                                text = reason.display,
+                                style = MaterialTheme.typography.bodyMedium,
+                                modifier = Modifier.weight(1f)
+                            )
+                            Text(
+                                "${reason.count} ca (${reason.sharePct}%)",
+                                style = MaterialTheme.typography.labelSmall.tabularNums(),
+                                fontFamily = JetBrainsMono,
+                                maxLines = 1,
+                                softWrap = false
                             )
                         }
+                        LinearProgressIndicator(
+                            progress = { (reason.sharePct / 100f).coerceIn(0f, 1f) },
+                            color = SemanticColors.WarningLight,
+                            trackColor = SemanticColors.SurfaceSubtle,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(7.dp)
+                                .clip(RoundedCornerShape(50))
+                        )
                     }
                 }
             }
@@ -1484,49 +1466,43 @@ internal fun TeamBucketPickerCard(
     onSelectBucket: (String) -> Unit
 ) {
     if (teamBuckets.isEmpty()) return
-    Card(
+    Column(
         modifier = Modifier
             .fillMaxWidth()
+            .hrpCardSurface()
+            .padding(16.dp)
             .testTag("team_bucket_picker_card"),
-        shape = RoundedCornerShape(18.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
+        verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+        Text(
+            text = "Chọn nhóm tuyển dụng",
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.Bold
+        )
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            Text(
-                text = "Chọn nhóm tuyển dụng",
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.Bold
-            )
-            FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                teamBuckets.forEach { bucket ->
-                    val selected = bucket.key == selectedBucketKey ||
-                        bucket.display == selectedBucketDisplay ||
-                        runCatching { WorkReportsContract.encodeTeamBucketKey(bucket.key) == selectedBucketKey }
-                            .getOrDefault(false)
-                    FilterChip(
-                        selected = selected,
-                        onClick = { onSelectBucket(bucket.key) },
-                        modifier = Modifier.testTag("team_bucket_chip_${bucket.key}"),
-                        label = {
-                            Text(
-                                text = if (bucket.count > 0) {
-                                    "${bucket.display} (${bucket.count})"
-                                } else {
-                                    bucket.display
-                                }
-                            )
-                        }
-                    )
-                }
+            teamBuckets.forEach { bucket ->
+                val selected = bucket.key == selectedBucketKey ||
+                    bucket.display == selectedBucketDisplay ||
+                    runCatching { WorkReportsContract.encodeTeamBucketKey(bucket.key) == selectedBucketKey }
+                        .getOrDefault(false)
+                FilterChip(
+                    selected = selected,
+                    onClick = { onSelectBucket(bucket.key) },
+                    modifier = Modifier.testTag("team_bucket_chip_${bucket.key}"),
+                    label = {
+                        Text(
+                            text = if (bucket.count > 0) {
+                                "${bucket.display} (${bucket.count})"
+                            } else {
+                                bucket.display
+                            },
+                            style = MaterialTheme.typography.labelMedium.tabularNums()
+                        )
+                    }
+                )
             }
         }
     }
@@ -1547,114 +1523,100 @@ internal fun TeamReportDetailCard(
             .testTag("team_report_detail_card"),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(20.dp),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-            elevation = CardDefaults.cardElevation(defaultElevation = 1.5.dp)
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .hrpCardSurface()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.weight(1f)
                 ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Groups,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary
-                        )
-                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                            Text(
-                                text = snapshot.bucketDisplay,
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.Bold
-                            )
-                            Text(
-                                text = "Báo cáo hiệu suất nhóm tuyển dụng",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    }
-                    Surface(
-                        shape = RoundedCornerShape(999.dp),
-                        color = MaterialTheme.colorScheme.primaryContainer
-                    ) {
+                    Icon(
+                        imageVector = Icons.Default.Groups,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                         Text(
-                            text = "${snapshot.totalRecruited} NLĐ",
-                            style = MaterialTheme.typography.labelLarge,
-                            fontFamily = JetBrainsMono,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onPrimaryContainer,
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                            text = snapshot.bucketDisplay,
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = "Báo cáo hiệu suất nhóm tuyển dụng",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                 }
+                HrpStatusBadge(
+                    text = "${snapshot.totalRecruited} NLĐ",
+                    containerColor = MaterialTheme.colorScheme.primaryContainer,
+                    contentColor = MaterialTheme.colorScheme.onPrimaryContainer
+                )
+            }
 
-                val statusHint = if (snapshot.workingCount != null) {
-                    "Đang làm: ${snapshot.workingCount} · Chờ: ${snapshot.waitingCount ?: 0} · Nghỉ: ${snapshot.leftCount ?: 0}"
-                } else {
-                    "Tổng nhân sự ghi nhận của nhóm"
-                }
+            val statusHint = if (snapshot.workingCount != null) {
+                "Đang làm: ${snapshot.workingCount} · Chờ: ${snapshot.waitingCount ?: 0} · Nghỉ: ${snapshot.leftCount ?: 0}"
+            } else {
+                "Tổng nhân sự ghi nhận của nhóm"
+            }
 
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    BiMetricKpiCard(
-                        modifier = Modifier.weight(1f),
-                        label = "TỔNG TUYỂN NHÓM",
-                        value = "${snapshot.totalRecruited}",
-                        unit = "NLĐ",
-                        hint = statusHint,
-                        accentColor = palette.lightPrimary
-                    )
-                    BiMetricKpiCard(
-                        modifier = Modifier.weight(1f),
-                        label = "THÀNH VIÊN CÓ SỐ",
-                        value = "${snapshot.activeRecruiterCount}",
-                        unit = "người",
-                        hint = "Có phát sinh tuyển dụng",
-                        accentColor = SemanticColors.SuccessLight
-                    )
-                }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                BiMetricKpiCard(
+                    modifier = Modifier.weight(1f),
+                    label = "TỔNG TUYỂN NHÓM",
+                    value = "${snapshot.totalRecruited}",
+                    unit = "NLĐ",
+                    hint = statusHint,
+                    accentColor = palette.lightPrimary
+                )
+                BiMetricKpiCard(
+                    modifier = Modifier.weight(1f),
+                    label = "THÀNH VIÊN CÓ SỐ",
+                    value = "${snapshot.activeRecruiterCount}",
+                    unit = "người",
+                    hint = "Có phát sinh tuyển dụng",
+                    accentColor = SemanticColors.SuccessLight
+                )
+            }
 
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    BiMetricKpiCard(
-                        modifier = Modifier.weight(1f),
-                        label = "DỰ ÁN THAM GIA",
-                        value = "${snapshot.activeProjectCount}",
-                        unit = "dự án",
-                        hint = "Có nhân sự của nhóm",
-                        accentColor = SemanticColors.RunningLight
-                    )
-                    BiMetricKpiCard(
-                        modifier = Modifier.weight(1f),
-                        label = "TB / NGÀY CÓ SỐ",
-                        value = snapshot.avgPerActiveDay?.let { String.format(Locale.US, "%.1f", it) } ?: "0.0",
-                        unit = "NLĐ",
-                        hint = if (snapshot.activeHiringDays > 0) {
-                            "${snapshot.activeHiringDays} ngày có tuyển · Đỉnh: ${snapshot.peakDailyCount ?: 0}"
-                        } else {
-                            "Chưa phát sinh ngày tuyển"
-                        },
-                        accentColor = SemanticColors.WarningLight
-                    )
-                }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                BiMetricKpiCard(
+                    modifier = Modifier.weight(1f),
+                    label = "DỰ ÁN THAM GIA",
+                    value = "${snapshot.activeProjectCount}",
+                    unit = "dự án",
+                    hint = "Có nhân sự của nhóm",
+                    accentColor = SemanticColors.RunningLight
+                )
+                BiMetricKpiCard(
+                    modifier = Modifier.weight(1f),
+                    label = "TB / NGÀY CÓ SỐ",
+                    value = snapshot.avgPerActiveDay?.let { String.format(Locale.US, "%.1f", it) } ?: "0.0",
+                    unit = "NLĐ",
+                    hint = if (snapshot.activeHiringDays > 0) {
+                        "${snapshot.activeHiringDays} ngày có tuyển · Đỉnh: ${snapshot.peakDailyCount ?: 0}"
+                    } else {
+                        "Chưa phát sinh ngày tuyển"
+                    },
+                    accentColor = SemanticColors.WarningLight
+                )
             }
         }
 
@@ -1694,80 +1656,76 @@ internal fun TeamReportDetailCard(
             )
         }
 
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(20.dp),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-            elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .hrpCardSurface()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = "Chi tiết lượt tuyển trong nhóm",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Text(
-                        text = "${snapshot.rows.size} dòng",
-                        style = MaterialTheme.typography.labelMedium,
-                        fontFamily = JetBrainsMono,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                HorizontalDivider()
-                if (snapshot.rows.isEmpty()) {
-                    Text(
-                        text = "Chưa có dòng tuyển dụng chi tiết trong nhóm này.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                } else {
-                    val displayedRows = snapshot.rows.take(visibleDetailCount)
-                    displayedRows.forEach { row ->
-                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                            Text(
-                                text = "${row.projectDisplay} · ${row.recruiterDisplay}",
-                                style = MaterialTheme.typography.bodyMedium,
-                                fontWeight = FontWeight.SemiBold
-                            )
-                            Text(
-                                text = "Ngày ${DirectEntryContract.isoDateToUiDate(row.businessDate)} · ${row.providerTypeDisplay} · ${row.employmentTypeDisplay} · SL: ${row.recruitedCount}",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))
+                Text(
+                    text = "Chi tiết lượt tuyển trong nhóm",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = "${snapshot.rows.size} dòng",
+                    style = MaterialTheme.typography.labelMedium.tabularNums(),
+                    fontFamily = JetBrainsMono,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            HorizontalDivider(color = SemanticColors.SurfaceBorder)
+            if (snapshot.rows.isEmpty()) {
+                Text(
+                    text = "Chưa có dòng tuyển dụng chi tiết trong nhóm này.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            } else {
+                val displayedRows = snapshot.rows.take(visibleDetailCount)
+                displayedRows.forEach { row ->
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(
+                            text = "${row.projectDisplay} · ${row.recruiterDisplay}",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Text(
+                            text = "Ngày ${DirectEntryContract.isoDateToUiDate(row.businessDate)} · ${row.providerTypeDisplay} · ${row.employmentTypeDisplay} · SL: ${row.recruitedCount}",
+                            style = MaterialTheme.typography.bodySmall.tabularNums(),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     }
+                    HorizontalDivider(color = SemanticColors.SurfaceBorder)
+                }
 
-                    if (snapshot.rows.size > visibleDetailCount) {
-                        val remaining = snapshot.rows.size - visibleDetailCount
-                        OutlinedButton(
-                            onClick = { visibleDetailCount += 30 },
-                            modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(10.dp)
-                        ) {
-                            Text("Xem thêm (${remaining} dòng còn lại)")
-                        }
-                    }
-                }
-                if (snapshot.nextCursor != null && onLoadMore != null) {
+                if (snapshot.rows.size > visibleDetailCount) {
+                    val remaining = snapshot.rows.size - visibleDetailCount
                     OutlinedButton(
-                        onClick = onLoadMore,
-                        enabled = !loadingMore,
+                        onClick = { visibleDetailCount += 30 },
                         modifier = Modifier.fillMaxWidth(),
+                        border = BorderStroke(1.dp, SemanticColors.SurfaceBorder),
                         shape = RoundedCornerShape(10.dp)
                     ) {
-                        Text(if (loadingMore) "Đang tải thêm…" else "Tải thêm từ máy chủ")
+                        Text("Xem thêm (${remaining} dòng còn lại)")
                     }
+                }
+            }
+            if (snapshot.nextCursor != null && onLoadMore != null) {
+                OutlinedButton(
+                    onClick = onLoadMore,
+                    enabled = !loadingMore,
+                    modifier = Modifier.fillMaxWidth(),
+                    border = BorderStroke(1.dp, SemanticColors.SurfaceBorder),
+                    shape = RoundedCornerShape(10.dp)
+                ) {
+                    Text(if (loadingMore) "Đang tải thêm…" else "Tải thêm từ máy chủ")
                 }
             }
         }
@@ -1780,46 +1738,58 @@ internal fun DuplicateCccdGroupCard(
     onSelfWithdraw: ((entryId: String, expectedVersion: Int) -> Unit)? = null
 ) {
     val hasActiveConflict = group.activeProfileCount > 1
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(18.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .hrpCardSurface()
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.weight(1f)
+            ) {
+                Icon(
+                    imageVector = if (hasActiveConflict) Icons.Default.WarningAmber else Icons.Default.VerifiedUser,
+                    contentDescription = null,
+                    tint = if (hasActiveConflict) SemanticColors.ErrorLight else SemanticColors.SuccessLight
+                )
+                Column {
+                    Text(
+                        text = "CCCD đuôi ***${group.cccdLast4} (${group.profileCount} hồ sơ)",
+                        style = MaterialTheme.typography.titleSmall.tabularNums(),
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = "${group.projectCount} dự án · Đang làm: ${group.activeProfileCount}",
+                        style = MaterialTheme.typography.bodySmall.tabularNums(),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+            HrpStatusBadge(
+                text = if (hasActiveConflict) "Trùng đang làm" else "Đã tách kỳ",
+                containerColor = if (hasActiveConflict) SemanticColors.ErrorBg else SemanticColors.SuccessBg,
+                contentColor = if (hasActiveConflict) SemanticColors.ErrorText else SemanticColors.SuccessText
+            )
+        }
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(16.dp),
+                .hrpMutedTile(cornerRadius = HrpDesignTokens.RadiusMD)
+                .padding(10.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Icon(
-                        imageVector = if (hasActiveConflict) Icons.Default.WarningAmber else Icons.Default.VerifiedUser,
-                        contentDescription = null,
-                        tint = if (hasActiveConflict) SemanticColors.ErrorLight else SemanticColors.SuccessLight
-                    )
-                    Column {
-                        Text(
-                            text = "CCCD đuôi ***${group.cccdLast4} (${group.profileCount} hồ sơ)",
-                            style = MaterialTheme.typography.titleSmall
-                        )
-                        Text(
-                            text = "${group.projectCount} dự án · Đang làm: ${group.activeProfileCount}",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
+            group.episodes.forEachIndexed { idx, ep ->
+                if (idx > 0) {
+                    HorizontalDivider(color = SemanticColors.SurfaceBorder)
                 }
-            }
-            HorizontalDivider()
-            group.episodes.forEach { ep ->
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -1828,21 +1798,29 @@ internal fun DuplicateCccdGroupCard(
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
                             text = "${ep.displayName} (${ep.employeeCode})",
-                            style = MaterialTheme.typography.bodySmall,
-                            fontWeight = FontWeight.SemiBold
+                            style = MaterialTheme.typography.bodySmall.tabularNums(),
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onSurface
                         )
                         Text(
                             text = "${ep.projectDisplay} · Ngày đầu: ${DirectEntryContract.isoDateToUiDate(ep.firstWorkDate)} · ${DirectEntryContract.workStatusUiLabel(ep.latestStatus)}",
-                            style = MaterialTheme.typography.bodySmall,
+                            style = MaterialTheme.typography.bodySmall.tabularNums(),
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                     if (ep.canSelfWithdraw && onSelfWithdraw != null) {
                         OutlinedButton(
                             onClick = { onSelfWithdraw(ep.entryId, ep.entryVersion) },
-                            shape = RoundedCornerShape(8.dp)
+                            shape = RoundedCornerShape(8.dp),
+                            border = BorderStroke(1.dp, SemanticColors.ErrorBorder),
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
                         ) {
-                            Text("Rút hồ sơ", style = MaterialTheme.typography.labelSmall)
+                            Text(
+                                "Rút hồ sơ",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = SemanticColors.ErrorText
+                            )
                         }
                     }
                 }

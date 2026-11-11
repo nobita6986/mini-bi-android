@@ -39,6 +39,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
@@ -55,9 +56,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -69,7 +72,12 @@ import com.example.data.SystemSoundOption
 import com.example.data.TaskReminderItem
 import com.example.data.TaskReminderManager
 import com.example.data.TaskReminderRepeatMode
-import com.example.ui.theme.LocalMiniBiPalette
+import com.example.ui.components.HrpDesignTokens
+import com.example.ui.components.HrpHaptics
+import com.example.ui.components.HrpStatusBadge
+import com.example.ui.components.hrpMutedTile
+import com.example.ui.theme.SemanticColors
+import com.example.ui.theme.tabularNums
 import java.util.Locale
 
 @Composable
@@ -78,7 +86,7 @@ fun TaskReminderDialog(
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
-    val palette = LocalMiniBiPalette.current
+    val hapticFeedback = LocalHapticFeedback.current
     val reminders by taskReminderManager.remindersFlow.collectAsStateWithLifecycle()
     val systemSounds = remember(taskReminderManager) {
         taskReminderManager.querySystemSounds()
@@ -151,6 +159,10 @@ fun TaskReminderDialog(
         }
     }
 
+    val liveHourPreview = (draftHourText.toIntOrNull() ?: 8).coerceIn(0, 23)
+    val liveMinutePreview = (draftMinuteText.toIntOrNull() ?: 0).coerceIn(0, 59)
+    val liveFormattedTime = String.format(Locale.US, "%02d:%02d", liveHourPreview, liveMinutePreview)
+
     Dialog(
         onDismissRequest = {
             taskReminderManager.stopSoundPreview()
@@ -159,20 +171,36 @@ fun TaskReminderDialog(
         properties = DialogProperties(usePlatformDefaultWidth = false)
     ) {
         Surface(
-            shape = RoundedCornerShape(20.dp),
+            shape = RoundedCornerShape(HrpDesignTokens.RadiusHero),
             color = MaterialTheme.colorScheme.surface,
-            tonalElevation = 4.dp,
-            border = BorderStroke(1.dp, palette.lightTopBarBorder),
+            tonalElevation = 2.dp,
+            border = BorderStroke(1.dp, SemanticColors.SurfaceBorder),
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 20.dp)
+                .padding(horizontal = 16.dp, vertical = 16.dp)
                 .testTag("task_reminder_dialog")
         ) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(16.dp)
+                    .padding(horizontal = 16.dp, vertical = 12.dp)
             ) {
+                // Sheet-style decorative drag handle
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 8.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .width(36.dp)
+                            .height(4.dp)
+                            .clip(CircleShape)
+                            .background(SemanticColors.SurfaceBorder)
+                    )
+                }
+
                 // Header
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -187,7 +215,7 @@ fun TaskReminderDialog(
                         Box(
                             modifier = Modifier
                                 .size(38.dp)
-                                .clip(CircleShape)
+                                .clip(RoundedCornerShape(12.dp))
                                 .background(MaterialTheme.colorScheme.primaryContainer),
                             contentAlignment = Alignment.Center
                         ) {
@@ -224,34 +252,121 @@ fun TaskReminderDialog(
                         },
                         modifier = Modifier
                             .size(34.dp)
+                            .clip(CircleShape)
+                            .background(SemanticColors.SurfaceSubtle)
                             .testTag("task_reminder_close_button")
                     ) {
                         Icon(
                             imageVector = Icons.Default.Close,
                             contentDescription = "Đóng",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(18.dp)
                         )
                     }
                 }
 
-                Spacer(modifier = Modifier.height(12.dp))
-                HorizontalDivider(color = palette.lightTopBarBorder)
-                Spacer(modifier = Modifier.height(12.dp))
+                Spacer(modifier = Modifier.height(10.dp))
+                HorizontalDivider(color = SemanticColors.SurfaceBorder)
+                Spacer(modifier = Modifier.height(10.dp))
 
                 if (isEditing) {
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .heightIn(max = 320.dp)
+                            .heightIn(max = 460.dp)
                             .verticalScroll(rememberScrollState()),
-                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
+                        // Large tabular 32.sp HH:mm live preview + quick preset chips
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .hrpMutedTile(cornerRadius = HrpDesignTokens.RadiusMD)
+                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Column {
+                                Text(
+                                    text = "GIỜ HẸN",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Text(
+                                    text = liveFormattedTime,
+                                    style = MaterialTheme.typography.displayMedium.copy(
+                                        fontSize = 32.sp,
+                                        lineHeight = 36.sp
+                                    ).tabularNums(),
+                                    fontWeight = FontWeight.ExtraBold,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
+
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(5.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                listOf(
+                                    "08" to "00",
+                                    "09" to "00",
+                                    "13" to "30",
+                                    "17" to "00"
+                                ).forEach { (h, m) ->
+                                    val selectedPreset =
+                                        draftHourText.padStart(2, '0') == h && draftMinuteText.padStart(2, '0') == m
+                                    Surface(
+                                        shape = RoundedCornerShape(8.dp),
+                                        color = if (selectedPreset) {
+                                            MaterialTheme.colorScheme.primary
+                                        } else {
+                                            SemanticColors.SurfaceLight
+                                        },
+                                        border = BorderStroke(
+                                            1.dp,
+                                            if (selectedPreset) {
+                                                MaterialTheme.colorScheme.primary
+                                            } else {
+                                                SemanticColors.SurfaceBorder
+                                            }
+                                        ),
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .clickable {
+                                                HrpHaptics.tick(hapticFeedback)
+                                                draftHourText = h
+                                                draftMinuteText = m
+                                            }
+                                    ) {
+                                        Text(
+                                            text = "$h:$m",
+                                            style = MaterialTheme.typography.labelSmall.tabularNums(),
+                                            fontWeight = FontWeight.Bold,
+                                            color = if (selectedPreset) {
+                                                Color.White
+                                            } else {
+                                                MaterialTheme.colorScheme.onSurface
+                                            },
+                                            modifier = Modifier.padding(horizontal = 7.dp, vertical = 5.dp),
+                                            maxLines = 1
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
                         OutlinedTextField(
                             value = draftTitle,
                             onValueChange = { draftTitle = it.take(TaskReminderManager.MAX_TITLE_LENGTH) },
                             label = { Text("Tiêu đề nhắc việc") },
                             placeholder = { Text("Ví dụ: Gửi báo cáo ca sáng") },
                             singleLine = true,
+                            shape = RoundedCornerShape(HrpDesignTokens.RadiusMD),
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = MaterialTheme.colorScheme.primary,
+                                unfocusedBorderColor = SemanticColors.SurfaceBorder
+                            ),
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .testTag("task_reminder_title_input")
@@ -260,7 +375,7 @@ fun TaskReminderDialog(
                         // Time inputs (24h HH:mm)
                         Row(
                             modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             OutlinedTextField(
@@ -271,6 +386,14 @@ fun TaskReminderDialog(
                                 },
                                 label = { Text("Giờ (00-23)") },
                                 singleLine = true,
+                                textStyle = MaterialTheme.typography.bodyLarge.tabularNums().copy(
+                                    fontWeight = FontWeight.Bold
+                                ),
+                                shape = RoundedCornerShape(HrpDesignTokens.RadiusMD),
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedBorderColor = MaterialTheme.colorScheme.primary,
+                                    unfocusedBorderColor = SemanticColors.SurfaceBorder
+                                ),
                                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                                 modifier = Modifier
                                     .weight(1f)
@@ -278,8 +401,9 @@ fun TaskReminderDialog(
                             )
                             Text(
                                 text = ":",
-                                style = MaterialTheme.typography.headlineSmall,
-                                fontWeight = FontWeight.Bold
+                                style = MaterialTheme.typography.headlineSmall.tabularNums(),
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                             OutlinedTextField(
                                 value = draftMinuteText,
@@ -289,6 +413,14 @@ fun TaskReminderDialog(
                                 },
                                 label = { Text("Phút (00-59)") },
                                 singleLine = true,
+                                textStyle = MaterialTheme.typography.bodyLarge.tabularNums().copy(
+                                    fontWeight = FontWeight.Bold
+                                ),
+                                shape = RoundedCornerShape(HrpDesignTokens.RadiusMD),
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedBorderColor = MaterialTheme.colorScheme.primary,
+                                    unfocusedBorderColor = SemanticColors.SurfaceBorder
+                                ),
                                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                                 modifier = Modifier
                                     .weight(1f)
@@ -296,50 +428,11 @@ fun TaskReminderDialog(
                             )
                         }
 
-                        // Quick preset chips
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            listOf("07" to "30", "08" to "00", "12" to "00", "17" to "00", "20" to "00").forEach { (h, m) ->
-                                val selectedPreset = draftHourText.padStart(2, '0') == h && draftMinuteText.padStart(2, '0') == m
-                                Surface(
-                                    shape = RoundedCornerShape(8.dp),
-                                    color = if (selectedPreset) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                                    border = BorderStroke(
-                                        1.dp,
-                                        if (selectedPreset) MaterialTheme.colorScheme.primary else Color.Transparent
-                                    ),
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .clip(RoundedCornerShape(8.dp))
-                                        .clickable {
-                                            draftHourText = h
-                                            draftMinuteText = m
-                                        }
-                                ) {
-                                    Text(
-                                        text = "$h:$m",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        fontWeight = FontWeight.SemiBold,
-                                        color = if (selectedPreset) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                                        modifier = Modifier.padding(vertical = 6.dp),
-                                        maxLines = 1
-                                    )
-                                }
-                            }
-                        }
-
                         // Repeat Mode (DAILY / ONCE)
-                        Text(
-                            text = "Chế độ lặp",
-                            style = MaterialTheme.typography.labelMedium,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
                         Row(
                             modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
                             TaskReminderRepeatMode.entries.forEach { mode ->
                                 val isSelected = draftRepeatMode == mode
@@ -350,45 +443,56 @@ fun TaskReminderDialog(
                                 }
                                 Surface(
                                     shape = RoundedCornerShape(10.dp),
-                                    color = if (isSelected) MaterialTheme.colorScheme.primaryContainer else Color.Transparent,
+                                    color = if (isSelected) {
+                                        MaterialTheme.colorScheme.primaryContainer
+                                    } else {
+                                        SemanticColors.SurfaceSubtle
+                                    },
                                     border = BorderStroke(
                                         width = 1.dp,
-                                        color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline
+                                        color = if (isSelected) {
+                                            MaterialTheme.colorScheme.primary
+                                        } else {
+                                            SemanticColors.SurfaceBorder
+                                        }
                                     ),
                                     modifier = Modifier
                                         .weight(1f)
                                         .clip(RoundedCornerShape(10.dp))
-                                        .clickable { draftRepeatMode = mode }
+                                        .clickable {
+                                            HrpHaptics.tick(hapticFeedback)
+                                            draftRepeatMode = mode
+                                        }
                                         .testTag(tag)
                                 ) {
-                                    Row(
+                                    Text(
+                                        text = mode.labelVi,
+                                        style = MaterialTheme.typography.labelLarge,
+                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                        color = if (isSelected) {
+                                            MaterialTheme.colorScheme.primary
+                                        } else {
+                                            MaterialTheme.colorScheme.onSurface
+                                        },
+                                        textAlign = TextAlign.Center,
                                         modifier = Modifier
                                             .fillMaxWidth()
-                                            .padding(horizontal = 12.dp, vertical = 10.dp),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.Center
-                                    ) {
-                                        Text(
-                                            text = mode.labelVi,
-                                            style = MaterialTheme.typography.labelLarge,
-                                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                                            color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
-                                        )
-                                    }
+                                            .padding(horizontal = 10.dp, vertical = 9.dp)
+                                    )
                                 }
                             }
                         }
 
                         // System Sounds Selector
                         Text(
-                            text = "Âm thanh báo động (Hệ thống)",
+                            text = "Âm thanh báo động",
                             style = MaterialTheme.typography.labelMedium,
                             fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onSurface
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         Column(
                             modifier = Modifier.fillMaxWidth(),
-                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                            verticalArrangement = Arrangement.spacedBy(5.dp)
                         ) {
                             systemSounds.forEachIndexed { index, soundOption ->
                                 val selectedSound = draftSound.uri == soundOption.uri
@@ -397,16 +501,21 @@ fun TaskReminderDialog(
                                     color = if (selectedSound) {
                                         MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f)
                                     } else {
-                                        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
+                                        SemanticColors.SurfaceSubtle.copy(alpha = 0.7f)
                                     },
                                     border = BorderStroke(
                                         width = 1.dp,
-                                        color = if (selectedSound) MaterialTheme.colorScheme.primary else Color.Transparent
+                                        color = if (selectedSound) {
+                                            MaterialTheme.colorScheme.primary
+                                        } else {
+                                            SemanticColors.SurfaceBorder
+                                        }
                                     ),
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .clip(RoundedCornerShape(10.dp))
                                         .clickable {
+                                            HrpHaptics.tick(hapticFeedback)
                                             draftSound = soundOption
                                             taskReminderManager.playSoundPreview(soundOption.uri)
                                         }
@@ -415,7 +524,7 @@ fun TaskReminderDialog(
                                     Row(
                                         modifier = Modifier
                                             .fillMaxWidth()
-                                            .padding(horizontal = 10.dp, vertical = 8.dp),
+                                            .padding(horizontal = 10.dp, vertical = 7.dp),
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
                                         RadioButton(
@@ -435,7 +544,11 @@ fun TaskReminderDialog(
                                         Icon(
                                             imageVector = Icons.AutoMirrored.Filled.VolumeUp,
                                             contentDescription = "Nghe thử",
-                                            tint = if (selectedSound) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                            tint = if (selectedSound) {
+                                                MaterialTheme.colorScheme.primary
+                                            } else {
+                                                MaterialTheme.colorScheme.onSurfaceVariant
+                                            },
                                             modifier = Modifier.size(18.dp)
                                         )
                                     }
@@ -444,13 +557,13 @@ fun TaskReminderDialog(
                         }
                     }
 
-                    Spacer(modifier = Modifier.height(12.dp))
+                    Spacer(modifier = Modifier.height(10.dp))
 
                     // Form Action Buttons (pinned below scrollable content)
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(top = 4.dp),
+                            .padding(top = 2.dp),
                         horizontalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
                         OutlinedButton(
@@ -458,6 +571,8 @@ fun TaskReminderDialog(
                                 taskReminderManager.stopSoundPreview()
                                 isEditing = false
                             },
+                            shape = RoundedCornerShape(HrpDesignTokens.RadiusMD),
+                            border = BorderStroke(1.dp, SemanticColors.SurfaceBorder),
                             modifier = Modifier
                                 .weight(1f)
                                 .height(44.dp)
@@ -468,6 +583,7 @@ fun TaskReminderDialog(
 
                         Button(
                             onClick = {
+                                HrpHaptics.tick(hapticFeedback)
                                 taskReminderManager.stopSoundPreview()
                                 ensureNotificationPermissionIfNeeded()
                                 val parsedHour = (draftHourText.toIntOrNull() ?: 8).coerceIn(0, 23)
@@ -484,6 +600,7 @@ fun TaskReminderDialog(
                                 )
                                 isEditing = false
                             },
+                            shape = RoundedCornerShape(HrpDesignTokens.RadiusMD),
                             modifier = Modifier
                                 .weight(1f)
                                 .height(44.dp)
@@ -495,8 +612,11 @@ fun TaskReminderDialog(
                 } else {
                     // List View
                     Button(
-                        onClick = { openCreateForm() },
-                        shape = RoundedCornerShape(12.dp),
+                        onClick = {
+                            HrpHaptics.tick(hapticFeedback)
+                            openCreateForm()
+                        },
+                        shape = RoundedCornerShape(HrpDesignTokens.RadiusMD),
                         colors = ButtonDefaults.buttonColors(
                             containerColor = MaterialTheme.colorScheme.primary,
                             contentColor = Color.White
@@ -523,17 +643,26 @@ fun TaskReminderDialog(
                     Spacer(modifier = Modifier.height(12.dp))
 
                     if (reminders.isEmpty()) {
-                        Box(
+                        Column(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(vertical = 28.dp)
+                                .hrpMutedTile(cornerRadius = HrpDesignTokens.RadiusMD)
+                                .padding(vertical = 26.dp, horizontal = 16.dp)
                                 .testTag("task_reminder_empty_state"),
-                            contentAlignment = Alignment.Center
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
                             Text(
                                 text = "Chưa có lịch nhắc việc nào.",
                                 style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.SemiBold,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Text(
+                                text = "Bấm \"Thêm nhắc việc\" để hẹn giờ báo cáo ca làm việc.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = SemanticColors.TextMuted,
+                                textAlign = TextAlign.Center
                             )
                         }
                     } else {
@@ -550,14 +679,14 @@ fun TaskReminderDialog(
                                     color = if (item.isEnabled) {
                                         MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.25f)
                                     } else {
-                                        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
+                                        SemanticColors.SurfaceSubtle
                                     },
                                     border = BorderStroke(
                                         width = 1.dp,
                                         color = if (item.isEnabled) {
                                             MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)
                                         } else {
-                                            palette.lightTopBarBorder
+                                            SemanticColors.SurfaceBorder
                                         }
                                     ),
                                     modifier = Modifier
@@ -579,7 +708,7 @@ fun TaskReminderDialog(
                                             ) {
                                                 Text(
                                                     text = item.formattedTime,
-                                                    style = MaterialTheme.typography.titleLarge.copy(fontSize = 22.sp),
+                                                    style = MaterialTheme.typography.titleLarge.copy(fontSize = 22.sp).tabularNums(),
                                                     fontWeight = FontWeight.ExtraBold,
                                                     color = if (item.isEnabled) {
                                                         MaterialTheme.colorScheme.primary
@@ -587,26 +716,19 @@ fun TaskReminderDialog(
                                                         MaterialTheme.colorScheme.onSurfaceVariant
                                                     }
                                                 )
-                                                Surface(
-                                                    shape = RoundedCornerShape(6.dp),
-                                                    color = if (item.repeatMode == TaskReminderRepeatMode.DAILY) {
+                                                HrpStatusBadge(
+                                                    text = item.repeatMode.labelVi,
+                                                    containerColor = if (item.repeatMode == TaskReminderRepeatMode.DAILY) {
                                                         MaterialTheme.colorScheme.primaryContainer
                                                     } else {
-                                                        MaterialTheme.colorScheme.secondaryContainer
+                                                        SemanticColors.InfoBg
+                                                    },
+                                                    contentColor = if (item.repeatMode == TaskReminderRepeatMode.DAILY) {
+                                                        MaterialTheme.colorScheme.primary
+                                                    } else {
+                                                        SemanticColors.InfoText
                                                     }
-                                                ) {
-                                                    Text(
-                                                        text = item.repeatMode.labelVi,
-                                                        style = MaterialTheme.typography.labelSmall,
-                                                        fontWeight = FontWeight.Bold,
-                                                        color = if (item.repeatMode == TaskReminderRepeatMode.DAILY) {
-                                                            MaterialTheme.colorScheme.primary
-                                                        } else {
-                                                            MaterialTheme.colorScheme.onSecondaryContainer
-                                                        },
-                                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                                    )
-                                                }
+                                                )
                                             }
                                             Spacer(modifier = Modifier.height(2.dp))
                                             Text(
@@ -633,6 +755,7 @@ fun TaskReminderDialog(
                                         Switch(
                                             checked = item.isEnabled,
                                             onCheckedChange = { enabled ->
+                                                HrpHaptics.tick(hapticFeedback)
                                                 if (enabled) {
                                                     ensureNotificationPermissionIfNeeded()
                                                 }
@@ -642,7 +765,10 @@ fun TaskReminderDialog(
                                         )
 
                                         IconButton(
-                                            onClick = { taskReminderManager.deleteReminder(item.id) },
+                                            onClick = {
+                                                HrpHaptics.tick(hapticFeedback)
+                                                taskReminderManager.deleteReminder(item.id)
+                                            },
                                             modifier = Modifier
                                                 .size(34.dp)
                                                 .testTag("task_reminder_delete_${item.id}")
@@ -650,7 +776,7 @@ fun TaskReminderDialog(
                                             Icon(
                                                 imageVector = Icons.Default.DeleteOutline,
                                                 contentDescription = "Xóa nhắc việc",
-                                                tint = MaterialTheme.colorScheme.error,
+                                                tint = SemanticColors.ErrorLight,
                                                 modifier = Modifier.size(19.dp)
                                             )
                                         }

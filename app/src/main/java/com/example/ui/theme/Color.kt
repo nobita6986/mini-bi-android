@@ -24,14 +24,41 @@ data class MiniBiPalette(
 )
 
 object SemanticColors {
+    // Crisp AA surface & text tokens aligned with iOS HRP Design System
+    val BackgroundLight = Color(0xFFF6F8FB)
+    val SurfaceLight = Color(0xFFFFFFFF)
+    val SurfaceBorder = Color(0xFFE2E8F0)
+    val SurfaceSubtle = Color(0xFFF1F5F9)
+    val TextPrimary = Color(0xFF0F172A)
+    val TextSecondary = Color(0xFF475569)
+    val TextMuted = Color(0xFF64748B)
+
+    // Semantic foreground + soft background + hairline border pairs (WCAG AA)
     val SuccessLight = Color(0xFF047857)
     val SuccessDark = Color(0xFF34D399)
+    val SuccessText = Color(0xFF166534)
+    val SuccessBg = Color(0xFFDCFCE7)
+    val SuccessBorder = Color(0xFF86EFAC)
+
     val WarningLight = Color(0xFFB45309)
     val WarningDark = Color(0xFFFBBF24)
+    val WarningText = Color(0xFF92400E)
+    val WarningBg = Color(0xFFFEF3C7)
+    val WarningBorder = Color(0xFFFDE68A)
+
     val ErrorLight = Color(0xFFBE123C)
     val ErrorDark = Color(0xFFFB7185)
+    val ErrorText = Color(0xFF991B1B)
+    val ErrorBg = Color(0xFFFEE2E2)
+    val ErrorBorder = Color(0xFFFCA5A5)
+
     val RunningLight = Color(0xFF0369A1)
     val RunningDark = Color(0xFF38BDF8)
+    val InfoLight = Color(0xFF1D4ED8)
+    val InfoText = Color(0xFF1E40AF)
+    val InfoBg = Color(0xFFDBEAFE)
+    val InfoBorder = Color(0xFF93C5FD)
+
     val SlateLight = Color(0xFF64748B)
     val SlateDark = Color(0xFF94A3B8)
 }
@@ -41,17 +68,17 @@ val MiniBiThemes = listOf(
         id = "hr-partner",
         name = "HRPartner",
         subtitle = "HRP Brand Orange",
-        lightBg = Color(0xFFF8F7F5),
+        lightBg = Color(0xFFF6F8FB),
         lightSurface = Color(0xFFFFFFFF),
-        lightTopBar = Color(0xFFFFF8F3),
-        lightTopBarBorder = Color(0xFFF2DFD0),
+        lightTopBar = Color(0xFFFFFFFF),
+        lightTopBarBorder = Color(0xFFE2E8F0),
         lightPrimary = Color(0xFFEA580C),
         lightPrimaryContainer = Color(0xFFFFF1E6),
         lightOnPrimaryContainer = Color(0xFF9A3412),
         lightSecondary = Color(0xFF1E3A8A),
         lightAccent = Color(0xFFC2410C),
-        darkBg = Color(0xFF14110F),
-        darkSurface = Color(0xFF1E1916),
+        darkBg = Color(0xFF0F141C),
+        darkSurface = Color(0xFF18202C),
         darkPrimary = Color(0xFFFB923C),
         darkSecondary = Color(0xFF60A5FA),
         darkAccent = Color(0xFFF97316),

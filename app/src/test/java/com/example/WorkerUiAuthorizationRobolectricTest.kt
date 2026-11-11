@@ -7604,4 +7604,347 @@ class WorkerUiAuthorizationRobolectricTest {
             singletonManager.getReminders().forEach { singletonManager.deleteReminder(it.id) }
         }
     }
+
+    @Test
+    fun `phase 1 ui overhaul - HrpInitialsAvatar extracts Vietnamese initials accurately across 2-word, 3-plus-word, 1-word, and blank inputs`() {
+        // 2 words
+        assertEquals("LH", com.example.ui.components.HrpInitialsAvatarDefaults.extractInitials("Lê Hoa"))
+        assertEquals("PH", com.example.ui.components.HrpInitialsAvatarDefaults.extractInitials("Phạm Hùng"))
+
+        // 3+ words (Vietnamese diacritics & Đ/đ)
+        assertEquals("KH", com.example.ui.components.HrpInitialsAvatarDefaults.extractInitials("KIỀU VIỆT HÀ"))
+        assertEquals("ĐT", com.example.ui.components.HrpInitialsAvatarDefaults.extractInitials("Đỗ Đức Thuận"))
+        assertEquals("NK", com.example.ui.components.HrpInitialsAvatarDefaults.extractInitials("Nguyễn Thị Minh Khai (HRP012)"))
+
+        // 1 word / handle / email
+        assertEquals("NO", com.example.ui.components.HrpInitialsAvatarDefaults.extractInitials("nobita6986"))
+        assertEquals("MI", com.example.ui.components.HrpInitialsAvatarDefaults.extractInitials("Minh"))
+        assertEquals("QL", com.example.ui.components.HrpInitialsAvatarDefaults.extractInitials("ql.duan@hrpartner.vn"))
+
+        // Empty / blank / symbols
+        assertEquals("NL", com.example.ui.components.HrpInitialsAvatarDefaults.extractInitials(""))
+        assertEquals("NL", com.example.ui.components.HrpInitialsAvatarDefaults.extractInitials("   "))
+        assertEquals("NL", com.example.ui.components.HrpInitialsAvatarDefaults.extractInitials("---"))
+
+        composeTestRule.setContent {
+            MyApplicationTheme {
+                com.example.ui.components.HrpInitialsAvatar(fullName = "Đỗ Đức Thuận")
+            }
+        }
+        composeTestRule.onNodeWithText("ĐT").assertIsDisplayed()
+    }
+
+    @Test
+    fun `phase 1 ui overhaul - WorkerOperationsRowCard hides Ma NLD on list card while WorkerEntryDetailDialog displays full Ma NLD`() {
+        val entryId = "55555555-6666-4777-8888-999999999901"
+        val worker = sampleWorker(
+            entryId = entryId,
+            canView = true,
+            canProposeChange = false,
+            canDirectEdit = true
+        ).copy(
+            employeeCode = "hrp-2026-000189",
+            displayName = "Đỗ Đức Thuận",
+            employmentStatus = "ON",
+            projectDisplay = "Samsung Điện Tử Bắc Ninh",
+            recruiterDisplay = "Nguyễn Thị Hoa",
+            firstWorkDate = "2026-10-15"
+        )
+        val detail = WorkerEntryDetail(
+            entryId = entryId,
+            submissionId = "sub-01",
+            version = 1,
+            projectId = "PRJ_01",
+            firstWorkDate = "2026-10-15",
+            employeeCode = "hrp-2026-000189",
+            recruiterId = "REC_01",
+            teamId = "TEAM_01",
+            providerType = "hrp",
+            laborType = "TEMPORARY",
+            laborTypeDisplay = "Thời vụ",
+            displayName = "Đỗ Đức Thuận",
+            gender = "MALE",
+            dateOfBirth = "1998-05-12",
+            nationalId = "001098012345",
+            nationalIdIssuedAt = "2022-04-01",
+            nationalIdIssuedPlace = "Cục Cảnh sát QLHC",
+            address = "Yên Phong, Bắc Ninh",
+            phone = "0988112233",
+            generalNote = null,
+            paymentState = "READY",
+            bankId = "VCB",
+            bankName = "Vietcombank",
+            accountNumber = "0451000998877",
+            accountHolderName = "DO DUC THUAN",
+            employmentStatus = "ON",
+            employmentEffectiveDate = "2026-10-15",
+            employmentStatusVersion = 1,
+            portraitPreviewPath = null,
+            portraitDownloadPath = null,
+            documents = emptyList()
+        )
+
+        val showDetail = androidx.compose.runtime.mutableStateOf(false)
+        composeTestRule.setContent {
+            MyApplicationTheme {
+                WorkerOperationsRowCard(
+                    worker = worker,
+                    onViewDetail = { showDetail.value = true },
+                    onProposeChange = {},
+                    onDirectEdit = {}
+                )
+                if (showDetail.value) {
+                    com.example.ui.screens.WorkerEntryDetailDialog(
+                        detail = detail,
+                        onDismiss = { showDetail.value = false }
+                    )
+                }
+            }
+        }
+
+        // Outer list card displays name, avatar initials, status, project, recruiter, and firstWorkDate, WITHOUT "Mã NLĐ:"
+        composeTestRule.onNodeWithText("Đỗ Đức Thuận").assertIsDisplayed()
+        composeTestRule.onNodeWithText("ĐT").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Đang làm").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Dự án: Samsung Điện Tử Bắc Ninh").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Người tuyển: Nguyễn Thị Hoa").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Ngày đầu: 2026-10-15").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Mã NLĐ:", substring = true).assertDoesNotExist()
+        composeTestRule.onNodeWithText("hrp-2026-000189", substring = true).assertDoesNotExist()
+
+        // Open detail dialog -> full Mã NLĐ chip and grouped sections are displayed
+        composeTestRule.onNodeWithTag("worker_detail_$entryId").performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithText("Mã NLĐ: hrp-2026-000189").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Cá nhân & Định danh").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Dự án & Tuyển dụng").assertIsDisplayed()
+    }
+
+    @Test
+    @Config(qualifiers = "w360dp-h800dp")
+    fun `phase 1 ui overhaul - RecruitmentPostsScreen highlights salary and contact person on card and keeps sections 1 to 3 in initial viewport on 800dp screen`() {
+        val briefId = "22222222-3333-4444-8555-666666666601"
+        val postJson = """
+            {
+              "brief_id": "$briefId",
+              "version": 1,
+              "status": "PUBLISHED",
+              "project": {
+                "project_id": "bbbbbbbb-1111-4222-8333-444444444401",
+                "display_name": "Dự Án Luxshare Bắc Giang"
+              },
+              "industrial_park": {
+                "industrial_park_id": "bbbbbbbb-1111-4222-8333-444444444402",
+                "industrial_park_code": "KCN_QUANG_CHAU",
+                "display_name": "KCN Quang Châu",
+                "active": true
+              },
+              "province": {
+                "province_id": "bbbbbbbb-1111-4222-8333-444444444403",
+                "province_code": "BAC_GIANG",
+                "display_name": "Bắc Giang"
+              },
+              "published_at": "2026-11-11T08:00:00Z",
+              "updated_at": "2026-11-11T08:30:00Z",
+              "withdrawn_at": null,
+              "created_by_display_name": "Người Phụ Trách Tuyển Dụng",
+              "updated_by_display_name": "Người Phụ Trách Tuyển Dụng",
+              "withdrawn_by_display_name": null,
+              "general": {
+                "customer_name": "Luxshare-ICT",
+                "investment_origin": null,
+                "manufacturing_industry": "Linh kiện điện tử",
+                "job_description": "Lắp ráp linh kiện tai nghe trong phòng sạch",
+                "environment_types": ["CLEAN_ROOM"],
+                "work_postures": ["SITTING"],
+                "shift_pattern": "TWO_SHIFTS",
+                "shift_details": "Ca 12h luân phiên",
+                "manager_name": "Quản Lý Nội Bộ Ẩn",
+                "manager_phone": "0912345678",
+                "labor_types": [{"labor_type_key": "thoi_vu", "display_name": "Thời vụ"}],
+                "supply_schedule_text": null,
+                "expected_headcount": 250
+              },
+              "candidate": {
+                "age_min": 18,
+                "age_max": 40,
+                "gender_requirement": "ANY",
+                "education_requirement": "NONE",
+                "experience_required": false,
+                "experience_details": null,
+                "accept_former_customer_workers": true,
+                "entry_assessment_text": null,
+                "other_requirements_text": null
+              },
+              "compensation": {
+                "base_salary_vnd": "8500000",
+                "base_salary_conditions": null,
+                "attendance_bonus_vnd": "500000",
+                "attendance_bonus_conditions": null,
+                "living_allowance_vnd": null,
+                "living_allowance_conditions": null,
+                "seniority_allowance_vnd": null,
+                "seniority_allowance_conditions": null,
+                "eyesight_allowance_vnd": null,
+                "eyesight_allowance_conditions": null,
+                "other_allowance_text": null,
+                "average_income_min_vnd": "9500000",
+                "average_income_max_vnd": "13500000",
+                "salary_payment_schedule": "Ngày 15 hàng tháng",
+                "salary_advance_available": true,
+                "salary_advance_amount_vnd": "1000000",
+                "salary_advance_schedule": "Thứ 6 hàng tuần",
+                "weekly_salary_available": false,
+                "weekly_salary_payment_schedule": null,
+                "day_shift_8h_vnd": "260000",
+                "day_shift_11h_vnd": "390000",
+                "night_shift_8h_vnd": null,
+                "night_shift_11h_vnd": null,
+                "sunday_day_11h_vnd": null,
+                "sunday_night_11h_vnd": null,
+                "holiday_day_11h_vnd": null,
+                "holiday_night_11h_vnd": null,
+                "ppe_provided": true,
+                "ppe_details": "Áo phòng sạch",
+                "other_benefits": null
+              },
+              "documents": {
+                "require_original_cccd_and_copy": true,
+                "require_certified_resume": false,
+                "require_health_certificate_within_6_months": false,
+                "require_photo_3x4": true,
+                "require_degree_or_certificate": false,
+                "require_social_insurance_book": false,
+                "require_other_documents": false,
+                "other_documents_text": null
+              },
+              "allowed_actions": {
+                "can_edit": false,
+                "can_withdraw": false
+              }
+            }
+        """.trimIndent()
+
+        val server = MockWebServer()
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val path = request.path.orEmpty()
+                return when {
+                    path.startsWith("/api/auth/session") -> MockResponse()
+                        .setResponseCode(401)
+                        .setHeader("Content-Type", "application/json")
+                        .setBody("""{"ok":false,"code":"UNAUTHENTICATED","message":"Unauthenticated"}""")
+                    path.startsWith("/api/auth/login") -> MockResponse()
+                        .setResponseCode(200)
+                        .setHeader("Set-Cookie", "mini_bi_session=sess-p1; Path=/; HttpOnly")
+                        .setHeader("Content-Type", "application/json")
+                        .setBody(
+                            """
+                            {
+                              "ok": true,
+                              "user": {"id": "bbbb0016-2222-4333-8444-555555555555", "username": "rec.p1", "fullName": "Recruiter P1", "role": "STAFF"},
+                              "actor": {
+                                "app_user_id": "bbbb0016-2222-4333-8444-555555555555",
+                                "display_name": "Recruiter P1",
+                                "capabilities": [],
+                                "scopes": [],
+                                "self_recruiter_suggestion": null,
+                                "allowed_worker_tabs": []
+                              }
+                            }
+                            """.trimIndent()
+                        )
+                    path.startsWith("/api/recruitment-posts?") -> MockResponse()
+                        .setResponseCode(200)
+                        .setHeader("Content-Type", "application/json")
+                        .setBody(
+                            """
+                            {
+                              "ok": true,
+                              "data": {
+                                "items": [$postJson],
+                                "page_size": 10,
+                                "has_more": false,
+                                "next_cursor": null,
+                                "snapshot_token": "snap-p1"
+                              }
+                            }
+                            """.trimIndent()
+                        )
+                    path.contains("/api/recruitment-posts/$briefId") -> MockResponse()
+                        .setResponseCode(200)
+                        .setHeader("Content-Type", "application/json")
+                        .setBody("""{"ok":true,"data":{"post":$postJson}}""")
+                    else -> MockResponse()
+                        .setResponseCode(200)
+                        .setHeader("Content-Type", "application/json")
+                        .setBody("""{"ok":true,"items":[]}""")
+                }
+            }
+        }
+        server.start()
+
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val db = buildTestDb(app)
+        val cookieFile = File(app.cacheDir, "p1_rec_cookie_${System.nanoTime()}.enc")
+        val prefsFile = File(app.cacheDir, "p1_rec_prefs_${System.nanoTime()}.preferences_pb")
+        val repo = MiniBiRepository(
+            context = app,
+            database = db,
+            defaultServerUrl = server.url("/").toString().trimEnd('/'),
+            allowDebugUrlOverride = true,
+            cookieStorageFile = cookieFile,
+            preferencesStorageFile = prefsFile,
+            cookieCipher = JvmAes256GcmCookieCipher()
+        )
+        val vm = MiniBiViewModel(app, repo)
+        registerTestResourcesCleanup(vm, db, server, cookieFile, prefsFile)
+
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            !vm.sessionBootstrapping.value
+        }
+
+        vm.login("rec.p1@hrpartner.vn", "pass123", rememberAccount = false)
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            !vm.loginBusy.value && vm.currentActor.value?.appUserId == "bbbb0016-2222-4333-8444-555555555555"
+        }
+
+        composeTestRule.setContent {
+            MyApplicationTheme {
+                com.example.ui.screens.RecruitmentPostsScreen(viewModel = vm)
+            }
+        }
+
+        vm.navigateTo(com.example.ui.MainDestination.RECRUITMENT)
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            vm.recruitmentPosts.value.size == 1 && !vm.recruitmentPostsLoading.value
+        }
+        composeTestRule.waitForIdle()
+
+        // Outer summary card highlights salary/income and displays contactPersonDisplay (never manager_name)
+        composeTestRule.onNodeWithText("Dự Án Luxshare Bắc Giang").assertIsDisplayed()
+        composeTestRule.onNodeWithText("8.500.000", substring = true).assertIsDisplayed()
+        composeTestRule.onNodeWithText("9.500.000", substring = true).assertIsDisplayed()
+        composeTestRule.onNodeWithText("Phụ trách: Người Phụ Trách Tuyển Dụng").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Quản Lý Nội Bộ Ẩn", substring = true).assertDoesNotExist()
+
+        // Open detail dialog -> sections 1, 2, and 3 MUST be displayed simultaneously in the initial 800dp viewport without scrolling
+        composeTestRule.onNodeWithTag("recruitment_post_detail_btn_$briefId").performClick()
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            vm.selectedRecruitmentPostDetail.value?.briefId == briefId
+        }
+        composeTestRule.waitForIdle()
+
+        composeTestRule.onNodeWithTag("recruitment_post_detail_dialog").assertIsDisplayed()
+        composeTestRule.onNodeWithText("1. Thông tin chung dự án").assertIsDisplayed()
+        composeTestRule.onNodeWithText("2. Yêu cầu ứng viên").assertIsDisplayed()
+        composeTestRule.onNodeWithText("3. Lương, thưởng và phúc lợi").assertIsDisplayed()
+        composeTestRule.onNodeWithText("4. Hồ sơ ứng viên cần chuẩn bị").performScrollTo().assertIsDisplayed()
+        composeTestRule.onNodeWithText("5. Đơn giá ca làm & bảo hộ").performScrollTo().assertIsDisplayed()
+        composeTestRule.onNodeWithText("6. Thông tin đăng tải & cập nhật").performScrollTo().assertIsDisplayed()
+    }
 }
