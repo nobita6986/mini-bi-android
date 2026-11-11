@@ -1784,24 +1784,12 @@ public struct WorkersScreen: View {
                                     }
 
                                     if viewModel.ownSubmissionsHasMore {
-                                        Button {
-                                            HapticsManager.lightImpact()
+                                        HrpLoadMoreButton(
+                                            isLoading: viewModel.isLoadingOwnSubmissions,
+                                            theme: theme
+                                        ) {
                                             Task { await viewModel.loadMoreOwnSubmissions() }
-                                        } label: {
-                                            HStack(spacing: 6) {
-                                                if viewModel.isLoadingOwnSubmissions {
-                                                    ProgressView().scaleEffect(0.8)
-                                                }
-                                                Text("Tải thêm")
-                                                    .font(.caption.weight(.bold))
-                                            }
-                                            .frame(maxWidth: .infinity, minHeight: 44)
-                                            .background(Color.white)
-                                            .foregroundColor(theme.primary)
-                                            .clipShape(RoundedRectangle(cornerRadius: HrpDesignTokens.radiusMD, style: .continuous))
                                         }
-                                        .buttonStyle(HrpPressableButtonStyle())
-                                        .disabled(viewModel.isLoadingOwnSubmissions)
                                     }
                                 }
                             }
@@ -1881,22 +1869,19 @@ public struct WorkersScreen: View {
                                 if viewModel.isLoadingWorkers && viewModel.workers.isEmpty {
                                     VStack(spacing: 10) {
                                         ForEach(0..<3, id: \.self) { _ in
-                                            VStack(alignment: .leading, spacing: 8) {
-                                                HStack {
-                                                    Text("Nguyễn Văn A (HRP-1024)")
-                                                        .font(.subheadline.weight(.bold))
-                                                    Spacer()
-                                                    Text("Đang làm việc")
-                                                        .font(.caption2.weight(.bold))
+                                            HStack(spacing: 12) {
+                                                Circle()
+                                                    .fill(SemanticColors.surfaceMuted)
+                                                    .frame(width: 40, height: 40)
+                                                VStack(alignment: .leading, spacing: 4) {
+                                                    Text("Nguyễn Văn A · HRP-1024")
+                                                        .font(.subheadline.weight(.semibold))
+                                                    Text("Sản xuất Điện tử · 0912345678")
+                                                        .font(.caption)
                                                 }
-                                                Text("Dự án: Sản xuất Điện tử · Tuyển: Nguyễn Thị B")
-                                                    .font(.caption)
-                                                HStack(spacing: 12) {
-                                                    Text("CCCD: 001099012345")
-                                                        .font(.caption2)
-                                                    Text("SĐT: 0912345678")
-                                                        .font(.caption2)
-                                                }
+                                                Spacer()
+                                                Text("Đang làm việc")
+                                                    .font(.caption2.weight(.bold))
                                             }
                                             .padding(14)
                                             .hrpCardSurface(cornerRadius: HrpDesignTokens.radiusCard)
@@ -1911,90 +1896,104 @@ public struct WorkersScreen: View {
                                 } else {
                                     LazyVStack(spacing: 10) {
                                         ForEach(viewModel.workers) { worker in
-                                            VStack(alignment: .leading, spacing: 8) {
-                                                HStack {
-                                                    Text(worker.displayEmployeeCode.isEmpty ? worker.hoTen : "\(worker.hoTen) (\(worker.displayEmployeeCode))")
-                                                        .font(.subheadline.weight(.bold))
-                                                        .foregroundColor(SemanticColors.textPrimary)
-                                                    Spacer()
+                                            let subtitleParts = [worker.duAn, worker.sdt, worker.nguoiTuyen]
+                                                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                                                .filter { !$0.isEmpty }
+
+                                            HStack(spacing: 12) {
+                                                HrpInitialsAvatar(
+                                                    fullName: worker.hoTen,
+                                                    tint: theme.primary,
+                                                    size: 40
+                                                )
+
+                                                VStack(alignment: .leading, spacing: 3) {
+                                                    HStack(spacing: 6) {
+                                                        Text(worker.hoTen)
+                                                            .font(.subheadline.weight(.semibold))
+                                                            .foregroundColor(SemanticColors.textPrimary)
+                                                            .lineLimit(1)
+                                                        if !worker.displayEmployeeCode.isEmpty {
+                                                            Text(worker.displayEmployeeCode)
+                                                                .font(.caption2.weight(.semibold))
+                                                                .monospacedDigit()
+                                                                .foregroundColor(SemanticColors.textMuted)
+                                                                .lineLimit(1)
+                                                        }
+                                                    }
+
+                                                    Text(subtitleParts.isEmpty ? "Chưa phân dự án" : subtitleParts.joined(separator: " · "))
+                                                        .font(.caption)
+                                                        .monospacedDigit()
+                                                        .foregroundColor(SemanticColors.textSecondary)
+                                                        .lineLimit(1)
+                                                }
+
+                                                Spacer(minLength: 6)
+
+                                                VStack(alignment: .trailing, spacing: 6) {
                                                     Text(worker.trangThai)
                                                         .font(.caption2.weight(.bold))
                                                         .padding(.horizontal, 8)
-                                                        .padding(.vertical, 4)
+                                                        .padding(.vertical, 3)
                                                         .background(worker.trangThai.contains("Đang") ? SemanticColors.successBg : SemanticColors.warningBg)
                                                         .foregroundColor(worker.trangThai.contains("Đang") ? SemanticColors.successText : SemanticColors.warningText)
                                                         .clipShape(Capsule())
-                                                }
 
-                                                Text("Dự án: \(worker.duAn.isEmpty ? "—" : worker.duAn) · Tuyển: \(worker.nguoiTuyen.isEmpty ? "—" : worker.nguoiTuyen)")
-                                                    .font(.caption)
-                                                    .foregroundColor(SemanticColors.textSecondary)
-
-                                                HStack(spacing: 12) {
-                                                    Text("CCCD: \(worker.soCccd.isEmpty ? "—" : worker.soCccd)")
-                                                        .font(.caption2)
-                                                        .monospacedDigit()
-                                                        .foregroundColor(SemanticColors.textMuted)
-                                                    Text("SĐT: \(worker.sdt.isEmpty ? "—" : worker.sdt)")
-                                                        .font(.caption2)
-                                                        .monospacedDigit()
-                                                        .foregroundColor(SemanticColors.textMuted)
-                                                    Spacer()
-                                                    if worker.contractFileUrl != nil {
-                                                        Label("Có HĐ", systemImage: "doc.text.fill")
-                                                            .font(.caption2.weight(.semibold))
-                                                            .foregroundColor(SemanticColors.successText)
-                                                    }
-                                                }
-
-                                                Divider()
-
-                                                HStack(spacing: 8) {
-                                                    if worker.canView {
-                                                        Button {
-                                                            HapticsManager.selection()
-                                                            KeyboardDismissal.dismiss()
-                                                            viewModel.selectedWorkerDetail = worker
-                                                        } label: {
-                                                            HStack(spacing: 4) {
-                                                                Image(systemName: "eye")
-                                                                Text("Xem chi tiết")
-                                                            }
-                                                            .font(.caption.weight(.semibold))
-                                                            .padding(.horizontal, 12)
-                                                            .frame(minHeight: 34)
-                                                            .background(SemanticColors.surfaceMuted)
-                                                            .foregroundColor(SemanticColors.textPrimary)
-                                                            .clipShape(RoundedRectangle(cornerRadius: HrpDesignTokens.radiusXS, style: .continuous))
+                                                    HStack(spacing: 8) {
+                                                        if worker.contractFileUrl != nil {
+                                                            Image(systemName: "doc.text.fill")
+                                                                .font(.caption.weight(.semibold))
+                                                                .foregroundColor(SemanticColors.successText)
+                                                                .accessibilityLabel("Có hợp đồng")
                                                         }
-                                                        .buttonStyle(HrpPressableButtonStyle())
-                                                    }
 
-                                                    if worker.canDirectEdit {
-                                                        Button {
-                                                            HapticsManager.selection()
-                                                            KeyboardDismissal.dismiss()
-                                                            Task { await viewModel.openDirectEdit(worker) }
-                                                        } label: {
-                                                            HStack(spacing: 4) {
+                                                        if worker.canDirectEdit {
+                                                            Button {
+                                                                HapticsManager.selection()
+                                                                KeyboardDismissal.dismiss()
+                                                                Task { await viewModel.openDirectEdit(worker) }
+                                                            } label: {
                                                                 Image(systemName: "square.and.pencil")
-                                                                Text("Sửa trực tiếp")
+                                                                    .font(.caption.weight(.bold))
+                                                                    .foregroundColor(theme.primary)
+                                                                    .frame(width: 28, height: 28)
+                                                                    .background(theme.primaryLight)
+                                                                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                                                             }
-                                                            .font(.caption.weight(.bold))
-                                                            .padding(.horizontal, 12)
-                                                            .frame(minHeight: 34)
-                                                            .background(theme.primary)
-                                                            .foregroundColor(.white)
-                                                            .clipShape(RoundedRectangle(cornerRadius: HrpDesignTokens.radiusXS, style: .continuous))
+                                                            .buttonStyle(HrpPressableButtonStyle())
+                                                            .accessibilityLabel("Sửa trực tiếp")
                                                         }
-                                                        .buttonStyle(HrpPressableButtonStyle())
-                                                    }
 
-                                                    Spacer()
+                                                        if worker.canView {
+                                                            Image(systemName: "chevron.right")
+                                                                .font(.caption2.weight(.semibold))
+                                                                .foregroundColor(SemanticColors.textMuted)
+                                                        }
+                                                    }
                                                 }
                                             }
                                             .padding(14)
+                                            .contentShape(Rectangle())
+                                            .onTapGesture {
+                                                guard worker.canView else { return }
+                                                HapticsManager.selection()
+                                                KeyboardDismissal.dismiss()
+                                                viewModel.selectedWorkerDetail = worker
+                                            }
                                             .hrpCardSurface(cornerRadius: HrpDesignTokens.radiusCard)
+                                        }
+                                    }
+
+                                    if viewModel.workersPage < viewModel.workersTotalPages || viewModel.workers.count < viewModel.workersTotalCount {
+                                        HrpLoadMoreButton(
+                                            title: "Tải thêm nhân sự",
+                                            loadedCount: viewModel.workers.count,
+                                            totalCount: viewModel.workersTotalCount > 0 ? viewModel.workersTotalCount : nil,
+                                            isLoading: viewModel.isLoadingMoreWorkers,
+                                            theme: theme
+                                        ) {
+                                            Task { await viewModel.loadMoreWorkers() }
                                         }
                                     }
                                 }
@@ -2002,7 +2001,7 @@ public struct WorkersScreen: View {
                             .padding(14)
                         }
                         .refreshable {
-                            await viewModel.loadWorkers(resetPage: false)
+                            await viewModel.loadWorkers(resetPage: true)
                         }
                     }
                 }

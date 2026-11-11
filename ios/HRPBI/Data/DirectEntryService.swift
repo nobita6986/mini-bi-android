@@ -126,7 +126,7 @@ public final class DirectEntryService: @unchecked Sendable {
         status: String = "ALL",
         search: String = "",
         page: Int = 1,
-        pageSize: Int = 30
+        pageSize: Int = 15
     ) async -> MiniBiApiResult<(items: [CccdReviewItem], total: Int)> {
         let safeLimit = min(max(pageSize, 1), 100)
         let safeOffset = max(0, (max(page, 1) - 1) * safeLimit)

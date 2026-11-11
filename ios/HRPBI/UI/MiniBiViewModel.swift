@@ -315,6 +315,11 @@ public final class MiniBiViewModel: ObservableObject {
     @Published public var todayServerAttendanceCount: Int = 0
     @Published public var isSubmittingAttendance: Bool = false
     @Published public var isSyncingAttendance: Bool = false
+    @Published public var selectedAttendanceHistoryDate: String = LeaveContract.todayVietnamIsoDate()
+    @Published public var attendanceHistoryPage: Int = 1
+    @Published public var attendanceHistoryHasMore: Bool = false
+    @Published public var attendanceHistoryTotalCount: Int = 0
+    @Published public var isLoadingMoreAttendanceHistory: Bool = false
 
     // MARK: - Leave Request ("Xin nghỉ") & Leave Approval ("Duyệt nghỉ") State
     @Published public var activeAttendanceTab: AttendanceAreaTab = .checkIn
@@ -331,12 +336,14 @@ public final class MiniBiViewModel: ObservableObject {
     @Published public var leaveInboxPage: Int = 1
     @Published public var leaveApprovalInbox: LeaveApprovalInboxProjection?
     @Published public var isLoadingLeaveInbox: Bool = false
+    @Published public var isLoadingMoreLeaveInbox: Bool = false
     @Published public var leaveInboxError: String?
 
-    // MARK: - Attendance Explanation ("Giải trình chấm công") & Approval ("Xét duyệt giải trình") State
+    // MARK: - Attendance Explanation ("Giải trình") & Approval ("Xét duyệt giải trình") State
     @Published public var explanationSelectedDate: String = AttendanceExplanationContract.todayVietnamIsoDate()
     @Published public var myExplanationsOverview: AttendanceMyExplanationsOverviewProjection?
     @Published public var isLoadingMyExplanations: Bool = false
+    @Published public var isLoadingMoreMyExplanations: Bool = false
     @Published public var myExplanationsError: String?
     @Published public var myExplanationsErrorCode: String?
     @Published public var isMutatingExplanation: Bool = false
@@ -345,20 +352,32 @@ public final class MiniBiViewModel: ObservableObject {
     @Published public var explanationInboxPage: Int = 1
     @Published public var explanationApprovalInbox: AttendanceExplanationApprovalInboxProjection?
     @Published public var isLoadingExplanationInbox: Bool = false
+    @Published public var isLoadingMoreExplanationInbox: Bool = false
     @Published public var explanationInboxError: String?
     @Published public var explanationInboxErrorCode: String?
 
     // MARK: - Work Reports State
     @Published public var selectedWorkReportsSubTab: WorkReportsSubTab = .actionable
     @Published public var workReportObligations: [WorkReportObligationItem] = []
+    @Published public var workReportHistoryFilterByDate: Bool = false
+    @Published public var workReportHistorySelectedDate: String = LeaveContract.todayVietnamIsoDate()
     @Published public var selectedObligationEditor: WorkReportObligationItem?
     @Published public var editorFieldValues: [String: String] = [:]
     @Published public var isLoadingWorkReports: Bool = false
     @Published public var isSavingWorkReport: Bool = false
     @Published public var workReportReviews: [WorkReportReviewItem] = []
+    @Published public var workReportReviewsPage: Int = 1
+    @Published public var workReportReviewsHasMore: Bool = false
+    @Published public var isLoadingMoreWorkReportReviews: Bool = false
     @Published public var selectedReviewDetail: WorkReportReviewItem?
     @Published public var workReportTemplates: [WorkReportTemplateOption] = []
     @Published public var workReportAnalytics: WorkReportsAnalyticsSnapshot = WorkReportsAnalyticsSnapshot()
+
+    // MARK: - Pagination Load-More State for Workers & CCCD
+    @Published public var isLoadingMoreWorkers: Bool = false
+    @Published public var cccdReviewPage: Int = 1
+    @Published public var isLoadingMoreCccdReview: Bool = false
+    @Published public var isLoadingMoreDuplicateCccd: Bool = false
 
     public init(
         repository: MiniBiRepository = .shared,
@@ -688,6 +707,7 @@ public final class MiniBiViewModel: ObservableObject {
         workersPage = 1
         workersTotalPages = 1
         isLoadingWorkers = false
+        isLoadingMoreWorkers = false
         selectedWorkerDetail = nil
         isUploadingWorkerContract = false
         ownSubmissions = []
@@ -711,20 +731,36 @@ public final class MiniBiViewModel: ObservableObject {
         workforceDeepMetrics = WorkforceDeepMetricsData()
         teamReport = TeamReportData()
         duplicateCccdReport = DuplicateCccdReportData()
+        isLoadingMoreDuplicateCccd = false
         cccdReviewItems = []
         cccdReviewTotal = 0
+        cccdReviewPage = 1
+        isLoadingMoreCccdReview = false
         selectedCccdReviewItem = nil
         workReportObligations = []
+        workReportHistoryFilterByDate = false
+        workReportHistorySelectedDate = LeaveContract.todayVietnamIsoDate()
         selectedObligationEditor = nil
         editorFieldValues = [:]
         isSavingWorkReport = false
         workReportReviews = []
+        workReportReviewsPage = 1
+        workReportReviewsHasMore = false
+        isLoadingMoreWorkReportReviews = false
         selectedReviewDetail = nil
         workReportTemplates = []
         workReportAnalytics = WorkReportsAnalyticsSnapshot()
         isLoadingDashboard = false
         isLoadingWorkReports = false
         isLoadingCccdReview = false
+        selectedAttendanceHistoryDate = LeaveContract.todayVietnamIsoDate()
+        attendanceHistoryPage = 1
+        attendanceHistoryHasMore = false
+        attendanceHistoryTotalCount = 0
+        isLoadingMoreAttendanceHistory = false
+        isLoadingMoreLeaveInbox = false
+        isLoadingMoreMyExplanations = false
+        isLoadingMoreExplanationInbox = false
         resetRecruitmentPostsState()
         if clearDraftRows {
             newWorkerDraftRows = [NewWorkerEntryDraft()]
@@ -1095,10 +1131,16 @@ public final class MiniBiViewModel: ObservableObject {
             }
 
             if includeCccdTabs {
-                async let dupTask = self.workReportsService.fetchDuplicateCccdReport(search: self.duplicateSearchQuery)
+                async let dupTask = self.workReportsService.fetchDuplicateCccdReport(
+                    search: self.duplicateSearchQuery,
+                    page: 1,
+                    pageSize: Self.leaveInboxPageSize
+                )
                 async let cccdTask = self.directEntryService.fetchCccdReviewList(
                     status: self.cccdReviewFilterStatus,
-                    search: self.cccdReviewSearchQuery
+                    search: self.cccdReviewSearchQuery,
+                    page: 1,
+                    pageSize: Self.leaveInboxPageSize
                 )
                 let dupRes = await dupTask
                 let cccdRes = await cccdTask
@@ -1107,6 +1149,7 @@ public final class MiniBiViewModel: ObservableObject {
                 if case .success(let cccd, _) = cccdRes {
                     self.cccdReviewItems = cccd.items
                     self.cccdReviewTotal = cccd.total
+                    self.cccdReviewPage = 1
                 }
             }
         }
@@ -1121,14 +1164,78 @@ public final class MiniBiViewModel: ObservableObject {
             self.isLoadingCccdReview = true
             let res = await self.directEntryService.fetchCccdReviewList(
                 status: targetStatus,
-                search: targetSearch
+                search: targetSearch,
+                page: 1,
+                pageSize: Self.leaveInboxPageSize
             )
             guard !Task.isCancelled, self.isSessionValid(token) else { return }
             self.isLoadingCccdReview = false
             if case .success(let data, _) = res {
                 self.cccdReviewItems = data.items
                 self.cccdReviewTotal = data.total
+                self.cccdReviewPage = 1
             }
+        }
+    }
+
+    public func loadMoreCccdReviewItems() async {
+        guard let token = captureSessionToken(),
+              !isLoadingCccdReview,
+              !isLoadingMoreCccdReview,
+              cccdReviewItems.count < cccdReviewTotal else { return }
+        let targetStatus = cccdReviewFilterStatus
+        let targetSearch = cccdReviewSearchQuery
+        let nextPage = cccdReviewPage + 1
+        isLoadingMoreCccdReview = true
+        let res = await directEntryService.fetchCccdReviewList(
+            status: targetStatus,
+            search: targetSearch,
+            page: nextPage,
+            pageSize: Self.leaveInboxPageSize
+        )
+        guard !Task.isCancelled, isSessionValid(token) else {
+            isLoadingMoreCccdReview = false
+            return
+        }
+        isLoadingMoreCccdReview = false
+        if case .success(let data, _) = res {
+            let existingIds = Set(cccdReviewItems.map { $0.id })
+            let appended = data.items.filter { !existingIds.contains($0.id) }
+            cccdReviewItems.append(contentsOf: appended)
+            cccdReviewTotal = max(data.total, cccdReviewItems.count)
+            cccdReviewPage = nextPage
+        }
+    }
+
+    public func loadMoreDuplicateCccdReport() async {
+        guard let token = captureSessionToken(),
+              !isLoadingMoreDuplicateCccd,
+              (duplicateCccdReport.page < duplicateCccdReport.totalPages || duplicateCccdReport.groups.count < duplicateCccdReport.totalGroups) else {
+            return
+        }
+        let nextPage = max(1, duplicateCccdReport.page) + 1
+        let targetSearch = duplicateSearchQuery
+        isLoadingMoreDuplicateCccd = true
+        let res = await workReportsService.fetchDuplicateCccdReport(
+            search: targetSearch,
+            page: nextPage,
+            pageSize: Self.leaveInboxPageSize
+        )
+        guard !Task.isCancelled, isSessionValid(token) else {
+            isLoadingMoreDuplicateCccd = false
+            return
+        }
+        isLoadingMoreDuplicateCccd = false
+        if case .success(let data, _) = res {
+            let existingCccds = Set(duplicateCccdReport.groups.map { $0.cccd })
+            let appended = data.groups.filter { !existingCccds.contains($0.cccd) }
+            let combined = duplicateCccdReport.groups + appended
+            duplicateCccdReport = DuplicateCccdReportData(
+                totalGroups: max(data.totalGroups, combined.count),
+                groups: combined,
+                page: data.page,
+                totalPages: data.totalPages
+            )
         }
     }
 
@@ -1626,6 +1733,55 @@ public final class MiniBiViewModel: ObservableObject {
                 self.workersTotalPages = 1
                 self.showBanner(message, isError: true)
             }
+        }
+    }
+
+    public func loadMoreWorkers() async {
+        guard let token = captureSessionToken(),
+              let user = currentUser else { return }
+        let allowedTabs = user.safeAllowedWorkerTabs
+        guard !allowedTabs.isEmpty,
+              selectedWorkerScope != "uploader",
+              !isLoadingWorkers,
+              !isLoadingMoreWorkers,
+              (workersPage < workersTotalPages || workers.count < workersTotalCount) else {
+            return
+        }
+        let resolvedScope = selectedWorkerScope
+        let nextPage = workersPage + 1
+        let targetSearch = workerSearchQuery
+        let targetProject = workerProjectFilter
+        let targetStatus = workerStatusFilter
+
+        isLoadingMoreWorkers = true
+        let res = await repository.fetchWorkers(
+            scope: resolvedScope,
+            search: targetSearch,
+            project: targetProject,
+            status: targetStatus,
+            page: nextPage,
+            pageSize: Self.leaveInboxPageSize
+        )
+        guard !Task.isCancelled,
+              isSessionValid(token),
+              selectedWorkerScope == resolvedScope,
+              workerSearchQuery == targetSearch,
+              workerProjectFilter == targetProject,
+              workerStatusFilter == targetStatus else {
+            isLoadingMoreWorkers = false
+            return
+        }
+        isLoadingMoreWorkers = false
+        switch res {
+        case .success(let data, _):
+            let existingIds = Set(workers.map { $0.id })
+            let appended = data.items.filter { !existingIds.contains($0.id) }
+            workers.append(contentsOf: appended)
+            workersPage = nextPage
+            workersTotalCount = max(data.total, workers.count)
+            workersTotalPages = max(data.totalPages, nextPage)
+        case .failure(let message, _, _, _):
+            showBanner(message, isError: true)
         }
     }
 
@@ -3131,17 +3287,73 @@ public final class MiniBiViewModel: ObservableObject {
         if !force && hasLoadedAttendanceHistoryInSession {
             return true
         }
-        let histRes = await attendanceOutboxService.syncServerHistoryForUser(userKey: userKey)
+        let targetDate = selectedAttendanceHistoryDate.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedDate = LeaveContract.isValidIsoDate(targetDate) ? targetDate : LeaveContract.todayVietnamIsoDate()
+        let histRes = await attendanceOutboxService.syncServerHistoryForUser(
+            userKey: userKey,
+            fromDate: resolvedDate,
+            toDate: resolvedDate,
+            page: 1,
+            pageSize: Self.leaveInboxPageSize
+        )
         guard !Task.isCancelled, isSessionValid(token) else { return false }
         switch histRes {
         case .success(let data, _):
             hasLoadedAttendanceHistoryInSession = true
             attendanceOutboxItems = data.items
             todayServerAttendanceCount = data.todayCount
+            attendanceHistoryPage = 1
+            attendanceHistoryHasMore = attendanceOutboxService.lastHistorySyncHasMore
+            attendanceHistoryTotalCount = attendanceOutboxService.lastHistorySyncTotalCount
             return true
         case .failure:
             attendanceOutboxItems = attendanceOutboxService.listItemsForUser(userKey: userKey)
             return false
+        }
+    }
+
+    public func selectAttendanceHistoryDate(_ dateIso: String) {
+        let clean = dateIso.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard LeaveContract.isValidIsoDate(clean) else { return }
+        let todayIso = LeaveContract.todayVietnamIsoDate()
+        let clamped = clean > todayIso ? todayIso : clean
+        selectedAttendanceHistoryDate = clamped
+        attendanceHistoryPage = 1
+        Task {
+            _ = await refreshAttendanceHistoryOnly(force: true)
+        }
+    }
+
+    public func loadMoreAttendanceHistory() async {
+        guard let token = captureSessionToken(),
+              let userKey = currentUser?.username.trimmingCharacters(in: .whitespacesAndNewlines),
+              !userKey.isEmpty,
+              attendanceHistoryHasMore,
+              !isLoadingMoreAttendanceHistory,
+              !isSyncingAttendance else {
+            return
+        }
+        let targetDate = selectedAttendanceHistoryDate.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedDate = LeaveContract.isValidIsoDate(targetDate) ? targetDate : LeaveContract.todayVietnamIsoDate()
+        let nextPage = attendanceHistoryPage + 1
+        isLoadingMoreAttendanceHistory = true
+        defer {
+            isLoadingMoreAttendanceHistory = false
+        }
+        let histRes = await attendanceOutboxService.syncServerHistoryForUser(
+            userKey: userKey,
+            fromDate: resolvedDate,
+            toDate: resolvedDate,
+            page: nextPage,
+            pageSize: Self.leaveInboxPageSize
+        )
+        guard !Task.isCancelled, isSessionValid(token), selectedAttendanceHistoryDate == resolvedDate else { return }
+        if case .success(let data, _) = histRes {
+            attendanceOutboxItems = data.items
+            todayServerAttendanceCount = data.todayCount
+            attendanceHistoryPage = nextPage
+            attendanceHistoryHasMore = attendanceOutboxService.lastHistorySyncHasMore
+            attendanceHistoryTotalCount = max(attendanceHistoryTotalCount, attendanceOutboxService.lastHistorySyncTotalCount)
         }
     }
 
@@ -3255,7 +3467,7 @@ public final class MiniBiViewModel: ObservableObject {
 
     // MARK: - Leave Request ("Xin nghỉ") & Leave Approval ("Duyệt nghỉ") Actions
 
-    public static let leaveInboxPageSize: Int = 50
+    public static let leaveInboxPageSize: Int = 15
 
     public var currentLeaveActorAppUserId: String? {
         if let authId = myLeaveSummary?.authority.appUserId.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -3649,6 +3861,41 @@ public final class MiniBiViewModel: ObservableObject {
         }
     }
 
+    public func loadMoreLeaveApprovalInbox() async {
+        guard let currentInbox = leaveApprovalInbox,
+              !isLoadingLeaveInbox,
+              !isLoadingMoreLeaveInbox,
+              currentInbox.items.count < currentInbox.total else {
+            return
+        }
+        let nextOffset = currentInbox.items.count
+        let limit = Self.leaveInboxPageSize
+        let effectiveFilter = leaveInboxStatusFilter
+
+        isLoadingMoreLeaveInbox = true
+        let result = await leaveService.fetchApprovalInbox(
+            statusFilter: effectiveFilter,
+            limit: limit,
+            offset: nextOffset
+        )
+        isLoadingMoreLeaveInbox = false
+
+        if case .success(let pageData, _) = result {
+            let existingIds = Set(currentInbox.items.map { $0.requestId })
+            let appended = pageData.items.filter { !existingIds.contains($0.requestId) }
+            let combined = currentInbox.items + appended
+            leaveApprovalInbox = LeaveApprovalInboxProjection(
+                asOfDate: pageData.asOfDate,
+                statusFilter: pageData.statusFilter,
+                total: max(pageData.total, combined.count),
+                limit: limit,
+                offset: 0,
+                items: combined
+            )
+            leaveInboxPage = max(1, (combined.count + limit - 1) / limit)
+        }
+    }
+
     public func decideLeaveRequest(
         request: LeaveRequestProjection,
         decision: String,
@@ -3840,6 +4087,45 @@ public final class MiniBiViewModel: ObservableObject {
         }
     }
 
+    public func loadMoreMyExplanations() async {
+        guard let currentOverview = myExplanationsOverview,
+              !isLoadingMyExplanations,
+              !isLoadingMoreMyExplanations,
+              currentOverview.items.count < currentOverview.pagination.totalRows else {
+            return
+        }
+        let nextOffset = currentOverview.items.count
+        let limit = Self.leaveInboxPageSize
+        let targetDate = explanationSelectedDate
+
+        isLoadingMoreMyExplanations = true
+        let result = await attendanceExplanationService.fetchMyExplanationsOverview(
+            businessDate: targetDate,
+            limit: limit,
+            offset: nextOffset
+        )
+        isLoadingMoreMyExplanations = false
+
+        if case .success(let pageData, _) = result {
+            let existingIds = Set(currentOverview.items.map { $0.explanationId })
+            let appended = pageData.items.filter { !existingIds.contains($0.explanationId) }
+            let combined = currentOverview.items + appended
+            myExplanationsOverview = AttendanceMyExplanationsOverviewProjection(
+                viewer: pageData.viewer,
+                routing: pageData.routing,
+                todayLocal: pageData.todayLocal,
+                selectedDate: pageData.selectedDate,
+                dayEvaluation: pageData.dayEvaluation,
+                pagination: AttendanceExplanationPaginationProjection(
+                    limit: limit,
+                    offset: 0,
+                    totalRows: max(pageData.pagination.totalRows, combined.count)
+                ),
+                items: combined
+            )
+        }
+    }
+
     public func submitAttendanceExplanation(
         businessDate: String? = nil,
         slotCode: String,
@@ -3960,6 +4246,43 @@ public final class MiniBiViewModel: ObservableObject {
         }
     }
 
+    public func loadMoreExplanationApprovalInbox() async {
+        guard let currentInbox = explanationApprovalInbox,
+              !isLoadingExplanationInbox,
+              !isLoadingMoreExplanationInbox,
+              currentInbox.items.count < currentInbox.pagination.totalRows else {
+            return
+        }
+        let nextOffset = currentInbox.items.count
+        let limit = Self.leaveInboxPageSize
+        let effectiveFilter = explanationInboxStatusFilter
+
+        isLoadingMoreExplanationInbox = true
+        let result = await attendanceExplanationService.fetchApprovalInbox(
+            statusFilter: effectiveFilter,
+            limit: limit,
+            offset: nextOffset
+        )
+        isLoadingMoreExplanationInbox = false
+
+        if case .success(let pageData, _) = result {
+            let existingIds = Set(currentInbox.items.map { $0.explanationId })
+            let appended = pageData.items.filter { !existingIds.contains($0.explanationId) }
+            let combined = currentInbox.items + appended
+            explanationApprovalInbox = AttendanceExplanationApprovalInboxProjection(
+                viewer: pageData.viewer,
+                pagination: AttendanceExplanationApprovalInboxPaginationProjection(
+                    limit: limit,
+                    offset: 0,
+                    totalRows: max(pageData.pagination.totalRows, combined.count),
+                    pendingCount: pageData.pagination.pendingCount
+                ),
+                items: combined
+            )
+            explanationInboxPage = max(1, (combined.count + limit - 1) / limit)
+        }
+    }
+
     public func decideAttendanceExplanation(
         item: AttendanceExplanationItemProjection,
         decision: String,
@@ -4035,7 +4358,10 @@ public final class MiniBiViewModel: ObservableObject {
             await self.loadWorkReportObligations()
             guard !Task.isCancelled, self.isSessionValid(token) else { return }
 
-            async let reviewsTask = self.workReportsService.fetchPendingReviews()
+            async let reviewsTask = self.workReportsService.fetchPendingReviews(
+                page: 1,
+                pageSize: Self.leaveInboxPageSize
+            )
             async let templatesTask = self.workReportsService.fetchSelectableTemplates()
             async let analyticsTask = self.workReportsService.fetchAnalyticsSnapshot()
 
@@ -4044,9 +4370,50 @@ public final class MiniBiViewModel: ObservableObject {
             let anaRes = await analyticsTask
             guard !Task.isCancelled, self.isSessionValid(token) else { return }
 
-            if case .success(let revs, _) = revRes { self.workReportReviews = revs }
+            if case .success(let revs, _) = revRes {
+                self.workReportReviews = revs
+                self.workReportReviewsPage = 1
+                self.workReportReviewsHasMore = revs.count >= Self.leaveInboxPageSize
+            }
             if case .success(let tpls, _) = tplRes { self.workReportTemplates = tpls }
             if case .success(let ana, _) = anaRes { self.workReportAnalytics = ana }
+        }
+    }
+
+    public func selectWorkReportHistoryDate(_ dateIso: String) {
+        let clean = dateIso.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard LeaveContract.isValidIsoDate(clean) else { return }
+        workReportHistorySelectedDate = clean
+        workReportHistoryFilterByDate = true
+    }
+
+    public func setWorkReportHistoryFilterMode(byDate: Bool) {
+        workReportHistoryFilterByDate = byDate
+    }
+
+    public func loadMoreWorkReportReviews() async {
+        guard let token = captureSessionToken(),
+              !isLoadingWorkReports,
+              !isLoadingMoreWorkReportReviews,
+              workReportReviewsHasMore else {
+            return
+        }
+        let nextPage = workReportReviewsPage + 1
+        isLoadingMoreWorkReportReviews = true
+        defer {
+            isLoadingMoreWorkReportReviews = false
+        }
+        let revRes = await workReportsService.fetchPendingReviews(
+            page: nextPage,
+            pageSize: Self.leaveInboxPageSize
+        )
+        guard !Task.isCancelled, isSessionValid(token) else { return }
+        if case .success(let newItems, _) = revRes {
+            let existingIds = Set(workReportReviews.map { $0.id })
+            let appended = newItems.filter { !existingIds.contains($0.id) }
+            workReportReviews.append(contentsOf: appended)
+            workReportReviewsPage = nextPage
+            workReportReviewsHasMore = newItems.count >= Self.leaveInboxPageSize
         }
     }
 

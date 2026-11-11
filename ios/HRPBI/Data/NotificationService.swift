@@ -404,7 +404,7 @@ public final class MiniBiRepository {
         manager: String = "",
         recruiter: String = "",
         page: Int = 1,
-        pageSize: Int = 30
+        pageSize: Int = 15
     ) async -> MiniBiApiResult<(items: [WorkerItem], total: Int, totalPages: Int)> {
         let normalizedScope = scope.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard MiniBiUser.canonicalWorkerDirectoryScopes.contains(normalizedScope) else {
@@ -415,10 +415,14 @@ public final class MiniBiRepository {
             )
         }
 
+        let safePage = max(page, 1)
         var queryItems: [URLQueryItem] = [
             URLQueryItem(name: "scope", value: normalizedScope),
             URLQueryItem(name: "page_size", value: String(min(max(pageSize, 1), 100)))
         ]
+        if safePage > 1 {
+            queryItems.append(URLQueryItem(name: "page", value: String(safePage)))
+        }
         let cleanSearch = search.trimmingCharacters(in: .whitespacesAndNewlines)
         if !cleanSearch.isEmpty {
             queryItems.append(URLQueryItem(name: "search", value: cleanSearch))

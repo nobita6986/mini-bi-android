@@ -100,6 +100,8 @@ public struct AttendanceScreen: View {
     @State private var selectedPhotoItem: PhotosPickerItem?
     @State private var exportedReportUrl: URL?
     @State private var selectedPreviewOutboxItem: AttendanceOutboxItem?
+    @State private var isShowingTechnicalInfoSheet: Bool = false
+    @State private var visibleMyLeaveRequestsCount: Int = 10
     @State private var liveClockTick: Int64 = 0
     @State private var lastAutoTimeSyncAttemptSec: TimeInterval = 0
     @Namespace private var attendanceTabNamespace
@@ -262,6 +264,10 @@ public struct AttendanceScreen: View {
             )
             .hrpSheetPresentation(detents: [.medium, .large])
         }
+        .sheet(isPresented: $isShowingTechnicalInfoSheet) {
+            attendanceTechnicalInfoSheet(theme: theme)
+                .hrpSheetPresentation(detents: [.medium])
+        }
     }
 
     // MARK: - Top Tab Bar (`Chấm công` | `Giải trình chấm công` | `Xin nghỉ phép` | `Xét duyệt giải trình` | `Duyệt nghỉ`)
@@ -348,155 +354,165 @@ public struct AttendanceScreen: View {
         .buttonStyle(.plain)
     }
 
-    // MARK: - Tab 1: Check-In Content (100% Preserved)
+    // MARK: - Tab 1: Check-In Content (Hero Clock Card + Pending Outbox + Date Navigator Timeline)
+
+    private static let heroClockTimeFormatter: DateFormatter = {
+        let df = DateFormatter()
+        df.calendar = Calendar(identifier: .gregorian)
+        df.locale = Locale(identifier: "en_US_POSIX")
+        df.timeZone = TimeZone(identifier: "Asia/Ho_Chi_Minh") ?? .current
+        df.dateFormat = "HH:mm:ss"
+        return df
+    }()
+
+    private static let heroClockDateFormatter: DateFormatter = {
+        let df = DateFormatter()
+        df.calendar = Calendar(identifier: .gregorian)
+        df.locale = Locale(identifier: "vi_VN")
+        df.timeZone = TimeZone(identifier: "Asia/Ho_Chi_Minh") ?? .current
+        df.dateFormat = "EEEE, dd/MM/yyyy"
+        return df
+    }()
+
+    private func formatHeroLiveClock(epochMs: Int64) -> (time: String, date: String) {
+        let d = Date(timeIntervalSince1970: Double(epochMs) / 1000.0)
+        let rawDate = Self.heroClockDateFormatter.string(from: d)
+        let capDate = rawDate.prefix(1).uppercased() + rawDate.dropFirst()
+        return (Self.heroClockTimeFormatter.string(from: d), capDate)
+    }
 
     private func checkInTabContent(theme: MiniBiThemePalette) -> some View {
         let eval = viewModel.attendanceTimeEvaluation
+        let _ = liveClockTick
+        let resolvedNow = viewModel.timeAnchorManager.resolveCaptureTime()
+        let heroClock = formatHeroLiveClock(epochMs: resolvedNow.capturedEpochMs)
+        let pendingOutboxItems = viewModel.attendanceOutboxItems.filter {
+            $0.status != AttendanceContract.statusSynced
+        }
+        let selectedDateSyncedItems = viewModel.attendanceOutboxItems.filter {
+            $0.status == AttendanceContract.statusSynced &&
+                AttendanceOutboxService.vietnamDateIso(for: $0) == viewModel.selectedAttendanceHistoryDate
+        }
 
         return ScrollView {
             VStack(alignment: .leading, spacing: 14) {
-                // 1. Server Time Anchor & Today Count Card
-                VStack(alignment: .leading, spacing: 10) {
+                // 1. Hero Check-in Card (Unified Live Clock + Status Pills + Primary CTA)
+                VStack(spacing: 14) {
+                    // Top Row: Date Label + Technical Info Popover/Sheet Button
                     HStack {
                         HStack(spacing: 6) {
-                            Image(systemName: eval.isTrusted ? "clock.badge.checkmark.fill" : "clock.badge.exclamationmark.fill")
-                                .foregroundColor(eval.isTrusted ? SemanticColors.successText : SemanticColors.warningText)
-                            Text(eval.isTrusted ? "Đã neo giờ chuẩn máy chủ" : "Đang dùng giờ thiết bị tạm thời")
-                                .font(.subheadline.weight(.bold))
-                                .foregroundColor(eval.isTrusted ? SemanticColors.successText : SemanticColors.warningText)
+                            Image(systemName: "calendar.badge.clock")
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundColor(theme.primary)
+                            Text(heroClock.date)
+                                .font(.caption.weight(.semibold))
+                                .foregroundColor(SemanticColors.textSecondary)
                         }
                         Spacer()
+                        Button {
+                            HapticsManager.selection()
+                            isShowingTechnicalInfoSheet = true
+                        } label: {
+                            Image(systemName: "info.circle")
+                                .font(.system(size: 16, weight: .semibold))
+                                .foregroundColor(SemanticColors.textSecondary)
+                                .frame(width: 44, height: 44)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Thông số kỹ thuật giờ và GPS")
+                    }
+                    .padding(.bottom, -8)
+
+                    // Center Hero Clock (`36pt`, `.bold`, `.monospacedDigit()`)
+                    Text(heroClock.time)
+                        .font(.system(size: 36, weight: .bold, design: .rounded))
+                        .monospacedDigit()
+                        .contentTransition(.numericText())
+                        .animation(.default, value: liveClockTick)
+                        .foregroundColor(SemanticColors.textPrimary)
+
+                    // Compact Status Pills Row (Time Anchor Pill + GPS Pill)
+                    HStack(spacing: 8) {
                         Button {
                             HapticsManager.lightImpact()
                             Task { await viewModel.syncAttendanceTimeAnchor() }
                         } label: {
-                            HStack(spacing: 4) {
-                                Image(systemName: "arrow.triangle.2.circlepath")
-                                Text("Đồng bộ giờ")
+                            HStack(spacing: 5) {
+                                Circle()
+                                    .fill(eval.isTrusted ? SemanticColors.successText : SemanticColors.warningText)
+                                    .frame(width: 7, height: 7)
+                                Text(eval.isTrusted ? "Giờ chuẩn" : "Giờ tạm")
+                                    .font(.caption2.weight(.bold))
+                                    .foregroundColor(eval.isTrusted ? SemanticColors.successText : SemanticColors.warningText)
                             }
-                            .font(.caption.weight(.bold))
                             .padding(.horizontal, 10)
                             .padding(.vertical, 6)
-                            .frame(minHeight: 34)
-                            .background(theme.primaryLight)
-                            .foregroundColor(theme.primary)
-                            .clipShape(RoundedRectangle(cornerRadius: HrpDesignTokens.radiusXS, style: .continuous))
-                            .contentShape(Rectangle())
+                            .background(eval.isTrusted ? SemanticColors.successBg : SemanticColors.warningBg)
+                            .clipShape(Capsule())
                         }
-                        .buttonStyle(HrpPressableButtonStyle())
-                    }
+                        .buttonStyle(.plain)
 
-                    Text(eval.detailMessageVi)
-                        .font(.caption)
-                        .monospacedDigit()
-                        .contentTransition(.numericText())
-                        .foregroundColor(SemanticColors.textSecondary)
-
-                    HStack {
-                        VStack(alignment: .leading, spacing: 2) {
-                            let _ = liveClockTick
-                            Text("Giờ chuẩn hiện tại")
-                                .font(.caption2)
-                                .foregroundColor(SemanticColors.textMuted)
-                            let resolved = viewModel.timeAnchorManager.resolveCaptureTime()
-                            Text(AttendanceTimeAnchorManager.formatDisplayDateTimeVi(isoString: resolved.capturedAtIso, fallbackEpochMs: resolved.capturedEpochMs))
-                                .font(.subheadline.weight(.bold))
-                                .monospacedDigit()
-                                .contentTransition(.numericText())
-                                .animation(.default, value: liveClockTick)
-                                .foregroundColor(SemanticColors.textPrimary)
-                        }
-                        Spacer()
-                        VStack(alignment: .trailing, spacing: 2) {
-                            Text("Đã chấm công hôm nay")
-                                .font(.caption2)
-                                .foregroundColor(SemanticColors.textMuted)
-                            Text("\(viewModel.todayServerAttendanceCount) lượt")
-                                .font(.headline.weight(.heavy))
-                                .monospacedDigit()
-                                .contentTransition(.numericText())
-                                .animation(.default, value: viewModel.todayServerAttendanceCount)
-                                .foregroundColor(theme.primary)
-                        }
-                    }
-                    .padding(10)
-                    .hrpMutedTile(cornerRadius: HrpDesignTokens.radiusMD)
-                }
-                .padding(14)
-                .hrpCardSurface(cornerRadius: HrpDesignTokens.radiusCard)
-
-                // 2. GPS & Photo Check-in Card
-                VStack(alignment: .leading, spacing: 12) {
-                    Text("Tạo lượt chấm công mới")
-                        .font(.headline)
-                        .foregroundColor(SemanticColors.textPrimary)
-
-                    // GPS Coordinate Row
-                    HStack {
-                        Image(systemName: "location.fill")
-                            .foregroundColor(theme.primary)
                         if let loc = locationManager.currentLocation {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(String(format: "Toạ độ: %.6f, %.6f", loc.coordinate.latitude, loc.coordinate.longitude))
-                                    .font(.caption.weight(.semibold))
-                                    .monospacedDigit()
-                                    .foregroundColor(SemanticColors.textPrimary)
-                                Text(String(format: "Sai số GPS: ±%.1f m", max(0, loc.horizontalAccuracy)))
-                                    .font(.caption2)
-                                    .monospacedDigit()
-                                    .foregroundColor(SemanticColors.textMuted)
+                            Button {
+                                HapticsManager.selection()
+                                locationManager.requestLocationUpdate()
+                            } label: {
+                                HStack(spacing: 4) {
+                                    Image(systemName: "location.fill")
+                                        .font(.system(size: 10, weight: .bold))
+                                    Text(String(format: "GPS ±%.0fm", max(1, loc.horizontalAccuracy)))
+                                        .font(.caption2.weight(.semibold))
+                                        .monospacedDigit()
+                                }
+                                .foregroundColor(theme.primary)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 6)
+                                .background(theme.primaryLight)
+                                .clipShape(Capsule())
                             }
-                        } else {
-                            Text(locationManager.locationErrorMessage ?? "Đang định vị GPS...")
-                                .font(.caption)
-                                .foregroundColor(locationManager.isPermissionDenied ? SemanticColors.dangerText : SemanticColors.textSecondary)
-                        }
-                        Spacer()
-                        if locationManager.isPermissionDenied {
-                            Button("Mở Cài đặt") {
+                            .buttonStyle(.plain)
+                        } else if locationManager.isPermissionDenied {
+                            Button {
                                 if let url = URL(string: UIApplication.openSettingsURLString) {
                                     UIApplication.shared.open(url)
                                 }
+                            } label: {
+                                HStack(spacing: 4) {
+                                    Image(systemName: "location.slash.fill")
+                                        .font(.system(size: 10, weight: .bold))
+                                    Text("Cấp quyền GPS")
+                                        .font(.caption2.weight(.bold))
+                                }
+                                .foregroundColor(SemanticColors.dangerText)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 6)
+                                .background(SemanticColors.dangerBg)
+                                .clipShape(Capsule())
                             }
-                            .font(.caption.weight(.bold))
-                            .foregroundColor(SemanticColors.dangerText)
-                            .frame(minHeight: 36)
-                            .contentShape(Rectangle())
+                            .buttonStyle(.plain)
                         } else {
-                            Button("Lấy lại GPS") {
+                            Button {
                                 HapticsManager.selection()
                                 locationManager.requestLocationUpdate()
+                            } label: {
+                                HStack(spacing: 4) {
+                                    ProgressView()
+                                        .scaleEffect(0.65)
+                                    Text("Đang lấy GPS…")
+                                        .font(.caption2.weight(.medium))
+                                }
+                                .foregroundColor(SemanticColors.textSecondary)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 6)
+                                .background(SemanticColors.surfaceMuted)
+                                .clipShape(Capsule())
                             }
-                            .font(.caption.weight(.semibold))
-                            .foregroundColor(theme.primary)
-                            .frame(minHeight: 36)
-                            .contentShape(Rectangle())
+                            .buttonStyle(.plain)
                         }
                     }
-                    .padding(10)
-                    .hrpMutedTile(cornerRadius: HrpDesignTokens.radiusMD)
 
-                    // Photo Capture Row (Live Camera Only — matches Android 100%, freezes timestamp immediately upon capture)
-                    Button {
-                        HapticsManager.lightImpact()
-                        locationManager.requestLocationUpdate()
-                        if !viewModel.timeAnchorManager.evaluateAnchor().isTrusted {
-                            Task { _ = await viewModel.syncAttendanceTimeAnchorOnly(force: false, isAutomatic: true) }
-                        }
-                        isShowingCamera = true
-                    } label: {
-                        HStack(spacing: 6) {
-                            Image(systemName: "camera.fill")
-                            Text(capturedPhotoData == nil ? "Chụp ảnh chấm công" : "Chụp lại ảnh")
-                        }
-                        .font(.caption.weight(.bold))
-                        .frame(maxWidth: .infinity, minHeight: 44)
-                        .background(theme.primary)
-                        .foregroundColor(.white)
-                        .clipShape(RoundedRectangle(cornerRadius: HrpDesignTokens.radiusMD, style: .continuous))
-                    }
-                    .buttonStyle(HrpPressableButtonStyle())
-
+                    // Captured Photo Preview & Note (Progressive Disclosure when photo is taken)
                     if let photoData = capturedPhotoData, let uiImg = UIImage(data: photoData) {
                         VStack(alignment: .leading, spacing: 10) {
                             HStack(spacing: 12) {
@@ -508,10 +524,10 @@ public struct AttendanceScreen: View {
                                         Image(uiImage: uiImg)
                                             .resizable()
                                             .scaledToFill()
-                                            .frame(width: 80, height: 80)
+                                            .frame(width: 72, height: 72)
                                             .clipShape(RoundedRectangle(cornerRadius: HrpDesignTokens.radiusMD, style: .continuous))
                                         Image(systemName: "magnifyingglass.circle.fill")
-                                            .font(.system(size: 18))
+                                            .font(.system(size: 17))
                                             .foregroundColor(.white)
                                             .shadow(radius: 2)
                                             .padding(4)
@@ -519,22 +535,25 @@ public struct AttendanceScreen: View {
                                 }
                                 .buttonStyle(.plain)
 
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text("Đã khoá mốc thời gian chụp")
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text("Đã khoá mốc giờ chụp")
                                         .font(.caption.weight(.bold))
                                         .foregroundColor(SemanticColors.successText)
                                     if let frozen = frozenCaptureTimestamp {
                                         Text(AttendanceTimeAnchorManager.formatDisplayDateTimeVi(isoString: frozen.capturedAtIso, fallbackEpochMs: frozen.capturedEpochMs))
-                                            .font(.caption)
+                                            .font(.caption.weight(.semibold))
                                             .monospacedDigit()
                                             .foregroundColor(SemanticColors.textPrimary)
-                                        Text(frozen.statusBadgeVi)
-                                            .font(.caption2)
-                                            .foregroundColor(SemanticColors.textMuted)
                                     }
-                                    Text("Chạm vào ảnh để phóng to")
-                                        .font(.system(size: 10, weight: .medium))
-                                        .foregroundColor(theme.primary)
+                                    Button {
+                                        HapticsManager.lightImpact()
+                                        isShowingCamera = true
+                                    } label: {
+                                        Label("Chụp lại ảnh", systemImage: "camera.rotate")
+                                            .font(.caption2.weight(.bold))
+                                            .foregroundColor(theme.primary)
+                                    }
+                                    .buttonStyle(.plain)
                                 }
                                 Spacer()
                                 Button {
@@ -546,206 +565,189 @@ public struct AttendanceScreen: View {
                                     Image(systemName: "xmark.circle.fill")
                                         .font(.system(size: 20))
                                         .foregroundColor(SemanticColors.dangerText)
-                                        .frame(width: 44, height: 44)
+                                        .frame(width: 40, height: 40)
                                         .contentShape(Rectangle())
                                 }
+                                .buttonStyle(.plain)
                             }
 
                             beautyPresetSelectorRow(theme: theme)
+
+                            TextField("Ghi chú ca làm, địa điểm (tuỳ chọn)…", text: $noteInput)
+                                .font(.caption)
+                                .foregroundColor(SemanticColors.textPrimary)
+                                .padding(10)
+                                .background(Color.white)
+                                .clipShape(RoundedRectangle(cornerRadius: HrpDesignTokens.radiusXS, style: .continuous))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: HrpDesignTokens.radiusXS, style: .continuous)
+                                        .stroke(SemanticColors.borderSubtle, lineWidth: 1)
+                                )
                         }
                         .padding(10)
-                        .background(SemanticColors.successBg.opacity(0.45))
+                        .background(SemanticColors.successBg.opacity(0.42))
                         .clipShape(RoundedRectangle(cornerRadius: HrpDesignTokens.radiusMD, style: .continuous))
-                    }
 
-                    TextField("Ghi chú chấm công (ca làm, địa điểm, dự án...)", text: $noteInput)
-                        .font(.caption)
-                        .foregroundColor(SemanticColors.textPrimary)
-                        .padding(10)
-                        .background(SemanticColors.surfaceMuted)
-                        .clipShape(RoundedRectangle(cornerRadius: HrpDesignTokens.radiusXS, style: .continuous))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: HrpDesignTokens.radiusXS, style: .continuous)
-                                .stroke(SemanticColors.borderSubtle, lineWidth: 1)
-                        )
-
-                    let canSubmitAttendance = capturedPhotoData != nil && locationManager.currentLocation != nil && !viewModel.isSubmittingAttendance
-
-                    Button {
-                        guard let photoData = capturedPhotoData else {
-                            HapticsManager.error()
-                            viewModel.showBanner("Vui lòng chụp ảnh xác thực trước khi chấm công.", isError: true)
-                            return
-                        }
-                        guard let loc = locationManager.currentLocation else {
-                            HapticsManager.error()
-                            locationManager.requestLocationUpdate()
-                            viewModel.showBanner("Đang lấy tọa độ GPS. Vui lòng bật Vị trí và đợi GPS định vị xong rồi bấm chấm công.", isError: true)
-                            return
-                        }
-                        HapticsManager.success()
-                        let lat = loc.coordinate.latitude
-                        let lng = loc.coordinate.longitude
-                        let acc = loc.horizontalAccuracy >= 0 ? loc.horizontalAccuracy : 15.0
-                        let ts = frozenCaptureTimestamp ?? viewModel.timeAnchorManager.resolveCaptureTime()
-
-                        Task {
-                            await viewModel.submitAttendanceCheckIn(
-                                lat: lat,
-                                lng: lng,
-                                accuracyM: acc,
-                                photoData: photoData,
-                                note: noteInput,
-                                frozenTimestamp: ts
-                            )
-                            rawCapturedPhotoData = nil
-                            capturedPhotoData = nil
-                            frozenCaptureTimestamp = nil
-                            noteInput = ""
-                        }
-                    } label: {
-                        HStack {
-                            Spacer()
-                            if viewModel.isSubmittingAttendance {
-                                ProgressView().tint(.white).padding(.trailing, 6)
+                        let canSubmitAttendance = locationManager.currentLocation != nil && !viewModel.isSubmittingAttendance
+                        Button {
+                            guard let loc = locationManager.currentLocation else {
+                                HapticsManager.error()
+                                locationManager.requestLocationUpdate()
+                                viewModel.showBanner("Đang lấy tọa độ GPS. Vui lòng bật Vị trí và đợi GPS định vị xong rồi bấm chấm công.", isError: true)
+                                return
                             }
-                            Text(viewModel.isSubmittingAttendance ? "Đang xử lý chấm công..." : "Ghi nhận chấm công")
-                                .font(.subheadline.weight(.bold))
-                                .foregroundColor(.white)
-                            Spacer()
+                            HapticsManager.success()
+                            let lat = loc.coordinate.latitude
+                            let lng = loc.coordinate.longitude
+                            let acc = loc.horizontalAccuracy >= 0 ? loc.horizontalAccuracy : 15.0
+                            let ts = frozenCaptureTimestamp ?? viewModel.timeAnchorManager.resolveCaptureTime()
+
+                            Task {
+                                await viewModel.submitAttendanceCheckIn(
+                                    lat: lat,
+                                    lng: lng,
+                                    accuracyM: acc,
+                                    photoData: photoData,
+                                    note: noteInput,
+                                    frozenTimestamp: ts
+                                )
+                                rawCapturedPhotoData = nil
+                                capturedPhotoData = nil
+                                frozenCaptureTimestamp = nil
+                                noteInput = ""
+                            }
+                        } label: {
+                            HStack(spacing: 8) {
+                                if viewModel.isSubmittingAttendance {
+                                    ProgressView().tint(.white)
+                                } else {
+                                    Image(systemName: "checkmark.circle.fill")
+                                        .font(.system(size: 16, weight: .bold))
+                                }
+                                Text(viewModel.isSubmittingAttendance ? "Đang xử lý chấm công..." : "Ghi nhận chấm công")
+                                    .font(.subheadline.weight(.bold))
+                            }
+                            .foregroundColor(.white)
+                            .frame(maxWidth: .infinity, minHeight: 52)
+                            .background(!canSubmitAttendance ? Color.gray.opacity(0.65) : SemanticColors.successText)
+                            .clipShape(RoundedRectangle(cornerRadius: HrpDesignTokens.radiusMD, style: .continuous))
                         }
-                        .frame(minHeight: 48)
-                        .background(!canSubmitAttendance ? Color.gray.opacity(0.65) : SemanticColors.successText)
-                        .clipShape(RoundedRectangle(cornerRadius: HrpDesignTokens.radiusMD, style: .continuous))
+                        .buttonStyle(HrpPressableButtonStyle())
+                        .disabled(!canSubmitAttendance)
+                    } else {
+                        // Primary Hero Action Button ("Chấm công ngay" + "Hôm nay: X lượt" badge)
+                        Button {
+                            HapticsManager.lightImpact()
+                            locationManager.requestLocationUpdate()
+                            if !viewModel.timeAnchorManager.evaluateAnchor().isTrusted {
+                                Task { _ = await viewModel.syncAttendanceTimeAnchorOnly(force: false, isAutomatic: true) }
+                            }
+                            isShowingCamera = true
+                        } label: {
+                            HStack(spacing: 10) {
+                                Image(systemName: "camera.fill")
+                                    .font(.system(size: 16, weight: .bold))
+                                Text("Chấm công ngay")
+                                    .font(.subheadline.weight(.bold))
+                                Spacer()
+                                Text("Hôm nay: \(viewModel.todayServerAttendanceCount) lượt")
+                                    .font(.caption.weight(.bold))
+                                    .monospacedDigit()
+                                    .contentTransition(.numericText())
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 5)
+                                    .background(Color.white.opacity(0.22))
+                                    .clipShape(Capsule())
+                            }
+                            .padding(.horizontal, 16)
+                            .foregroundColor(.white)
+                            .frame(maxWidth: .infinity, minHeight: 52)
+                            .background(theme.primary)
+                            .clipShape(RoundedRectangle(cornerRadius: HrpDesignTokens.radiusMD, style: .continuous))
+                        }
+                        .buttonStyle(HrpPressableButtonStyle())
                     }
-                    .buttonStyle(HrpPressableButtonStyle())
-                    .disabled(!canSubmitAttendance)
                 }
-                .padding(14)
+                .padding(16)
                 .hrpCardSurface(cornerRadius: HrpDesignTokens.radiusCard)
 
-                // 3. Offline Outbox & Synced History + Export Report
-                VStack(alignment: .leading, spacing: 10) {
-                    HStack {
-                        Text("Hàng đợi & Lịch sử chấm công (\(viewModel.attendanceOutboxItems.count))")
-                            .font(.headline)
-                            .monospacedDigit()
-                            .contentTransition(.numericText())
-                            .foregroundColor(SemanticColors.textPrimary)
-                        Spacer()
-
-                        Button {
-                            HapticsManager.lightImpact()
-                            Task { await viewModel.flushAttendanceOutboxNow() }
-                        } label: {
-                            HStack(spacing: 4) {
-                                if viewModel.isSyncingAttendance {
-                                    ProgressView().scaleEffect(0.7)
-                                } else {
-                                    Image(systemName: "arrow.clockwise")
-                                }
-                                Text("Gửi bù")
+                // 2. Dedicated Offline Outbox Section (Always visible at top if any record is pending/failed)
+                if !pendingOutboxItems.isEmpty {
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack {
+                            HStack(spacing: 6) {
+                                Image(systemName: "icloud.and.arrow.up.fill")
+                                    .foregroundColor(SemanticColors.warningText)
+                                Text("Hàng đợi chờ đồng bộ (\(pendingOutboxItems.count))")
+                                    .font(.subheadline.weight(.bold))
+                                    .monospacedDigit()
+                                    .foregroundColor(SemanticColors.textPrimary)
                             }
-                            .font(.caption.weight(.bold))
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 6)
-                            .frame(minHeight: 34)
-                            .background(theme.primaryLight)
-                            .foregroundColor(theme.primary)
-                            .clipShape(RoundedRectangle(cornerRadius: HrpDesignTokens.radiusXS, style: .continuous))
-                        }
-                        .buttonStyle(HrpPressableButtonStyle())
-
-                        Button {
-                            HapticsManager.lightImpact()
-                            Task {
-                                let userKey = viewModel.currentUser?.username ?? "guest"
-                                let res = await viewModel.attendanceOutboxService.exportAttendanceReport(userKey: userKey)
-                                switch res {
-                                case .success(let url, _):
-                                    exportedReportUrl = url
-                                case .failure(let msg, _, _, _):
-                                    viewModel.showBanner(msg, isError: true)
-                                }
-                            }
-                        } label: {
-                            HStack(spacing: 4) {
-                                Image(systemName: "square.and.arrow.up")
-                                Text("Xuất BC")
-                            }
-                            .font(.caption.weight(.bold))
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 6)
-                            .frame(minHeight: 34)
-                            .background(SemanticColors.surfaceMuted)
-                            .foregroundColor(SemanticColors.textPrimary)
-                            .clipShape(RoundedRectangle(cornerRadius: HrpDesignTokens.radiusXS, style: .continuous))
-                        }
-                        .buttonStyle(HrpPressableButtonStyle())
-                    }
-
-                    if viewModel.attendanceOutboxItems.isEmpty {
-                        Text("Chưa có bản ghi chấm công nào trên thiết bị.")
-                            .font(.caption)
-                            .foregroundColor(SemanticColors.textSecondary)
-                            .padding(.vertical, 12)
-                    } else {
-                        LazyVStack(spacing: 8) {
-                            ForEach(viewModel.attendanceOutboxItems) { item in
-                                HStack(alignment: .top, spacing: 12) {
-                                    Button {
-                                        HapticsManager.selection()
-                                        selectedPreviewOutboxItem = item
-                                    } label: {
-                                        AttendanceOutboxPhotoThumbnailView(
-                                            item: item,
-                                            outboxService: viewModel.attendanceOutboxService
-                                        )
+                            Spacer()
+                            Button {
+                                HapticsManager.lightImpact()
+                                Task { await viewModel.flushAttendanceOutboxNow() }
+                            } label: {
+                                HStack(spacing: 4) {
+                                    if viewModel.isSyncingAttendance {
+                                        ProgressView().scaleEffect(0.7)
+                                    } else {
+                                        Image(systemName: "arrow.clockwise")
                                     }
-                                    .buttonStyle(.plain)
+                                    Text("Gửi bù")
+                                }
+                                .font(.caption.weight(.bold))
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 6)
+                                .frame(minHeight: 34)
+                                .background(theme.primaryLight)
+                                .foregroundColor(theme.primary)
+                                .clipShape(RoundedRectangle(cornerRadius: HrpDesignTokens.radiusXS, style: .continuous))
+                            }
+                            .buttonStyle(HrpPressableButtonStyle())
+                        }
 
-                                    VStack(alignment: .leading, spacing: 5) {
-                                        HStack {
-                                            Text(AttendanceTimeAnchorManager.formatDisplayDateTimeVi(isoString: item.clientCapturedAt, fallbackEpochMs: item.createdAtEpochMs))
-                                                .font(.caption.weight(.bold))
-                                                .monospacedDigit()
-                                                .foregroundColor(SemanticColors.textPrimary)
-                                            Spacer()
-                                            Text(AttendanceContract.statusDisplayLabel(item.status))
-                                                .font(.caption2.weight(.bold))
-                                                .padding(.horizontal, 8)
-                                                .padding(.vertical, 3)
-                                                .background(outboxBgColor(item.status))
-                                                .foregroundColor(outboxTextColor(item.status))
-                                                .clipShape(Capsule())
-                                        }
-
-                                        Text(String(format: "GPS: %.5f, %.5f · Nguồn giờ: %@", item.lat, item.lng, AttendanceTimeContract.timeSourceDisplayLabel(item.timeSource)))
-                                            .font(.caption2)
+                        LazyVStack(spacing: 8) {
+                            ForEach(pendingOutboxItems) { item in
+                                HStack(spacing: 10) {
+                                    AttendanceOutboxPhotoThumbnailView(
+                                        item: item,
+                                        outboxService: viewModel.attendanceOutboxService,
+                                        size: 44
+                                    )
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        Text(AttendanceTimeAnchorManager.formatDisplayDateTimeVi(isoString: item.clientCapturedAt, fallbackEpochMs: item.createdAtEpochMs))
+                                            .font(.caption.weight(.bold))
                                             .monospacedDigit()
-                                            .foregroundColor(SemanticColors.textSecondary)
-
-                                        if !item.note.isEmpty {
-                                            Text("Ghi chú: \(item.note)")
-                                                .font(.caption2)
-                                                .foregroundColor(SemanticColors.textMuted)
-                                        }
-
+                                            .foregroundColor(SemanticColors.textPrimary)
                                         if let err = item.lastErrorMessage, !err.isEmpty {
-                                            HStack {
-                                                Text(err)
-                                                    .font(.caption2)
-                                                    .foregroundColor(SemanticColors.dangerText)
-                                                Spacer()
-                                                if item.status == AttendanceContract.statusFailedPermanent {
-                                                    Button("Xoá") {
-                                                        HapticsManager.warning()
-                                                        viewModel.attendanceOutboxService.removeRejectedItem(localId: item.localId)
-                                                    }
-                                                    .font(.caption2.weight(.bold))
-                                                    .foregroundColor(SemanticColors.dangerText)
-                                                }
+                                            Text(err)
+                                                .font(.caption2)
+                                                .foregroundColor(SemanticColors.dangerText)
+                                                .lineLimit(2)
+                                        } else if !item.note.isEmpty {
+                                            Text(item.note)
+                                                .font(.caption2)
+                                                .foregroundColor(SemanticColors.textSecondary)
+                                                .lineLimit(1)
+                                        }
+                                    }
+                                    Spacer()
+                                    VStack(alignment: .trailing, spacing: 4) {
+                                        Text(AttendanceContract.statusDisplayLabel(item.status))
+                                            .font(.caption2.weight(.bold))
+                                            .padding(.horizontal, 8)
+                                            .padding(.vertical, 3)
+                                            .background(outboxBgColor(item.status))
+                                            .foregroundColor(outboxTextColor(item.status))
+                                            .clipShape(Capsule())
+                                        if item.status == AttendanceContract.statusFailedPermanent {
+                                            Button("Xoá") {
+                                                HapticsManager.warning()
+                                                viewModel.attendanceOutboxService.removeRejectedItem(localId: item.localId)
                                             }
+                                            .font(.caption2.weight(.bold))
+                                            .foregroundColor(SemanticColors.dangerText)
                                         }
                                     }
                                 }
@@ -759,15 +761,275 @@ public struct AttendanceScreen: View {
                             }
                         }
                     }
+                    .padding(14)
+                    .hrpCardSurface(cornerRadius: HrpDesignTokens.radiusCard)
                 }
-                .padding(14)
-                .hrpCardSurface(cornerRadius: HrpDesignTokens.radiusCard)
+
+                // 3. Date Navigator Bar + Clean Vertical Timeline History
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack {
+                        Text("Lịch sử chấm công")
+                            .font(.subheadline.weight(.bold))
+                            .foregroundColor(SemanticColors.textPrimary)
+                        Spacer()
+                        Button {
+                            HapticsManager.lightImpact()
+                            Task { _ = await viewModel.refreshAttendanceHistoryOnly(force: true) }
+                        } label: {
+                            HStack(spacing: 4) {
+                                Image(systemName: "arrow.clockwise")
+                                Text("Làm mới")
+                            }
+                            .font(.caption.weight(.semibold))
+                            .padding(.horizontal, 10)
+                            .frame(minHeight: 32)
+                            .background(theme.primaryLight)
+                            .foregroundColor(theme.primary)
+                            .clipShape(RoundedRectangle(cornerRadius: HrpDesignTokens.radiusXS, style: .continuous))
+                        }
+                        .buttonStyle(HrpPressableButtonStyle())
+
+                        Button {
+                            HapticsManager.lightImpact()
+                            Task {
+                                let userKey = viewModel.currentUser?.username ?? "guest"
+                                let res = await viewModel.attendanceOutboxService.exportAttendanceReport(
+                                    userKey: userKey,
+                                    startDate: viewModel.selectedAttendanceHistoryDate,
+                                    endDate: viewModel.selectedAttendanceHistoryDate
+                                )
+                                switch res {
+                                case .success(let url, _):
+                                    exportedReportUrl = url
+                                case .failure(let msg, _, _, _):
+                                    viewModel.showBanner(msg, isError: true)
+                                }
+                            }
+                        } label: {
+                            HStack(spacing: 4) {
+                                Image(systemName: "square.and.arrow.up")
+                                Text("Xuất BC")
+                            }
+                            .font(.caption.weight(.semibold))
+                            .padding(.horizontal, 10)
+                            .frame(minHeight: 32)
+                            .background(SemanticColors.surfaceMuted)
+                            .foregroundColor(SemanticColors.textPrimary)
+                            .clipShape(RoundedRectangle(cornerRadius: HrpDesignTokens.radiusXS, style: .continuous))
+                        }
+                        .buttonStyle(HrpPressableButtonStyle())
+                    }
+
+                    HrpDateNavigatorBar(
+                        selectedDateIso: viewModel.selectedAttendanceHistoryDate,
+                        todayDateIso: LeaveContract.todayVietnamIsoDate(),
+                        allowFutureDates: false,
+                        theme: theme,
+                        onDateSelected: { newDate in
+                            viewModel.selectAttendanceHistoryDate(newDate)
+                        }
+                    )
+
+                    if selectedDateSyncedItems.isEmpty {
+                        HStack(spacing: 8) {
+                            Image(systemName: "clock.badge.questionmark")
+                                .font(.system(size: 18))
+                                .foregroundColor(SemanticColors.textMuted)
+                            Text("Không có lượt chấm công nào trong ngày \(LeaveContract.formatIsoDateVi(viewModel.selectedAttendanceHistoryDate)).")
+                                .font(.caption)
+                                .foregroundColor(SemanticColors.textSecondary)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(14)
+                        .hrpCardSurface(cornerRadius: HrpDesignTokens.radiusCard)
+                    } else {
+                        VStack(spacing: 0) {
+                            ForEach(Array(selectedDateSyncedItems.enumerated()), id: \.element.id) { idx, item in
+                                let isLast = idx == selectedDateSyncedItems.count - 1
+                                HStack(alignment: .top, spacing: 12) {
+                                    // Left Column: HH:mm + vertical timeline connector
+                                    VStack(spacing: 4) {
+                                        Text(AttendanceOutboxService.formatVietnamTimeHHmm(for: item))
+                                            .font(.system(size: 15, weight: .bold, design: .rounded))
+                                            .monospacedDigit()
+                                            .foregroundColor(theme.primary)
+                                            .frame(width: 48, alignment: .leading)
+                                        if !isLast {
+                                            Rectangle()
+                                                .fill(theme.primary.opacity(0.22))
+                                                .frame(width: 2, height: 32)
+                                        }
+                                    }
+
+                                    // Middle Column: 44x44pt Squircle Thumbnail + Short Note
+                                    AttendanceOutboxPhotoThumbnailView(
+                                        item: item,
+                                        outboxService: viewModel.attendanceOutboxService,
+                                        size: 44
+                                    )
+
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        Text(item.note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Chấm công xác thực" : item.note)
+                                            .font(.subheadline.weight(.semibold))
+                                            .foregroundColor(SemanticColors.textPrimary)
+                                            .lineLimit(1)
+                                        Text("Chạm để xem ảnh & vị trí GPS")
+                                            .font(.caption2)
+                                            .foregroundColor(SemanticColors.textMuted)
+                                    }
+
+                                    Spacer(minLength: 4)
+
+                                    // Right Column: Compact Status Badge + Chevron
+                                    HStack(spacing: 6) {
+                                        Text(AttendanceContract.statusDisplayLabel(item.status))
+                                            .font(.caption2.weight(.bold))
+                                            .padding(.horizontal, 8)
+                                            .padding(.vertical, 3)
+                                            .background(outboxBgColor(item.status))
+                                            .foregroundColor(outboxTextColor(item.status))
+                                            .clipShape(Capsule())
+                                        Image(systemName: "chevron.right")
+                                            .font(.system(size: 11, weight: .semibold))
+                                            .foregroundColor(SemanticColors.textMuted)
+                                    }
+                                }
+                                .padding(.vertical, 10)
+                                .padding(.horizontal, 12)
+                                .contentShape(Rectangle())
+                                .onTapGesture {
+                                    HapticsManager.selection()
+                                    selectedPreviewOutboxItem = item
+                                }
+                                if !isLast {
+                                    Divider().padding(.leading, 64)
+                                }
+                            }
+                        }
+                        .padding(.vertical, 4)
+                        .hrpCardSurface(cornerRadius: HrpDesignTokens.radiusCard)
+
+                        if viewModel.attendanceHistoryHasMore {
+                            HrpLoadMoreButton(
+                                title: "Tải thêm lịch sử ngày này",
+                                loadedCount: selectedDateSyncedItems.count,
+                                totalCount: viewModel.attendanceHistoryTotalCount > selectedDateSyncedItems.count ? viewModel.attendanceHistoryTotalCount : nil,
+                                isLoading: viewModel.isLoadingMoreAttendanceHistory,
+                                theme: theme
+                            ) {
+                                Task { await viewModel.loadMoreAttendanceHistory() }
+                            }
+                        }
+                    }
+                }
             }
             .padding(14)
         }
         .refreshable {
             locationManager.requestLocationUpdate()
             await viewModel.syncAttendanceTimeAnchor()
+            _ = await viewModel.refreshAttendanceHistoryOnly(force: true)
+        }
+    }
+
+    @ViewBuilder
+    private func attendanceTechnicalInfoSheet(theme: MiniBiThemePalette) -> some View {
+        let eval = viewModel.attendanceTimeEvaluation
+        NavigationStack {
+            VStack(alignment: .leading, spacing: 14) {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 6) {
+                        Image(systemName: eval.isTrusted ? "clock.badge.checkmark.fill" : "clock.badge.exclamationmark.fill")
+                            .foregroundColor(eval.isTrusted ? SemanticColors.successText : SemanticColors.warningText)
+                        Text(eval.isTrusted ? "Đã neo giờ chuẩn máy chủ" : "Đang dùng giờ thiết bị tạm thời")
+                            .font(.subheadline.weight(.bold))
+                            .foregroundColor(eval.isTrusted ? SemanticColors.successText : SemanticColors.warningText)
+                    }
+                    Text(eval.detailMessageVi)
+                        .font(.caption)
+                        .monospacedDigit()
+                        .foregroundColor(SemanticColors.textSecondary)
+
+                    Button {
+                        HapticsManager.lightImpact()
+                        Task { await viewModel.syncAttendanceTimeAnchor() }
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "arrow.triangle.2.circlepath")
+                            Text("Đồng bộ giờ máy chủ ngay")
+                        }
+                        .font(.caption.weight(.bold))
+                        .padding(.horizontal, 12)
+                        .frame(minHeight: 38)
+                        .background(theme.primaryLight)
+                        .foregroundColor(theme.primary)
+                        .clipShape(RoundedRectangle(cornerRadius: HrpDesignTokens.radiusXS, style: .continuous))
+                    }
+                    .buttonStyle(HrpPressableButtonStyle())
+                    .padding(.top, 4)
+                }
+                .padding(14)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .hrpCardSurface(cornerRadius: HrpDesignTokens.radiusCard)
+
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "location.fill")
+                            .foregroundColor(theme.primary)
+                        Text("Thông số định vị GPS")
+                            .font(.subheadline.weight(.bold))
+                            .foregroundColor(SemanticColors.textPrimary)
+                    }
+                    if let loc = locationManager.currentLocation {
+                        Text(String(format: "Vĩ độ / Kinh độ: %.6f, %.6f", loc.coordinate.latitude, loc.coordinate.longitude))
+                            .font(.caption.weight(.semibold))
+                            .monospacedDigit()
+                            .foregroundColor(SemanticColors.textPrimary)
+                        Text(String(format: "Sai số ngang: ±%.1f m", max(0, loc.horizontalAccuracy)))
+                            .font(.caption)
+                            .monospacedDigit()
+                            .foregroundColor(SemanticColors.textSecondary)
+                    } else {
+                        Text(locationManager.locationErrorMessage ?? "Đang định vị GPS…")
+                            .font(.caption)
+                            .foregroundColor(locationManager.isPermissionDenied ? SemanticColors.dangerText : SemanticColors.textSecondary)
+                    }
+
+                    Button {
+                        HapticsManager.selection()
+                        locationManager.requestLocationUpdate()
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "location.magnifyingglass")
+                            Text("Lấy lại toạ độ GPS")
+                        }
+                        .font(.caption.weight(.bold))
+                        .padding(.horizontal, 12)
+                        .frame(minHeight: 38)
+                        .background(SemanticColors.surfaceMuted)
+                        .foregroundColor(SemanticColors.textPrimary)
+                        .clipShape(RoundedRectangle(cornerRadius: HrpDesignTokens.radiusXS, style: .continuous))
+                    }
+                    .buttonStyle(HrpPressableButtonStyle())
+                    .padding(.top, 4)
+                }
+                .padding(14)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .hrpCardSurface(cornerRadius: HrpDesignTokens.radiusCard)
+
+                Spacer()
+            }
+            .padding(16)
+            .background(theme.background)
+            .navigationTitle("Chi tiết giờ chuẩn & GPS")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Đóng") {
+                        isShowingTechnicalInfoSheet = false
+                    }
+                }
+            }
         }
     }
 
@@ -1536,6 +1798,7 @@ public struct AttendanceScreen: View {
         theme: MiniBiThemePalette
     ) -> some View {
         let actorId = viewModel.currentLeaveActorAppUserId
+        let visibleRequests = Array(summary.requests.prefix(visibleMyLeaveRequestsCount))
 
         return VStack(alignment: .leading, spacing: 10) {
             Text("Lịch sử đơn xin nghỉ của tôi (\(summary.requests.count))")
@@ -1548,7 +1811,7 @@ public struct AttendanceScreen: View {
                     .foregroundColor(SemanticColors.textSecondary)
                     .padding(.vertical, 6)
             } else {
-                ForEach(summary.requests) { req in
+                ForEach(visibleRequests) { req in
                     let canWithdraw = LeaveContract.canWithdrawOwnLeaveRequest(
                         actorAppUserId: actorId,
                         request: req
@@ -1634,6 +1897,20 @@ public struct AttendanceScreen: View {
                     .padding(12)
                     .background(Color(hex: 0xF8FAFC))
                     .cornerRadius(12)
+                }
+
+                if summary.requests.count > visibleMyLeaveRequestsCount {
+                    HrpLoadMoreButton(
+                        title: "Tải thêm đơn xin nghỉ",
+                        loadedCount: visibleRequests.count,
+                        totalCount: summary.requests.count,
+                        isLoading: false,
+                        theme: theme
+                    ) {
+                        withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) {
+                            visibleMyLeaveRequestsCount += 10
+                        }
+                    }
                 }
             }
         }
@@ -1998,6 +2275,18 @@ public struct AttendanceScreen: View {
                             .padding(14)
                             .background(Color.white)
                             .cornerRadius(14)
+                        }
+
+                        if let total = inbox?.total, items.count < total {
+                            HrpLoadMoreButton(
+                                title: "Tải thêm đơn cần duyệt",
+                                loadedCount: items.count,
+                                totalCount: total,
+                                isLoading: viewModel.isLoadingMoreLeaveInbox,
+                                theme: theme
+                            ) {
+                                Task { await viewModel.loadMoreLeaveApprovalInbox() }
+                            }
                         }
                     }
                 }
@@ -2541,10 +2830,10 @@ public struct AttendanceScreen: View {
                 VStack(alignment: .leading, spacing: 12) {
                     HStack(alignment: .top) {
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("GIẢI TRÌNH CHẤM CÔNG CÁ NHÂN")
+                            Text("GIẢI TRÌNH CÁ NHÂN")
                                 .font(.caption2.weight(.bold))
                                 .foregroundColor(theme.primary)
-                            Text("Giải trình chấm công")
+                            Text("Giải trình")
                                 .font(.headline.weight(.bold))
                                 .foregroundColor(SemanticColors.textPrimary)
                         }
@@ -2572,74 +2861,16 @@ public struct AttendanceScreen: View {
                         .font(.caption)
                         .foregroundColor(SemanticColors.textSecondary)
 
-                    // Business Date Selector Row
-                    HStack(spacing: 8) {
-                        Button {
-                            viewModel.shiftExplanationSelectedDate(days: -1)
-                        } label: {
-                            Image(systemName: "chevron.left")
-                                .font(.caption.weight(.bold))
-                                .frame(width: 34, height: 36)
-                                .background(Color(hex: 0xF1F5F9))
-                                .foregroundColor(SemanticColors.textPrimary)
-                                .cornerRadius(8)
+                    // Shared Date Navigator Bar for Explanation Business Date
+                    HrpDateNavigatorBar(
+                        selectedDateIso: selectedDate,
+                        todayDateIso: todayIso,
+                        allowFutureDates: false,
+                        theme: theme,
+                        onDateSelected: { newDate in
+                            viewModel.setExplanationSelectedDate(newDate)
                         }
-                        .disabled(viewModel.isLoadingMyExplanations)
-
-                        Button {
-                            explanationDatePickerSelection = parseIsoDate(selectedDate) ?? Date()
-                            isShowingExplanationDatePickerSheet = true
-                        } label: {
-                            HStack(spacing: 6) {
-                                Image(systemName: "calendar")
-                                    .font(.caption.weight(.bold))
-                                    .foregroundColor(theme.primary)
-                                VStack(alignment: .leading, spacing: 1) {
-                                    Text("Ngày nghiệp vụ")
-                                        .font(.system(size: 10, weight: .medium))
-                                        .foregroundColor(SemanticColors.textMuted)
-                                    Text("\(LeaveContract.formatIsoDateVi(selectedDate)) (\(selectedDate))")
-                                        .font(.caption.weight(.bold))
-                                        .foregroundColor(SemanticColors.textPrimary)
-                                }
-                                Spacer()
-                            }
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 6)
-                            .background(Color(hex: 0xF8FAFC))
-                            .cornerRadius(8)
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 8)
-                                    .stroke(SemanticColors.borderSubtle, lineWidth: 1)
-                            )
-                        }
-                        .buttonStyle(.plain)
-
-                        Button {
-                            viewModel.shiftExplanationSelectedDate(days: 1)
-                        } label: {
-                            Image(systemName: "chevron.right")
-                                .font(.caption.weight(.bold))
-                                .frame(width: 34, height: 36)
-                                .background(Color(hex: 0xF1F5F9))
-                                .foregroundColor(selectedDate >= todayIso ? SemanticColors.textMuted : SemanticColors.textPrimary)
-                                .cornerRadius(8)
-                        }
-                        .disabled(viewModel.isLoadingMyExplanations || selectedDate >= todayIso)
-
-                        Button {
-                            viewModel.setExplanationSelectedDate(todayIso)
-                        } label: {
-                            Text("Hôm nay")
-                                .font(.caption.weight(.bold))
-                                .padding(.horizontal, 10)
-                                .frame(height: 36)
-                                .background(theme.primaryLight)
-                                .foregroundColor(theme.primary)
-                                .cornerRadius(8)
-                        }
-                        .disabled(viewModel.isLoadingMyExplanations)
-                    }
+                    )
 
                     if let currentOverview = overview {
                         let dayEval = currentOverview.dayEvaluation
@@ -2778,6 +3009,18 @@ public struct AttendanceScreen: View {
                     } else {
                         ForEach(currentOverview.items) { item in
                             explanationMyHistoryCard(item: item, theme: theme)
+                        }
+
+                        if currentOverview.items.count < currentOverview.pagination.totalRows {
+                            HrpLoadMoreButton(
+                                title: "Tải thêm lịch sử giải trình",
+                                loadedCount: currentOverview.items.count,
+                                totalCount: currentOverview.pagination.totalRows,
+                                isLoading: viewModel.isLoadingMoreMyExplanations,
+                                theme: theme
+                            ) {
+                                Task { await viewModel.loadMoreMyExplanations() }
+                            }
                         }
                     }
                 }
@@ -3302,29 +3545,16 @@ public struct AttendanceScreen: View {
                             .cornerRadius(14)
                         }
 
-                        if let pagination = inbox?.pagination, pagination.totalRows > pagination.limit {
-                            let currentPage = viewModel.explanationInboxPage
-                            let totalPages = max(1, Int(ceil(Double(pagination.totalRows) / Double(max(1, pagination.limit)))))
-                            HStack {
-                                Button("Trang trước") {
-                                    viewModel.setExplanationInboxPage(currentPage - 1)
-                                }
-                                .font(.caption.weight(.bold))
-                                .disabled(currentPage <= 1 || viewModel.isLoadingExplanationInbox)
-                                Spacer()
-                                Text("Trang \(currentPage)/\(totalPages) (\(pagination.totalRows) bản ghi)")
-                                    .font(.caption2)
-                                    .foregroundColor(SemanticColors.textSecondary)
-                                Spacer()
-                                Button("Trang sau") {
-                                    viewModel.setExplanationInboxPage(currentPage + 1)
-                                }
-                                .font(.caption.weight(.bold))
-                                .disabled(currentPage >= totalPages || viewModel.isLoadingExplanationInbox)
+                        if let pagination = inbox?.pagination, items.count < pagination.totalRows {
+                            HrpLoadMoreButton(
+                                title: "Tải thêm giải trình cần duyệt",
+                                loadedCount: items.count,
+                                totalCount: pagination.totalRows,
+                                isLoading: viewModel.isLoadingMoreExplanationInbox,
+                                theme: theme
+                            ) {
+                                Task { await viewModel.loadMoreExplanationApprovalInbox() }
                             }
-                            .padding(12)
-                            .background(Color.white)
-                            .cornerRadius(12)
                         }
                     }
                 }
@@ -3730,6 +3960,7 @@ public struct AttendanceScreen: View {
 private struct AttendanceOutboxPhotoThumbnailView: View {
     let item: AttendanceOutboxItem
     let outboxService: AttendanceOutboxService
+    var size: CGFloat = 52
 
     @State private var loadedImage: UIImage?
     @State private var isLoadingRemote: Bool = false
@@ -3740,30 +3971,30 @@ private struct AttendanceOutboxPhotoThumbnailView: View {
                 Image(uiImage: uiImage)
                     .resizable()
                     .scaledToFill()
-                    .frame(width: 68, height: 68)
+                    .frame(width: size, height: size)
                     .clipped()
             } else if isLoadingRemote {
                 ProgressView()
                     .scaleEffect(0.75)
-                    .frame(width: 68, height: 68)
+                    .frame(width: size, height: size)
             } else {
-                VStack(spacing: 3) {
+                VStack(spacing: 2) {
                     Image(systemName: "camera.fill")
-                        .font(.system(size: 16, weight: .semibold))
+                        .font(.system(size: size * 0.28, weight: .semibold))
                         .foregroundColor(SemanticColors.textMuted)
-                    Text("Ảnh CC")
-                        .font(.system(size: 9, weight: .semibold))
+                    Text("Ảnh")
+                        .font(.system(size: max(8, size * 0.17), weight: .semibold))
                         .foregroundColor(SemanticColors.textMuted)
                 }
-                .frame(width: 68, height: 68)
+                .frame(width: size, height: size)
             }
         }
-        .frame(width: 68, height: 68)
+        .frame(width: size, height: size)
         .background(Color(hex: 0xE2E8F0))
-        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .clipShape(RoundedRectangle(cornerRadius: size * 0.22, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 10)
-                .stroke(SemanticColors.borderSubtle, lineWidth: 1)
+            RoundedRectangle(cornerRadius: size * 0.22, style: .continuous)
+                .stroke(SemanticColors.borderSubtle, lineWidth: 0.8)
         )
         .task(id: "\(item.localId)-\(item.serverCheckinId ?? "")-\(item.photoLocalPath ?? "")") {
             if loadedImage != nil { return }

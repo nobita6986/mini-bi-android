@@ -160,31 +160,14 @@ public struct RecruitmentPostsScreen: View {
                         }
 
                         if viewModel.recruitmentPostsHasMore {
-                            Button {
-                                HapticsManager.lightImpact()
+                            HrpLoadMoreButton(
+                                loadedCount: cards.count,
+                                totalCount: nil,
+                                isLoading: viewModel.recruitmentPostsLoadingMore,
+                                theme: theme
+                            ) {
                                 Task { await viewModel.loadMoreRecruitmentPosts() }
-                            } label: {
-                                HStack(spacing: 8) {
-                                    if viewModel.recruitmentPostsLoadingMore {
-                                        ProgressView()
-                                            .scaleEffect(0.85)
-                                            .tint(theme.primary)
-                                        Text("Đang tải thêm…")
-                                    } else {
-                                        Text("Tải thêm")
-                                    }
-                                }
-                                .font(.subheadline.weight(.semibold))
-                                .foregroundColor(theme.primary)
-                                .frame(maxWidth: .infinity, minHeight: 44)
-                                .background(Color.white)
-                                .clipShape(RoundedRectangle(cornerRadius: HrpDesignTokens.radiusMD, style: .continuous))
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: HrpDesignTokens.radiusMD, style: .continuous)
-                                        .stroke(theme.primary.opacity(0.45), lineWidth: 1)
-                                )
                             }
-                            .buttonStyle(HrpPressableButtonStyle())
                             .disabled(viewModel.recruitmentPostsLoading || viewModel.recruitmentPostsLoadingMore)
                             .accessibilityIdentifier("recruitment_posts_load_more_button")
                         }
@@ -270,51 +253,70 @@ private struct RecruitmentPostSummaryCardView: View {
     let onOpenDetail: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(card.projectName)
-                .font(.headline.weight(.bold))
-                .foregroundColor(theme.primary)
-
-            Text("Khách hàng: \(card.customerNameDisplay)")
-                .font(.subheadline.weight(.semibold))
-                .foregroundColor(SemanticColors.textPrimary)
-
-            Text(card.locationDisplay)
-                .font(.caption)
-                .foregroundColor(SemanticColors.textSecondary)
-
-            Divider()
-
-            Text("Công việc: \(card.jobDescriptionDisplay)")
-                .font(.footnote)
-                .foregroundColor(SemanticColors.textPrimary)
-                .lineLimit(3)
-
-            RecruitmentPostMetaRow(label: "Hình thức tuyển dụng", value: card.laborTypesDisplay)
-            RecruitmentPostMetaRow(label: "Số lượng dự kiến", value: card.expectedHeadcountDisplay)
-            RecruitmentPostMetaRow(label: "Giới tính & độ tuổi", value: card.genderAndAgeDisplay)
-            RecruitmentPostMetaRow(label: "Lương & thu nhập", value: card.baseSalaryAndIncomeDisplay)
-            RecruitmentPostMetaRow(label: "Người phụ trách", value: card.contactPersonDisplay)
-            RecruitmentPostMetaRow(label: "Số điện thoại", value: card.contactPhoneDisplay)
-            RecruitmentPostMetaRow(label: "Cập nhật gần nhất", value: card.updatedAtDisplay)
-
-            HStack {
-                Spacer()
-                Button(action: onOpenDetail) {
-                    Text("Xem chi tiết")
-                        .font(.caption.weight(.bold))
+        Button(action: onOpenDetail) {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(alignment: .top, spacing: 8) {
+                    Text(card.projectName)
+                        .font(.headline.weight(.bold))
                         .foregroundColor(theme.primary)
-                        .padding(.horizontal, 12)
-                        .frame(minHeight: 36)
-                        .background(theme.primaryLight)
-                        .clipShape(RoundedRectangle(cornerRadius: HrpDesignTokens.radiusXS, style: .continuous))
+                        .multilineTextAlignment(.leading)
+
+                    Spacer(minLength: 6)
+
+                    Text(card.baseSalaryAndIncomeDisplay)
+                        .font(.caption2.weight(.bold))
+                        .monospacedDigit()
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(SemanticColors.successBg)
+                        .foregroundColor(SemanticColors.successText)
+                        .clipShape(Capsule())
+                        .lineLimit(1)
                 }
-                .buttonStyle(HrpPressableButtonStyle())
-                .accessibilityIdentifier("recruitment_post_detail_btn_\(card.briefId)")
+
+                HStack(spacing: 6) {
+                    Image(systemName: "mappin.and.ellipse")
+                        .font(.caption2)
+                        .foregroundColor(SemanticColors.textMuted)
+                    Text("\(card.locationDisplay) · \(card.customerNameDisplay)")
+                        .font(.caption)
+                        .foregroundColor(SemanticColors.textSecondary)
+                        .lineLimit(1)
+                }
+
+                HStack(spacing: 6) {
+                    Text(card.laborTypesDisplay)
+                        .font(.caption2.weight(.semibold))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(SemanticColors.surfaceMuted)
+                        .foregroundColor(SemanticColors.textPrimary)
+                        .clipShape(Capsule())
+                        .lineLimit(1)
+
+                    Text("SL: \(card.expectedHeadcountDisplay)")
+                        .font(.caption2.weight(.semibold))
+                        .monospacedDigit()
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(theme.primaryLight)
+                        .foregroundColor(theme.primary)
+                        .clipShape(Capsule())
+                        .lineLimit(1)
+
+                    Spacer(minLength: 4)
+
+                    Image(systemName: "chevron.right")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundColor(SemanticColors.textMuted)
+                }
             }
+            .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .hrpCardSurface(cornerRadius: HrpDesignTokens.radiusCard)
         }
-        .padding(14)
-        .hrpCardSurface(cornerRadius: HrpDesignTokens.radiusCard)
+        .buttonStyle(HrpPressableButtonStyle())
+        .accessibilityIdentifier("recruitment_post_detail_btn_\(card.briefId)")
     }
 }
 

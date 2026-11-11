@@ -575,7 +575,7 @@ public enum AttendanceExplanationContract {
     public static let reasonMinLength = 3
     public static let reasonMaxLength = 500
     public static let decisionNoteMaxLength = 500
-    public static let defaultPageLimit = 50
+    public static let defaultPageLimit = 15
 
     public static let defaultSlotPolicyProfileId = "00000000-0000-4000-8000-000000000001"
     public static let defaultSlotPolicyProfileCode = "DEFAULT"

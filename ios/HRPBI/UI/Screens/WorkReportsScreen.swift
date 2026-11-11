@@ -6,6 +6,8 @@ import SwiftUI
 public struct WorkReportsScreen: View {
     @ObservedObject var viewModel: MiniBiViewModel
     @Namespace private var workReportsTabNamespace
+    @State private var visibleActionableCount: Int = 15
+    @State private var visibleHistoryCount: Int = 15
 
     public init(viewModel: MiniBiViewModel) {
         self.viewModel = viewModel
@@ -98,15 +100,9 @@ public struct WorkReportsScreen: View {
                     } else {
                         switch viewModel.selectedWorkReportsSubTab {
                         case .actionable:
-                            obligationsListSection(
-                                items: viewModel.actionableObligations,
-                                emptyText: "Bạn đã hoàn thành tất cả báo cáo công việc cần nộp!"
-                            )
+                            actionableObligationsSection
                         case .history:
-                            obligationsListSection(
-                                items: viewModel.historyObligations,
-                                emptyText: "Chưa có lịch sử báo cáo công việc đã lưu / đã nộp / quá hạn."
-                            )
+                            historyObligationsSection
                         case .reviewQueue:
                             reviewQueueSection
                         case .analytics:
@@ -142,12 +138,8 @@ public struct WorkReportsScreen: View {
             ForEach(0..<3, id: \.self) { _ in
                 VStack(alignment: .leading, spacing: 8) {
                     HStack {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("Báo cáo kết quả công việc hàng ngày")
-                                .font(.subheadline.weight(.bold))
-                            Text("Hàng ngày · Kỳ: 11/11/2026")
-                                .font(.caption)
-                        }
+                        Text("Báo cáo kết quả công việc hàng ngày")
+                            .font(.subheadline.weight(.bold))
                         Spacer()
                         Text("Chưa nộp")
                             .font(.caption2.weight(.bold))
@@ -157,11 +149,9 @@ public struct WorkReportsScreen: View {
                             .clipShape(Capsule())
                     }
                     HStack {
-                        Text("Hạn nộp: 17:30 11/11/2026")
-                            .font(.caption2)
+                        Text("11/11/2026 · Hạn: 17:30 11/11/2026")
+                            .font(.caption)
                         Spacer()
-                        Text("Mở để nhập / nộp →")
-                            .font(.caption2.weight(.bold))
                     }
                 }
                 .padding(14)
@@ -186,9 +176,123 @@ public struct WorkReportsScreen: View {
 
     // MARK: - 1 & 2. Obligations List (`Cần nộp` & `Lịch sử / Đã lưu / Đã nộp`)
 
-    private func obligationsListSection(items: [WorkReportObligationItem], emptyText: String) -> some View {
-        let theme = viewModel.selectedTheme
+    private var actionableObligationsSection: some View {
+        let items = viewModel.actionableObligations
+        let visibleItems = Array(items.prefix(visibleActionableCount))
+        return VStack(spacing: 12) {
+            obligationsListSection(
+                items: visibleItems,
+                emptyText: "Bạn đã hoàn thành tất cả báo cáo công việc cần nộp!"
+            )
+            if items.count > visibleActionableCount {
+                HrpLoadMoreButton(
+                    loadedCount: visibleItems.count,
+                    totalCount: items.count,
+                    isLoading: false,
+                    theme: viewModel.selectedTheme
+                ) {
+                    visibleActionableCount += 15
+                }
+            }
+        }
+    }
 
+    private var filteredHistoryObligations: [WorkReportObligationItem] {
+        let all = viewModel.historyObligations
+        guard viewModel.workReportHistoryFilterByDate else { return all }
+        let targetDate = viewModel.workReportHistorySelectedDate
+        return all.filter { ob in
+            if ob.periodKey == targetDate || ob.periodKey.hasPrefix(targetDate) {
+                return true
+            }
+            if let dueAt = ob.dueAt, dueAt.hasPrefix(targetDate) {
+                return true
+            }
+            if let submittedAt = ob.submittedAt, submittedAt.hasPrefix(targetDate) {
+                return true
+            }
+            return false
+        }
+    }
+
+    private var historyObligationsSection: some View {
+        let theme = viewModel.selectedTheme
+        let items = filteredHistoryObligations
+        let visibleItems = Array(items.prefix(visibleHistoryCount))
+
+        return VStack(spacing: 12) {
+            HStack(spacing: 8) {
+                Text("Lọc lịch sử")
+                    .font(.caption.weight(.semibold))
+                    .foregroundColor(SemanticColors.textSecondary)
+                Spacer()
+                HStack(spacing: 4) {
+                    Button {
+                        HapticsManager.selection()
+                        visibleHistoryCount = 15
+                        viewModel.setWorkReportHistoryFilterMode(byDate: false)
+                    } label: {
+                        Text("Tất cả kỳ")
+                            .font(.caption.weight(.bold))
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 6)
+                            .background(!viewModel.workReportHistoryFilterByDate ? theme.primary : Color.clear)
+                            .foregroundColor(!viewModel.workReportHistoryFilterByDate ? .white : SemanticColors.textSecondary)
+                            .clipShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+
+                    Button {
+                        HapticsManager.selection()
+                        visibleHistoryCount = 15
+                        viewModel.setWorkReportHistoryFilterMode(byDate: true)
+                    } label: {
+                        Text("Theo ngày")
+                            .font(.caption.weight(.bold))
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 6)
+                            .background(viewModel.workReportHistoryFilterByDate ? theme.primary : Color.clear)
+                            .foregroundColor(viewModel.workReportHistoryFilterByDate ? .white : SemanticColors.textSecondary)
+                            .clipShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(3)
+                .background(SemanticColors.surfaceMuted)
+                .clipShape(Capsule())
+            }
+
+            if viewModel.workReportHistoryFilterByDate {
+                HrpDateNavigatorBar(
+                    selectedDateIso: viewModel.workReportHistorySelectedDate,
+                    theme: theme
+                ) { dateIso in
+                    visibleHistoryCount = 15
+                    viewModel.selectWorkReportHistoryDate(dateIso)
+                }
+            }
+
+            obligationsListSection(
+                items: visibleItems,
+                emptyText: viewModel.workReportHistoryFilterByDate
+                    ? "Không có báo cáo công việc nào trong ngày đã chọn."
+                    : "Chưa có lịch sử báo cáo công việc đã lưu / đã nộp / quá hạn."
+            )
+
+            if items.count > visibleHistoryCount {
+                HrpLoadMoreButton(
+                    loadedCount: visibleItems.count,
+                    totalCount: items.count,
+                    isLoading: false,
+                    theme: theme
+                ) {
+                    visibleHistoryCount += 15
+                }
+            }
+        }
+    }
+
+    private func obligationsListSection(items: [WorkReportObligationItem], emptyText: String) -> some View {
         return VStack(spacing: 12) {
             if items.isEmpty {
                 VStack(spacing: 8) {
@@ -204,10 +308,9 @@ public struct WorkReportsScreen: View {
                 .padding(28)
                 .hrpCardSurface(cornerRadius: HrpDesignTokens.radiusCard)
             } else {
-                LazyVStack(spacing: 12) {
+                LazyVStack(spacing: 10) {
                     ForEach(items) { ob in
                         let badgeText = WorkReportsContract.obligationBadgeDisplayLabel(ob)
-                        let isEditable = WorkReportsContract.isEditableObligation(ob)
 
                         Button {
                             HapticsManager.selection()
@@ -216,17 +319,12 @@ public struct WorkReportsScreen: View {
                             }
                         } label: {
                             VStack(alignment: .leading, spacing: 8) {
-                                HStack(alignment: .top) {
-                                    VStack(alignment: .leading, spacing: 3) {
-                                        Text(ob.templateName)
-                                            .font(.subheadline.weight(.bold))
-                                            .foregroundColor(SemanticColors.textPrimary)
-                                        Text("\(WorkReportsContract.periodTypeDisplayLabel(ob.periodType)) · Kỳ: \(WorkReportsContract.formatPeriodKeyVi(ob.periodKey))")
-                                            .font(.caption)
-                                            .monospacedDigit()
-                                            .foregroundColor(SemanticColors.textSecondary)
-                                    }
-                                    Spacer()
+                                HStack(alignment: .top, spacing: 8) {
+                                    Text(ob.templateName)
+                                        .font(.subheadline.weight(.bold))
+                                        .foregroundColor(SemanticColors.textPrimary)
+                                        .multilineTextAlignment(.leading)
+                                    Spacer(minLength: 6)
                                     Text(badgeText)
                                         .font(.caption2.weight(.bold))
                                         .padding(.horizontal, 9)
@@ -240,17 +338,27 @@ public struct WorkReportsScreen: View {
                                         .clipShape(Capsule())
                                 }
 
-                                HStack(spacing: 12) {
-                                    if let dueAt = ob.dueAt, !dueAt.isEmpty {
-                                        Label("Hạn nộp: \(WorkReportsContract.formatIsoDateTimeVi(dueAt))", systemImage: "calendar.badge.clock")
-                                            .font(.caption2)
-                                            .monospacedDigit()
-                                            .foregroundColor(ob.isOverdue ? SemanticColors.dangerText : SemanticColors.textMuted)
-                                    }
-                                    Spacer()
-                                    Text(isEditable ? "Mở để nhập / nộp →" : "Xem nội dung (Chỉ xem) →")
-                                        .font(.caption2.weight(.bold))
-                                        .foregroundColor(isEditable ? theme.primary : SemanticColors.textSecondary)
+                                HStack(spacing: 6) {
+                                    Image(systemName: "calendar")
+                                        .font(.caption2)
+                                        .foregroundColor(ob.isOverdue ? SemanticColors.dangerText : SemanticColors.textMuted)
+                                    let dueDisplay: String = {
+                                        if let dueAt = ob.dueAt, !dueAt.isEmpty {
+                                            return " · Hạn: \(WorkReportsContract.formatIsoDateTimeVi(dueAt))"
+                                        }
+                                        return ""
+                                    }()
+                                    Text("\(WorkReportsContract.formatPeriodKeyVi(ob.periodKey))\(dueDisplay)")
+                                        .font(.caption)
+                                        .monospacedDigit()
+                                        .foregroundColor(ob.isOverdue ? SemanticColors.dangerText : SemanticColors.textSecondary)
+                                        .lineLimit(1)
+
+                                    Spacer(minLength: 4)
+
+                                    Image(systemName: "chevron.right")
+                                        .font(.caption2.weight(.semibold))
+                                        .foregroundColor(SemanticColors.textMuted)
                                 }
 
                                 if let comment = ob.reviewComment, !comment.isEmpty {
@@ -258,9 +366,10 @@ public struct WorkReportsScreen: View {
                                         Image(systemName: "bubble.left.and.exclamationmark.bubble.right.fill")
                                             .font(.caption2)
                                             .foregroundColor(SemanticColors.warningText)
-                                        Text("Ý kiến người duyệt: \(comment)")
+                                        Text(comment)
                                             .font(.caption2.weight(.medium))
                                             .foregroundColor(SemanticColors.warningText)
+                                            .lineLimit(2)
                                     }
                                     .padding(8)
                                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -337,40 +446,69 @@ public struct WorkReportsScreen: View {
                     .padding(24)
                     .hrpCardSurface(cornerRadius: HrpDesignTokens.radiusCard)
             } else {
-                LazyVStack(spacing: 12) {
+                LazyVStack(spacing: 10) {
                     ForEach(viewModel.workReportReviews) { rev in
                         Button {
                             HapticsManager.selection()
                             viewModel.selectedReviewDetail = rev
                         } label: {
-                            VStack(alignment: .leading, spacing: 6) {
-                                HStack {
-                                    Text(rev.templateName)
-                                        .font(.subheadline.weight(.bold))
-                                        .foregroundColor(SemanticColors.textPrimary)
-                                    Spacer()
-                                    Text("Kỳ \(WorkReportsContract.formatPeriodKeyVi(rev.periodKey))")
-                                        .font(.caption2.weight(.bold))
-                                        .monospacedDigit()
-                                        .padding(.horizontal, 8)
-                                        .padding(.vertical, 3)
-                                        .background(theme.primaryLight)
-                                        .foregroundColor(theme.primary)
-                                        .clipShape(Capsule())
+                            HStack(spacing: 10) {
+                                HrpInitialsAvatar(
+                                    fullName: rev.reporterName,
+                                    tint: theme.primary,
+                                    size: 38
+                                )
+
+                                VStack(alignment: .leading, spacing: 4) {
+                                    HStack {
+                                        Text(rev.templateName)
+                                            .font(.subheadline.weight(.bold))
+                                            .foregroundColor(SemanticColors.textPrimary)
+                                            .lineLimit(1)
+                                        Spacer(minLength: 6)
+                                        Text(WorkReportsContract.formatPeriodKeyVi(rev.periodKey))
+                                            .font(.caption2.weight(.bold))
+                                            .monospacedDigit()
+                                            .padding(.horizontal, 8)
+                                            .padding(.vertical, 3)
+                                            .background(theme.primaryLight)
+                                            .foregroundColor(theme.primary)
+                                            .clipShape(Capsule())
+                                    }
+
+                                    HStack(spacing: 6) {
+                                        Text("\(rev.reporterName) · \(rev.unitName)")
+                                            .font(.caption)
+                                            .foregroundColor(SemanticColors.textSecondary)
+                                            .lineLimit(1)
+                                        Spacer(minLength: 4)
+                                        Text(WorkReportsContract.formatIsoDateTimeVi(rev.submittedAt))
+                                            .font(.caption2)
+                                            .monospacedDigit()
+                                            .foregroundColor(SemanticColors.textMuted)
+                                            .lineLimit(1)
+                                        Image(systemName: "chevron.right")
+                                            .font(.caption2.weight(.semibold))
+                                            .foregroundColor(SemanticColors.textMuted)
+                                    }
                                 }
-                                Text("Người nộp: \(rev.reporterName) · Đơn vị: \(rev.unitName)")
-                                    .font(.caption)
-                                    .foregroundColor(SemanticColors.textSecondary)
-                                Text("Thời gian nộp: \(WorkReportsContract.formatIsoDateTimeVi(rev.submittedAt))")
-                                    .font(.caption2)
-                                    .monospacedDigit()
-                                    .foregroundColor(SemanticColors.textMuted)
                             }
                             .padding(14)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .hrpCardSurface(cornerRadius: HrpDesignTokens.radiusCard)
                         }
                         .buttonStyle(HrpPressableButtonStyle())
+                    }
+                }
+
+                if viewModel.workReportReviewsHasMore {
+                    HrpLoadMoreButton(
+                        loadedCount: viewModel.workReportReviews.count,
+                        totalCount: nil,
+                        isLoading: viewModel.isLoadingMoreWorkReportReviews,
+                        theme: theme
+                    ) {
+                        Task { await viewModel.loadMoreWorkReportReviews() }
                     }
                 }
             }
@@ -396,20 +534,27 @@ public struct WorkReportsScreen: View {
                     Text("Tỷ lệ hoàn thành theo Đơn vị")
                         .font(.headline)
                     ForEach(viewModel.workReportAnalytics.byUnit) { row in
-                        HStack {
-                            VStack(alignment: .leading, spacing: 2) {
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack {
                                 Text(row.groupLabel)
                                     .font(.subheadline.weight(.semibold))
-                                Text("Đã nộp: \(row.submittedCount)/\(row.totalObligations) · Quá hạn: \(row.overdueCount)")
-                                    .font(.caption)
+                                    .foregroundColor(SemanticColors.textPrimary)
+                                Spacer()
+                                Text(WorkReportsContract.formatPercentVi(row.completionRate))
+                                    .font(.caption.weight(.bold))
                                     .monospacedDigit()
-                                    .foregroundColor(SemanticColors.textSecondary)
+                                    .foregroundColor(theme.primary)
                             }
-                            Spacer()
-                            Text(WorkReportsContract.formatPercentVi(row.completionRate))
-                                .font(.caption.weight(.bold))
+                            HrpSegmentedBar(
+                                positiveCount: row.submittedCount,
+                                negativeCount: row.overdueCount,
+                                neutralCount: max(0, row.totalObligations - row.submittedCount - row.overdueCount),
+                                height: 6
+                            )
+                            Text("Đã nộp \(row.submittedCount)/\(row.totalObligations) · Quá hạn \(row.overdueCount)")
+                                .font(.caption2)
                                 .monospacedDigit()
-                                .foregroundColor(theme.primary)
+                                .foregroundColor(SemanticColors.textSecondary)
                         }
                         .padding(.vertical, 4)
                     }

@@ -6,6 +6,7 @@ import SwiftUI
 public struct DashboardScreen: View {
     @ObservedObject var viewModel: MiniBiViewModel
     @Namespace private var dashboardTabNamespace
+    @State private var visibleProjectsCount: Int = 10
 
     public init(viewModel: MiniBiViewModel) {
         self.viewModel = viewModel
@@ -161,10 +162,10 @@ public struct DashboardScreen: View {
     private func dashboardSkeletonPlaceholder(theme: MiniBiThemePalette) -> some View {
         VStack(alignment: .leading, spacing: 14) {
             LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
-                kpiCard(title: "Tổng nhân sự", value: "1.280", subtitle: "Tuyển mới: +48", accentColor: theme.primary)
-                kpiCard(title: "Đang làm việc", value: "1.045", subtitle: "Giữ chân: 81,6%", accentColor: SemanticColors.successText)
-                kpiCard(title: "Đã nghỉ việc", value: "185", subtitle: "Nghỉ trong kỳ: 12", accentColor: SemanticColors.dangerText)
-                kpiCard(title: "Phỏng vấn / Chờ nhận", value: "50", subtitle: "Biến động: 14,4%", accentColor: SemanticColors.warningText)
+                kpiCard(title: "Tổng nhân sự", value: "1.280", subtitle: "+48 mới", iconName: "person.3.fill", accentColor: theme.primary)
+                kpiCard(title: "Đang làm việc", value: "1.045", subtitle: "Giữ chân 81,6%", iconName: "checkmark.seal.fill", accentColor: SemanticColors.successText)
+                kpiCard(title: "Đã nghỉ việc", value: "185", subtitle: "Trong kỳ: 12", iconName: "person.crop.circle.badge.minus", accentColor: SemanticColors.dangerText)
+                kpiCard(title: "Phỏng vấn / Chờ nhận", value: "50", subtitle: "Biến động 14,4%", iconName: "clock.badge.questionmark", accentColor: SemanticColors.warningText)
             }
 
             VStack(alignment: .leading, spacing: 10) {
@@ -176,19 +177,20 @@ public struct DashboardScreen: View {
                         .font(.caption)
                 }
                 ForEach(0..<3, id: \.self) { _ in
-                    VStack(alignment: .leading, spacing: 6) {
+                    VStack(alignment: .leading, spacing: 8) {
                         HStack {
                             Text("Dự án Sản xuất Điện tử")
                                 .font(.subheadline.weight(.semibold))
                             Spacer()
-                            Text("Tổng: 320")
-                                .font(.caption.weight(.bold))
+                            Text("320")
+                                .font(.subheadline.weight(.bold))
                         }
+                        HrpSegmentedBar(activeCount: 280, inactiveCount: 40)
                         HStack(spacing: 12) {
-                            Text("Đang làm: 280")
-                                .font(.caption)
-                            Text("Đã nghỉ: 40")
-                                .font(.caption)
+                            Text("280 đang làm")
+                                .font(.caption2)
+                            Text("40 nghỉ")
+                                .font(.caption2)
                         }
                     }
                     .padding(10)
@@ -201,56 +203,74 @@ public struct DashboardScreen: View {
         .redacted(reason: .placeholder)
     }
 
-    // MARK: - Date & Scope Filter Bar
+    // MARK: - Date & Scope Filter Bar (Compact Single Row: Scope Menu + Period Chips)
+
+    private var currentScopeLabel: String {
+        switch viewModel.dashboardScope {
+        case "team": return "Theo nhóm"
+        case "own": return "Cá nhân"
+        default: return "Toàn công ty"
+        }
+    }
 
     private var dateAndScopeFilterBar: some View {
         let theme = viewModel.selectedTheme
-        return VStack(spacing: 8) {
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 6) {
-                    ForEach(DateFilterPreset.allCases) { preset in
-                        let selected = viewModel.selectedDatePreset == preset
-                        Button {
-                            HapticsManager.selection()
-                            viewModel.applyDatePreset(preset)
-                        } label: {
-                            Text(preset.titleVi)
-                                .font(.caption.weight(selected ? .bold : .medium))
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 6)
-                                .frame(minHeight: 32)
-                                .background(selected ? theme.primaryLight : SemanticColors.surfaceMuted)
-                                .foregroundColor(selected ? theme.primary : SemanticColors.textSecondary)
-                                .clipShape(RoundedRectangle(cornerRadius: HrpDesignTokens.radiusXS, style: .continuous))
-                                .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                    }
-
-                    Divider().frame(height: 18)
-
+        return ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                Menu {
                     ForEach([("all", "Toàn công ty"), ("team", "Theo nhóm"), ("own", "Cá nhân")], id: \.0) { scopeCode, label in
-                        let selected = viewModel.dashboardScope == scopeCode
                         Button {
                             HapticsManager.selection()
                             viewModel.dashboardScope = scopeCode
                             Task { await viewModel.loadDashboardData() }
                         } label: {
-                            Text(label)
-                                .font(.caption.weight(selected ? .bold : .medium))
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 6)
-                                .frame(minHeight: 32)
-                                .background(selected ? theme.primary : SemanticColors.surfaceMuted)
-                                .foregroundColor(selected ? .white : SemanticColors.textSecondary)
-                                .clipShape(RoundedRectangle(cornerRadius: HrpDesignTokens.radiusXS, style: .continuous))
-                                .contentShape(Rectangle())
+                            HStack {
+                                Text(label)
+                                if viewModel.dashboardScope == scopeCode {
+                                    Image(systemName: "checkmark")
+                                }
+                            }
                         }
-                        .buttonStyle(.plain)
                     }
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: "building.2.fill")
+                            .font(.system(size: 11, weight: .semibold))
+                        Text(currentScopeLabel)
+                            .font(.caption.weight(.bold))
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 9, weight: .bold))
+                    }
+                    .padding(.horizontal, 11)
+                    .padding(.vertical, 6)
+                    .frame(minHeight: 32)
+                    .background(theme.primary)
+                    .foregroundColor(.white)
+                    .clipShape(Capsule())
                 }
-                .padding(.horizontal, 14)
+
+                Divider().frame(height: 18)
+
+                ForEach(DateFilterPreset.allCases) { preset in
+                    let selected = viewModel.selectedDatePreset == preset
+                    Button {
+                        HapticsManager.selection()
+                        viewModel.applyDatePreset(preset)
+                    } label: {
+                        Text(preset.titleVi)
+                            .font(.caption.weight(selected ? .bold : .medium))
+                            .padding(.horizontal, 11)
+                            .padding(.vertical, 6)
+                            .frame(minHeight: 32)
+                            .background(selected ? theme.primaryLight : SemanticColors.surfaceMuted)
+                            .foregroundColor(selected ? theme.primary : SemanticColors.textSecondary)
+                            .clipShape(Capsule())
+                            .contentShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                }
             }
+            .padding(.horizontal, 14)
         }
         .padding(.vertical, 8)
         .background(Color.white)
@@ -262,89 +282,141 @@ public struct DashboardScreen: View {
         let kpis = viewModel.generalOverview.kpis
         let theme = viewModel.selectedTheme
         let hasDateFilter = viewModel.selectedDatePreset != .all
+        let allProjects = viewModel.generalOverview.projects
+        let visibleProjects = Array(allProjects.prefix(visibleProjectsCount))
 
         return VStack(alignment: .leading, spacing: 14) {
-            // KPI Cards Grid
+            // KPI Cards Grid (2x2 with Tinted SF Symbol Circle + 27pt Heavy Numbers)
             LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
                 kpiCard(
                     title: hasDateFilter ? "Tuyển mới trong kỳ" : "Tổng nhân sự",
                     value: "\(kpis.totalHeadcount)",
-                    subtitle: hasDateFilter ? "Kỳ: \(viewModel.selectedDatePreset.titleVi)" : "Tuyển mới: +\(kpis.newCount)",
+                    subtitle: hasDateFilter ? "Kỳ: \(viewModel.selectedDatePreset.titleVi)" : "+\(kpis.newCount) mới",
+                    iconName: "person.3.fill",
                     accentColor: theme.primary
                 )
                 kpiCard(
                     title: hasDateFilter ? "Vào làm trong kỳ" : "Đang làm việc",
                     value: "\(kpis.activeCount)",
-                    subtitle: "Giữ chân: \(WorkReportsContract.formatPercentVi(kpis.retentionRate))",
+                    subtitle: "Giữ chân \(WorkReportsContract.formatPercentVi(kpis.retentionRate))",
+                    iconName: "checkmark.seal.fill",
                     accentColor: SemanticColors.successText
                 )
                 kpiCard(
                     title: hasDateFilter ? "Nghỉ trong kỳ" : "Đã nghỉ việc",
                     value: "\(kpis.inactiveCount)",
-                    subtitle: "Nghỉ trong kỳ: \(kpis.resignedInPeriodCount)",
+                    subtitle: "Trong kỳ: \(kpis.resignedInPeriodCount)",
+                    iconName: "person.crop.circle.badge.minus",
                     accentColor: SemanticColors.dangerText
                 )
                 kpiCard(
                     title: "Phỏng vấn / Chờ nhận",
                     value: "\(kpis.interviewCount)",
-                    subtitle: "Biến động: \(WorkReportsContract.formatPercentVi(kpis.turnoverRate))",
+                    subtitle: "Biến động \(WorkReportsContract.formatPercentVi(kpis.turnoverRate))",
+                    iconName: "clock.badge.questionmark",
                     accentColor: SemanticColors.warningText
                 )
             }
 
-            // Projects Breakdown Card
+            // Projects Breakdown Card with HrpSegmentedBar & Load More
             VStack(alignment: .leading, spacing: 10) {
                 HStack {
                     Text(hasDateFilter ? "Thống kê Dự án (\(viewModel.selectedDatePreset.titleVi))" : "Thống kê nhân sự theo Dự án")
                         .font(.headline)
                         .foregroundColor(SemanticColors.textPrimary)
                     Spacer()
-                    Text("\(max(viewModel.generalOverview.projectsTotal, viewModel.generalOverview.projects.count)) dự án")
-                        .font(.caption)
+                    Text("\(max(viewModel.generalOverview.projectsTotal, allProjects.count)) dự án")
+                        .font(.caption.weight(.semibold))
                         .monospacedDigit()
                         .contentTransition(.numericText())
                         .foregroundColor(SemanticColors.textMuted)
                 }
 
-                if viewModel.generalOverview.projects.isEmpty {
+                if allProjects.isEmpty {
                     Text("Chưa có dữ liệu dự án trong kỳ đã chọn.")
                         .font(.subheadline)
                         .foregroundColor(SemanticColors.textMuted)
                         .padding(.vertical, 8)
                 } else {
                     LazyVStack(spacing: 8) {
-                        ForEach(viewModel.generalOverview.projects) { proj in
-                            VStack(alignment: .leading, spacing: 6) {
-                                HStack {
+                        ForEach(visibleProjects) { proj in
+                            let retentionPct: Double = proj.totalCount > 0
+                                ? (Double(proj.activeCount) * 100.0 / Double(proj.totalCount))
+                                : 0
+                            VStack(alignment: .leading, spacing: 7) {
+                                // Row 1: Project Name left · Total right (+New badge if any)
+                                HStack(spacing: 6) {
                                     Text(proj.projectName)
                                         .font(.subheadline.weight(.semibold))
                                         .foregroundColor(SemanticColors.textPrimary)
+                                        .lineLimit(1)
                                     Spacer()
-                                    Text("Tổng: \(proj.totalCount)")
-                                        .font(.caption.weight(.bold))
+                                    if proj.newCount > 0 {
+                                        Text("+\(proj.newCount) mới")
+                                            .font(.caption2.weight(.bold))
+                                            .monospacedDigit()
+                                            .padding(.horizontal, 6)
+                                            .padding(.vertical, 2)
+                                            .background(SemanticColors.infoBg)
+                                            .foregroundColor(SemanticColors.infoText)
+                                            .clipShape(Capsule())
+                                    }
+                                    Text("\(proj.totalCount)")
+                                        .font(.subheadline.weight(.bold))
                                         .monospacedDigit()
                                         .contentTransition(.numericText())
                                         .foregroundColor(theme.primary)
                                 }
+
+                                // Row 2: Visual Segmented Bar
+                                HrpSegmentedBar(
+                                    activeCount: proj.activeCount,
+                                    inactiveCount: proj.inactiveCount
+                                )
+
+                                // Row 3: Colored Dots + Retention %
                                 HStack(spacing: 12) {
-                                    Label("Đang làm: \(proj.activeCount)", systemImage: "checkmark.circle.fill")
-                                        .font(.caption)
+                                    HStack(spacing: 4) {
+                                        Circle()
+                                            .fill(SemanticColors.successText)
+                                            .frame(width: 6, height: 6)
+                                        Text("\(proj.activeCount) đang làm")
+                                            .font(.caption2.weight(.medium))
+                                            .monospacedDigit()
+                                            .foregroundColor(SemanticColors.textSecondary)
+                                    }
+                                    HStack(spacing: 4) {
+                                        Circle()
+                                            .fill(SemanticColors.dangerText.opacity(0.85))
+                                            .frame(width: 6, height: 6)
+                                        Text("\(proj.inactiveCount) nghỉ")
+                                            .font(.caption2.weight(.medium))
+                                            .monospacedDigit()
+                                            .foregroundColor(SemanticColors.textSecondary)
+                                    }
+                                    Spacer()
+                                    Text(WorkReportsContract.formatPercentVi(retentionPct))
+                                        .font(.caption2.weight(.bold))
                                         .monospacedDigit()
                                         .foregroundColor(SemanticColors.successText)
-                                    Label("Đã nghỉ: \(proj.inactiveCount)", systemImage: "xmark.circle")
-                                        .font(.caption)
-                                        .monospacedDigit()
-                                        .foregroundColor(SemanticColors.dangerText)
-                                    if proj.newCount > 0 {
-                                        Text("Mới: +\(proj.newCount)")
-                                            .font(.caption.weight(.semibold))
-                                            .monospacedDigit()
-                                            .foregroundColor(SemanticColors.infoText)
-                                    }
                                 }
                             }
-                            .padding(10)
+                            .padding(11)
                             .hrpMutedTile(cornerRadius: HrpDesignTokens.radiusMD)
+                        }
+                    }
+
+                    if allProjects.count > visibleProjectsCount {
+                        HrpLoadMoreButton(
+                            title: "Xem thêm dự án",
+                            loadedCount: visibleProjects.count,
+                            totalCount: allProjects.count,
+                            isLoading: false,
+                            theme: theme
+                        ) {
+                            withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) {
+                                visibleProjectsCount += 10
+                            }
                         }
                     }
                 }
@@ -354,15 +426,17 @@ public struct DashboardScreen: View {
 
             // Recruiters & Managers Performance
             if !viewModel.generalOverview.recruiters.isEmpty {
-                personPerformanceCard(
+                DashboardPersonPerformanceCard(
                     title: hasDateFilter ? "Hiệu suất Người tuyển dụng (\(viewModel.selectedDatePreset.titleVi))" : "Hiệu suất Người tuyển dụng",
-                    rows: viewModel.generalOverview.recruiters
+                    rows: viewModel.generalOverview.recruiters,
+                    theme: theme
                 )
             }
             if !viewModel.generalOverview.managers.isEmpty {
-                personPerformanceCard(
+                DashboardPersonPerformanceCard(
                     title: hasDateFilter ? "Hiệu suất Theo Nhóm (\(viewModel.selectedDatePreset.titleVi))" : "Hiệu suất Quản lý dự án",
-                    rows: viewModel.generalOverview.managers
+                    rows: viewModel.generalOverview.managers,
+                    theme: theme
                 )
             }
         }
@@ -429,22 +503,41 @@ public struct DashboardScreen: View {
                                     .clipShape(Capsule())
                             }
 
+                            HrpSegmentedBar(
+                                activeCount: team.activeWorkers,
+                                inactiveCount: team.inactiveWorkers
+                            )
+
                             HStack(spacing: 14) {
-                                Text("Tổng NLĐ: \(team.totalWorkers)")
-                                    .font(.caption.weight(.semibold))
+                                HStack(spacing: 4) {
+                                    Circle()
+                                        .fill(SemanticColors.successText)
+                                        .frame(width: 6, height: 6)
+                                    Text("\(team.activeWorkers) đang làm")
+                                        .font(.caption2.weight(.medium))
+                                        .monospacedDigit()
+                                        .foregroundColor(SemanticColors.textSecondary)
+                                }
+                                HStack(spacing: 4) {
+                                    Circle()
+                                        .fill(SemanticColors.dangerText.opacity(0.85))
+                                        .frame(width: 6, height: 6)
+                                    Text("\(team.inactiveWorkers) nghỉ")
+                                        .font(.caption2.weight(.medium))
+                                        .monospacedDigit()
+                                        .foregroundColor(SemanticColors.textSecondary)
+                                }
+                                if team.newWorkers > 0 {
+                                    Text("+\(team.newWorkers) mới")
+                                        .font(.caption2.weight(.bold))
+                                        .monospacedDigit()
+                                        .foregroundColor(SemanticColors.infoText)
+                                }
+                                Spacer()
+                                Text("Tổng: \(team.totalWorkers)")
+                                    .font(.caption2.weight(.bold))
                                     .monospacedDigit()
-                                Text("Đang làm: \(team.activeWorkers)")
-                                    .font(.caption)
-                                    .monospacedDigit()
-                                    .foregroundColor(SemanticColors.successText)
-                                Text("Nghỉ: \(team.inactiveWorkers)")
-                                    .font(.caption)
-                                    .monospacedDigit()
-                                    .foregroundColor(SemanticColors.dangerText)
-                                Text("Mới: +\(team.newWorkers)")
-                                    .font(.caption)
-                                    .monospacedDigit()
-                                    .foregroundColor(SemanticColors.infoText)
+                                    .foregroundColor(SemanticColors.textPrimary)
                             }
 
                             if !team.members.isEmpty {
@@ -571,6 +664,18 @@ public struct DashboardScreen: View {
                         .padding(14)
                         .hrpCardSurface(cornerRadius: HrpDesignTokens.radiusCard)
                     }
+
+                    if dupData.page < dupData.totalPages || dupData.groups.count < dupData.totalGroups {
+                        HrpLoadMoreButton(
+                            title: "Tải thêm nhóm CCCD trùng",
+                            loadedCount: dupData.groups.count,
+                            totalCount: dupData.totalGroups,
+                            isLoading: viewModel.isLoadingMoreDuplicateCccd,
+                            theme: theme
+                        ) {
+                            Task { await viewModel.loadMoreDuplicateCccdReport() }
+                        }
+                    }
                 }
             }
         }
@@ -578,55 +683,42 @@ public struct DashboardScreen: View {
 
     // MARK: - Helper Cards
 
-    private func kpiCard(title: String, value: String, subtitle: String, accentColor: Color) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(title)
-                .font(.caption.weight(.semibold))
-                .foregroundColor(SemanticColors.textSecondary)
+    private func kpiCard(
+        title: String,
+        value: String,
+        subtitle: String,
+        iconName: String = "chart.bar.fill",
+        accentColor: Color
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                ZStack {
+                    Circle()
+                        .fill(accentColor.opacity(0.14))
+                        .frame(width: 28, height: 28)
+                    Image(systemName: iconName)
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundColor(accentColor)
+                }
+                Text(title)
+                    .font(.caption.weight(.semibold))
+                    .foregroundColor(SemanticColors.textSecondary)
+                    .lineLimit(1)
+            }
             Text(value)
-                .font(.system(size: 24, weight: .bold, design: .rounded))
+                .font(.system(size: 27, weight: .heavy, design: .rounded))
                 .monospacedDigit()
                 .contentTransition(.numericText())
                 .animation(.default, value: value)
                 .foregroundColor(accentColor)
             Text(subtitle)
-                .font(.caption2)
+                .font(.caption2.weight(.medium))
                 .monospacedDigit()
                 .contentTransition(.numericText())
                 .foregroundColor(SemanticColors.textMuted)
+                .lineLimit(1)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(14)
-        .hrpCardSurface(cornerRadius: HrpDesignTokens.radiusCard)
-    }
-
-    private func personPerformanceCard(title: String, rows: [PersonPerformanceRow]) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text(title)
-                .font(.headline)
-                .foregroundColor(SemanticColors.textPrimary)
-
-            ForEach(rows.prefix(10)) { row in
-                HStack {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(row.name)
-                            .font(.subheadline.weight(.medium))
-                            .foregroundColor(SemanticColors.textPrimary)
-                        Text("Tổng: \(row.totalCount) · Đang làm: \(row.activeCount) · Nghỉ: \(row.inactiveCount)")
-                            .font(.caption)
-                            .monospacedDigit()
-                            .foregroundColor(SemanticColors.textSecondary)
-                    }
-                    Spacer()
-                    Text(WorkReportsContract.formatPercentVi(row.activeRatePct))
-                        .font(.caption.weight(.bold))
-                        .monospacedDigit()
-                        .contentTransition(.numericText())
-                        .foregroundColor(SemanticColors.successText)
-                }
-                .padding(.vertical, 4)
-            }
-        }
         .padding(14)
         .hrpCardSurface(cornerRadius: HrpDesignTokens.radiusCard)
     }
@@ -667,6 +759,98 @@ public struct DashboardScreen: View {
                             }
                         }
                         .frame(height: 6)
+                    }
+                }
+            }
+        }
+        .padding(14)
+        .hrpCardSurface(cornerRadius: HrpDesignTokens.radiusCard)
+    }
+}
+
+private struct DashboardPersonPerformanceCard: View {
+    let title: String
+    let rows: [PersonPerformanceRow]
+    let theme: MiniBiThemePalette
+    @State private var visibleCount: Int = 10
+
+    var body: some View {
+        let visibleRows = Array(rows.prefix(visibleCount))
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text(title)
+                    .font(.headline)
+                    .foregroundColor(SemanticColors.textPrimary)
+                Spacer()
+                Text("\(rows.count)")
+                    .font(.caption.weight(.semibold))
+                    .monospacedDigit()
+                    .foregroundColor(SemanticColors.textMuted)
+            }
+
+            LazyVStack(spacing: 8) {
+                ForEach(visibleRows) { row in
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            Text(row.name)
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundColor(SemanticColors.textPrimary)
+                                .lineLimit(1)
+                            Spacer()
+                            Text("\(row.totalCount)")
+                                .font(.subheadline.weight(.bold))
+                                .monospacedDigit()
+                                .contentTransition(.numericText())
+                                .foregroundColor(theme.primary)
+                        }
+
+                        HrpSegmentedBar(
+                            activeCount: row.activeCount,
+                            inactiveCount: row.inactiveCount
+                        )
+
+                        HStack(spacing: 12) {
+                            HStack(spacing: 4) {
+                                Circle()
+                                    .fill(SemanticColors.successText)
+                                    .frame(width: 6, height: 6)
+                                Text("\(row.activeCount) đang làm")
+                                    .font(.caption2.weight(.medium))
+                                    .monospacedDigit()
+                                    .foregroundColor(SemanticColors.textSecondary)
+                            }
+                            HStack(spacing: 4) {
+                                Circle()
+                                    .fill(SemanticColors.dangerText.opacity(0.85))
+                                    .frame(width: 6, height: 6)
+                                Text("\(row.inactiveCount) nghỉ")
+                                    .font(.caption2.weight(.medium))
+                                    .monospacedDigit()
+                                    .foregroundColor(SemanticColors.textSecondary)
+                            }
+                            Spacer()
+                            Text(WorkReportsContract.formatPercentVi(row.activeRatePct))
+                                .font(.caption2.weight(.bold))
+                                .monospacedDigit()
+                                .contentTransition(.numericText())
+                                .foregroundColor(SemanticColors.successText)
+                        }
+                    }
+                    .padding(10)
+                    .hrpMutedTile(cornerRadius: HrpDesignTokens.radiusMD)
+                }
+            }
+
+            if rows.count > visibleCount {
+                HrpLoadMoreButton(
+                    title: "Xem thêm",
+                    loadedCount: visibleRows.count,
+                    totalCount: rows.count,
+                    isLoading: false,
+                    theme: theme
+                ) {
+                    withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) {
+                        visibleCount += 10
                     }
                 }
             }
@@ -795,6 +979,18 @@ public struct CccdReviewSectionView: View {
                             .hrpCardSurface(cornerRadius: HrpDesignTokens.radiusCard)
                         }
                         .buttonStyle(HrpPressableButtonStyle())
+                    }
+
+                    if viewModel.cccdReviewItems.count < viewModel.cccdReviewTotal {
+                        HrpLoadMoreButton(
+                            title: "Tải thêm hồ sơ duyệt CCCD",
+                            loadedCount: viewModel.cccdReviewItems.count,
+                            totalCount: viewModel.cccdReviewTotal,
+                            isLoading: viewModel.isLoadingMoreCccdReview,
+                            theme: theme
+                        ) {
+                            Task { await viewModel.loadMoreCccdReviewItems() }
+                        }
                     }
                 }
             }

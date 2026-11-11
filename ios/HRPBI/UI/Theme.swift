@@ -402,6 +402,490 @@ public extension View {
     }
 }
 
+// MARK: - Shared Appllama Round 2 Components (Date Navigator, Load More, Segmented Bar, Initials Avatar)
+
+public struct HrpDateNavigatorBar: View {
+    public let selectedDateIso: String
+    public let todayDateIso: String
+    public let allowFutureDates: Bool
+    public let theme: MiniBiThemePalette
+    public let onDateSelected: (String) -> Void
+
+    @Namespace private var dateStripNamespace
+    @State private var showCalendarSheet: Bool = false
+    @State private var pickerDate: Date = Date()
+
+    public init(
+        selectedDateIso: String,
+        todayDateIso: String = LeaveContract.todayVietnamIsoDate(),
+        allowFutureDates: Bool = false,
+        theme: MiniBiThemePalette,
+        onDateSelected: @escaping (String) -> Void
+    ) {
+        self.selectedDateIso = selectedDateIso
+        self.todayDateIso = todayDateIso
+        self.allowFutureDates = allowFutureDates
+        self.theme = theme
+        self.onDateSelected = onDateSelected
+    }
+
+    private static var vietnamCalendar: Calendar {
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone(identifier: "Asia/Ho_Chi_Minh") ?? .current
+        cal.locale = Locale(identifier: "vi_VN")
+        cal.firstWeekday = 2 // Monday (T2)
+        return cal
+    }
+
+    private static let isoFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.calendar = Calendar(identifier: .gregorian)
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.timeZone = TimeZone(identifier: "Asia/Ho_Chi_Minh") ?? .current
+        f.dateFormat = "yyyy-MM-dd"
+        return f
+    }()
+
+    private func parseIso(_ iso: String) -> Date {
+        Self.isoFormatter.date(from: iso.trimmingCharacters(in: .whitespacesAndNewlines)) ?? Date()
+    }
+
+    private func formatIso(_ date: Date) -> String {
+        Self.isoFormatter.string(from: date)
+    }
+
+    private var selectedDate: Date {
+        parseIso(selectedDateIso)
+    }
+
+    private var monthYearLabel: String {
+        let cal = Self.vietnamCalendar
+        let comps = cal.dateComponents([.month, .year], from: selectedDate)
+        let m = comps.month ?? 1
+        let y = comps.year ?? 2026
+        return "Tháng \(m), \(y)"
+    }
+
+    private struct WeekDayCell: Identifiable {
+        let id: String // ISO date YYYY-MM-DD
+        let weekdayShort: String
+        let dayNumber: Int
+        let isToday: Bool
+        let isSelected: Bool
+        let isDisabled: Bool
+    }
+
+    private var weekDays: [WeekDayCell] {
+        let cal = Self.vietnamCalendar
+        let baseDate = selectedDate
+        let weekday = cal.component(.weekday, from: baseDate) // 1 = Sun, 2 = Mon, ..., 7 = Sat
+        let offsetToMonday = (weekday == 1) ? -6 : (2 - weekday)
+        let monday = cal.date(byAdding: .day, value: offsetToMonday, to: baseDate) ?? baseDate
+        let labels = ["T2", "T3", "T4", "T5", "T6", "T7", "CN"]
+
+        return (0..<7).map { idx in
+            let d = cal.date(byAdding: .day, value: idx, to: monday) ?? baseDate
+            let iso = formatIso(d)
+            let dayNum = cal.component(.day, from: d)
+            let disabled = !allowFutureDates && iso > todayDateIso
+            return WeekDayCell(
+                id: iso,
+                weekdayShort: labels[idx],
+                dayNumber: dayNum,
+                isToday: iso == todayDateIso,
+                isSelected: iso == selectedDateIso,
+                isDisabled: disabled
+            )
+        }
+    }
+
+    private var canAdvanceWeek: Bool {
+        if allowFutureDates { return true }
+        return selectedDateIso < todayDateIso
+    }
+
+    private func shiftDays(_ delta: Int) {
+        let cal = Self.vietnamCalendar
+        guard let shifted = cal.date(byAdding: .day, value: delta, to: selectedDate) else { return }
+        var targetIso = formatIso(shifted)
+        if !allowFutureDates && targetIso > todayDateIso {
+            targetIso = todayDateIso
+        }
+        guard targetIso != selectedDateIso else { return }
+        HapticsManager.selection()
+        onDateSelected(targetIso)
+    }
+
+    public var body: some View {
+        VStack(spacing: 8) {
+            // Top Row: `<` | Month/Year Picker Button | "Hôm nay" chip | `>`
+            HStack(spacing: 8) {
+                Button {
+                    shiftDays(-7)
+                } label: {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundColor(SemanticColors.textPrimary)
+                        .frame(width: 34, height: 34)
+                        .background(SemanticColors.surfaceMuted)
+                        .clipShape(RoundedRectangle(cornerRadius: HrpDesignTokens.radiusXS, style: .continuous))
+                }
+                .buttonStyle(HrpPressableButtonStyle())
+                .accessibilityLabel("Tuần trước")
+
+                Button {
+                    HapticsManager.selection()
+                    pickerDate = selectedDate
+                    showCalendarSheet = true
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "calendar")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundColor(theme.primary)
+                        Text(monthYearLabel)
+                            .font(.subheadline.weight(.bold))
+                            .monospacedDigit()
+                            .foregroundColor(SemanticColors.textPrimary)
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundColor(SemanticColors.textMuted)
+                    }
+                    .padding(.horizontal, 10)
+                    .frame(minHeight: 34)
+                    .background(SemanticColors.surfaceMuted.opacity(0.75))
+                    .clipShape(RoundedRectangle(cornerRadius: HrpDesignTokens.radiusXS, style: .continuous))
+                }
+                .buttonStyle(HrpPressableButtonStyle())
+
+                Spacer(minLength: 4)
+
+                if selectedDateIso != todayDateIso {
+                    Button {
+                        HapticsManager.selection()
+                        onDateSelected(todayDateIso)
+                    } label: {
+                        Text("Hôm nay")
+                            .font(.caption.weight(.bold))
+                            .foregroundColor(theme.primary)
+                            .padding(.horizontal, 10)
+                            .frame(minHeight: 30)
+                            .background(theme.primaryLight)
+                            .clipShape(Capsule())
+                    }
+                    .buttonStyle(HrpPressableButtonStyle())
+                }
+
+                Button {
+                    shiftDays(7)
+                } label: {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundColor(canAdvanceWeek ? SemanticColors.textPrimary : SemanticColors.textMuted.opacity(0.45))
+                        .frame(width: 34, height: 34)
+                        .background(SemanticColors.surfaceMuted)
+                        .clipShape(RoundedRectangle(cornerRadius: HrpDesignTokens.radiusXS, style: .continuous))
+                }
+                .buttonStyle(HrpPressableButtonStyle())
+                .disabled(!canAdvanceWeek)
+                .accessibilityLabel("Tuần sau")
+            }
+
+            // Bottom Row: 7-day strip (T2..CN)
+            HStack(spacing: 6) {
+                ForEach(weekDays) { cell in
+                    Button {
+                        guard !cell.isDisabled, cell.id != selectedDateIso else { return }
+                        HapticsManager.selection()
+                        withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) {
+                            onDateSelected(cell.id)
+                        }
+                    } label: {
+                        VStack(spacing: 3) {
+                            Text(cell.weekdayShort)
+                                .font(.system(size: 10, weight: cell.isSelected ? .bold : .semibold))
+                                .foregroundColor(
+                                    cell.isSelected
+                                        ? Color.white.opacity(0.9)
+                                        : (cell.isDisabled ? SemanticColors.textMuted.opacity(0.45) : SemanticColors.textSecondary)
+                                )
+                            Text("\(cell.dayNumber)")
+                                .font(.system(size: 14, weight: cell.isSelected ? .heavy : .semibold))
+                                .monospacedDigit()
+                                .foregroundColor(
+                                    cell.isSelected
+                                        ? .white
+                                        : (cell.isDisabled ? SemanticColors.textMuted.opacity(0.45) : (cell.isToday ? theme.primary : SemanticColors.textPrimary))
+                                )
+                            Circle()
+                                .fill(cell.isSelected ? Color.white : (cell.isToday ? theme.primary : Color.clear))
+                                .frame(width: 4, height: 4)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 6)
+                        .background {
+                            if cell.isSelected {
+                                RoundedRectangle(cornerRadius: HrpDesignTokens.radiusMD, style: .continuous)
+                                    .fill(theme.primary)
+                                    .matchedGeometryEffect(id: "hrp_date_nav_active_pill", in: dateStripNamespace)
+                                    .shadow(color: theme.primary.opacity(0.22), radius: 5, x: 0, y: 2)
+                            } else {
+                                RoundedRectangle(cornerRadius: HrpDesignTokens.radiusMD, style: .continuous)
+                                    .fill(cell.isToday ? theme.primaryLight.opacity(0.6) : SemanticColors.surfaceMuted.opacity(0.55))
+                            }
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(cell.isDisabled)
+                }
+            }
+        }
+        .padding(10)
+        .hrpCardSurface(cornerRadius: HrpDesignTokens.radiusCard)
+        .sheet(isPresented: $showCalendarSheet) {
+            NavigationStack {
+                VStack(spacing: 16) {
+                    if allowFutureDates {
+                        DatePicker(
+                            "Chọn ngày",
+                            selection: $pickerDate,
+                            displayedComponents: [.date]
+                        )
+                        .datePickerStyle(.graphical)
+                        .environment(\.locale, Locale(identifier: "vi_VN"))
+                        .environment(\.calendar, Self.vietnamCalendar)
+                        .tint(theme.primary)
+                        .padding(.horizontal, 12)
+                    } else {
+                        DatePicker(
+                            "Chọn ngày",
+                            selection: $pickerDate,
+                            in: ...parseIso(todayDateIso),
+                            displayedComponents: [.date]
+                        )
+                        .datePickerStyle(.graphical)
+                        .environment(\.locale, Locale(identifier: "vi_VN"))
+                        .environment(\.calendar, Self.vietnamCalendar)
+                        .tint(theme.primary)
+                        .padding(.horizontal, 12)
+                    }
+
+                    HStack(spacing: 10) {
+                        Button {
+                            HapticsManager.selection()
+                            showCalendarSheet = false
+                            onDateSelected(todayDateIso)
+                        } label: {
+                            Text("Về hôm nay")
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundColor(theme.primary)
+                                .frame(maxWidth: .infinity, minHeight: 44)
+                                .background(theme.primaryLight)
+                                .clipShape(RoundedRectangle(cornerRadius: HrpDesignTokens.radiusMD, style: .continuous))
+                        }
+                        .buttonStyle(HrpPressableButtonStyle())
+
+                        Button {
+                            HapticsManager.selection()
+                            let chosenIso = formatIso(pickerDate)
+                            let clampedIso = (!allowFutureDates && chosenIso > todayDateIso) ? todayDateIso : chosenIso
+                            showCalendarSheet = false
+                            if clampedIso != selectedDateIso {
+                                onDateSelected(clampedIso)
+                            }
+                        } label: {
+                            Text("Áp dụng")
+                                .font(.subheadline.weight(.bold))
+                                .foregroundColor(.white)
+                                .frame(maxWidth: .infinity, minHeight: 44)
+                                .background(theme.primary)
+                                .clipShape(RoundedRectangle(cornerRadius: HrpDesignTokens.radiusMD, style: .continuous))
+                        }
+                        .buttonStyle(HrpPressableButtonStyle())
+                    }
+                    .padding(.horizontal, 16)
+
+                    Spacer(minLength: 0)
+                }
+                .padding(.top, 8)
+                .navigationTitle("Chọn ngày xem dữ liệu")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Đóng") {
+                            showCalendarSheet = false
+                        }
+                    }
+                }
+            }
+            .hrpSheetPresentation(detents: [.medium, .large])
+        }
+    }
+}
+
+public struct HrpLoadMoreButton: View {
+    public let title: String
+    public let loadedCount: Int?
+    public let totalCount: Int?
+    public let isLoading: Bool
+    public let theme: MiniBiThemePalette
+    public let action: () -> Void
+
+    public init(
+        title: String = "Tải thêm",
+        loadedCount: Int? = nil,
+        totalCount: Int? = nil,
+        isLoading: Bool = false,
+        theme: MiniBiThemePalette,
+        action: @escaping () -> Void
+    ) {
+        self.title = title
+        self.loadedCount = loadedCount
+        self.totalCount = totalCount
+        self.isLoading = isLoading
+        self.theme = theme
+        self.action = action
+    }
+
+    private var resolvedLabel: String {
+        if let loaded = loadedCount, let total = totalCount, total > loaded {
+            return "\(title) (đang hiện \(loaded) / \(total))"
+        }
+        return title
+    }
+
+    public var body: some View {
+        Button {
+            guard !isLoading else { return }
+            HapticsManager.lightImpact()
+            action()
+        } label: {
+            HStack(spacing: 8) {
+                if isLoading {
+                    ProgressView()
+                        .scaleEffect(0.85)
+                        .tint(theme.primary)
+                    Text("Đang tải thêm…")
+                        .font(.subheadline.weight(.semibold))
+                } else {
+                    Image(systemName: "arrow.down.circle")
+                        .font(.system(size: 14, weight: .semibold))
+                    Text(resolvedLabel)
+                        .font(.subheadline.weight(.semibold))
+                        .monospacedDigit()
+                        .contentTransition(.numericText())
+                }
+            }
+            .foregroundColor(theme.primary)
+            .frame(maxWidth: .infinity, minHeight: 44)
+            .background(Color.white)
+            .clipShape(RoundedRectangle(cornerRadius: HrpDesignTokens.radiusMD, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: HrpDesignTokens.radiusMD, style: .continuous)
+                    .stroke(theme.primary.opacity(0.38), lineWidth: 0.9)
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(HrpPressableButtonStyle())
+        .disabled(isLoading)
+    }
+}
+
+public struct HrpSegmentedBar: View {
+    public let activeCount: Int
+    public let inactiveCount: Int
+    public let otherCount: Int
+    public let height: CGFloat
+
+    public init(
+        activeCount: Int,
+        inactiveCount: Int,
+        otherCount: Int = 0,
+        height: CGFloat = 6
+    ) {
+        self.activeCount = max(0, activeCount)
+        self.inactiveCount = max(0, inactiveCount)
+        self.otherCount = max(0, otherCount)
+        self.height = height
+    }
+
+    public var body: some View {
+        let total = max(1, activeCount + inactiveCount + otherCount)
+        GeometryReader { geo in
+            let w = geo.size.width
+            let activeWidth = w * CGFloat(activeCount) / CGFloat(total)
+            let inactiveWidth = w * CGFloat(inactiveCount) / CGFloat(total)
+            let otherWidth = max(0, w - activeWidth - inactiveWidth)
+
+            HStack(spacing: 0) {
+                if activeCount + inactiveCount + otherCount == 0 {
+                    Rectangle()
+                        .fill(SemanticColors.borderSubtle.opacity(0.6))
+                        .frame(width: w, height: height)
+                } else {
+                    if activeCount > 0 {
+                        Rectangle()
+                            .fill(SemanticColors.successText)
+                            .frame(width: activeWidth, height: height)
+                    }
+                    if inactiveCount > 0 {
+                        Rectangle()
+                            .fill(SemanticColors.dangerText.opacity(0.85))
+                            .frame(width: inactiveWidth, height: height)
+                    }
+                    if otherCount > 0 {
+                        Rectangle()
+                            .fill(SemanticColors.warningText)
+                            .frame(width: otherWidth, height: height)
+                    }
+                }
+            }
+            .clipShape(Capsule())
+        }
+        .frame(height: height)
+    }
+}
+
+public struct HrpInitialsAvatar: View {
+    public let fullName: String
+    public let tint: Color
+    public let size: CGFloat
+
+    public init(fullName: String, tint: Color, size: CGFloat = 40) {
+        self.fullName = fullName
+        self.tint = tint
+        self.size = size
+    }
+
+    public static func extractInitials(from rawName: String) -> String {
+        let words = rawName
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .components(separatedBy: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }
+        guard !words.isEmpty else { return "NL" }
+        if words.count == 1 {
+            return String(words[0].prefix(2)).uppercased()
+        }
+        let firstChar = words.first?.first.map { String($0) } ?? ""
+        let lastChar = words.last?.first.map { String($0) } ?? ""
+        return (firstChar + lastChar).uppercased()
+    }
+
+    public var body: some View {
+        let initials = Self.extractInitials(from: fullName)
+        ZStack {
+            RoundedRectangle(cornerRadius: size * 0.32, style: .continuous)
+                .fill(tint.opacity(0.14))
+            RoundedRectangle(cornerRadius: size * 0.32, style: .continuous)
+                .stroke(tint.opacity(0.26), lineWidth: 0.8)
+            Text(initials)
+                .font(.system(size: size * 0.36, weight: .bold, design: .rounded))
+                .foregroundColor(tint)
+        }
+        .frame(width: size, height: size)
+    }
+}
+
 public extension Color {
     init(hex: UInt32, alpha: Double = 1.0) {
         let r = Double((hex >> 16) & 0xFF) / 255.0

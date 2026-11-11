@@ -444,7 +444,7 @@ final class HRPBTests: XCTestCase {
         )
         let empTabs = LeaveContract.resolveVisibleAttendanceTabs(authority: employeeAuth, errorCode: nil)
         XCTAssertEqual(empTabs, [.checkIn, .explanation, .leaveRequest])
-        XCTAssertEqual(empTabs.map(\.label), ["Chấm công", "Giải trình chấm công", "Xin nghỉ phép"])
+        XCTAssertEqual(empTabs.map(\.label), ["Chấm công", "Giải trình", "Xin nghỉ phép"])
 
         // 2. Approver (Team Leader / Department Head / Admin / BoD) -> sees all 5 tabs in exact order
         let approverAuth = LeaveAuthorityProjection(
@@ -461,7 +461,7 @@ final class HRPBTests: XCTestCase {
         )
         XCTAssertEqual(
             approverTabs.map(\.label),
-            ["Chấm công", "Giải trình chấm công", "Xin nghỉ phép", "Xét duyệt giải trình", "Duyệt nghỉ"]
+            ["Chấm công", "Giải trình", "Xin nghỉ phép", "Xét duyệt giải trình", "Duyệt nghỉ"]
         )
 
         // 3. Shared non-employee account -> sees only Check-in
@@ -4140,5 +4140,77 @@ final class HRPBTests: XCTestCase {
         XCTAssertEqual(HrpDesignTokens.radiusMD, 12)
         XCTAssertEqual(HrpDesignTokens.radiusCard, 16)
         XCTAssertEqual(HrpDesignTokens.radiusHero, 22)
+    }
+
+    func testAppllamaRound2LabelInitialsAndPaginationDefaults() async throws {
+        // 1. Shortened tab label ("Giải trình chấm công" -> "Giải trình")
+        XCTAssertEqual(AttendanceAreaTab.explanation.label, "Giải trình")
+
+        // 2. Explanation default page limit is 15
+        XCTAssertEqual(AttendanceExplanationService.defaultPageLimit, 15)
+
+        // 3. Initials extraction for 2-line worker avatar
+        XCTAssertEqual(HrpInitialsAvatar.initials(from: "Nguyễn Văn An"), "NA")
+        XCTAssertEqual(HrpInitialsAvatar.initials(from: "Lê Hoa"), "LH")
+        XCTAssertEqual(HrpInitialsAvatar.initials(from: "Minh"), "MI")
+        XCTAssertEqual(HrpInitialsAvatar.initials(from: "   "), "NV")
+
+        // 4. Date-scoped attendance history query contract (`from_date`, `to_date`, `page`, `page_size=15`)
+        MockURLProtocol.reset()
+        MockURLProtocol.requestHandler = { request in
+            let url = try XCTUnwrap(request.url)
+            let response = HTTPURLResponse(
+                url: url,
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: ["Content-Type": "application/json"]
+            )!
+            let payload = """
+            {
+                "ok": true,
+                "data": {
+                    "items": [],
+                    "has_more": true,
+                    "total": 34
+                }
+            }
+            """.data(using: .utf8)!
+            return (response, payload)
+        }
+
+        let (client, keychain) = makeMockClient()
+        keychain.saveAccessToken("mock-token")
+        let anchorManager = TrustedTimeAnchorManager(
+            defaults: UserDefaults(suiteName: "com.aistudio.minibi.round2.anchor.\(UUID().uuidString)")!
+        )
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("outbox_round2_\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let outboxService = AttendanceOutboxService(
+            httpClient: client,
+            timeAnchorManager: anchorManager,
+            storageDirectory: tempDir
+        )
+
+        let synced = await outboxService.syncServerHistoryForUser(
+            userKey: "user-round2",
+            fromDate: "2026-11-11",
+            toDate: "2026-11-11",
+            page: 2,
+            pageSize: 15
+        )
+        XCTAssertTrue(synced.isEmpty)
+        XCTAssertTrue(outboxService.lastHistorySyncHasMore)
+        XCTAssertEqual(outboxService.lastHistorySyncTotalCount, 34)
+
+        let historyUrls = MockURLProtocol.recordedUrls().filter { $0.contains("/api/attendance/history") }
+        XCTAssertEqual(historyUrls.count, 1)
+        let queryUrl = try XCTUnwrap(historyUrls.first)
+        XCTAssertTrue(queryUrl.contains("from_date=2026-11-11"))
+        XCTAssertTrue(queryUrl.contains("to_date=2026-11-11"))
+        XCTAssertTrue(queryUrl.contains("page=2"))
+        XCTAssertTrue(queryUrl.contains("page_size=15"))
     }
 }

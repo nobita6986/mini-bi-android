@@ -760,21 +760,70 @@ public final class AttendanceOutboxService {
 
     // MARK: - Server History Sync & Report Export
 
-    public func syncServerHistoryForUser(userKey: String, days: Int = 30) async -> MiniBiApiResult<(items: [AttendanceOutboxItem], todayCount: Int)> {
+    public private(set) var lastHistorySyncHasMore: Bool = false
+    public private(set) var lastHistorySyncTotalCount: Int = 0
+
+    public static func vietnamDateIso(for item: AttendanceOutboxItem) -> String {
+        let epochMs = AttendanceTimeAnchorManager.parseIso8601ToEpochMs(item.clientCapturedAt) ?? item.createdAtEpochMs
+        let date = Date(timeIntervalSince1970: Double(epochMs) / 1000.0)
+        let df = DateFormatter()
+        df.calendar = Calendar(identifier: .gregorian)
+        df.locale = Locale(identifier: "en_US_POSIX")
+        df.timeZone = TimeZone(identifier: "Asia/Ho_Chi_Minh") ?? .current
+        df.dateFormat = "yyyy-MM-dd"
+        return df.string(from: date)
+    }
+
+    public static func formatVietnamTimeHHmm(for item: AttendanceOutboxItem) -> String {
+        let epochMs = AttendanceTimeAnchorManager.parseIso8601ToEpochMs(item.clientCapturedAt) ?? item.createdAtEpochMs
+        let date = Date(timeIntervalSince1970: Double(epochMs) / 1000.0)
+        let df = DateFormatter()
+        df.calendar = Calendar(identifier: .gregorian)
+        df.locale = Locale(identifier: "en_US_POSIX")
+        df.timeZone = TimeZone(identifier: "Asia/Ho_Chi_Minh") ?? .current
+        df.dateFormat = "HH:mm"
+        return df.string(from: date)
+    }
+
+    public func syncServerHistoryForUser(
+        userKey: String,
+        fromDate: String? = nil,
+        toDate: String? = nil,
+        page: Int = 1,
+        pageSize: Int = 15,
+        days: Int = 0
+    ) async -> MiniBiApiResult<(items: [AttendanceOutboxItem], todayCount: Int)> {
         var cal = Calendar(identifier: .gregorian)
         cal.timeZone = TimeZone(identifier: "Asia/Ho_Chi_Minh") ?? .current
         let now = Date()
-        let fromDate = cal.date(byAdding: .day, value: -max(days, 1), to: now) ?? now
         let df = DateFormatter()
         df.locale = Locale(identifier: "en_US_POSIX")
         df.timeZone = cal.timeZone
         df.dateFormat = "yyyy-MM-dd"
+        let todayStr = df.string(from: now)
 
+        let resolvedFromDate: String
+        let resolvedToDate: String
+        if let f = fromDate?.trimmingCharacters(in: .whitespacesAndNewlines), !f.isEmpty {
+            resolvedFromDate = f
+            let t = toDate?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            resolvedToDate = t.isEmpty ? f : t
+        } else if days > 0 {
+            let start = cal.date(byAdding: .day, value: -days, to: now) ?? now
+            resolvedFromDate = df.string(from: start)
+            resolvedToDate = todayStr
+        } else {
+            resolvedFromDate = todayStr
+            resolvedToDate = todayStr
+        }
+
+        let safePage = max(1, page)
+        let safePageSize = max(1, min(pageSize, 100))
         let queryItems: [URLQueryItem] = [
-            URLQueryItem(name: "from_date", value: df.string(from: fromDate)),
-            URLQueryItem(name: "to_date", value: df.string(from: now)),
-            URLQueryItem(name: "page", value: "1"),
-            URLQueryItem(name: "page_size", value: "100")
+            URLQueryItem(name: "from_date", value: resolvedFromDate),
+            URLQueryItem(name: "to_date", value: resolvedToDate),
+            URLQueryItem(name: "page", value: "\(safePage)"),
+            URLQueryItem(name: "page_size", value: "\(safePageSize)")
         ]
 
         let response = await httpClient.request(
@@ -798,10 +847,32 @@ public final class AttendanceOutboxService {
             .ifEmpty(root.optObjectArray("items"))
             .ifEmpty(root.optObjectArray("check_ins"))
 
+        let totalRows = reportObj.optInt(
+            "total", "total_rows", "total_count",
+            defaultValue: root.optInt("total", "total_rows", "total_count", defaultValue: -1)
+        )
+        let totalPages = reportObj.optInt(
+            "total_pages",
+            defaultValue: root.optInt("total_pages", defaultValue: -1)
+        )
+        let explicitHasMore = (reportObj["has_more"] as? Bool) ?? (root["has_more"] as? Bool)
+        let resolvedHasMore: Bool
+        if let explicitHasMore {
+            resolvedHasMore = explicitHasMore
+        } else if totalPages > 0 {
+            resolvedHasMore = safePage < totalPages
+        } else if totalRows >= 0 {
+            resolvedHasMore = (safePage * safePageSize) < totalRows
+        } else {
+            resolvedHasMore = rawItems.count >= safePageSize
+        }
+
         let todayServerCount = root.optInt("today_count", "today_check_in_count", defaultValue: -1)
         let normalizedKey = userKey.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
 
         lock.lock()
+        lastHistorySyncHasMore = resolvedHasMore
+        lastHistorySyncTotalCount = totalRows >= 0 ? totalRows : rawItems.count
         var currentList = items
         for obj in rawItems {
             let idempKey = obj.optString("idempotency_key", "client_id")

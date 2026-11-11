@@ -542,7 +542,8 @@ public final class WorkReportsAndReportingService {
 
     public func fetchMyObligations(
         submissionState: String? = nil,
-        periodKey: String? = nil
+        periodKey: String? = nil,
+        pageSize: Int? = nil
     ) async -> MiniBiApiResult<[WorkReportObligationItem]> {
         var queryItems: [URLQueryItem] = []
         if let submissionState, !submissionState.isEmpty {
@@ -550,6 +551,9 @@ public final class WorkReportsAndReportingService {
         }
         if let periodKey, !periodKey.isEmpty {
             queryItems.append(URLQueryItem(name: "period_key", value: periodKey))
+        }
+        if let pageSize, pageSize > 0 {
+            queryItems.append(URLQueryItem(name: "page_size", value: String(min(pageSize, 100))))
         }
 
         let response = await httpClient.request(
@@ -774,15 +778,21 @@ public final class WorkReportsAndReportingService {
 
     // MARK: - 3. Reviews & Templates & Analytics
 
-    public func fetchPendingReviews(status: String = "SUBMITTED") async -> MiniBiApiResult<[WorkReportReviewItem]> {
+    public func fetchPendingReviews(
+        status: String = "SUBMITTED",
+        page: Int = 1,
+        pageSize: Int = 15
+    ) async -> MiniBiApiResult<[WorkReportReviewItem]> {
         let resolvedState = status.uppercased() == "PENDING" ? "SUBMITTED" : status.uppercased()
+        let safePage = max(1, page)
+        let safePageSize = min(max(pageSize, 1), 100)
         let response = await httpClient.request(
             method: "GET",
             path: "/api/work-reports/reviews",
             queryItems: [
                 URLQueryItem(name: "state", value: resolvedState),
-                URLQueryItem(name: "page", value: "1"),
-                URLQueryItem(name: "page_size", value: "50")
+                URLQueryItem(name: "page", value: String(safePage)),
+                URLQueryItem(name: "page_size", value: String(safePageSize))
             ]
         )
         if response.statusCode == 403 || response.statusCode == 404 {
@@ -2356,7 +2366,7 @@ public final class WorkReportsAndReportingService {
     public func fetchDuplicateCccdReport(
         search: String = "",
         page: Int = 1,
-        pageSize: Int = 25
+        pageSize: Int = 15
     ) async -> MiniBiApiResult<DuplicateCccdReportData> {
         var queryItems: [URLQueryItem] = [
             URLQueryItem(name: "page", value: String(max(page, 1))),
