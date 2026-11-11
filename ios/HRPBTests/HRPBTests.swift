@@ -4147,51 +4147,35 @@ final class HRPBTests: XCTestCase {
         XCTAssertEqual(AttendanceAreaTab.explanation.label, "Giải trình")
 
         // 2. Explanation default page limit is 15
-        XCTAssertEqual(AttendanceExplanationService.defaultPageLimit, 15)
+        XCTAssertEqual(AttendanceExplanationContract.defaultPageLimit, 15)
 
         // 3. Initials extraction for 2-line worker avatar
-        XCTAssertEqual(HrpInitialsAvatar.initials(from: "Nguyễn Văn An"), "NA")
-        XCTAssertEqual(HrpInitialsAvatar.initials(from: "Lê Hoa"), "LH")
-        XCTAssertEqual(HrpInitialsAvatar.initials(from: "Minh"), "MI")
-        XCTAssertEqual(HrpInitialsAvatar.initials(from: "   "), "NV")
+        XCTAssertEqual(HrpInitialsAvatar.extractInitials(from: "Nguyễn Văn An"), "NA")
+        XCTAssertEqual(HrpInitialsAvatar.extractInitials(from: "Lê Hoa"), "LH")
+        XCTAssertEqual(HrpInitialsAvatar.extractInitials(from: "Minh"), "MI")
+        XCTAssertEqual(HrpInitialsAvatar.extractInitials(from: "   "), "NL")
 
         // 4. Date-scoped attendance history query contract (`from_date`, `to_date`, `page`, `page_size=15`)
-        MockURLProtocol.reset()
-        MockURLProtocol.requestHandler = { request in
-            let url = try XCTUnwrap(request.url)
-            let response = HTTPURLResponse(
-                url: url,
+        MockURLProtocol.resetRecordedUrls()
+        MockURLProtocol.requestHandler = { req in
+            return Self.makeJsonResponse(
+                req,
                 statusCode: 200,
-                httpVersion: nil,
-                headerFields: ["Content-Type": "application/json"]
-            )!
-            let payload = """
-            {
-                "ok": true,
-                "data": {
-                    "items": [],
-                    "has_more": true,
-                    "total": 34
-                }
-            }
-            """.data(using: .utf8)!
-            return (response, payload)
+                json: #"{"ok":true,"data":{"items":[],"has_more":true,"total":34}}"#
+            )
         }
 
-        let (client, keychain) = makeMockClient()
-        keychain.saveAccessToken("mock-token")
-        let anchorManager = TrustedTimeAnchorManager(
-            defaults: UserDefaults(suiteName: "com.aistudio.minibi.round2.anchor.\(UUID().uuidString)")!
-        )
+        let client = makeMockHttpClient()
+        let keychain = KeychainStore(serviceName: "com.aistudio.minibi.round2.\(UUID().uuidString)")
         let tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("outbox_round2_\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
+        let anchorManager = AttendanceTimeAnchorManager(httpClient: client, keychain: keychain)
         let outboxService = AttendanceOutboxService(
             httpClient: client,
             timeAnchorManager: anchorManager,
-            storageDirectory: tempDir
+            customStorageDirectory: tempDir
         )
 
         let synced = await outboxService.syncServerHistoryForUser(
