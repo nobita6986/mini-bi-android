@@ -4966,92 +4966,131 @@ internal fun SalaryAdvanceWorkspaceScreen(
         else -> workersLoading
     }
 
+    val haptic = LocalHapticFeedback.current
+
     Column(
         modifier = Modifier
             .fillMaxSize()
             .padding(horizontal = 12.dp, vertical = 8.dp)
             .testTag("salary_advance_workspace_screen"),
-        verticalArrangement = Arrangement.spacedBy(8.dp)
+        verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        // Thanh chuyển tab gọn nhẹ (bỏ nút Nhân sự & tiêu đề thừa để tối đa diện tích thao tác)
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        // Capsule segmented pill switcher đồng bộ chuẩn iOS & WorkersAndDirectEntryScreen
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .hrpCardSurface(cornerRadius = 14.dp)
+                .padding(5.dp)
         ) {
-            val isCreateActive = workspaceTab == "CREATE"
-            val isListOrDetailActive = workspaceTab == "LIST" || workspaceTab == "DETAIL"
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                val isCreateActive = workspaceTab == "CREATE"
+                val isListOrDetailActive = workspaceTab == "LIST" || workspaceTab == "DETAIL"
 
-            Button(
-                onClick = { viewModel.switchSalaryAdvanceWorkspaceTab("CREATE") },
-                enabled = !anyMutationBusy,
-                shape = RoundedCornerShape(10.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = if (isCreateActive) {
+                Surface(
+                    selected = isCreateActive,
+                    onClick = {
+                        if (!isCreateActive) {
+                            HrpHaptics.tick(haptic)
+                            viewModel.switchSalaryAdvanceWorkspaceTab("CREATE")
+                        }
+                    },
+                    enabled = !anyMutationBusy,
+                    shape = RoundedCornerShape(50),
+                    color = if (isCreateActive) {
                         MaterialTheme.colorScheme.primary
                     } else {
-                        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f)
+                        Color.Transparent
                     },
-                    contentColor = if (isCreateActive) {
-                        MaterialTheme.colorScheme.onPrimary
-                    } else {
-                        MaterialTheme.colorScheme.onSurface
-                    }
-                ),
-                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
-                modifier = Modifier
-                    .weight(0.95f)
-                    .height(38.dp)
-                    .testTag("salary_advance_tab_create")
-            ) {
-                Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
-                Spacer(modifier = Modifier.width(4.dp))
-                Text(
-                    text = "Tạo yêu cầu",
-                    style = MaterialTheme.typography.labelLarge,
-                    fontWeight = FontWeight.Bold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
-
-            Button(
-                onClick = { viewModel.switchSalaryAdvanceWorkspaceTab("LIST") },
-                enabled = !anyMutationBusy,
-                shape = RoundedCornerShape(10.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = if (isListOrDetailActive) {
-                        MaterialTheme.colorScheme.primary
-                    } else {
-                        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f)
-                    },
-                    contentColor = if (isListOrDetailActive) {
-                        MaterialTheme.colorScheme.onPrimary
-                    } else {
-                        MaterialTheme.colorScheme.onSurface
-                    }
-                ),
-                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
-                modifier = Modifier
-                    .weight(1.2f)
-                    .height(38.dp)
-                    .testTag("salary_advance_tab_requests")
-            ) {
-                val listLabel = buildString {
-                    append("Yêu cầu")
-                    if (requests.isNotEmpty()) {
-                        append(" (${requests.size})")
-                    }
-                    if (actionableCount > 0) {
-                        append(" · $actionableCount cần XL")
+                    modifier = Modifier
+                        .weight(0.95f)
+                        .height(38.dp)
+                        .testTag("salary_advance_tab_create")
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(horizontal = 10.dp),
+                        horizontalArrangement = Arrangement.Center,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Add,
+                            contentDescription = null,
+                            tint = if (isCreateActive) {
+                                MaterialTheme.colorScheme.onPrimary
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = "Tạo yêu cầu",
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = if (isCreateActive) FontWeight.Bold else FontWeight.SemiBold,
+                            color = if (isCreateActive) {
+                                MaterialTheme.colorScheme.onPrimary
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
                     }
                 }
-                Text(
-                    text = listLabel,
-                    style = MaterialTheme.typography.labelLarge,
-                    fontWeight = FontWeight.Bold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
+
+                Surface(
+                    selected = isListOrDetailActive,
+                    onClick = {
+                        if (workspaceTab != "LIST") {
+                            HrpHaptics.tick(haptic)
+                            viewModel.switchSalaryAdvanceWorkspaceTab("LIST")
+                        }
+                    },
+                    enabled = !anyMutationBusy,
+                    shape = RoundedCornerShape(50),
+                    color = if (isListOrDetailActive) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        Color.Transparent
+                    },
+                    modifier = Modifier
+                        .weight(1.2f)
+                        .height(38.dp)
+                        .testTag("salary_advance_tab_requests")
+                ) {
+                    val listLabel = buildString {
+                        append("Yêu cầu")
+                        if (requests.isNotEmpty()) {
+                            append(" (${requests.size})")
+                        }
+                        if (actionableCount > 0) {
+                            append(" · $actionableCount cần XL")
+                        }
+                    }
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(horizontal = 10.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = listLabel,
+                            style = MaterialTheme.typography.labelLarge.tabularNums(),
+                            fontWeight = if (isListOrDetailActive) FontWeight.Bold else FontWeight.SemiBold,
+                            color = if (isListOrDetailActive) {
+                                MaterialTheme.colorScheme.onPrimary
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
             }
         }
 
@@ -5217,6 +5256,7 @@ internal fun SalaryAdvanceCreateRequestDialog(
     workerPickerExpanded: Boolean = true,
     onSetWorkerPickerExpanded: (Boolean) -> Unit = {}
 ) {
+    val haptic = LocalHapticFeedback.current
     val activeProjects = remember(context) { context.activeManagedProjects }
     val selectedProject = remember(activeProjects, selectedProjectId) {
         activeProjects.firstOrNull { it.projectId == selectedProjectId }
@@ -5276,7 +5316,7 @@ internal fun SalaryAdvanceCreateRequestDialog(
     val showExpandedWorkerList = workerPickerExpanded || selectedWorker == null || (workerEligibility != null && !workerEligibility.isEligible)
 
     val dialogBody: @Composable () -> Unit = {
-        Surface(
+        Box(
             modifier = Modifier
                 .then(
                     if (renderInDialog) {
@@ -5285,15 +5325,15 @@ internal fun SalaryAdvanceCreateRequestDialog(
                         Modifier.fillMaxSize()
                     }
                 )
-                .testTag("salary_advance_create_dialog"),
-            shape = RoundedCornerShape(if (renderInDialog) 24.dp else 18.dp),
-            color = MaterialTheme.colorScheme.surface,
-            tonalElevation = if (renderInDialog) 6.dp else 2.dp
+                .hrpCardSurface(
+                    cornerRadius = if (renderInDialog) HrpDesignTokens.RadiusHero else HrpDesignTokens.RadiusCard
+                )
+                .testTag("salary_advance_create_dialog")
         ) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(if (renderInDialog) 16.dp else 12.dp),
+                    .padding(if (renderInDialog) 16.dp else 14.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 if (renderInDialog) {
@@ -5378,13 +5418,11 @@ internal fun SalaryAdvanceCreateRequestDialog(
                         )
                     }
 
-                    // 2. Tra cứu NLĐ theo từ khóa (không chủ động hiển thị danh sách NLĐ khi chưa tìm kiếm)
-                    Surface(
-                        shape = RoundedCornerShape(14.dp),
-                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.28f),
-                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.28f)),
+                    // 2. Tra cứu NLĐ theo từ khóa
+                    Box(
                         modifier = Modifier
                             .fillMaxWidth()
+                            .hrpMutedTile(cornerRadius = 14.dp)
                             .testTag("salary_advance_worker_list")
                     ) {
                         Column(
@@ -5409,7 +5447,7 @@ internal fun SalaryAdvanceCreateRequestDialog(
                                         } else {
                                             "Tìm người lao động ứng lương *"
                                         },
-                                        style = MaterialTheme.typography.labelLarge,
+                                        style = MaterialTheme.typography.labelLarge.tabularNums(),
                                         fontWeight = FontWeight.Bold
                                     )
                                     if (workersLoading) {
@@ -5443,11 +5481,10 @@ internal fun SalaryAdvanceCreateRequestDialog(
                             }
 
                             if (!showExpandedWorkerList && selectedWorker != null && workerEligibility != null) {
-                                // Thanh tóm tắt gọn khi đã chọn NLĐ đủ điều kiện (giúp form bên dưới hiện ngay lập tức)
                                 Surface(
-                                    shape = RoundedCornerShape(10.dp),
+                                    shape = RoundedCornerShape(12.dp),
                                     color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f),
-                                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary),
+                                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.65f)),
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .clickable(enabled = !submitting) { onSetWorkerPickerExpanded(true) }
@@ -5460,30 +5497,33 @@ internal fun SalaryAdvanceCreateRequestDialog(
                                         horizontalArrangement = Arrangement.SpaceBetween,
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
-                                        Column(modifier = Modifier.weight(1f)) {
-                                            Text(
-                                                text = selectedWorker.displayName,
-                                                style = MaterialTheme.typography.bodyMedium,
-                                                fontWeight = FontWeight.Bold
-                                            )
-                                            Text(
-                                                text = "Mã NLĐ: ${selectedWorker.employeeCode} · Ngày đầu: ${SalaryAdvanceContract.formatWorkDateVi(selectedWorker.firstWorkDate)}",
-                                                style = MaterialTheme.typography.labelSmall,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                                            )
-                                        }
-                                        Surface(
-                                            shape = RoundedCornerShape(8.dp),
-                                            color = SemanticColors.SuccessLight.copy(alpha = 0.16f)
+                                        Row(
+                                            modifier = Modifier.weight(1f),
+                                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                            verticalAlignment = Alignment.CenterVertically
                                         ) {
-                                            Text(
-                                                text = "Đã chọn · Đổi",
-                                                style = MaterialTheme.typography.labelSmall,
-                                                color = SemanticColors.SuccessLight,
-                                                fontWeight = FontWeight.SemiBold,
-                                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                            HrpInitialsAvatar(
+                                                fullName = selectedWorker.displayName,
+                                                size = 36.dp
                                             )
+                                            Column(modifier = Modifier.weight(1f)) {
+                                                Text(
+                                                    text = selectedWorker.displayName,
+                                                    style = MaterialTheme.typography.bodyMedium,
+                                                    fontWeight = FontWeight.Bold
+                                                )
+                                                Text(
+                                                    text = "Mã NLĐ: ${selectedWorker.employeeCode} · Ngày đầu: ${SalaryAdvanceContract.formatWorkDateVi(selectedWorker.firstWorkDate)}",
+                                                    style = MaterialTheme.typography.labelSmall.tabularNums(),
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                )
+                                            }
                                         }
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        HrpStatusBadge(
+                                            text = "Đã chọn · Đổi",
+                                            tint = SemanticColors.SuccessLight
+                                        )
                                     }
                                 }
                             } else {
@@ -5521,7 +5561,6 @@ internal fun SalaryAdvanceCreateRequestDialog(
                                             .testTag("salary_advance_worker_search_prompt")
                                     )
                                 } else {
-                                    // Chip lọc nhanh kết quả tìm kiếm theo điều kiện
                                     Row(
                                         modifier = Modifier
                                             .fillMaxWidth()
@@ -5536,9 +5575,13 @@ internal fun SalaryAdvanceCreateRequestDialog(
                                         filterChipItems.forEach { (filterKey, filterLabel, _) ->
                                             FilterChip(
                                                 selected = workerEligibilityFilter == filterKey,
-                                                onClick = { onWorkerEligibilityFilterChange(filterKey) },
+                                                onClick = {
+                                                    HrpHaptics.tick(haptic)
+                                                    onWorkerEligibilityFilterChange(filterKey)
+                                                },
                                                 enabled = !submitting,
-                                                label = { Text(filterLabel, style = MaterialTheme.typography.labelSmall) },
+                                                shape = RoundedCornerShape(50),
+                                                label = { Text(filterLabel, style = MaterialTheme.typography.labelSmall.tabularNums()) },
                                                 modifier = Modifier.testTag("salary_advance_worker_filter_$filterKey")
                                             )
                                         }
@@ -5546,17 +5589,7 @@ internal fun SalaryAdvanceCreateRequestDialog(
 
                                     when {
                                         workersLoading && searchMatchedWorkers.isEmpty() -> {
-                                            Row(
-                                                modifier = Modifier.padding(vertical = 12.dp),
-                                                verticalAlignment = Alignment.CenterVertically,
-                                                horizontalArrangement = Arrangement.spacedBy(10.dp)
-                                            ) {
-                                                CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
-                                                Text(
-                                                    text = "Đang tìm kiếm NLĐ từ máy chủ…",
-                                                    style = MaterialTheme.typography.bodySmall
-                                                )
-                                            }
+                                            HrpSkeletonCard(lines = 3)
                                         }
 
                                         workersError != null && searchMatchedWorkers.isEmpty() -> {
@@ -5598,7 +5631,7 @@ internal fun SalaryAdvanceCreateRequestDialog(
                                                 }
 
                                                 Surface(
-                                                    shape = RoundedCornerShape(10.dp),
+                                                    shape = RoundedCornerShape(12.dp),
                                                     color = if (isSelected) {
                                                         MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f)
                                                     } else {
@@ -5615,67 +5648,70 @@ internal fun SalaryAdvanceCreateRequestDialog(
                                                     modifier = Modifier
                                                         .fillMaxWidth()
                                                         .clickable(enabled = !submitting) {
+                                                            HrpHaptics.tick(haptic)
                                                             onSelectWorker(worker.workerEntryId)
                                                         }
                                                         .testTag("salary_advance_worker_item_${worker.workerEntryId}")
                                                 ) {
-                                                    Column(
+                                                    Row(
                                                         modifier = Modifier
                                                             .fillMaxWidth()
-                                                            .padding(horizontal = 10.dp, vertical = 8.dp),
-                                                        verticalArrangement = Arrangement.spacedBy(3.dp)
+                                                            .padding(horizontal = 10.dp, vertical = 9.dp),
+                                                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                                        verticalAlignment = Alignment.CenterVertically
                                                     ) {
-                                                        Row(
-                                                            modifier = Modifier.fillMaxWidth(),
-                                                            horizontalArrangement = Arrangement.SpaceBetween,
-                                                            verticalAlignment = Alignment.CenterVertically
+                                                        HrpInitialsAvatar(
+                                                            fullName = worker.displayName,
+                                                            size = 36.dp
+                                                        )
+                                                        Column(
+                                                            modifier = Modifier.weight(1f),
+                                                            verticalArrangement = Arrangement.spacedBy(3.dp)
                                                         ) {
-                                                            Text(
-                                                                text = worker.displayName,
-                                                                style = MaterialTheme.typography.bodyMedium,
-                                                                fontWeight = FontWeight.Bold,
-                                                                maxLines = 1,
-                                                                overflow = TextOverflow.Ellipsis,
-                                                                modifier = Modifier.weight(1f)
-                                                            )
-                                                            Spacer(modifier = Modifier.width(6.dp))
-                                                            Surface(
-                                                                shape = RoundedCornerShape(6.dp),
-                                                                color = badgeColor.copy(alpha = 0.14f)
+                                                            Row(
+                                                                modifier = Modifier.fillMaxWidth(),
+                                                                horizontalArrangement = Arrangement.SpaceBetween,
+                                                                verticalAlignment = Alignment.CenterVertically
                                                             ) {
                                                                 Text(
+                                                                    text = worker.displayName,
+                                                                    style = MaterialTheme.typography.bodyMedium,
+                                                                    fontWeight = FontWeight.Bold,
+                                                                    maxLines = 1,
+                                                                    overflow = TextOverflow.Ellipsis,
+                                                                    modifier = Modifier.weight(1f)
+                                                                )
+                                                                Spacer(modifier = Modifier.width(6.dp))
+                                                                HrpStatusBadge(
                                                                     text = itemEligibility.statusLabel,
-                                                                    style = MaterialTheme.typography.labelSmall,
-                                                                    color = badgeColor,
-                                                                    fontWeight = FontWeight.SemiBold,
-                                                                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
+                                                                    tint = badgeColor
                                                                 )
                                                             }
-                                                        }
 
-                                                        Text(
-                                                            text = "Mã NLĐ: ${worker.employeeCode} · Ngày đầu: ${SalaryAdvanceContract.formatWorkDateVi(worker.firstWorkDate)}",
-                                                            style = MaterialTheme.typography.labelSmall,
-                                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                                            maxLines = 1,
-                                                            overflow = TextOverflow.Ellipsis
-                                                        )
-
-                                                        Text(
-                                                            text = "Tuyển: ${SalaryAdvanceContract.formatWorkerRecruiterLabel(worker)} · ${itemEligibility.portraitStatusLabel}",
-                                                            style = MaterialTheme.typography.labelSmall,
-                                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                                            maxLines = 1,
-                                                            overflow = TextOverflow.Ellipsis
-                                                        )
-
-                                                        if (!itemEligibility.isEligible) {
                                                             Text(
-                                                                text = itemEligibility.blockingMessage ?: itemEligibility.reasonLabels.joinToString("; "),
-                                                                style = MaterialTheme.typography.labelSmall,
-                                                                color = MaterialTheme.colorScheme.error,
-                                                                modifier = Modifier.testTag("salary_advance_worker_ineligible_reason_${worker.workerEntryId}")
+                                                                text = "Mã NLĐ: ${worker.employeeCode} · Ngày đầu: ${SalaryAdvanceContract.formatWorkDateVi(worker.firstWorkDate)}",
+                                                                style = MaterialTheme.typography.labelSmall.tabularNums(),
+                                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                                maxLines = 1,
+                                                                overflow = TextOverflow.Ellipsis
                                                             )
+
+                                                            Text(
+                                                                text = "Tuyển: ${SalaryAdvanceContract.formatWorkerRecruiterLabel(worker)} · ${itemEligibility.portraitStatusLabel}",
+                                                                style = MaterialTheme.typography.labelSmall,
+                                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                                maxLines = 1,
+                                                                overflow = TextOverflow.Ellipsis
+                                                            )
+
+                                                            if (!itemEligibility.isEligible) {
+                                                                Text(
+                                                                    text = itemEligibility.blockingMessage ?: itemEligibility.reasonLabels.joinToString("; "),
+                                                                    style = MaterialTheme.typography.labelSmall,
+                                                                    color = MaterialTheme.colorScheme.error,
+                                                                    modifier = Modifier.testTag("salary_advance_worker_ineligible_reason_${worker.workerEntryId}")
+                                                                )
+                                                            }
                                                         }
                                                     }
                                                 }
@@ -5703,12 +5739,10 @@ internal fun SalaryAdvanceCreateRequestDialog(
                     // 3. Thông tin NLĐ đã chọn + Tóm tắt 30 ngày gần nhất + Nút Xem lịch sử ứng lương
                     if (selectedWorker != null && workerEligibility != null) {
                         val summary30d = selectedWorker.advance30dSummary
-                        Surface(
-                            shape = RoundedCornerShape(14.dp),
-                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
-                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.3f)),
+                        Box(
                             modifier = Modifier
                                 .fillMaxWidth()
+                                .hrpMutedTile(cornerRadius = 14.dp)
                                 .testTag("salary_advance_selected_worker_card")
                         ) {
                             Column(
@@ -5719,7 +5753,7 @@ internal fun SalaryAdvanceCreateRequestDialog(
                             ) {
                                 Text(
                                     text = "Thông tin NLĐ: ${selectedWorker.displayName} (${selectedWorker.employeeCode})",
-                                    style = MaterialTheme.typography.titleSmall,
+                                    style = MaterialTheme.typography.titleSmall.tabularNums(),
                                     fontWeight = FontWeight.Bold
                                 )
 
@@ -5734,9 +5768,8 @@ internal fun SalaryAdvanceCreateRequestDialog(
                                     )
                                     Text(
                                         text = SalaryAdvanceContract.formatWorkDateVi(selectedWorker.firstWorkDate),
-                                        style = MaterialTheme.typography.bodySmall,
+                                        style = MaterialTheme.typography.bodySmall.tabularNums(),
                                         fontWeight = FontWeight.SemiBold,
-                                        fontFamily = JetBrainsMono,
                                         modifier = Modifier.testTag("salary_advance_worker_first_work_date")
                                     )
                                 }
@@ -5758,7 +5791,7 @@ internal fun SalaryAdvanceCreateRequestDialog(
                                     )
                                 }
 
-                                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))
+                                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
 
                                 Text(
                                     text = "Tóm tắt ứng trong 30 ngày gần nhất",
@@ -5777,9 +5810,8 @@ internal fun SalaryAdvanceCreateRequestDialog(
                                     )
                                     Text(
                                         text = "${summary30d?.totalCount ?: 0} lần",
-                                        style = MaterialTheme.typography.bodySmall,
+                                        style = MaterialTheme.typography.bodySmall.tabularNums(),
                                         fontWeight = FontWeight.Bold,
-                                        fontFamily = JetBrainsMono,
                                         modifier = Modifier.testTag("salary_advance_worker_30d_count")
                                     )
                                 }
@@ -5795,16 +5827,18 @@ internal fun SalaryAdvanceCreateRequestDialog(
                                     )
                                     Text(
                                         text = SalaryAdvanceContract.formatVndAmount(summary30d?.totalAmountVnd ?: "0"),
-                                        style = MaterialTheme.typography.bodySmall,
+                                        style = MaterialTheme.typography.bodySmall.tabularNums(),
                                         fontWeight = FontWeight.Bold,
-                                        fontFamily = JetBrainsMono,
                                         color = MaterialTheme.colorScheme.primary,
                                         modifier = Modifier.testTag("salary_advance_worker_30d_amount")
                                     )
                                 }
 
                                 OutlinedButton(
-                                    onClick = onOpenWorkerHistory,
+                                    onClick = {
+                                        HrpHaptics.tick(haptic)
+                                        onOpenWorkerHistory()
+                                    },
                                     enabled = !submitting,
                                     shape = RoundedCornerShape(10.dp),
                                     modifier = Modifier
@@ -5859,6 +5893,7 @@ internal fun SalaryAdvanceCreateRequestDialog(
                         Text(
                             text = "Phương thức nhận tiền *",
                             style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.SemiBold,
                             color = MaterialTheme.colorScheme.onSurface
                         )
                         Row(
@@ -5869,8 +5904,12 @@ internal fun SalaryAdvanceCreateRequestDialog(
                                 val label = SalaryAdvanceContract.paymentMethodLabel(method)
                                 FilterChip(
                                     selected = paymentMethod == method,
-                                    onClick = { onSelectPaymentMethod(method) },
+                                    onClick = {
+                                        HrpHaptics.tick(haptic)
+                                        onSelectPaymentMethod(method)
+                                    },
                                     enabled = !submitting,
+                                    shape = RoundedCornerShape(50),
                                     label = { Text(label) },
                                     modifier = Modifier.testTag("salary_advance_method_$method")
                                 )
@@ -5919,8 +5958,7 @@ internal fun SalaryAdvanceCreateRequestDialog(
                                     if (!bankStatus.accountHolderName.isNullOrBlank() || !bankStatus.accountNumberDisplay.isNullOrBlank()) {
                                         Text(
                                             text = "Chủ TK: ${bankStatus.accountHolderName.orEmpty()} · Số TK: ${bankStatus.accountNumberDisplay.orEmpty()}",
-                                            style = MaterialTheme.typography.bodySmall,
-                                            fontFamily = JetBrainsMono
+                                            style = MaterialTheme.typography.bodySmall.tabularNums()
                                         )
                                     }
                                 }
@@ -5935,8 +5973,14 @@ internal fun SalaryAdvanceCreateRequestDialog(
                             onAmountChange(raw.filter { ch -> ch.isDigit() || ch == '.' || ch == ',' || ch == ' ' }.take(24))
                         },
                         label = { Text("Số tiền ứng (VND) *") },
+                        textStyle = MaterialTheme.typography.bodyMedium.tabularNums(),
                         supportingText = if (parsedAmountVnd != null) {
-                            { Text("Sẽ gửi: ${SalaryAdvanceContract.formatVndAmount(parsedAmountVnd)}") }
+                            {
+                                Text(
+                                    text = "Sẽ gửi: ${SalaryAdvanceContract.formatVndAmount(parsedAmountVnd)}",
+                                    style = MaterialTheme.typography.bodySmall.tabularNums()
+                                )
+                            }
                         } else null,
                         singleLine = true,
                         enabled = !submitting,
@@ -5998,7 +6042,10 @@ internal fun SalaryAdvanceCreateRequestDialog(
                             Text("Đóng")
                         }
                         Button(
-                            onClick = onSubmit,
+                            onClick = {
+                                HrpHaptics.tick(haptic)
+                                onSubmit()
+                            },
                             enabled = !submitting && !isSubmitLockedByServerEligibility,
                             shape = RoundedCornerShape(10.dp),
                             modifier = Modifier
@@ -6026,13 +6073,16 @@ internal fun SalaryAdvanceCreateRequestDialog(
                     }
                 } else {
                     Button(
-                        onClick = onSubmit,
+                        onClick = {
+                            HrpHaptics.tick(haptic)
+                            onSubmit()
+                        },
                         enabled = !submitting && !isSubmitLockedByServerEligibility,
                         shape = RoundedCornerShape(10.dp),
                         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(42.dp)
+                            .height(44.dp)
                             .testTag("salary_advance_submit_button")
                     ) {
                         if (submitting) {
@@ -6091,6 +6141,7 @@ private fun SalaryAdvanceRequestListTabContent(
     onOpenRequestDetail: (String) -> Unit,
     onSwitchToCreate: () -> Unit
 ) {
+    val haptic = LocalHapticFeedback.current
     val activeProjects = remember(context) { context.activeManagedProjects }
     var filtersExpanded by rememberSaveable { mutableStateOf(false) }
     val activeFilterCount = remember(projectFilter, stateFilter, evidenceFilter) {
@@ -6112,21 +6163,19 @@ private fun SalaryAdvanceRequestListTabContent(
         modifier = Modifier
             .fillMaxSize()
             .testTag("salary_advance_request_list_scroll"),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
         contentPadding = PaddingValues(bottom = 16.dp)
     ) {
         item {
-            Surface(
-                shape = RoundedCornerShape(14.dp),
-                color = MaterialTheme.colorScheme.surface,
-                tonalElevation = 1.dp,
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.2f)),
-                modifier = Modifier.fillMaxWidth()
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .hrpCardSurface(cornerRadius = 14.dp)
             ) {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(10.dp),
+                        .padding(12.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     Row(
@@ -6161,7 +6210,10 @@ private fun SalaryAdvanceRequestListTabContent(
                         )
 
                         OutlinedButton(
-                            onClick = { filtersExpanded = !filtersExpanded },
+                            onClick = {
+                                HrpHaptics.tick(haptic)
+                                filtersExpanded = !filtersExpanded
+                            },
                             shape = RoundedCornerShape(10.dp),
                             contentPadding = PaddingValues(horizontal = 10.dp, vertical = 10.dp),
                             colors = if (filtersExpanded || activeFilterCount > 0) {
@@ -6178,7 +6230,7 @@ private fun SalaryAdvanceRequestListTabContent(
                             Spacer(modifier = Modifier.width(4.dp))
                             Text(
                                 text = if (activeFilterCount > 0) "Lọc ($activeFilterCount)" else "Bộ lọc",
-                                style = MaterialTheme.typography.labelMedium,
+                                style = MaterialTheme.typography.labelMedium.tabularNums(),
                                 fontWeight = FontWeight.SemiBold,
                                 maxLines = 1
                             )
@@ -6222,7 +6274,11 @@ private fun SalaryAdvanceRequestListTabContent(
                                 SalaryAdvanceContract.REQUEST_STATE_FILTER_OPTIONS.forEach { (key, label) ->
                                     FilterChip(
                                         selected = stateFilter == key,
-                                        onClick = { onStateFilterChange(key) },
+                                        onClick = {
+                                            HrpHaptics.tick(haptic)
+                                            onStateFilterChange(key)
+                                        },
+                                        shape = RoundedCornerShape(50),
                                         label = { Text(label, style = MaterialTheme.typography.labelSmall) },
                                         modifier = Modifier.testTag("salary_advance_list_state_filter_$key")
                                     )
@@ -6244,7 +6300,11 @@ private fun SalaryAdvanceRequestListTabContent(
                                 SalaryAdvanceContract.EVIDENCE_REVIEW_STATE_FILTER_OPTIONS.forEach { (key, label) ->
                                     FilterChip(
                                         selected = evidenceFilter == key,
-                                        onClick = { onEvidenceFilterChange(key) },
+                                        onClick = {
+                                            HrpHaptics.tick(haptic)
+                                            onEvidenceFilterChange(key)
+                                        },
+                                        shape = RoundedCornerShape(50),
                                         label = { Text(label, style = MaterialTheme.typography.labelSmall) },
                                         modifier = Modifier.testTag("salary_advance_list_evidence_filter_$key")
                                     )
@@ -6258,19 +6318,9 @@ private fun SalaryAdvanceRequestListTabContent(
 
         if (loading && requests.isEmpty()) {
             item {
-                Surface(
-                    shape = RoundedCornerShape(14.dp),
-                    color = MaterialTheme.colorScheme.surface,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Row(
-                        modifier = Modifier.padding(16.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
-                        Text("Đang tải danh sách yêu cầu ứng lương…", style = MaterialTheme.typography.bodySmall)
-                    }
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    HrpSkeletonCard(lines = 3)
+                    HrpSkeletonCard(lines = 3)
                 }
             }
         } else if (!error.isNullOrBlank() && requests.isEmpty()) {
@@ -6292,12 +6342,10 @@ private fun SalaryAdvanceRequestListTabContent(
             }
         } else if (requests.isEmpty()) {
             item {
-                Surface(
-                    shape = RoundedCornerShape(16.dp),
-                    color = MaterialTheme.colorScheme.surface,
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.2f)),
+                Box(
                     modifier = Modifier
                         .fillMaxWidth()
+                        .hrpCardSurface()
                         .testTag("salary_advance_list_empty")
                 ) {
                     Column(
@@ -6345,55 +6393,71 @@ private fun SalaryAdvanceRequestListTabContent(
                     else -> MaterialTheme.colorScheme.onSurfaceVariant
                 }
 
-                Card(
-                    shape = RoundedCornerShape(14.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                    border = BorderStroke(
-                        width = if (attention.needsPmAttention) 1.5.dp else 1.dp,
-                        color = if (attention.needsPmAttention) {
-                            SemanticColors.WarningLight
-                        } else {
-                            MaterialTheme.colorScheme.outline.copy(alpha = 0.22f)
-                        }
-                    ),
+                Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clickable { onOpenRequestDetail(item.requestId) }
+                        .hrpCardSurface()
+                        .then(
+                            if (attention.needsPmAttention) {
+                                Modifier.border(
+                                    width = 1.5.dp,
+                                    color = SemanticColors.WarningLight,
+                                    shape = RoundedCornerShape(HrpDesignTokens.RadiusCard)
+                                )
+                            } else {
+                                Modifier
+                            }
+                        )
+                        .clickable {
+                            HrpHaptics.tick(haptic)
+                            onOpenRequestDetail(item.requestId)
+                        }
                         .testTag("salary_advance_request_card_${item.requestId}")
                 ) {
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(12.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                            .padding(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        // Hàng 1: Tên NLĐ (trái) + Số tiền & Hình thức (phải)
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.Top
                         ) {
-                            Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
-                                Text(
-                                    text = item.workerDisplayName,
-                                    style = MaterialTheme.typography.titleSmall,
-                                    fontWeight = FontWeight.Bold,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
+                            Row(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .padding(end = 8.dp),
+                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                HrpInitialsAvatar(
+                                    fullName = item.workerDisplayName,
+                                    size = 38.dp
                                 )
-                                Text(
-                                    text = "${item.workerEmployeeCode} · ${item.projectDisplayName}",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = item.workerDisplayName,
+                                        style = MaterialTheme.typography.titleSmall,
+                                        fontWeight = FontWeight.Bold,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    Text(
+                                        text = "${item.workerEmployeeCode} · ${item.projectDisplayName}",
+                                        style = MaterialTheme.typography.bodySmall.tabularNums(),
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
                             }
 
                             Column(horizontalAlignment = Alignment.End) {
                                 Text(
                                     text = SalaryAdvanceContract.formatVndAmount(item.requestedAmountVnd),
-                                    style = MaterialTheme.typography.titleSmall,
+                                    style = MaterialTheme.typography.titleSmall.tabularNums(),
                                     fontWeight = FontWeight.Bold,
                                     color = MaterialTheme.colorScheme.primary
                                 )
@@ -6421,7 +6485,6 @@ private fun SalaryAdvanceRequestListTabContent(
                             }
                         }
 
-                        // Hàng 2: Các chip trạng thái + thời gian cập nhật
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween,
@@ -6431,35 +6494,19 @@ private fun SalaryAdvanceRequestListTabContent(
                                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Surface(
-                                    shape = RoundedCornerShape(6.dp),
-                                    color = reqStateColor.copy(alpha = 0.14f)
-                                ) {
-                                    Text(
-                                        text = SalaryAdvanceContract.requestStateShortLabel(item.requestState),
-                                        style = MaterialTheme.typography.labelSmall,
-                                        fontWeight = FontWeight.SemiBold,
-                                        color = reqStateColor,
-                                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
-                                    )
-                                }
-                                Surface(
-                                    shape = RoundedCornerShape(6.dp),
-                                    color = evStateColor.copy(alpha = 0.14f)
-                                ) {
-                                    Text(
-                                        text = SalaryAdvanceContract.evidenceReviewStateShortLabel(item.evidenceReviewState),
-                                        style = MaterialTheme.typography.labelSmall,
-                                        fontWeight = FontWeight.Medium,
-                                        color = evStateColor,
-                                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
-                                    )
-                                }
+                                HrpStatusBadge(
+                                    text = SalaryAdvanceContract.requestStateShortLabel(item.requestState),
+                                    tint = reqStateColor
+                                )
+                                HrpStatusBadge(
+                                    text = SalaryAdvanceContract.evidenceReviewStateShortLabel(item.evidenceReviewState),
+                                    tint = evStateColor
+                                )
                             }
 
                             Text(
                                 text = SalaryAdvanceContract.formatDateTimeVi(item.lastActivityAt.ifBlank { item.createdAt }),
-                                style = MaterialTheme.typography.labelSmall,
+                                style = MaterialTheme.typography.labelSmall.tabularNums(),
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
@@ -6595,7 +6642,7 @@ private fun SalaryAdvanceRequestDetailTabContent(
             if (detail != null) {
                 Text(
                     text = "#${detail.request.requestId.take(8)} · v${detail.request.version}",
-                    style = MaterialTheme.typography.labelMedium,
+                    style = MaterialTheme.typography.labelMedium.tabularNums(),
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     fontWeight = FontWeight.SemiBold
                 )
@@ -6639,20 +6686,8 @@ private fun SalaryAdvanceRequestDetailTabContent(
         }
 
         if (loading && detail == null) {
-            Surface(
-                shape = RoundedCornerShape(14.dp),
-                color = MaterialTheme.colorScheme.surface,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Row(
-                    modifier = Modifier.padding(16.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
-                    Text("Đang tải chi tiết yêu cầu ứng lương…", style = MaterialTheme.typography.bodySmall)
-                }
-            }
+            HrpSkeletonCard(lines = 4)
+            HrpSkeletonCard(lines = 3)
         } else if (detail != null) {
             val req = detail.request
             val summary30d = detail.workerAdvance30dSummary
@@ -6670,14 +6705,11 @@ private fun SalaryAdvanceRequestDetailTabContent(
                 else -> MaterialTheme.colorScheme.onSurfaceVariant
             }
 
-            // 1. Thẻ thông tin tổng quan yêu cầu & NLĐ (bố cục trực quan, gọn, rõ ràng)
-            Surface(
-                shape = RoundedCornerShape(16.dp),
-                color = MaterialTheme.colorScheme.surface,
-                tonalElevation = 1.dp,
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.22f)),
+            // 1. Thẻ thông tin tổng quan yêu cầu & NLĐ (hrpCardSurface + HrpInitialsAvatar + HrpStatusBadge + tabularNums)
+            Box(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .hrpCardSurface()
                     .testTag("salary_advance_detail_summary_card")
             ) {
                 Column(
@@ -6686,13 +6718,17 @@ private fun SalaryAdvanceRequestDetailTabContent(
                         .padding(14.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    // Dòng 1: Tên NLĐ + Mã NLĐ và các badge trạng thái tách riêng
-                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    // Dòng 1: Avatar + Tên NLĐ + Mã NLĐ và các badge trạng thái chuẩn HrpStatusBadge
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
+                            HrpInitialsAvatar(
+                                fullName = req.workerDisplayName,
+                                size = 40.dp
+                            )
                             Text(
                                 text = req.workerDisplayName,
                                 style = MaterialTheme.typography.titleMedium,
@@ -6701,7 +6737,7 @@ private fun SalaryAdvanceRequestDetailTabContent(
                             )
                             Text(
                                 text = req.workerEmployeeCode,
-                                style = MaterialTheme.typography.labelMedium,
+                                style = MaterialTheme.typography.labelMedium.tabularNums(),
                                 color = MaterialTheme.colorScheme.primary,
                                 fontWeight = FontWeight.SemiBold
                             )
@@ -6711,30 +6747,14 @@ private fun SalaryAdvanceRequestDetailTabContent(
                             horizontalArrangement = Arrangement.spacedBy(6.dp),
                             verticalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
-                            Surface(
-                                shape = RoundedCornerShape(6.dp),
-                                color = reqStateColor.copy(alpha = 0.14f)
-                            ) {
-                                Text(
-                                    text = SalaryAdvanceContract.requestStateShortLabel(req.requestState),
-                                    style = MaterialTheme.typography.labelSmall,
-                                    fontWeight = FontWeight.Bold,
-                                    color = reqStateColor,
-                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
-                                )
-                            }
-                            Surface(
-                                shape = RoundedCornerShape(6.dp),
-                                color = evStateColor.copy(alpha = 0.14f)
-                            ) {
-                                Text(
-                                    text = SalaryAdvanceContract.evidenceReviewStateShortLabel(req.evidenceReviewState),
-                                    style = MaterialTheme.typography.labelSmall,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = evStateColor,
-                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
-                                )
-                            }
+                            HrpStatusBadge(
+                                text = SalaryAdvanceContract.requestStateShortLabel(req.requestState),
+                                tint = reqStateColor
+                            )
+                            HrpStatusBadge(
+                                text = SalaryAdvanceContract.evidenceReviewStateShortLabel(req.evidenceReviewState),
+                                tint = evStateColor
+                            )
                         }
                     }
 
@@ -6755,10 +6775,13 @@ private fun SalaryAdvanceRequestDetailTabContent(
                     }
 
                     // Khối nổi bật: Số tiền đề nghị + phương thức + nội dung đề nghị
-                    Surface(
-                        shape = RoundedCornerShape(12.dp),
-                        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.28f),
-                        modifier = Modifier.fillMaxWidth()
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .hrpMutedTile(
+                                cornerRadius = 12.dp,
+                                containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.28f)
+                            )
                     ) {
                         Column(
                             modifier = Modifier.padding(12.dp),
@@ -6788,7 +6811,7 @@ private fun SalaryAdvanceRequestDetailTabContent(
                             }
                             Text(
                                 text = SalaryAdvanceContract.formatVndAmount(req.requestedAmountVnd),
-                                style = MaterialTheme.typography.titleLarge,
+                                style = MaterialTheme.typography.titleLarge.tabularNums(),
                                 fontWeight = FontWeight.Bold,
                                 color = MaterialTheme.colorScheme.primary
                             )
@@ -6803,10 +6826,10 @@ private fun SalaryAdvanceRequestDetailTabContent(
                     }
 
                     req.paymentDestinationSnapshot?.let { snap ->
-                        Surface(
-                            shape = RoundedCornerShape(10.dp),
-                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
-                            modifier = Modifier.fillMaxWidth()
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .hrpMutedTile(cornerRadius = 10.dp)
                         ) {
                             Column(
                                 modifier = Modifier.padding(10.dp),
@@ -6819,7 +6842,7 @@ private fun SalaryAdvanceRequestDetailTabContent(
                                 )
                                 Text(
                                     text = "${snap.accountHolderName} · ${snap.accountNumberMasked}",
-                                    style = MaterialTheme.typography.bodySmall,
+                                    style = MaterialTheme.typography.bodySmall.tabularNums(),
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
@@ -6877,7 +6900,7 @@ private fun SalaryAdvanceRequestDetailTabContent(
                                 )
                                 Text(
                                     text = SalaryAdvanceContract.formatWorkDateVi(req.workerFirstWorkDate),
-                                    style = MaterialTheme.typography.bodySmall,
+                                    style = MaterialTheme.typography.bodySmall.tabularNums(),
                                     fontWeight = FontWeight.Medium
                                 )
                             }
@@ -6903,10 +6926,10 @@ private fun SalaryAdvanceRequestDetailTabContent(
                     }
 
                     if (!req.decisionNote.isNullOrBlank()) {
-                        Surface(
-                            shape = RoundedCornerShape(8.dp),
-                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
-                            modifier = Modifier.fillMaxWidth()
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .hrpMutedTile(cornerRadius = 8.dp)
                         ) {
                             Text(
                                 text = "Ghi chú Kế toán: ${req.decisionNote}",
@@ -6939,7 +6962,7 @@ private fun SalaryAdvanceRequestDetailTabContent(
                             )
                             Text(
                                 text = "${summary30d?.totalCount ?: 0} lần · ${SalaryAdvanceContract.formatVndAmount(summary30d?.totalAmountVnd ?: "0")}",
-                                style = MaterialTheme.typography.bodySmall,
+                                style = MaterialTheme.typography.bodySmall.tabularNums(),
                                 fontWeight = FontWeight.Bold
                             )
                         }
@@ -6961,13 +6984,10 @@ private fun SalaryAdvanceRequestDetailTabContent(
 
             // 2. Thao tác phản hồi bổ sung thông tin (PROVIDE_INFO) hoặc Rút yêu cầu (WITHDRAW) của QLDA
             if (req.allowedActions.canProvideInfo || req.allowedActions.canWithdraw) {
-                Surface(
-                    shape = RoundedCornerShape(16.dp),
-                    color = MaterialTheme.colorScheme.surface,
-                    tonalElevation = 2.dp,
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.22f)),
+                Box(
                     modifier = Modifier
                         .fillMaxWidth()
+                        .hrpCardSurface()
                         .testTag("salary_advance_detail_actions_card")
                 ) {
                     Column(
@@ -7041,13 +7061,10 @@ private fun SalaryAdvanceRequestDetailTabContent(
             }
 
             // 3. Khung đối chiếu ảnh chân dung & Tải lên ảnh chứng từ nhận tiền
-            Surface(
-                shape = RoundedCornerShape(16.dp),
-                color = MaterialTheme.colorScheme.surface,
-                tonalElevation = 2.dp,
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.22f)),
+            Box(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .hrpCardSurface()
                     .testTag("salary_advance_detail_evidence_card")
             ) {
                 val sortedVersions = detail.evidenceVersions
@@ -7084,21 +7101,21 @@ private fun SalaryAdvanceRequestDetailTabContent(
                         Text(
                             text = "Chứng từ nhận tiền & Đối chiếu",
                             style = MaterialTheme.typography.titleSmall,
-                            fontWeight = FontWeight.Bold
-                        )
-                        Text(
-                            text = SalaryAdvanceContract.evidenceReviewStateShortLabel(req.evidenceReviewState),
-                            style = MaterialTheme.typography.labelMedium,
                             fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.primary
+                            modifier = Modifier.weight(1f)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        HrpStatusBadge(
+                            text = SalaryAdvanceContract.evidenceReviewStateShortLabel(req.evidenceReviewState),
+                            tint = evStateColor
                         )
                     }
 
                     if (!req.currentEvidence?.reviewNote.isNullOrBlank()) {
-                        Surface(
-                            shape = RoundedCornerShape(10.dp),
-                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
-                            modifier = Modifier.fillMaxWidth()
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .hrpMutedTile(cornerRadius = 10.dp)
                         ) {
                             Text(
                                 text = "Nhận xét đối chiếu của Kế toán: ${req.currentEvidence?.reviewNote}",
@@ -7121,7 +7138,7 @@ private fun SalaryAdvanceRequestDetailTabContent(
                             }"
                             Text(
                                 text = "Ảnh chân dung hồ sơ NLĐ trong hệ thống (v${portrait.version}):",
-                                style = MaterialTheme.typography.labelMedium,
+                                style = MaterialTheme.typography.labelMedium.tabularNums(),
                                 fontWeight = FontWeight.SemiBold
                             )
                             AsyncImage(
@@ -7156,7 +7173,7 @@ private fun SalaryAdvanceRequestDetailTabContent(
                                 FilterChip(
                                     selected = activeEvidenceItem?.evidenceVersion == verItem.evidenceVersion,
                                     onClick = { onSelectEvidenceVersion(verItem.evidenceVersion) },
-                                    label = { Text("Ảnh v${verItem.evidenceVersion}") },
+                                    label = { Text("Ảnh v${verItem.evidenceVersion}", style = MaterialTheme.typography.labelMedium.tabularNums()) },
                                     modifier = Modifier.testTag("salary_advance_evidence_version_${verItem.evidenceVersion}")
                                 )
                             }
@@ -7172,7 +7189,7 @@ private fun SalaryAdvanceRequestDetailTabContent(
                         }"
                         Text(
                             text = "Ảnh chứng từ đã tải lên (v${activeEvidenceItem.evidenceVersion} · ${SalaryAdvanceContract.formatFileSizeBytes(activeEvidenceItem.sizeBytes)}):",
-                            style = MaterialTheme.typography.labelMedium,
+                            style = MaterialTheme.typography.labelMedium.tabularNums(),
                             fontWeight = FontWeight.SemiBold
                         )
                         AsyncImage(
@@ -7188,7 +7205,7 @@ private fun SalaryAdvanceRequestDetailTabContent(
                         )
                         Text(
                             text = "Người tải: ${SalaryAdvanceContract.resolveActorDisplayName(activeEvidenceItem.uploadedByDisplayName)} · Lúc: ${SalaryAdvanceContract.formatDateTimeVi(activeEvidenceItem.uploadedAt)}",
-                            style = MaterialTheme.typography.labelSmall,
+                            style = MaterialTheme.typography.labelSmall.tabularNums(),
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         if (!activeEvidenceItem.captionNote.isNullOrBlank()) {
@@ -7293,13 +7310,10 @@ private fun SalaryAdvanceRequestDetailTabContent(
             }
 
             // 4. Luồng trao đổi với Kế toán & Nhật ký sự kiện
-            Surface(
-                shape = RoundedCornerShape(16.dp),
-                color = MaterialTheme.colorScheme.surface,
-                tonalElevation = 2.dp,
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.22f)),
+            Box(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .hrpCardSurface()
                     .testTag("salary_advance_detail_timeline_card")
             ) {
                 Column(
@@ -7310,7 +7324,7 @@ private fun SalaryAdvanceRequestDetailTabContent(
                 ) {
                     Text(
                         text = "Trao đổi với Kế toán & Nhật ký xử lý (${detail.events.size})",
-                        style = MaterialTheme.typography.titleSmall,
+                        style = MaterialTheme.typography.titleSmall.tabularNums(),
                         fontWeight = FontWeight.Bold
                     )
 
@@ -7348,12 +7362,10 @@ private fun SalaryAdvanceRequestDetailTabContent(
                     }
 
                     detail.events.forEach { ev: SalaryAdvanceEventItem ->
-                        Surface(
-                            shape = RoundedCornerShape(10.dp),
-                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.32f),
-                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.2f)),
+                        Box(
                             modifier = Modifier
                                 .fillMaxWidth()
+                                .hrpMutedTile(cornerRadius = 10.dp)
                                 .testTag("salary_advance_event_item_${ev.eventSeq}")
                         ) {
                             Column(
@@ -7369,13 +7381,12 @@ private fun SalaryAdvanceRequestDetailTabContent(
                                 ) {
                                     Text(
                                         text = "#${ev.eventSeq} · ${SalaryAdvanceContract.eventTypeLabel(ev.eventType)}",
-                                        style = MaterialTheme.typography.labelMedium,
+                                        style = MaterialTheme.typography.labelMedium.tabularNums(),
                                         fontWeight = FontWeight.Bold
                                     )
                                     Text(
                                         text = SalaryAdvanceContract.formatDateTimeVi(ev.createdAt),
-                                        style = MaterialTheme.typography.labelSmall,
-                                        fontFamily = JetBrainsMono,
+                                        style = MaterialTheme.typography.labelSmall.tabularNums(),
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
                                 }
@@ -7393,8 +7404,7 @@ private fun SalaryAdvanceRequestDetailTabContent(
                                 if (ev.evidenceVersion != null) {
                                     Text(
                                         text = "Phiên bản chứng từ: Ảnh v${ev.evidenceVersion}",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        fontFamily = JetBrainsMono,
+                                        style = MaterialTheme.typography.labelSmall.tabularNums(),
                                         color = MaterialTheme.colorScheme.primary
                                     )
                                 }
@@ -7434,13 +7444,11 @@ internal fun SalaryAdvanceWorkerHistoryDialog(
         ?: selectedWorker?.employeeCode.orEmpty()
 
     val dialogBody: @Composable () -> Unit = {
-        Surface(
+        Box(
             modifier = Modifier
                 .fillMaxWidth(if (renderInDialog) 0.95f else 1f)
-                .testTag("salary_advance_history_dialog"),
-            shape = RoundedCornerShape(24.dp),
-            color = MaterialTheme.colorScheme.surface,
-            tonalElevation = 6.dp
+                .hrpCardSurface(cornerRadius = HrpDesignTokens.RadiusHero)
+                .testTag("salary_advance_history_dialog")
         ) {
             Column(
                 modifier = Modifier
@@ -7450,9 +7458,15 @@ internal fun SalaryAdvanceWorkerHistoryDialog(
             ) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
+                    if (workerDisplayName.isNotBlank()) {
+                        HrpInitialsAvatar(
+                            fullName = workerDisplayName,
+                            size = 38.dp
+                        )
+                    }
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
                             text = "Lịch sử ứng lương NLĐ",
@@ -7462,8 +7476,7 @@ internal fun SalaryAdvanceWorkerHistoryDialog(
                         if (workerDisplayName.isNotBlank() || workerEmployeeCode.isNotBlank()) {
                             Text(
                                 text = "$workerDisplayName ($workerEmployeeCode)",
-                                style = MaterialTheme.typography.bodySmall,
-                                fontFamily = JetBrainsMono,
+                                style = MaterialTheme.typography.bodySmall.tabularNums(),
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
@@ -7561,11 +7574,13 @@ internal fun SalaryAdvanceWorkerHistoryDialog(
                             else -> SalaryAdvanceContract.HISTORY_PERIOD_MODES.firstOrNull { it.first == historyResponse.periodMode }?.second
                                 ?: historyResponse.periodMode
                         }
-                        Surface(
-                            shape = RoundedCornerShape(12.dp),
-                            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f),
+                        Box(
                             modifier = Modifier
                                 .fillMaxWidth()
+                                .hrpMutedTile(
+                                    cornerRadius = 12.dp,
+                                    containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.28f)
+                                )
                                 .testTag("salary_advance_history_summary_card")
                         ) {
                             Column(
@@ -7576,28 +7591,22 @@ internal fun SalaryAdvanceWorkerHistoryDialog(
                             ) {
                                 Text(
                                     text = "Kỳ: $periodDisplay",
-                                    style = MaterialTheme.typography.labelMedium,
+                                    style = MaterialTheme.typography.labelMedium.tabularNums(),
                                     fontWeight = FontWeight.Bold
                                 )
                                 Text(
                                     text = "Tổng số lần ứng: ${historyResponse.totalCount} lần · Tổng tiền: ${SalaryAdvanceContract.formatVndAmount(historyResponse.totalAmountVnd)}",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    fontFamily = JetBrainsMono
+                                    style = MaterialTheme.typography.bodySmall.tabularNums(),
+                                    fontWeight = FontWeight.SemiBold
                                 )
                             }
                         }
                     }
 
                     when {
-                        loading -> {
-                            Row(
-                                modifier = Modifier.padding(vertical = 12.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(10.dp)
-                            ) {
-                                CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
-                                Text("Đang tải lịch sử ứng lương…", style = MaterialTheme.typography.bodySmall)
-                            }
+                        loading && historyItems.isEmpty() -> {
+                            HrpSkeletonCard(lines = 3)
+                            HrpSkeletonCard(lines = 2)
                         }
 
                         error != null -> {
@@ -7633,18 +7642,16 @@ internal fun SalaryAdvanceWorkerHistoryDialog(
                                         "REJECTED" -> MaterialTheme.colorScheme.error
                                         else -> SemanticColors.WarningLight
                                     }
-                                    Surface(
-                                        shape = RoundedCornerShape(12.dp),
-                                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
-                                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.25f)),
+                                    Box(
                                         modifier = Modifier
                                             .fillMaxWidth()
+                                            .hrpMutedTile(cornerRadius = 12.dp)
                                             .testTag("salary_advance_history_item_${item.requestId}")
                                     ) {
                                         Column(
                                             modifier = Modifier
                                                 .fillMaxWidth()
-                                                .padding(10.dp),
+                                                .padding(12.dp),
                                             verticalArrangement = Arrangement.spacedBy(4.dp)
                                         ) {
                                             Row(
@@ -7654,26 +7661,17 @@ internal fun SalaryAdvanceWorkerHistoryDialog(
                                             ) {
                                                 Text(
                                                     text = "#${item.requestId.take(8)}",
-                                                    style = MaterialTheme.typography.labelLarge,
-                                                    fontWeight = FontWeight.Bold,
-                                                    fontFamily = JetBrainsMono
+                                                    style = MaterialTheme.typography.labelLarge.tabularNums(),
+                                                    fontWeight = FontWeight.Bold
                                                 )
-                                                Surface(
-                                                    shape = RoundedCornerShape(8.dp),
-                                                    color = statusColor.copy(alpha = 0.15f)
-                                                ) {
-                                                    Text(
-                                                        text = "${SalaryAdvanceContract.requestStateShortLabel(item.requestState)} · ${SalaryAdvanceContract.evidenceReviewStateShortLabel(item.evidenceReviewState)}",
-                                                        style = MaterialTheme.typography.labelSmall,
-                                                        fontWeight = FontWeight.SemiBold,
-                                                        color = statusColor,
-                                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
-                                                    )
-                                                }
+                                                HrpStatusBadge(
+                                                    text = "${SalaryAdvanceContract.requestStateShortLabel(item.requestState)} · ${SalaryAdvanceContract.evidenceReviewStateShortLabel(item.evidenceReviewState)}",
+                                                    tint = statusColor
+                                                )
                                             }
                                             Text(
                                                 text = "Số tiền: ${SalaryAdvanceContract.formatVndAmount(item.requestedAmountVnd)} · ${SalaryAdvanceContract.paymentMethodLabel(item.paymentMethod)}",
-                                                style = MaterialTheme.typography.bodySmall,
+                                                style = MaterialTheme.typography.bodySmall.tabularNums(),
                                                 fontWeight = FontWeight.SemiBold
                                             )
                                             Text(
@@ -7686,8 +7684,7 @@ internal fun SalaryAdvanceWorkerHistoryDialog(
                                             )
                                             Text(
                                                 text = "Thời gian: $formattedTime",
-                                                style = MaterialTheme.typography.labelSmall,
-                                                fontFamily = JetBrainsMono,
+                                                style = MaterialTheme.typography.labelSmall.tabularNums(),
                                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                                             )
                                             if (!item.initialContent.isNullOrBlank()) {

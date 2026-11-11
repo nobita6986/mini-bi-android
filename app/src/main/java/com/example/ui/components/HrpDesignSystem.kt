@@ -1,6 +1,7 @@
 package com.example.ui.components
 
 import android.animation.ValueAnimator
+import android.app.DatePickerDialog
 import android.os.Build
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
@@ -13,6 +14,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.InteractionSource
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
@@ -28,16 +30,24 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CalendarMonth
+import androidx.compose.material.icons.filled.ChevronLeft
+import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.composed
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
@@ -48,13 +58,19 @@ import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedback
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.ui.theme.SemanticColors
+import com.example.ui.theme.tabularNums
+import java.util.Calendar
 import java.util.Locale
+import java.util.TimeZone
 import kotlin.math.abs
 
 object HrpDesignTokens {
@@ -62,6 +78,7 @@ object HrpDesignTokens {
     val RadiusMD: Dp = 12.dp
     val RadiusCard: Dp = 16.dp
     val RadiusHero: Dp = 22.dp
+    val CardPadding: Dp = 14.dp
 }
 
 object HrpHaptics {
@@ -199,6 +216,23 @@ fun HrpStatusBadge(
             )
         }
     }
+}
+
+@Composable
+fun HrpStatusBadge(
+    text: String,
+    tint: Color,
+    modifier: Modifier = Modifier,
+    icon: ImageVector? = null
+) {
+    HrpStatusBadge(
+        text = text,
+        containerColor = tint.copy(alpha = 0.14f),
+        contentColor = tint,
+        modifier = modifier,
+        borderColor = tint.copy(alpha = 0.28f),
+        icon = icon
+    )
 }
 
 data class HrpAvatarPalette(
@@ -450,6 +484,491 @@ fun HrpSkeletonCard(
                     .clip(RoundedCornerShape(6.dp))
                     .background(brush)
             )
+        }
+    }
+}
+
+@Composable
+fun HrpSkeletonCard(
+    lines: Int,
+    modifier: Modifier = Modifier,
+    showAvatar: Boolean = false
+) {
+    HrpSkeletonCard(
+        modifier = modifier,
+        lineCount = lines,
+        showAvatar = showAvatar
+    )
+}
+
+/**
+ * API-24-safe ISO `yyyy-MM-dd` calendar helpers (UTC noon arithmetic avoids DST/midnight shifts).
+ */
+object HrpIsoDateUtils {
+    private val ISO_DATE_REGEX = Regex("^\\d{4}-\\d{2}-\\d{2}$")
+    private val UTC_TZ: TimeZone = TimeZone.getTimeZone("UTC")
+    private val VN_TZ: TimeZone = TimeZone.getTimeZone("Asia/Ho_Chi_Minh")
+    val WEEKDAY_LABELS_VI: List<String> = listOf("T2", "T3", "T4", "T5", "T6", "T7", "CN")
+
+    fun isValidIsoDate(raw: String?): Boolean {
+        val trimmed = raw?.trim().orEmpty()
+        if (!ISO_DATE_REGEX.matches(trimmed)) return false
+        return parseUtcNoonCalendar(trimmed) != null
+    }
+
+    fun todayIsoVietnam(nowEpochMs: Long = System.currentTimeMillis()): String {
+        val cal = Calendar.getInstance(VN_TZ, Locale.US).apply { timeInMillis = nowEpochMs }
+        return String.format(
+            Locale.US,
+            "%04d-%02d-%02d",
+            cal.get(Calendar.YEAR),
+            cal.get(Calendar.MONTH) + 1,
+            cal.get(Calendar.DAY_OF_MONTH)
+        )
+    }
+
+    private fun parseUtcNoonCalendar(isoDate: String): Calendar? {
+        val trimmed = isoDate.trim()
+        if (!ISO_DATE_REGEX.matches(trimmed)) return null
+        val parts = trimmed.split('-')
+        val year = parts.getOrNull(0)?.toIntOrNull() ?: return null
+        val month = parts.getOrNull(1)?.toIntOrNull() ?: return null
+        val day = parts.getOrNull(2)?.toIntOrNull() ?: return null
+        if (month !in 1..12 || day !in 1..31) return null
+        val cal = Calendar.getInstance(UTC_TZ, Locale.US).apply {
+            isLenient = false
+            clear()
+            set(year, month - 1, day, 12, 0, 0)
+        }
+        return try {
+            cal.timeInMillis
+            cal
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    private fun formatCalendarIso(cal: Calendar): String = String.format(
+        Locale.US,
+        "%04d-%02d-%02d",
+        cal.get(Calendar.YEAR),
+        cal.get(Calendar.MONTH) + 1,
+        cal.get(Calendar.DAY_OF_MONTH)
+    )
+
+    fun mondayOfWeek(isoDate: String?, fallbackIso: String): String {
+        val cal = (isoDate?.let { parseUtcNoonCalendar(it) }
+            ?: parseUtcNoonCalendar(fallbackIso)
+            ?: parseUtcNoonCalendar(todayIsoVietnam()))!!
+        val dow = cal.get(Calendar.DAY_OF_WEEK)
+        val offsetFromMonday = if (dow == Calendar.SUNDAY) 6 else dow - Calendar.MONDAY
+        cal.add(Calendar.DAY_OF_MONTH, -offsetFromMonday)
+        return formatCalendarIso(cal)
+    }
+
+    fun addDays(isoDate: String, deltaDays: Int): String {
+        val cal = parseUtcNoonCalendar(isoDate) ?: return isoDate
+        cal.add(Calendar.DAY_OF_MONTH, deltaDays)
+        return formatCalendarIso(cal)
+    }
+
+    fun dayOfMonth(isoDate: String): Int {
+        val cal = parseUtcNoonCalendar(isoDate) ?: return 1
+        return cal.get(Calendar.DAY_OF_MONTH)
+    }
+
+    fun formatMonthYearVi(isoDate: String): String {
+        val cal = parseUtcNoonCalendar(isoDate) ?: return isoDate
+        return String.format(
+            Locale.US,
+            "Tháng %02d, %04d",
+            cal.get(Calendar.MONTH) + 1,
+            cal.get(Calendar.YEAR)
+        )
+    }
+
+    fun splitYearMonthDay(isoDate: String, fallbackIso: String): Triple<Int, Int, Int> {
+        val cal = (parseUtcNoonCalendar(isoDate)
+            ?: parseUtcNoonCalendar(fallbackIso)
+            ?: parseUtcNoonCalendar(todayIsoVietnam()))!!
+        return Triple(
+            cal.get(Calendar.YEAR),
+            cal.get(Calendar.MONTH),
+            cal.get(Calendar.DAY_OF_MONTH)
+        )
+    }
+
+    fun endOfDayLocalMillis(isoDate: String): Long? {
+        val parts = isoDate.trim().split('-')
+        val year = parts.getOrNull(0)?.toIntOrNull() ?: return null
+        val month = parts.getOrNull(1)?.toIntOrNull() ?: return null
+        val day = parts.getOrNull(2)?.toIntOrNull() ?: return null
+        return runCatching {
+            Calendar.getInstance().apply {
+                set(year, month - 1, day, 23, 59, 59)
+                set(Calendar.MILLISECOND, 999)
+            }.timeInMillis
+        }.getOrNull()
+    }
+}
+
+/**
+ * Shared 7-day (`T2` .. `CN`) week strip date selector aligned with iOS `WeekStripDateSelector`.
+ *
+ * Supports both single-date selection (`showAllOption = false`) and list date filtering
+ * (`showAllOption = true`, where `allDatesSelected = true` / `selectedDateIso = null` shows all records).
+ */
+@Composable
+fun HrpWeekStripDateSelector(
+    selectedDateIso: String?,
+    todayIso: String,
+    onSelectDate: (String) -> Unit,
+    modifier: Modifier = Modifier,
+    allowFutureDates: Boolean = false,
+    showAllOption: Boolean = false,
+    allDatesSelected: Boolean = selectedDateIso == null,
+    onSelectAllDates: (() -> Unit)? = null,
+    markedDates: Set<String> = emptySet(),
+    wrapInCardSurface: Boolean = true,
+    tagPrefix: String = "hrp_week_strip"
+) {
+    val context = LocalContext.current
+    val haptic = LocalHapticFeedback.current
+    val safeTodayIso = remember(todayIso) {
+        if (HrpIsoDateUtils.isValidIsoDate(todayIso)) todayIso.trim() else HrpIsoDateUtils.todayIsoVietnam()
+    }
+    val validSelectedIso = remember(selectedDateIso) {
+        selectedDateIso?.trim()?.takeIf { HrpIsoDateUtils.isValidIsoDate(it) }
+    }
+
+    var displayedMondayIso by remember {
+        mutableStateOf(HrpIsoDateUtils.mondayOfWeek(validSelectedIso ?: safeTodayIso, safeTodayIso))
+    }
+
+    LaunchedEffect(validSelectedIso, safeTodayIso) {
+        if (validSelectedIso != null) {
+            displayedMondayIso = HrpIsoDateUtils.mondayOfWeek(validSelectedIso, safeTodayIso)
+        }
+    }
+
+    val weekDates = remember(displayedMondayIso) {
+        (0..6).map { offset -> HrpIsoDateUtils.addDays(displayedMondayIso, offset) }
+    }
+    val headerAnchorIso = remember(displayedMondayIso, validSelectedIso, weekDates) {
+        if (validSelectedIso != null && validSelectedIso in weekDates) {
+            validSelectedIso
+        } else {
+            HrpIsoDateUtils.addDays(displayedMondayIso, 3)
+        }
+    }
+    val monthHeaderLabel = remember(headerAnchorIso) {
+        HrpIsoDateUtils.formatMonthYearVi(headerAnchorIso)
+    }
+    val nextWeekMondayIso = remember(displayedMondayIso) {
+        HrpIsoDateUtils.addDays(displayedMondayIso, 7)
+    }
+    val canAdvanceWeek = allowFutureDates || nextWeekMondayIso <= safeTodayIso
+    val isTodayActive = !allDatesSelected && validSelectedIso == safeTodayIso
+
+    val containerModifier = if (wrapInCardSurface) {
+        modifier
+            .fillMaxWidth()
+            .hrpCardSurface(cornerRadius = HrpDesignTokens.RadiusCard)
+            .padding(horizontal = 10.dp, vertical = 10.dp)
+            .testTag(tagPrefix)
+    } else {
+        modifier
+            .fillMaxWidth()
+            .testTag(tagPrefix)
+    }
+
+    Column(
+        modifier = containerModifier,
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Surface(
+                    shape = CircleShape,
+                    color = SemanticColors.SurfaceSubtle,
+                    modifier = Modifier
+                        .size(30.dp)
+                        .clip(CircleShape)
+                        .clickable {
+                            HrpHaptics.tick(haptic)
+                            displayedMondayIso = HrpIsoDateUtils.addDays(displayedMondayIso, -7)
+                        }
+                        .testTag("${tagPrefix}_prev_week")
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            imageVector = Icons.Default.ChevronLeft,
+                            contentDescription = "Tuần trước",
+                            tint = MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                }
+
+                Surface(
+                    shape = CircleShape,
+                    color = SemanticColors.SurfaceSubtle,
+                    border = BorderStroke(1.dp, SemanticColors.SurfaceBorder.copy(alpha = 0.8f)),
+                    modifier = Modifier
+                        .clip(CircleShape)
+                        .clickable {
+                            HrpHaptics.tick(haptic)
+                            val (initYear, initMonthZero, initDay) = HrpIsoDateUtils.splitYearMonthDay(
+                                validSelectedIso ?: safeTodayIso,
+                                safeTodayIso
+                            )
+                            val dialog = DatePickerDialog(
+                                context,
+                                { _, year, monthZeroBased, dayOfMonth ->
+                                    val picked = String.format(
+                                        Locale.US,
+                                        "%04d-%02d-%02d",
+                                        year,
+                                        monthZeroBased + 1,
+                                        dayOfMonth
+                                    )
+                                    val clamped = if (!allowFutureDates && picked > safeTodayIso) {
+                                        safeTodayIso
+                                    } else {
+                                        picked
+                                    }
+                                    displayedMondayIso = HrpIsoDateUtils.mondayOfWeek(clamped, safeTodayIso)
+                                    onSelectDate(clamped)
+                                },
+                                initYear,
+                                initMonthZero,
+                                initDay
+                            )
+                            if (!allowFutureDates) {
+                                HrpIsoDateUtils.endOfDayLocalMillis(safeTodayIso)?.let { maxMs ->
+                                    dialog.datePicker.maxDate = maxMs
+                                }
+                            }
+                            dialog.show()
+                        }
+                        .testTag("${tagPrefix}_month_picker")
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.CalendarMonth,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(14.dp)
+                        )
+                        Text(
+                            text = monthHeaderLabel,
+                            style = MaterialTheme.typography.labelMedium.tabularNums(),
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            maxLines = 1
+                        )
+                    }
+                }
+            }
+
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                if (showAllOption) {
+                    Surface(
+                        shape = CircleShape,
+                        color = if (allDatesSelected) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            SemanticColors.SurfaceSubtle
+                        },
+                        border = if (allDatesSelected) {
+                            null
+                        } else {
+                            BorderStroke(1.dp, SemanticColors.SurfaceBorder)
+                        },
+                        modifier = Modifier
+                            .clip(CircleShape)
+                            .clickable {
+                                HrpHaptics.tick(haptic)
+                                onSelectAllDates?.invoke()
+                            }
+                            .testTag("${tagPrefix}_all_chip")
+                    ) {
+                        Text(
+                            text = "Tất cả",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = if (allDatesSelected) {
+                                MaterialTheme.colorScheme.onPrimary
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                            maxLines = 1,
+                            modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp)
+                        )
+                    }
+                }
+
+                Surface(
+                    shape = CircleShape,
+                    color = if (isTodayActive) {
+                        MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
+                    } else {
+                        SemanticColors.SurfaceSubtle
+                    },
+                    border = BorderStroke(
+                        1.dp,
+                        if (isTodayActive) {
+                            MaterialTheme.colorScheme.primary.copy(alpha = 0.55f)
+                        } else {
+                            SemanticColors.SurfaceBorder
+                        }
+                    ),
+                    modifier = Modifier
+                        .clip(CircleShape)
+                        .clickable {
+                            HrpHaptics.tick(haptic)
+                            displayedMondayIso = HrpIsoDateUtils.mondayOfWeek(safeTodayIso, safeTodayIso)
+                            onSelectDate(safeTodayIso)
+                        }
+                        .testTag("${tagPrefix}_today_chip")
+                ) {
+                    Text(
+                        text = "Hôm nay",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = if (isTodayActive) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                        maxLines = 1,
+                        modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp)
+                    )
+                }
+
+                Surface(
+                    shape = CircleShape,
+                    color = SemanticColors.SurfaceSubtle,
+                    modifier = Modifier
+                        .size(30.dp)
+                        .clip(CircleShape)
+                        .alpha(if (canAdvanceWeek) 1f else 0.35f)
+                        .clickable(enabled = canAdvanceWeek) {
+                            HrpHaptics.tick(haptic)
+                            displayedMondayIso = nextWeekMondayIso
+                        }
+                        .testTag("${tagPrefix}_next_week")
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            imageVector = Icons.Default.ChevronRight,
+                            contentDescription = "Tuần kế tiếp",
+                            tint = MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                }
+            }
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            weekDates.forEachIndexed { idx, dayIso ->
+                val weekdayLabel = HrpIsoDateUtils.WEEKDAY_LABELS_VI[idx]
+                val dayNum = HrpIsoDateUtils.dayOfMonth(dayIso)
+                val isSelected = !allDatesSelected && validSelectedIso == dayIso
+                val isToday = dayIso == safeTodayIso
+                val isFutureLocked = !allowFutureDates && dayIso > safeTodayIso
+                val isMarked = dayIso in markedDates
+                val cellShape = RoundedCornerShape(HrpDesignTokens.RadiusMD)
+
+                val bgColor = when {
+                    isSelected -> MaterialTheme.colorScheme.primary
+                    isToday -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f)
+                    else -> SemanticColors.SurfaceSubtle.copy(alpha = 0.55f)
+                }
+                val borderModifier = if (!isSelected && isToday) {
+                    Modifier.border(
+                        width = 1.dp,
+                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.45f),
+                        shape = cellShape
+                    )
+                } else {
+                    Modifier
+                }
+
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .alpha(if (isFutureLocked) 0.36f else 1f)
+                        .clip(cellShape)
+                        .background(bgColor, cellShape)
+                        .then(borderModifier)
+                        .clickable(enabled = !isFutureLocked) {
+                            HrpHaptics.tick(haptic)
+                            if (showAllOption && isSelected && onSelectAllDates != null) {
+                                onSelectAllDates()
+                            } else {
+                                onSelectDate(dayIso)
+                            }
+                        }
+                        .padding(vertical = 6.dp, horizontal = 2.dp)
+                        .testTag("${tagPrefix}_day_$dayIso"),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
+                    Text(
+                        text = weekdayLabel,
+                        fontSize = 10.sp,
+                        fontWeight = if (isSelected || isToday) FontWeight.Bold else FontWeight.Medium,
+                        color = when {
+                            isSelected -> MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.92f)
+                            isToday -> MaterialTheme.colorScheme.primary
+                            else -> MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                        maxLines = 1
+                    )
+                    Text(
+                        text = dayNum.toString(),
+                        style = MaterialTheme.typography.labelLarge.tabularNums(),
+                        fontWeight = FontWeight.Bold,
+                        color = when {
+                            isSelected -> MaterialTheme.colorScheme.onPrimary
+                            isToday -> MaterialTheme.colorScheme.primary
+                            else -> MaterialTheme.colorScheme.onSurface
+                        },
+                        maxLines = 1
+                    )
+                    val dotColor = when {
+                        isSelected && (isMarked || isToday) -> MaterialTheme.colorScheme.onPrimary
+                        isMarked -> MaterialTheme.colorScheme.primary
+                        isToday -> MaterialTheme.colorScheme.primary.copy(alpha = 0.55f)
+                        else -> Color.Transparent
+                    }
+                    Box(
+                        modifier = Modifier
+                            .size(4.dp)
+                            .background(dotColor, CircleShape)
+                    )
+                }
+            }
         }
     }
 }

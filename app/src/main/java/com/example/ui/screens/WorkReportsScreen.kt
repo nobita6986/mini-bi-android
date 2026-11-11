@@ -24,6 +24,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
@@ -36,8 +37,6 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -64,6 +63,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -72,7 +72,10 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.AppActor
+import com.example.data.AttendanceExplanationContract
+import com.example.data.AttendanceTimeContract
 import com.example.data.DirectEntryContract
+import com.example.data.LeaveContract
 import com.example.data.WorkReportAnalyticsSnapshot
 import com.example.data.WorkReportObligationEntity
 import com.example.data.WorkReportReviewItem
@@ -80,10 +83,55 @@ import com.example.data.WorkReportSectionSpec
 import com.example.data.WorkReportTemplateOption
 import com.example.data.WorkReportsContract
 import com.example.ui.MiniBiViewModel
-import com.example.ui.theme.JetBrainsMono
+import com.example.ui.components.HrpDesignTokens
+import com.example.ui.components.HrpHaptics
+import com.example.ui.components.HrpInitialsAvatar
+import com.example.ui.components.HrpSkeletonCard
+import com.example.ui.components.HrpStatusBadge
+import com.example.ui.components.HrpWeekStripDateSelector
+import com.example.ui.components.hrpCardSurface
+import com.example.ui.components.hrpMutedTile
 import com.example.ui.theme.SemanticColors
+import com.example.ui.theme.tabularNums
 import org.json.JSONArray
 import org.json.JSONObject
+
+private val WORK_REPORT_ISO_DATE_REGEX = Regex("\\b(\\d{4}-\\d{2}-\\d{2})\\b")
+
+private fun extractVietnamIsoDateOrNull(rawIso: String?): String? {
+    val trimmed = rawIso?.trim().orEmpty()
+    if (trimmed.isEmpty()) return null
+    val hcmDate = runCatching {
+        val ms = AttendanceTimeContract.parseIsoInstantToEpochMillis(trimmed, "work_report_iso")
+        AttendanceTimeContract.formatEpochMillisInHcmIso(ms).take(10)
+    }.getOrNull()
+    if (hcmDate != null && WORK_REPORT_ISO_DATE_REGEX.matches(hcmDate)) {
+        return hcmDate
+    }
+    return WORK_REPORT_ISO_DATE_REGEX.find(trimmed)?.value
+}
+
+internal fun matchesObligationFilterDate(
+    item: WorkReportObligationEntity,
+    filterDateIso: String
+): Boolean {
+    if (item.periodKey.contains(filterDateIso)) return true
+    if (item.dueAtIso.startsWith(filterDateIso)) return true
+    if (extractVietnamIsoDateOrNull(item.dueAtIso) == filterDateIso) return true
+    if (item.submittedAtIso?.startsWith(filterDateIso) == true) return true
+    if (extractVietnamIsoDateOrNull(item.submittedAtIso) == filterDateIso) return true
+    return false
+}
+
+private fun matchesReviewItemFilterDate(
+    item: WorkReportReviewItem,
+    filterDateIso: String
+): Boolean {
+    if (item.periodKey.contains(filterDateIso)) return true
+    if (item.submittedAt?.startsWith(filterDateIso) == true) return true
+    if (extractVietnamIsoDateOrNull(item.submittedAt) == filterDateIso) return true
+    return false
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -97,6 +145,7 @@ fun WorkReportsScreen(
 ) {
     BackHandler(onBack = onBackToDashboard)
 
+    val haptic = LocalHapticFeedback.current
     val reports by viewModel.workReports.collectAsStateWithLifecycle()
     val loading by viewModel.workReportsLoading.collectAsStateWithLifecycle()
     val error by viewModel.workReportsError.collectAsStateWithLifecycle()
@@ -115,6 +164,8 @@ fun WorkReportsScreen(
     val canViewAnalytics = actor.hasCapability("report_analytics_view") && hasTeamOrAllScope
 
     var selectedTab by remember { mutableIntStateOf(0) }
+    var selectedFilterDate by remember { mutableStateOf<String?>(null) }
+    val todayIso = remember { AttendanceExplanationContract.todayVietnamIsoDate() }
 
     val availableTemplates = remember(reports, reviewQueue, serverTemplates, analyticsSnapshot) {
         val map = linkedMapOf<String, String>()
@@ -148,6 +199,22 @@ fun WorkReportsScreen(
         reports.filter { WorkReportsContract.isHistoryObligation(it) }
     }
 
+    val filteredActiveObligations = remember(activeObligations, selectedFilterDate) {
+        val filterDate = selectedFilterDate
+        if (filterDate == null) activeObligations
+        else activeObligations.filter { matchesObligationFilterDate(it, filterDate) }
+    }
+    val filteredHistoryObligations = remember(historyObligations, selectedFilterDate) {
+        val filterDate = selectedFilterDate
+        if (filterDate == null) historyObligations
+        else historyObligations.filter { matchesObligationFilterDate(it, filterDate) }
+    }
+    val filteredReviewQueue = remember(reviewQueue, selectedFilterDate) {
+        val filterDate = selectedFilterDate
+        if (filterDate == null) reviewQueue
+        else reviewQueue.filter { matchesReviewItemFilterDate(it, filterDate) }
+    }
+
     val tabDefs = buildList {
         add("active" to "Cần nộp (${activeObligations.size})")
         add("history" to "Đã lưu / Đã nộp (${historyObligations.size})")
@@ -161,348 +228,421 @@ fun WorkReportsScreen(
     val safeTab = selectedTab.coerceIn(0, (tabDefs.size - 1).coerceAtLeast(0))
     val currentTabKey = tabDefs.getOrNull(safeTab)?.first ?: "active"
 
+    val currentTabMarkedDates = remember(currentTabKey, activeObligations, historyObligations, reviewQueue) {
+        val dates = linkedSetOf<String>()
+        when (currentTabKey) {
+            "active" -> activeObligations.forEach { item ->
+                WORK_REPORT_ISO_DATE_REGEX.find(item.periodKey)?.value?.let { dates.add(it) }
+                extractVietnamIsoDateOrNull(item.dueAtIso)?.let { dates.add(it) }
+            }
+            "history" -> historyObligations.forEach { item ->
+                WORK_REPORT_ISO_DATE_REGEX.find(item.periodKey)?.value?.let { dates.add(it) }
+                extractVietnamIsoDateOrNull(item.dueAtIso)?.let { dates.add(it) }
+            }
+            "review" -> reviewQueue.forEach { item ->
+                WORK_REPORT_ISO_DATE_REGEX.find(item.periodKey)?.value?.let { dates.add(it) }
+                extractVietnamIsoDateOrNull(item.submittedAt)?.let { dates.add(it) }
+            }
+        }
+        dates
+    }
+
     PullToRefreshBox(
         isRefreshing = loading,
         onRefresh = { viewModel.refreshWorkReportsData(actor) },
         modifier = Modifier.fillMaxSize()
     ) {
-    LazyColumn(
-        modifier = Modifier
-            .fillMaxSize()
-            .testTag("work_reports_lazy_column"),
-        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp)
-    ) {
-        item {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(22.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
-            ) {
-                Column(
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxSize()
+                .testTag("work_reports_lazy_column"),
+            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            item {
+                Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                        .hrpCardSurface(cornerRadius = HrpDesignTokens.RadiusHero)
                 ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(HrpDesignTokens.CardPadding),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        Text(
-                            text = "BÁO CÁO CÔNG VIỆC",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                        OutlinedButton(
-                            onClick = { viewModel.refreshWorkReportsData(actor) },
-                            enabled = !loading && !mutationBusy,
-                            shape = RoundedCornerShape(10.dp),
-                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(
-                                text = "Làm mới",
-                                style = MaterialTheme.typography.labelMedium,
-                                maxLines = 1,
-                                softWrap = false
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "BÁO CÁO CÔNG VIỆC",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                                Text(
+                                    text = "Báo cáo định kỳ",
+                                    style = MaterialTheme.typography.headlineSmall,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                            OutlinedButton(
+                                onClick = {
+                                    HrpHaptics.tick(haptic)
+                                    viewModel.refreshWorkReportsData(actor)
+                                },
+                                enabled = !loading && !mutationBusy,
+                                shape = RoundedCornerShape(10.dp),
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
+                            ) {
+                                Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = "Làm mới",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    maxLines = 1,
+                                    softWrap = false
+                                )
+                            }
+                        }
+                        Text(
+                            text = "Điền báo cáo công việc được giao, duyệt báo cáo nhóm và theo dõi kết quả tổng hợp.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+
+            item {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .hrpCardSurface(cornerRadius = 14.dp)
+                        .padding(6.dp)
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("work_reports_tab_grid"),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        val indexedTabs = tabDefs.mapIndexed { index, pair -> Triple(index, pair.first, pair.second) }
+                        indexedTabs.chunked(2).forEach { rowItems ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(IntrinsicSize.Min),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                rowItems.forEach { (index, key, title) ->
+                                    val selected = safeTab == index
+                                    Surface(
+                                        selected = selected,
+                                        onClick = {
+                                            if (!selected) {
+                                                HrpHaptics.tick(haptic)
+                                                selectedTab = index
+                                            }
+                                        },
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .fillMaxHeight()
+                                            .heightIn(min = 38.dp)
+                                            .testTag("work_reports_subtab_$key"),
+                                        shape = RoundedCornerShape(10.dp),
+                                        color = if (selected) {
+                                            MaterialTheme.colorScheme.primary
+                                        } else {
+                                            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
+                                        }
+                                    ) {
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .fillMaxHeight()
+                                                .padding(horizontal = 8.dp, vertical = 8.dp),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Text(
+                                                text = title,
+                                                style = MaterialTheme.typography.labelLarge.tabularNums(),
+                                                fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                                                color = if (selected) {
+                                                    MaterialTheme.colorScheme.onPrimary
+                                                } else {
+                                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                                },
+                                                textAlign = TextAlign.Center,
+                                                maxLines = 1,
+                                                softWrap = false,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (currentTabKey != "analytics") {
+                item {
+                    HrpWeekStripDateSelector(
+                        selectedDateIso = selectedFilterDate ?: todayIso,
+                        todayIso = todayIso,
+                        allowFutureDates = true,
+                        showAllOption = true,
+                        allDatesSelected = selectedFilterDate == null,
+                        markedDates = currentTabMarkedDates,
+                        tagPrefix = "work_reports_week_strip",
+                        onSelectDate = { picked ->
+                            selectedFilterDate = picked
+                        },
+                        onSelectAllDates = {
+                            selectedFilterDate = null
+                        }
+                    )
+                }
+            }
+
+            if (loading && reports.isEmpty() && reviewQueue.isEmpty() && analyticsSnapshot == null) {
+                item {
+                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        HrpSkeletonCard(lines = 3)
+                        HrpSkeletonCard(lines = 3)
+                    }
+                }
+            }
+
+            error?.let { errMsg ->
+                item {
+                    EmptyReportBanner(
+                        title = "Không thể tải dữ liệu báo cáo",
+                        subtitle = errMsg
+                    )
+                }
+            }
+
+            editingObligation?.let { target ->
+                item {
+                    val sections = remember(target.schemaJsonRaw) {
+                        parseDynamicSections(target.schemaJsonRaw)
+                    }
+                    val isEditableObligation = WorkReportsContract.isEditableObligation(target)
+                    DynamicWorkReportFormCard(
+                        obligation = target,
+                        sections = sections,
+                        canSubmit = isEditableObligation && !mutationBusy,
+                        onCancel = { viewModel.closeObligationEditor() },
+                        onSaveDraft = { payload ->
+                            if (onSaveDraftAction != null) {
+                                onSaveDraftAction(target, payload)
+                                viewModel.closeObligationEditor()
+                            } else {
+                                viewModel.saveWorkReportDraft(target, payload)
+                            }
+                        },
+                        onSubmitFinal = { payload ->
+                            if (onSubmitFinalAction != null) {
+                                onSubmitFinalAction(target, payload)
+                                viewModel.closeObligationEditor()
+                            } else {
+                                viewModel.submitWorkReportFinal(target, payload)
+                            }
+                        }
+                    )
+                }
+            }
+
+            when (currentTabKey) {
+                "active" -> {
+                    if (filteredActiveObligations.isEmpty() && !loading) {
+                        item {
+                            val filterDate = selectedFilterDate
+                            if (filterDate != null && activeObligations.isNotEmpty()) {
+                                EmptyReportBanner(
+                                    title = "Không có báo cáo cần nộp ngày ${LeaveContract.formatIsoDateVi(filterDate)}",
+                                    subtitle = "Bấm 'Tất cả' trên thanh lịch tuần để xem toàn bộ báo cáo cần nộp."
+                                )
+                            } else {
+                                EmptyReportBanner(
+                                    title = "Bạn đã hoàn thành hết báo cáo đến hạn",
+                                    subtitle = "Khi có kỳ báo cáo mới cần nộp, biểu mẫu sẽ hiển thị tại đây."
+                                )
+                            }
+                        }
+                    } else {
+                        items(filteredActiveObligations, key = { it.obligationId }) { item ->
+                            val isOpenInEditor = editingObligation?.obligationId == item.obligationId
+                            WorkReportObligationCard(
+                                item = item,
+                                showEditAction = item.obligationStatus == "ACTIVE",
+                                isCurrentlyEditing = isOpenInEditor,
+                                onOpenEdit = {
+                                    HrpHaptics.tick(haptic)
+                                    if (isOpenInEditor) {
+                                        viewModel.closeObligationEditor()
+                                    } else {
+                                        viewModel.openObligationEditor(item)
+                                    }
+                                }
                             )
                         }
                     }
-                    Text(
-                        text = "Báo cáo định kỳ",
-                        style = MaterialTheme.typography.headlineMedium
-                    )
-                    Text(
-                        text = "Điền báo cáo công việc được giao, duyệt báo cáo nhóm và theo dõi kết quả tổng hợp.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
                 }
-            }
-        }
 
-        item {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .testTag("work_reports_tab_grid"),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                val indexedTabs = tabDefs.mapIndexed { index, pair -> Triple(index, pair.first, pair.second) }
-                indexedTabs.chunked(2).forEach { rowItems ->
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(IntrinsicSize.Min),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        rowItems.forEach { (index, key, title) ->
-                            val selected = safeTab == index
-                            Surface(
-                                selected = selected,
-                                onClick = { selectedTab = index },
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .fillMaxHeight()
-                                    .heightIn(min = 40.dp)
-                                    .testTag("work_reports_subtab_$key"),
-                                shape = RoundedCornerShape(12.dp),
-                                color = if (selected) {
-                                    MaterialTheme.colorScheme.primaryContainer
-                                } else {
-                                    MaterialTheme.colorScheme.surface
-                                },
-                                border = if (selected) {
-                                    BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.35f))
-                                } else {
-                                    BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.22f))
-                                }
-                            ) {
-                                Box(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .fillMaxHeight()
-                                        .padding(horizontal = 8.dp, vertical = 8.dp),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Text(
-                                        text = title,
-                                        style = MaterialTheme.typography.labelLarge,
-                                        fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
-                                        color = if (selected) {
-                                            MaterialTheme.colorScheme.onPrimaryContainer
-                                        } else {
-                                            MaterialTheme.colorScheme.onSurfaceVariant
-                                        },
-                                        textAlign = TextAlign.Center,
-                                        maxLines = 1,
-                                        softWrap = false,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        if (loading) {
-            item {
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(18.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
-                ) {
-                    Row(
-                        modifier = Modifier.padding(20.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
-                        Text("Đang tải dữ liệu báo cáo…")
-                    }
-                }
-            }
-        }
-
-        error?.let { errMsg ->
-            item {
-                EmptyReportBanner(
-                    title = "Không thể tải dữ liệu báo cáo",
-                    subtitle = errMsg
-                )
-            }
-        }
-
-        editingObligation?.let { target ->
-            item {
-                val sections = remember(target.schemaJsonRaw) {
-                    parseDynamicSections(target.schemaJsonRaw)
-                }
-                val isEditableObligation = WorkReportsContract.isEditableObligation(target)
-                DynamicWorkReportFormCard(
-                    obligation = target,
-                    sections = sections,
-                    canSubmit = isEditableObligation && !mutationBusy,
-                    onCancel = { viewModel.closeObligationEditor() },
-                    onSaveDraft = { payload ->
-                        if (onSaveDraftAction != null) {
-                            onSaveDraftAction(target, payload)
-                            viewModel.closeObligationEditor()
-                        } else {
-                            viewModel.saveWorkReportDraft(target, payload)
-                        }
-                    },
-                    onSubmitFinal = { payload ->
-                        if (onSubmitFinalAction != null) {
-                            onSubmitFinalAction(target, payload)
-                            viewModel.closeObligationEditor()
-                        } else {
-                            viewModel.submitWorkReportFinal(target, payload)
-                        }
-                    }
-                )
-            }
-        }
-
-        when (currentTabKey) {
-            "active" -> {
-                if (activeObligations.isEmpty() && !loading) {
-                    item {
-                        EmptyReportBanner(
-                            title = "Bạn đã hoàn thành hết báo cáo đến hạn",
-                            subtitle = "Khi có kỳ báo cáo mới cần nộp, biểu mẫu sẽ hiển thị tại đây."
-                        )
-                    }
-                } else {
-                    items(activeObligations, key = { it.obligationId }) { item ->
-                        val isOpenInEditor = editingObligation?.obligationId == item.obligationId
-                        WorkReportObligationCard(
-                            item = item,
-                            showEditAction = item.obligationStatus == "ACTIVE",
-                            isCurrentlyEditing = isOpenInEditor,
-                            onOpenEdit = {
-                                if (isOpenInEditor) {
-                                    viewModel.closeObligationEditor()
-                                } else {
-                                    viewModel.openObligationEditor(item)
-                                }
-                            }
-                        )
-                    }
-                }
-            }
-
-            "history" -> {
-                if (historyObligations.isEmpty() && !loading) {
-                    item {
-                        EmptyReportBanner(
-                            title = "Chưa có báo cáo đã lưu hoặc đã nộp",
-                            subtitle = "Các bản nháp và báo cáo bạn đã gửi sẽ được lưu tại đây."
-                        )
-                    }
-                } else {
-                    items(historyObligations, key = { it.obligationId }) { item ->
-                        val isOpenInEditor = editingObligation?.obligationId == item.obligationId
-                        WorkReportObligationCard(
-                            item = item,
-                            showEditAction = item.isOverdue || (
-                                item.obligationStatus == "ACTIVE" &&
-                                    item.submissionState in listOf("DRAFT", "REJECTED")
-                            ),
-                            isCurrentlyEditing = isOpenInEditor,
-                            onOpenEdit = {
-                                if (isOpenInEditor) {
-                                    viewModel.closeObligationEditor()
-                                } else {
-                                    viewModel.openObligationEditor(item)
-                                }
-                            }
-                        )
-                    }
-                }
-            }
-
-            "review" -> {
-                if (reviewQueue.isEmpty() && !loading) {
-                    item {
-                        EmptyReportBanner(
-                            title = "Không có báo cáo chờ duyệt",
-                            subtitle = "Hiện chưa có báo cáo nào từ thành viên trong nhóm cần bạn phê duyệt."
-                        )
-                    }
-                } else {
-                    items(reviewQueue, key = { it.obligationId }) { item ->
-                        ReviewInboxItemCard(
-                            item = item,
-                            onApprove = { reason ->
-                                if (onReviewDecisionAction != null) {
-                                    onReviewDecisionAction(item, true, reason)
-                                } else {
-                                    viewModel.decideWorkReportReview(item, true, reason)
-                                }
-                            },
-                            onReject = { reason ->
-                                if (onReviewDecisionAction != null) {
-                                    onReviewDecisionAction(item, false, reason)
-                                } else {
-                                    viewModel.decideWorkReportReview(item, false, reason)
-                                }
-                            }
-                        )
-                    }
-                }
-            }
-
-            "analytics" -> {
-                if (availableTemplates.isNotEmpty() || analyticsSnapshot != null) {
-                    item {
-                        val activeTemplateId = analyticsSnapshot?.templateId
-                            ?: availableTemplates.firstOrNull()?.templateId.orEmpty()
-                        val activeTemplateName = availableTemplates
-                            .firstOrNull { it.templateId == activeTemplateId }
-                            ?.displayName
-                            ?: analyticsSnapshot?.templateName.orEmpty()
-                        val activeFinality = analyticsSnapshot?.finality ?: "final"
-                        val activeGroupBy = analyticsSnapshot?.groupBy ?: "team"
-
-                        AnalyticsFilterCard(
-                            availableTemplates = availableTemplates,
-                            selectedTemplateId = activeTemplateId,
-                            selectedFinality = activeFinality,
-                            selectedGroupBy = activeGroupBy,
-                            enabled = !loading,
-                            onSelectTemplate = { tid, tname ->
-                                viewModel.loadWorkReportAnalytics(
-                                    templateId = tid,
-                                    templateNameHint = tname,
-                                    groupBy = activeGroupBy,
-                                    finality = activeFinality
+                "history" -> {
+                    if (filteredHistoryObligations.isEmpty() && !loading) {
+                        item {
+                            val filterDate = selectedFilterDate
+                            if (filterDate != null && historyObligations.isNotEmpty()) {
+                                EmptyReportBanner(
+                                    title = "Không có báo cáo ngày ${LeaveContract.formatIsoDateVi(filterDate)}",
+                                    subtitle = "Bấm 'Tất cả' trên thanh lịch tuần để xem toàn bộ lịch sử báo cáo."
                                 )
-                            },
-                            onSelectFinality = { nextFinality ->
-                                if (activeTemplateId.isNotBlank() && nextFinality != activeFinality) {
-                                    viewModel.loadWorkReportAnalytics(
-                                        templateId = activeTemplateId,
-                                        templateNameHint = activeTemplateName,
-                                        groupBy = activeGroupBy,
-                                        finality = nextFinality
-                                    )
+                            } else {
+                                EmptyReportBanner(
+                                    title = "Chưa có báo cáo đã lưu hoặc đã nộp",
+                                    subtitle = "Các bản nháp và báo cáo bạn đã gửi sẽ được lưu tại đây."
+                                )
+                            }
+                        }
+                    } else {
+                        items(filteredHistoryObligations, key = { it.obligationId }) { item ->
+                            val isOpenInEditor = editingObligation?.obligationId == item.obligationId
+                            WorkReportObligationCard(
+                                item = item,
+                                showEditAction = item.isOverdue || (
+                                    item.obligationStatus == "ACTIVE" &&
+                                        item.submissionState in listOf("DRAFT", "REJECTED")
+                                ),
+                                isCurrentlyEditing = isOpenInEditor,
+                                onOpenEdit = {
+                                    HrpHaptics.tick(haptic)
+                                    if (isOpenInEditor) {
+                                        viewModel.closeObligationEditor()
+                                    } else {
+                                        viewModel.openObligationEditor(item)
+                                    }
                                 }
-                            },
-                            onSelectGroupBy = { nextGroupBy ->
-                                if (activeTemplateId.isNotBlank() && nextGroupBy != activeGroupBy) {
+                            )
+                        }
+                    }
+                }
+
+                "review" -> {
+                    if (filteredReviewQueue.isEmpty() && !loading) {
+                        item {
+                            val filterDate = selectedFilterDate
+                            if (filterDate != null && reviewQueue.isNotEmpty()) {
+                                EmptyReportBanner(
+                                    title = "Không có báo cáo chờ duyệt ngày ${LeaveContract.formatIsoDateVi(filterDate)}",
+                                    subtitle = "Bấm 'Tất cả' trên thanh lịch tuần để xem toàn bộ hàng đợi duyệt."
+                                )
+                            } else {
+                                EmptyReportBanner(
+                                    title = "Không có báo cáo chờ duyệt",
+                                    subtitle = "Hiện chưa có báo cáo nào từ thành viên trong nhóm cần bạn phê duyệt."
+                                )
+                            }
+                        }
+                    } else {
+                        items(filteredReviewQueue, key = { it.obligationId }) { item ->
+                            ReviewInboxItemCard(
+                                item = item,
+                                onApprove = { reason ->
+                                    HrpHaptics.tick(haptic)
+                                    if (onReviewDecisionAction != null) {
+                                        onReviewDecisionAction(item, true, reason)
+                                    } else {
+                                        viewModel.decideWorkReportReview(item, true, reason)
+                                    }
+                                },
+                                onReject = { reason ->
+                                    HrpHaptics.tick(haptic)
+                                    if (onReviewDecisionAction != null) {
+                                        onReviewDecisionAction(item, false, reason)
+                                    } else {
+                                        viewModel.decideWorkReportReview(item, false, reason)
+                                    }
+                                }
+                            )
+                        }
+                    }
+                }
+
+                "analytics" -> {
+                    if (availableTemplates.isNotEmpty() || analyticsSnapshot != null) {
+                        item {
+                            val activeTemplateId = analyticsSnapshot?.templateId
+                                ?: availableTemplates.firstOrNull()?.templateId.orEmpty()
+                            val activeTemplateName = availableTemplates
+                                .firstOrNull { it.templateId == activeTemplateId }
+                                ?.displayName
+                                ?: analyticsSnapshot?.templateName.orEmpty()
+                            val activeFinality = analyticsSnapshot?.finality ?: "final"
+                            val activeGroupBy = analyticsSnapshot?.groupBy ?: "team"
+
+                            AnalyticsFilterCard(
+                                availableTemplates = availableTemplates,
+                                selectedTemplateId = activeTemplateId,
+                                selectedFinality = activeFinality,
+                                selectedGroupBy = activeGroupBy,
+                                enabled = !loading,
+                                onSelectTemplate = { tid, tname ->
+                                    HrpHaptics.tick(haptic)
                                     viewModel.loadWorkReportAnalytics(
-                                        templateId = activeTemplateId,
-                                        templateNameHint = activeTemplateName,
-                                        groupBy = nextGroupBy,
+                                        templateId = tid,
+                                        templateNameHint = tname,
+                                        groupBy = activeGroupBy,
                                         finality = activeFinality
                                     )
+                                },
+                                onSelectFinality = { nextFinality ->
+                                    if (activeTemplateId.isNotBlank() && nextFinality != activeFinality) {
+                                        HrpHaptics.tick(haptic)
+                                        viewModel.loadWorkReportAnalytics(
+                                            templateId = activeTemplateId,
+                                            templateNameHint = activeTemplateName,
+                                            groupBy = activeGroupBy,
+                                            finality = nextFinality
+                                        )
+                                    }
+                                },
+                                onSelectGroupBy = { nextGroupBy ->
+                                    if (activeTemplateId.isNotBlank() && nextGroupBy != activeGroupBy) {
+                                        HrpHaptics.tick(haptic)
+                                        viewModel.loadWorkReportAnalytics(
+                                            templateId = activeTemplateId,
+                                            templateNameHint = activeTemplateName,
+                                            groupBy = nextGroupBy,
+                                            finality = activeFinality
+                                        )
+                                    }
                                 }
-                            }
-                        )
+                            )
+                        }
                     }
-                }
-                item {
-                    val snap = analyticsSnapshot
-                    if (snap == null && !loading) {
-                        EmptyReportBanner(
-                            title = "Chưa có số liệu tổng hợp",
-                            subtitle = "Chưa ghi nhận mẫu báo cáo đang hoạt động trong phạm vi quản lý của bạn."
-                        )
-                    } else if (snap != null) {
-                        WorkReportAnalyticsSummaryCard(snapshot = snap)
+                    item {
+                        val snap = analyticsSnapshot
+                        if (snap == null && !loading) {
+                            EmptyReportBanner(
+                                title = "Chưa có số liệu tổng hợp",
+                                subtitle = "Chưa ghi nhận mẫu báo cáo đang hoạt động trong phạm vi quản lý của bạn."
+                            )
+                        } else if (snap != null) {
+                            WorkReportAnalyticsSummaryCard(snapshot = snap)
+                        }
                     }
                 }
             }
         }
-    }
     }
 }
 
@@ -585,14 +725,16 @@ internal fun DynamicWorkReportFormCard(
         return obj
     }
 
-    Card(
+    Box(
         modifier = Modifier
             .fillMaxWidth()
-            .testTag("dynamic_work_report_form_card"),
-        shape = RoundedCornerShape(20.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        border = BorderStroke(1.2.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)),
-        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+            .hrpCardSurface(cornerRadius = HrpDesignTokens.RadiusCard)
+            .border(
+                width = 1.dp,
+                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.30f),
+                shape = RoundedCornerShape(HrpDesignTokens.RadiusCard)
+            )
+            .testTag("dynamic_work_report_form_card")
     ) {
         Column(
             modifier = Modifier
@@ -612,12 +754,12 @@ internal fun DynamicWorkReportFormCard(
                     verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     Surface(
-                        shape = RoundedCornerShape(6.dp),
+                        shape = CircleShape,
                         color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f)
                     ) {
                         Text(
                             text = "Kỳ ${WorkReportsContract.formatPeriodKeyVi(obligation.periodKey)}",
-                            style = MaterialTheme.typography.labelSmall,
+                            style = MaterialTheme.typography.labelSmall.tabularNums(),
                             fontWeight = FontWeight.SemiBold,
                             color = MaterialTheme.colorScheme.onPrimaryContainer,
                             maxLines = 1,
@@ -1045,16 +1187,15 @@ private fun WorkReportObligationCard(
         else -> "Làm báo cáo"
     }
 
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(18.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        elevation = CardDefaults.cardElevation(defaultElevation = 1.5.dp)
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .hrpCardSurface()
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(16.dp),
+                .padding(HrpDesignTokens.CardPadding),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             Row(
@@ -1066,57 +1207,48 @@ private fun WorkReportObligationCard(
                     modifier = Modifier
                         .weight(1f)
                         .padding(end = 8.dp),
-                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                    verticalArrangement = Arrangement.spacedBy(3.dp)
                 ) {
                     Text(
                         text = item.templateName.ifBlank { "Báo cáo công việc" },
                         style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.SemiBold
+                        fontWeight = FontWeight.Bold
                     )
                     Text(
                         text = "Kỳ báo cáo: ${WorkReportsContract.formatPeriodKeyVi(item.periodKey)}",
-                        style = MaterialTheme.typography.bodySmall,
+                        style = MaterialTheme.typography.bodySmall.tabularNums(),
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     Text(
                         text = "Hạn nộp: ${WorkReportsContract.formatIsoDateTimeVi(item.dueAtIso)}",
-                        style = MaterialTheme.typography.bodySmall,
+                        style = MaterialTheme.typography.bodySmall.tabularNums(),
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     if (!item.submittedAtIso.isNullOrBlank()) {
                         Text(
                             text = "Đã gửi lúc: ${WorkReportsContract.formatIsoDateTimeVi(item.submittedAtIso)}",
-                            style = MaterialTheme.typography.labelSmall,
+                            style = MaterialTheme.typography.labelSmall.tabularNums(),
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                 }
-                Surface(
-                    shape = RoundedCornerShape(8.dp),
-                    color = badgeColor.copy(alpha = 0.14f)
-                ) {
-                    Text(
-                        text = stateLabel,
-                        style = MaterialTheme.typography.labelSmall,
-                        fontWeight = FontWeight.SemiBold,
-                        color = badgeColor,
-                        maxLines = 1,
-                        softWrap = false,
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                    )
-                }
+                HrpStatusBadge(
+                    text = stateLabel,
+                    tint = badgeColor
+                )
             }
 
             if (!item.latestReviewReason.isNullOrBlank()) {
                 Surface(
                     shape = RoundedCornerShape(10.dp),
-                    color = badgeColor.copy(alpha = 0.1f)
+                    color = badgeColor.copy(alpha = 0.10f),
+                    modifier = Modifier.fillMaxWidth()
                 ) {
                     Text(
                         text = "Ghi chú người duyệt: ${item.latestReviewReason}",
                         style = MaterialTheme.typography.bodySmall,
                         color = badgeColor,
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp)
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
                     )
                 }
             }
@@ -1128,16 +1260,16 @@ private fun WorkReportObligationCard(
                 ) {
                     OutlinedButton(
                         onClick = onOpenEdit,
-                        shape = RoundedCornerShape(12.dp),
-                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
+                        shape = RoundedCornerShape(10.dp),
+                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 9.dp),
                         modifier = Modifier
-                            .heightIn(min = 42.dp)
+                            .heightIn(min = 40.dp)
                             .testTag("open_edit_report_${item.obligationId}")
                     ) {
                         Icon(
                             imageVector = if (isCurrentlyEditing) Icons.Default.Close else Icons.Default.EditNote,
                             contentDescription = null,
-                            modifier = Modifier.size(18.dp)
+                            modifier = Modifier.size(17.dp)
                         )
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(
@@ -1160,16 +1292,15 @@ private fun ReviewInboxItemCard(
 ) {
     var reviewNote by remember { mutableStateOf("") }
 
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(18.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .hrpCardSurface()
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(16.dp),
+                .padding(HrpDesignTokens.CardPadding),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             Row(
@@ -1177,51 +1308,52 @@ private fun ReviewInboxItemCard(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.Top
             ) {
-                Column(
+                Row(
                     modifier = Modifier
                         .weight(1f)
                         .padding(end = 8.dp),
-                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    val teamSuffix = item.teamDisplayName?.takeIf { it.isNotBlank() }?.let { " · $it" }.orEmpty()
-                    Text(
-                        text = "${item.assigneeDisplayName}$teamSuffix",
-                        style = MaterialTheme.typography.titleMedium
+                    HrpInitialsAvatar(
+                        fullName = item.assigneeDisplayName,
+                        size = 40.dp
                     )
-                    Text(
-                        text = "${item.templateName.ifBlank { "Báo cáo công việc" }} · Kỳ ${WorkReportsContract.formatPeriodKeyVi(item.periodKey)}",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Text(
-                        text = "Nộp lúc: ${WorkReportsContract.formatIsoDateTimeVi(item.submittedAt)}",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                    Column(
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(2.dp)
+                    ) {
+                        val teamSuffix = item.teamDisplayName?.takeIf { it.isNotBlank() }?.let { " · $it" }.orEmpty()
+                        Text(
+                            text = "${item.assigneeDisplayName}$teamSuffix",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = "${item.templateName.ifBlank { "Báo cáo công việc" }} · Kỳ ${WorkReportsContract.formatPeriodKeyVi(item.periodKey)}",
+                            style = MaterialTheme.typography.bodySmall.tabularNums(),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Text(
+                            text = "Nộp lúc: ${WorkReportsContract.formatIsoDateTimeVi(item.submittedAt)}",
+                            style = MaterialTheme.typography.labelSmall.tabularNums(),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                 }
                 Column(
                     horizontalAlignment = Alignment.End,
                     verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
                     val statusTint = if (item.isLate) SemanticColors.WarningLight else SemanticColors.RunningLight
-                    Surface(
-                        shape = RoundedCornerShape(8.dp),
-                        color = statusTint.copy(alpha = 0.14f)
-                    ) {
-                        Text(
-                            text = if (item.isLate) "Nộp muộn" else "Chờ duyệt",
-                            style = MaterialTheme.typography.labelSmall,
-                            fontWeight = FontWeight.SemiBold,
-                            color = statusTint,
-                            maxLines = 1,
-                            softWrap = false,
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                        )
-                    }
+                    HrpStatusBadge(
+                        text = if (item.isLate) "Nộp muộn" else "Chờ duyệt",
+                        tint = statusTint
+                    )
                     if (item.submissionVersion > 1) {
                         Text(
                             text = "Lần gửi ${item.submissionVersion}",
-                            style = MaterialTheme.typography.labelSmall,
+                            style = MaterialTheme.typography.labelSmall.tabularNums(),
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
@@ -1229,31 +1361,32 @@ private fun ReviewInboxItemCard(
             }
 
             if (item.payloadSummary.isNotEmpty()) {
-                Column(
+                Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f))
-                        .padding(12.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                        .hrpMutedTile(cornerRadius = 12.dp)
+                        .padding(12.dp)
                 ) {
-                    item.payloadSummary.forEach { (k, v) ->
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Text(
-                                text = k,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.weight(1f)
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(
-                                text = v,
-                                style = MaterialTheme.typography.bodySmall,
-                                fontWeight = FontWeight.SemiBold
-                            )
+                    Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                        item.payloadSummary.forEach { (k, v) ->
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = k,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = v,
+                                    style = MaterialTheme.typography.bodySmall.tabularNums(),
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            }
                         }
                     }
                 }
@@ -1277,8 +1410,11 @@ private fun ReviewInboxItemCard(
                 OutlinedButton(
                     onClick = { onReject(reviewNote) },
                     enabled = reviewNote.isNotBlank(),
-                    shape = RoundedCornerShape(12.dp),
+                    shape = RoundedCornerShape(10.dp),
                     contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        contentColor = SemanticColors.ErrorLight
+                    ),
                     modifier = Modifier
                         .weight(1f)
                         .heightIn(min = 44.dp)
@@ -1287,6 +1423,7 @@ private fun ReviewInboxItemCard(
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(
                         text = "Yêu cầu sửa",
+                        fontWeight = FontWeight.SemiBold,
                         maxLines = 1,
                         softWrap = false,
                         overflow = TextOverflow.Ellipsis
@@ -1294,8 +1431,11 @@ private fun ReviewInboxItemCard(
                 }
                 Button(
                     onClick = { onApprove(reviewNote) },
-                    colors = ButtonDefaults.buttonColors(containerColor = SemanticColors.SuccessLight),
-                    shape = RoundedCornerShape(12.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = SemanticColors.SuccessLight,
+                        contentColor = Color.White
+                    ),
+                    shape = RoundedCornerShape(10.dp),
                     contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
                     modifier = Modifier
                         .weight(1f)
@@ -1306,6 +1446,7 @@ private fun ReviewInboxItemCard(
                     Text(
                         text = "Đồng ý duyệt",
                         color = Color.White,
+                        fontWeight = FontWeight.SemiBold,
                         maxLines = 1,
                         softWrap = false,
                         overflow = TextOverflow.Ellipsis
@@ -1328,15 +1469,15 @@ private fun AnalyticsFilterCard(
     onSelectFinality: (String) -> Unit,
     onSelectGroupBy: (String) -> Unit
 ) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(18.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .hrpCardSurface()
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(16.dp),
+                .padding(HrpDesignTokens.CardPadding),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             if (availableTemplates.size > 1) {
@@ -1355,6 +1496,7 @@ private fun AnalyticsFilterCard(
                             FilterChip(
                                 selected = selectedTemplateId == opt.templateId,
                                 enabled = enabled,
+                                shape = CircleShape,
                                 onClick = { onSelectTemplate(opt.templateId, opt.displayName) },
                                 label = { Text(opt.displayName) }
                             )
@@ -1372,18 +1514,10 @@ private fun AnalyticsFilterCard(
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                    Surface(
-                        shape = RoundedCornerShape(8.dp),
-                        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.65f)
-                    ) {
-                        Text(
-                            text = availableTemplates.first().displayName,
-                            style = MaterialTheme.typography.labelMedium,
-                            fontWeight = FontWeight.SemiBold,
-                            color = MaterialTheme.colorScheme.onPrimaryContainer,
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
-                        )
-                    }
+                    HrpStatusBadge(
+                        text = availableTemplates.first().displayName,
+                        tint = MaterialTheme.colorScheme.primary
+                    )
                 }
             }
 
@@ -1398,12 +1532,14 @@ private fun AnalyticsFilterCard(
                     FilterChip(
                         selected = selectedFinality == "final",
                         enabled = enabled,
+                        shape = CircleShape,
                         onClick = { onSelectFinality("final") },
                         label = { Text("Đã chốt (Đã duyệt)") }
                     )
                     FilterChip(
                         selected = selectedFinality == "provisional_included",
                         enabled = enabled,
+                        shape = CircleShape,
                         onClick = { onSelectFinality("provisional_included") },
                         label = { Text("Tạm tính (Gồm chờ duyệt)") }
                     )
@@ -1426,6 +1562,7 @@ private fun AnalyticsFilterCard(
                         FilterChip(
                             selected = selectedGroupBy == key,
                             enabled = enabled,
+                            shape = CircleShape,
                             onClick = { onSelectGroupBy(key) },
                             label = { Text(label) }
                         )
@@ -1443,16 +1580,15 @@ private fun WorkReportAnalyticsSummaryCard(snapshot: WorkReportAnalyticsSnapshot
         add(if (snapshot.finality == "provisional_included") "Số liệu tạm tính" else "Số liệu đã chốt")
     }.joinToString(" · ")
 
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(20.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        elevation = CardDefaults.cardElevation(defaultElevation = 1.5.dp)
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .hrpCardSurface()
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(16.dp),
+                .padding(HrpDesignTokens.CardPadding),
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -1470,7 +1606,6 @@ private fun WorkReportAnalyticsSummaryCard(snapshot: WorkReportAnalyticsSnapshot
                 }
             }
 
-            // Highlight Banner: Tiến độ nộp báo cáo (single-line percentage, clear Vietnamese)
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -1494,14 +1629,13 @@ private fun WorkReportAnalyticsSummaryCard(snapshot: WorkReportAnalyticsSnapshot
                     )
                     Text(
                         text = "Đã hoàn thành ${snapshot.submittedCount} / ${snapshot.totalObligations} lượt báo cáo được giao",
-                        style = MaterialTheme.typography.bodySmall,
+                        style = MaterialTheme.typography.bodySmall.tabularNums(),
                         color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.85f)
                     )
                 }
                 Text(
                     text = WorkReportsContract.formatPercentVi(snapshot.complianceRatePct),
-                    style = MaterialTheme.typography.headlineSmall,
-                    fontFamily = JetBrainsMono,
+                    style = MaterialTheme.typography.headlineSmall.tabularNums(),
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.primary,
                     maxLines = 1,
@@ -1509,7 +1643,6 @@ private fun WorkReportAnalyticsSummaryCard(snapshot: WorkReportAnalyticsSnapshot
                 )
             }
 
-            // Clear 6-tile KPI Grid synced with App BI
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -1558,7 +1691,7 @@ private fun WorkReportAnalyticsSummaryCard(snapshot: WorkReportAnalyticsSnapshot
             }
 
             if (snapshot.metrics.isNotEmpty()) {
-                HorizontalDivider()
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
                 Text(
                     text = "Chỉ tiêu công việc tổng hợp",
                     style = MaterialTheme.typography.titleSmall,
@@ -1569,8 +1702,7 @@ private fun WorkReportAnalyticsSummaryCard(snapshot: WorkReportAnalyticsSnapshot
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clip(RoundedCornerShape(12.dp))
-                                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f))
+                                .hrpMutedTile(cornerRadius = 12.dp)
                                 .padding(horizontal = 12.dp, vertical = 10.dp),
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
@@ -1596,8 +1728,7 @@ private fun WorkReportAnalyticsSummaryCard(snapshot: WorkReportAnalyticsSnapshot
                             }
                             Text(
                                 text = metric.valueDisplay,
-                                style = MaterialTheme.typography.titleMedium,
-                                fontFamily = JetBrainsMono,
+                                style = MaterialTheme.typography.titleMedium.tabularNums(),
                                 fontWeight = FontWeight.Bold,
                                 color = MaterialTheme.colorScheme.primary,
                                 maxLines = 1,
@@ -1609,7 +1740,7 @@ private fun WorkReportAnalyticsSummaryCard(snapshot: WorkReportAnalyticsSnapshot
             }
 
             if (snapshot.breakdownRows.isNotEmpty()) {
-                HorizontalDivider()
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
                 val breakdownTitle = when (snapshot.groupBy) {
                     "assignee" -> "Chi tiết theo nhân viên"
                     "period" -> "Chi tiết theo kỳ báo cáo"
@@ -1630,12 +1761,7 @@ private fun WorkReportAnalyticsSummaryCard(snapshot: WorkReportAnalyticsSnapshot
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clip(RoundedCornerShape(12.dp))
-                                .border(
-                                    width = 1.dp,
-                                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f),
-                                    shape = RoundedCornerShape(12.dp)
-                                )
+                                .hrpMutedTile(cornerRadius = 12.dp)
                                 .padding(12.dp),
                             verticalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
@@ -1646,7 +1772,7 @@ private fun WorkReportAnalyticsSummaryCard(snapshot: WorkReportAnalyticsSnapshot
                             ) {
                                 Text(
                                     text = displayLabel,
-                                    style = MaterialTheme.typography.bodyMedium,
+                                    style = MaterialTheme.typography.bodyMedium.tabularNums(),
                                     fontWeight = FontWeight.SemiBold,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis,
@@ -1656,8 +1782,7 @@ private fun WorkReportAnalyticsSummaryCard(snapshot: WorkReportAnalyticsSnapshot
                                 )
                                 Text(
                                     text = WorkReportsContract.formatPercentVi(row.complianceRatePct),
-                                    style = MaterialTheme.typography.labelLarge,
-                                    fontFamily = JetBrainsMono,
+                                    style = MaterialTheme.typography.labelLarge.tabularNums(),
                                     fontWeight = FontWeight.Bold,
                                     color = MaterialTheme.colorScheme.primary,
                                     maxLines = 1,
@@ -1672,7 +1797,7 @@ private fun WorkReportAnalyticsSummaryCard(snapshot: WorkReportAnalyticsSnapshot
                             }
                             Text(
                                 text = countsInfo,
-                                style = MaterialTheme.typography.bodySmall,
+                                style = MaterialTheme.typography.bodySmall.tabularNums(),
                                 color = if (row.overdueMissingCount > 0)
                                     SemanticColors.ErrorLight
                                 else
@@ -1681,7 +1806,7 @@ private fun WorkReportAnalyticsSummaryCard(snapshot: WorkReportAnalyticsSnapshot
                             if (row.metricsSummary.isNotEmpty()) {
                                 Text(
                                     text = row.metricsSummary.joinToString(" · "),
-                                    style = MaterialTheme.typography.labelSmall,
+                                    style = MaterialTheme.typography.labelSmall.tabularNums(),
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
@@ -1691,7 +1816,7 @@ private fun WorkReportAnalyticsSummaryCard(snapshot: WorkReportAnalyticsSnapshot
             }
 
             if (snapshot.contributions.isNotEmpty()) {
-                HorizontalDivider()
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
                 Text(
                     text = "Báo cáo đã nộp gần đây",
                     style = MaterialTheme.typography.titleSmall,
@@ -1705,47 +1830,48 @@ private fun WorkReportAnalyticsSummaryCard(snapshot: WorkReportAnalyticsSnapshot
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clip(RoundedCornerShape(10.dp))
-                                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.28f))
+                                .hrpMutedTile(cornerRadius = 10.dp)
                                 .padding(horizontal = 12.dp, vertical = 8.dp),
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Column(
+                            Row(
                                 modifier = Modifier
                                     .weight(1f)
                                     .padding(end = 8.dp),
-                                verticalArrangement = Arrangement.spacedBy(2.dp)
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalAlignment = Alignment.CenterVertically
                             ) {
-                                val teamPart = contrib.teamDisplayName?.takeIf { it.isNotBlank() }?.let { " · $it" }.orEmpty()
-                                Text(
-                                    text = "${contrib.assigneeDisplayName}$teamPart",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    fontWeight = FontWeight.SemiBold
+                                HrpInitialsAvatar(
+                                    fullName = contrib.assigneeDisplayName,
+                                    size = 32.dp
                                 )
-                                val submittedPart = contrib.submittedAt?.let {
-                                    " · Nộp ${WorkReportsContract.formatIsoDateTimeVi(it)}"
-                                }.orEmpty()
-                                Text(
-                                    text = "Kỳ ${WorkReportsContract.formatPeriodKeyVi(contrib.periodKey)}$submittedPart",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
+                                Column(
+                                    modifier = Modifier.weight(1f),
+                                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                                ) {
+                                    val teamPart = contrib.teamDisplayName?.takeIf { it.isNotBlank() }?.let { " · $it" }.orEmpty()
+                                    Text(
+                                        text = "${contrib.assigneeDisplayName}$teamPart",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        fontWeight = FontWeight.SemiBold,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    val submittedPart = contrib.submittedAt?.let {
+                                        " · Nộp ${WorkReportsContract.formatIsoDateTimeVi(it)}"
+                                    }.orEmpty()
+                                    Text(
+                                        text = "Kỳ ${WorkReportsContract.formatPeriodKeyVi(contrib.periodKey)}$submittedPart",
+                                        style = MaterialTheme.typography.labelSmall.tabularNums(),
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
                             }
-                            Surface(
-                                shape = RoundedCornerShape(6.dp),
-                                color = stateColor.copy(alpha = 0.14f)
-                            ) {
-                                Text(
-                                    text = stateLabel,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    fontWeight = FontWeight.Medium,
-                                    color = stateColor,
-                                    maxLines = 1,
-                                    softWrap = false,
-                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
-                                )
-                            }
+                            HrpStatusBadge(
+                                text = stateLabel,
+                                tint = stateColor
+                            )
                         }
                     }
                 }
@@ -1763,8 +1889,7 @@ private fun ComplianceStatTile(
 ) {
     Column(
         modifier = modifier
-            .clip(RoundedCornerShape(12.dp))
-            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f))
+            .hrpMutedTile(cornerRadius = 12.dp)
             .padding(horizontal = 10.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(2.dp)
     ) {
@@ -1777,8 +1902,7 @@ private fun ComplianceStatTile(
         )
         Text(
             text = value,
-            style = MaterialTheme.typography.titleMedium,
-            fontFamily = JetBrainsMono,
+            style = MaterialTheme.typography.titleMedium.tabularNums(),
             fontWeight = FontWeight.Bold,
             color = accentColor ?: MaterialTheme.colorScheme.onSurface,
             maxLines = 1,
@@ -1796,10 +1920,10 @@ private fun submissionStateColor(stateCode: String): Color = when (stateCode.tri
 
 @Composable
 private fun EmptyReportBanner(title: String, subtitle: String) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(18.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .hrpCardSurface()
     ) {
         Column(
             modifier = Modifier
@@ -1814,11 +1938,17 @@ private fun EmptyReportBanner(title: String, subtitle: String) {
                 tint = SemanticColors.SuccessLight,
                 modifier = Modifier.size(32.dp)
             )
-            Text(title, style = MaterialTheme.typography.titleSmall)
             Text(
-                subtitle,
+                text = title,
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+                textAlign = TextAlign.Center
+            )
+            Text(
+                text = subtitle,
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center
             )
         }
     }

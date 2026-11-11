@@ -7947,4 +7947,509 @@ class WorkerUiAuthorizationRobolectricTest {
         composeTestRule.onNodeWithText("5. Đơn giá ca làm & bảo hộ").performScrollTo().assertIsDisplayed()
         composeTestRule.onNodeWithText("6. Thông tin đăng tải & cập nhật").performScrollTo().assertIsDisplayed()
     }
+
+    @Test
+    @Config(qualifiers = "w360dp-h800dp-xxhdpi")
+    fun `phase 2 ui overhaul - CheckIn button displays 2-line centered CHAM CONG NGAY and Hom nay count while preserving camera icon symmetry`() {
+        val actorId = "p2220001-2222-4333-8444-555555555555"
+        val nowMs = System.currentTimeMillis()
+        val server = MockWebServer()
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                return MockResponse()
+                    .setResponseCode(200)
+                    .setHeader("Content-Type", "application/json")
+                    .setBody("""{"ok":true,"data":{}}""")
+            }
+        }
+        server.start()
+
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val db = buildTestDb(app)
+        val todayIso = com.example.data.AttendanceExplanationContract.todayVietnamIsoDate(nowMs)
+        kotlinx.coroutines.runBlocking {
+            db.miniBiDao().insertAttendance(
+                AttendanceEntity(
+                    id = 9201L,
+                    idempotencyKey = "aaaaaaaa-2222-4ccc-8ddd-eeeeeeee0001",
+                    appUserId = actorId,
+                    userDisplayName = "Nhân Viên Chấm Công P2",
+                    latitude = 21.0285,
+                    longitude = 105.8542,
+                    accuracyMeters = 8f,
+                    addressHint = "Hà Nội",
+                    photoFilePath = "/tmp/p2_1.jpg",
+                    photoUri = "content://test/p2_1.jpg",
+                    photoSha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                    clientCapturedAtIso = com.example.data.AttendanceTimeContract.formatEpochMillisInHcmIso(nowMs - 60_000L),
+                    epochMillis = nowMs - 60_000L,
+                    timeSource = AttendanceTimeSource.SERVER_ANCHORED,
+                    note = "",
+                    syncStatus = AttendanceOutboxStatus.SYNCED,
+                    statusMessage = "Đã đồng bộ",
+                    serverBusinessDate = todayIso
+                )
+            )
+            db.miniBiDao().insertAttendance(
+                AttendanceEntity(
+                    id = 9202L,
+                    idempotencyKey = "aaaaaaaa-2222-4ccc-8ddd-eeeeeeee0002",
+                    appUserId = actorId,
+                    userDisplayName = "Nhân Viên Chấm Công P2",
+                    latitude = 21.0285,
+                    longitude = 105.8542,
+                    accuracyMeters = 8f,
+                    addressHint = "Hà Nội",
+                    photoFilePath = "/tmp/p2_2.jpg",
+                    photoUri = "content://test/p2_2.jpg",
+                    photoSha256 = "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+                    clientCapturedAtIso = com.example.data.AttendanceTimeContract.formatEpochMillisInHcmIso(nowMs - 30_000L),
+                    epochMillis = nowMs - 30_000L,
+                    timeSource = AttendanceTimeSource.SERVER_ANCHORED,
+                    note = "",
+                    syncStatus = AttendanceOutboxStatus.SYNCED,
+                    statusMessage = "Đã đồng bộ",
+                    serverBusinessDate = todayIso
+                )
+            )
+        }
+        val cookieFile = File(app.cacheDir, "p2_checkin_cookie_${System.nanoTime()}.enc")
+        val prefsFile = File(app.cacheDir, "p2_checkin_prefs_${System.nanoTime()}.preferences_pb")
+        val repo = MiniBiRepository(
+            context = app,
+            database = db,
+            defaultServerUrl = server.url("/").toString().trimEnd('/'),
+            allowDebugUrlOverride = true,
+            cookieStorageFile = cookieFile,
+            preferencesStorageFile = prefsFile,
+            cookieCipher = JvmAes256GcmCookieCipher()
+        )
+        val vm = MiniBiViewModel(app, repo)
+        registerTestResourcesCleanup(vm, db, server, cookieFile, prefsFile)
+
+        val actor = AppActor(
+            appUserId = actorId,
+            displayName = "Tên Actor Không Hiện Trên Hero P2",
+            capabilities = listOf("entry_read"),
+            scopes = emptyList(),
+            selfRecruiterSuggestion = null
+        )
+
+        composeTestRule.setContent {
+            MyApplicationTheme {
+                AttendanceScreen(
+                    actor = actor,
+                    viewModel = vm,
+                    onBackToDashboard = {}
+                )
+            }
+        }
+        composeTestRule.waitForIdle()
+
+        // Hero card removes redundant actor.displayName and renders static digital clock cleanly under Robolectric
+        composeTestRule.onNodeWithText("Ghi nhận Chấm công").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Tên Actor Không Hiện Trên Hero P2").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("attendance_live_digital_clock").assertIsDisplayed()
+
+        // Primary check-in button renders 2-line centered label + today's synced count while preserving camera icon symmetry
+        composeTestRule.onNodeWithText("CHẤM CÔNG NGAY", useUnmergedTree = true).assertIsDisplayed()
+        composeTestRule.onNodeWithText("Hôm nay: 2 lượt", useUnmergedTree = true).assertIsDisplayed()
+
+        val buttonBounds = composeTestRule
+            .onNodeWithTag("primary_checkin_camera_button")
+            .assertIsDisplayed()
+            .fetchSemanticsNode()
+            .boundsInRoot
+        val iconBounds = composeTestRule
+            .onNodeWithTag("primary_checkin_camera_icon", useUnmergedTree = true)
+            .fetchSemanticsNode()
+            .boundsInRoot
+        val labelBounds = composeTestRule
+            .onNodeWithTag("primary_checkin_camera_label", useUnmergedTree = true)
+            .fetchSemanticsNode()
+            .boundsInRoot
+
+        val minIconPx = with(composeTestRule.density) { 30.dp.toPx() }
+        assertTrue("Camera icon width must be >= 30.dp", iconBounds.width >= minIconPx)
+        assertTrue(
+            "2-line label column must stay horizontally centered inside primary_checkin_camera_button",
+            abs(buttonBounds.center.x - labelBounds.center.x) <= 2.5f
+        )
+        val gapFromButtonEdgePx = iconBounds.left - buttonBounds.left
+        val gapToLabelPx = labelBounds.left - iconBounds.right
+        assertTrue(
+            "Camera icon must stay centered in left gutter (gapFromEdge=$gapFromButtonEdgePx vs gapToLabel=$gapToLabelPx)",
+            abs(gapFromButtonEdgePx - gapToLabelPx) <= 2.5f
+        )
+    }
+
+    @Test
+    @Config(qualifiers = "w360dp-h800dp-xxhdpi")
+    fun `phase 2 ui overhaul - Explanation and ExplanationApproval hide SLOT_x DEFAULT and rowVersion jargon while keeping target time fully visible`() {
+        val approverId = "p2220002-2222-4333-8444-555555555555"
+        val requesterId = "p2220003-2222-4333-8444-555555555555"
+        val expId = "eeee2222-2222-4333-8444-555555555555"
+        val todayIso = com.example.data.AttendanceExplanationContract.todayVietnamIsoDate()
+
+        val explanationItemJson = """
+            {
+              "explanation_id": "$expId",
+              "app_user_id": "$requesterId",
+              "requester": {
+                "app_user_id": "$requesterId",
+                "display_name": "Lê Thị Giải Trình",
+                "personnel_code": "NV-888",
+                "account_enabled": true
+              },
+              "business_date": "$todayIso",
+              "slot_code": "SLOT_1",
+              "slot_index": 1,
+              "slot_label": "Time 1",
+              "session_code": "AM",
+              "target_time": "07:30",
+              "grace_before_minutes": 15,
+              "grace_after_minutes": 15,
+              "original_slot_status": "OUT_OF_GRACE",
+              "status": "PENDING",
+              "reason": "Tắc đường cầu Vĩnh Tuy buổi sáng",
+              "route_kind": "TEAM_LEADER",
+              "routed_team": {
+                "team_id": "t-1",
+                "team_code": "TEAM_TD",
+                "team_name": "Team Tuyển Dụng"
+              },
+              "submitted_at": "${todayIso}T01:15:00Z",
+              "submitted_at_local": "08:15 $todayIso",
+              "row_version": 2,
+              "can_decide": true,
+              "policy_profile_id_used": "00000000-0000-4000-8000-000000000001",
+              "policy_profile_code_used": "DEFAULT",
+              "policy_profile_name_used": "DEFAULT",
+              "policy_version_used": 1,
+              "related_checkins": [
+                {
+                  "checkin_id": "chk-p2-01",
+                  "sequence_in_day": 1,
+                  "captured_at": "${todayIso}T00:52:00Z",
+                  "captured_at_local": "07:52 $todayIso",
+                  "time_local": "07:52",
+                  "time_verified": true,
+                  "assigned_slot_code": "SLOT_1",
+                  "delta_minutes": 22,
+                  "over_grace_minutes": 7,
+                  "deviation_status": "LATE",
+                  "distance_target_kind": "OFFICE",
+                  "distance_status": "OK",
+                  "distance_meters": 25
+                }
+              ],
+              "audit_events": []
+            }
+        """.trimIndent()
+
+        val server = MockWebServer()
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val path = request.path.orEmpty()
+                return when {
+                    path.startsWith("/api/attendance/explanations/approvals") -> MockResponse()
+                        .setResponseCode(200)
+                        .setHeader("Content-Type", "application/json")
+                        .setBody(
+                            """
+                            {
+                              "ok": true,
+                              "viewer": {
+                                "app_user_id": "$approverId",
+                                "can_approve_explanations": true,
+                                "is_full_admin": false,
+                                "is_bod": false
+                              },
+                              "pagination": {
+                                "limit": 20,
+                                "offset": 0,
+                                "total_rows": 1,
+                                "pending_count": 1
+                              },
+                              "items": [$explanationItemJson]
+                            }
+                            """.trimIndent()
+                        )
+                    path.startsWith("/api/attendance/explanations") -> MockResponse()
+                        .setResponseCode(200)
+                        .setHeader("Content-Type", "application/json")
+                        .setBody(
+                            """
+                            {
+                              "ok": true,
+                              "today_local": "$todayIso",
+                              "selected_date": "$todayIso",
+                              "viewer": {
+                                "app_user_id": "$approverId",
+                                "can_submit_explanation": true,
+                                "can_approve_explanations": true,
+                                "is_shared_non_employee": false,
+                                "is_full_admin": false,
+                                "is_bod": false
+                              },
+                              "routing": {
+                                "route_kind": "TEAM_LEADER",
+                                "unit_kind": "RECRUITMENT",
+                                "profile_configured": true,
+                                "team_name": "Team Tuyển Dụng",
+                                "primary_approver": {
+                                  "app_user_id": "$approverId",
+                                  "display_name": "Quản Lý Duyệt P2",
+                                  "account_enabled": true
+                                }
+                              },
+                              "day_evaluation": {
+                                "business_date": "$todayIso",
+                                "policy_version_used": 1,
+                                "policy_profile_id_used": "00000000-0000-4000-8000-000000000001",
+                                "policy_profile_code_used": "DEFAULT",
+                                "policy_profile_name_used": "DEFAULT",
+                                "policy_is_default_used": true,
+                                "slots": [
+                                  {
+                                    "slot_code": "SLOT_1",
+                                    "slot_index": 1,
+                                    "slot_label": "Time 1",
+                                    "session_code": "AM",
+                                    "target_time": "07:30",
+                                    "grace_before_minutes": 15,
+                                    "grace_after_minutes": 15,
+                                    "is_leave_covered": false,
+                                    "original_slot_status": "MISSING",
+                                    "slot_status": "MISSING",
+                                    "eligible_for_explanation": true,
+                                    "checkins": [],
+                                    "explanation": null
+                                  }
+                                ]
+                              },
+                              "pagination": {
+                                "limit": 20,
+                                "offset": 0,
+                                "total_rows": 1
+                              },
+                              "items": [$explanationItemJson]
+                            }
+                            """.trimIndent()
+                        )
+                    else -> MockResponse()
+                        .setResponseCode(200)
+                        .setHeader("Content-Type", "application/json")
+                        .setBody("""{"ok":true,"data":{}}""")
+                }
+            }
+        }
+        server.start()
+
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val db = buildTestDb(app)
+        val cookieFile = File(app.cacheDir, "p2_exp_cookie_${System.nanoTime()}.enc")
+        val prefsFile = File(app.cacheDir, "p2_exp_prefs_${System.nanoTime()}.preferences_pb")
+        val repo = MiniBiRepository(
+            context = app,
+            database = db,
+            defaultServerUrl = server.url("/").toString().trimEnd('/'),
+            allowDebugUrlOverride = true,
+            cookieStorageFile = cookieFile,
+            preferencesStorageFile = prefsFile,
+            cookieCipher = JvmAes256GcmCookieCipher()
+        )
+        val vm = MiniBiViewModel(app, repo)
+        registerTestResourcesCleanup(vm, db, server, cookieFile, prefsFile)
+
+        val actor = AppActor(
+            appUserId = approverId,
+            displayName = "Quản Lý Duyệt P2",
+            capabilities = listOf("entry_read"),
+            scopes = emptyList(),
+            selfRecruiterSuggestion = null
+        )
+
+        composeTestRule.setContent {
+            MyApplicationTheme {
+                AttendanceScreen(
+                    actor = actor,
+                    viewModel = vm,
+                    onBackToDashboard = {}
+                )
+            }
+        }
+
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            vm.myExplanationsOverview.value != null && !vm.myExplanationsLoading.value
+        }
+        composeTestRule.waitForIdle()
+
+        // 1. Switch to Explanation tab: friendly Vietnamese labels shown, technical jargon completely hidden
+        composeTestRule.onNodeWithTag("attendance_tab_explanation").assertIsDisplayed().performClick()
+        composeTestRule.waitForIdle()
+
+        composeTestRule.onNodeWithText("Bảng chấm công áp dụng: Mặc định").assertIsDisplayed()
+        composeTestRule.onAllNodes(androidx.compose.ui.test.hasText("Mốc 1", substring = true))[0].assertIsDisplayed()
+        composeTestRule.onAllNodes(androidx.compose.ui.test.hasText("07:30", substring = true))[0].assertIsDisplayed()
+        composeTestRule.onNodeWithText("SLOT_1", substring = true).assertDoesNotExist()
+        composeTestRule.onNodeWithText("DEFAULT", substring = true).assertDoesNotExist()
+        composeTestRule.onNodeWithText("Mã cấu hình", substring = true).assertDoesNotExist()
+        composeTestRule.onNodeWithText("(v2)", substring = true).assertDoesNotExist()
+
+        // 2. Switch to Explanation Approval tab: shortened tab title "Duyệt giải trình" + non-truncated targetTime "07:30" + zero jargon
+        composeTestRule.onNodeWithTag("attendance_tab_explanation_approval").assertIsDisplayed().performClick()
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            vm.explanationApprovalInbox.value?.items?.size == 1 && !vm.explanationInboxLoading.value
+        }
+        composeTestRule.waitForIdle()
+
+        composeTestRule.onNodeWithText("Lê Thị Giải Trình").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Mốc 1 · 07:30", substring = true).assertIsDisplayed()
+        composeTestRule.onNodeWithText("Tắc đường cầu Vĩnh Tuy buổi sáng").assertIsDisplayed()
+        composeTestRule.onNodeWithText("SLOT_1", substring = true).assertDoesNotExist()
+        composeTestRule.onNodeWithText("DEFAULT", substring = true).assertDoesNotExist()
+        composeTestRule.onNodeWithText("(v2)", substring = true).assertDoesNotExist()
+    }
+
+    @Test
+    @Config(qualifiers = "w390dp-h844dp-xxhdpi")
+    fun `phase 2 ui overhaul - HrpWeekStripDateSelector filters dates cleanly while WorkReportsScreen shows all obligations by default`() {
+        val todayIso = com.example.data.AttendanceExplanationContract.todayVietnamIsoDate()
+        val mondayIso = com.example.ui.components.HrpIsoDateUtils.mondayOfWeek(todayIso, todayIso)
+        val otherDayIso = if (todayIso == mondayIso) {
+            com.example.ui.components.HrpIsoDateUtils.addDays(mondayIso, 1)
+        } else {
+            mondayIso
+        }
+        val oblTodayId = "aaaa2222-1111-4333-8444-555566660001"
+        val oblOtherId = "aaaa2222-1111-4333-8444-555566660002"
+        val templateId = "bbbb2222-1111-4333-8444-555566660000"
+
+        val server = MockWebServer()
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val path = request.path.orEmpty()
+                return when {
+                    path.startsWith("/api/work-reports/obligations") && !path.contains(oblTodayId) && !path.contains(oblOtherId) ->
+                        MockResponse()
+                            .setResponseCode(200)
+                            .setHeader("Content-Type", "application/json")
+                            .setBody(
+                                """
+                                {
+                                  "ok": true,
+                                  "data": [
+                                    {
+                                      "obligation_id": "$oblTodayId",
+                                      "template_id": "$templateId",
+                                      "template_code": "DAILY_P2_A",
+                                      "template_name": "Báo cáo Ngày Hôm Nay P2",
+                                      "period_type": "DAILY",
+                                      "period_key": "$todayIso",
+                                      "period_start_date": "$todayIso",
+                                      "period_end_date": "$todayIso",
+                                      "due_at": "2099-12-31T17:00:00Z",
+                                      "is_mandatory": true,
+                                      "obligation_status": "ACTIVE",
+                                      "is_overdue": false,
+                                      "submission_id": null,
+                                      "submission_state": "NOT_STARTED",
+                                      "submission_version": null,
+                                      "version": 1,
+                                      "schema_json": {"contract_version": "work-report-schema/1.0", "sections": [], "fields": []}
+                                    },
+                                    {
+                                      "obligation_id": "$oblOtherId",
+                                      "template_id": "$templateId",
+                                      "template_code": "DAILY_P2_B",
+                                      "template_name": "Báo cáo Ngày Khác Trong Tuần P2",
+                                      "period_type": "DAILY",
+                                      "period_key": "$otherDayIso",
+                                      "period_start_date": "$otherDayIso",
+                                      "period_end_date": "$otherDayIso",
+                                      "due_at": "2099-12-31T17:00:00Z",
+                                      "is_mandatory": true,
+                                      "obligation_status": "ACTIVE",
+                                      "is_overdue": false,
+                                      "submission_id": null,
+                                      "submission_state": "NOT_STARTED",
+                                      "submission_version": null,
+                                      "version": 1,
+                                      "schema_json": {"contract_version": "work-report-schema/1.0", "sections": [], "fields": []}
+                                    }
+                                  ]
+                                }
+                                """.trimIndent()
+                            )
+                    else -> MockResponse()
+                        .setResponseCode(200)
+                        .setHeader("Content-Type", "application/json")
+                        .setBody("""{"ok":true,"data":[]}""")
+                }
+            }
+        }
+        server.start()
+
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val db = buildTestDb(app)
+        val cookieFile = File(app.cacheDir, "p2_wr_cookie_${System.nanoTime()}.enc")
+        val prefsFile = File(app.cacheDir, "p2_wr_prefs_${System.nanoTime()}.preferences_pb")
+        val repo = MiniBiRepository(
+            context = app,
+            database = db,
+            defaultServerUrl = server.url("/").toString().trimEnd('/'),
+            allowDebugUrlOverride = true,
+            cookieStorageFile = cookieFile,
+            preferencesStorageFile = prefsFile,
+            cookieCipher = JvmAes256GcmCookieCipher()
+        )
+        val vm = MiniBiViewModel(app, repo)
+        registerTestResourcesCleanup(vm, db, server, cookieFile, prefsFile)
+
+        val actor = AppActor(
+            appUserId = "p2220004-2222-4333-8444-555555555555",
+            displayName = "Chuyên Viên Báo Cáo P2",
+            capabilities = listOf("entry_read"),
+            scopes = listOf(ActorScope("own", "self", "2026-01-01", null)),
+            selfRecruiterSuggestion = null
+        )
+
+        composeTestRule.setContent {
+            MyApplicationTheme {
+                com.example.ui.screens.WorkReportsScreen(
+                    actor = actor,
+                    viewModel = vm,
+                    onBackToDashboard = {}
+                )
+            }
+        }
+
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            !vm.workReportsLoading.value && vm.workReports.value.size == 2
+        }
+        composeTestRule.waitForIdle()
+
+        // 1. Default launch ("Tất cả") MUST display all active obligations across different dates
+        composeTestRule.onNodeWithTag("work_reports_week_strip_all_chip").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Báo cáo Ngày Hôm Nay P2").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Báo cáo Ngày Khác Trong Tuần P2").assertIsDisplayed()
+
+        // 2. Tap today's cell on HrpWeekStripDateSelector -> filters down to today's obligation only
+        composeTestRule.onNodeWithTag("work_reports_week_strip_day_$todayIso").assertIsDisplayed().performClick()
+        composeTestRule.waitForIdle()
+
+        composeTestRule.onNodeWithText("Báo cáo Ngày Hôm Nay P2").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Báo cáo Ngày Khác Trong Tuần P2").assertDoesNotExist()
+
+        // 3. Tap "Tất cả" chip -> restores full list immediately
+        composeTestRule.onNodeWithTag("work_reports_week_strip_all_chip").performClick()
+        composeTestRule.waitForIdle()
+
+        composeTestRule.onNodeWithText("Báo cáo Ngày Hôm Nay P2").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Báo cáo Ngày Khác Trong Tuần P2").assertIsDisplayed()
+    }
 }
