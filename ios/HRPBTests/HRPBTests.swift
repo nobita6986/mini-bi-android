@@ -4142,6 +4142,7 @@ final class HRPBTests: XCTestCase {
         XCTAssertEqual(HrpDesignTokens.radiusHero, 22)
     }
 
+    @MainActor
     func testAppllamaRound2LabelInitialsAndPaginationDefaults() async throws {
         // 1. Shortened tab labels ("Giải trình", "Nghỉ phép", "Duyệt giải trình")
         XCTAssertEqual(AttendanceAreaTab.explanation.label, "Giải trình")
@@ -4456,7 +4457,7 @@ final class HRPBTests: XCTestCase {
         MockURLProtocol.resetRecordedUrls()
         MockURLProtocol.requestHandler = { req in
             let path = req.url?.path ?? ""
-            if path.contains("/api/attendance/explanations/approval-inbox") || path.contains("/api/leave/approval-inbox") {
+            if path.contains("/api/attendance/explanations/approvals") || path.contains("/api/leave/approvals") {
                 throw URLError(.cancelled)
             }
             let resp = HTTPURLResponse(url: req.url!, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/json"])!
