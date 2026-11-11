@@ -331,6 +331,20 @@ fun HrpInitialsAvatar(
     }
 }
 
+private fun shouldUseStaticSkeleton(): Boolean {
+    if (Build.FINGERPRINT.equals("robolectric", ignoreCase = true)) {
+        return true
+    }
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        return try {
+            !ValueAnimator.areAnimatorsEnabled()
+        } catch (_: Throwable) {
+            true
+        }
+    }
+    return false
+}
+
 /**
  * Cold-start skeleton placeholder card.
  *
@@ -345,10 +359,7 @@ fun HrpSkeletonCard(
     lineCount: Int = 3,
     showAvatar: Boolean = false
 ) {
-    val isRobolectric = remember {
-        Build.FINGERPRINT.equals("robolectric", ignoreCase = true) ||
-            runCatching { !ValueAnimator.areAnimatorsEnabled() }.getOrDefault(true)
-    }
+    val isRobolectric = remember { shouldUseStaticSkeleton() }
     val baseColor = SemanticColors.SurfaceBorder
 
     val brush: Brush = if (isRobolectric) {
