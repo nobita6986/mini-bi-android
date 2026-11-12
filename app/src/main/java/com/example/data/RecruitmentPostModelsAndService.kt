@@ -132,7 +132,8 @@ data class RecruitmentPostListResult(
     val pageSize: Int,
     val hasMore: Boolean,
     val nextCursor: String?,
-    val snapshotToken: String
+    val snapshotToken: String,
+    val industrialParks: List<RecruitmentPostIndustrialParkSummary> = emptyList()
 )
 
 data class RecruitmentPostCardViewModel(
@@ -407,12 +408,21 @@ object RecruitmentPostContract {
         "other_documents_text"
     )
 
-    private val LIST_DATA_KEYS = setOf(
+    private val LIST_DATA_REQUIRED_KEYS = setOf(
         "items",
         "page_size",
         "has_more",
         "next_cursor",
         "snapshot_token"
+    )
+
+    private val LIST_DATA_KEYS = setOf(
+        "items",
+        "page_size",
+        "has_more",
+        "next_cursor",
+        "snapshot_token",
+        "industrial_parks"
     )
 
     private val DETAIL_DATA_KEYS = setOf("post")
@@ -770,7 +780,14 @@ object RecruitmentPostContract {
     }
 
     fun parseListData(data: JSONObject): RecruitmentPostListResult {
-        requireExactKeys(data, LIST_DATA_KEYS, "list data")
+        val actualKeys = HashSet<String>()
+        val iter = data.keys()
+        while (iter.hasNext()) {
+            actualKeys.add(iter.next())
+        }
+        if (!actualKeys.containsAll(LIST_DATA_REQUIRED_KEYS) || !LIST_DATA_KEYS.containsAll(actualKeys)) {
+            throw contractInvalid("Cấu trúc list data không khớp contract.")
+        }
         val itemsArr = data.optJSONArray("items")
             ?: throw contractInvalid("Trường items phải là mảng.")
         val pageSize = requirePositiveInt(data, "page_size", 1, MAX_PAGE_SIZE)
@@ -799,12 +816,53 @@ object RecruitmentPostContract {
             items.add(parsedItem)
         }
 
+        val industrialParks = if (data.has("industrial_parks") && !data.isNull("industrial_parks")) {
+            val parksArr = data.optJSONArray("industrial_parks")
+                ?: throw contractInvalid("Trường industrial_parks phải là mảng.")
+            val list = ArrayList<RecruitmentPostIndustrialParkSummary>(parksArr.length())
+            for (i in 0 until parksArr.length()) {
+                val parkObj = parksArr.optJSONObject(i)
+                    ?: throw contractInvalid("Phần tử industrial_parks[$i] không phải object.")
+                list.add(parseIndustrialParkSummary(parkObj, strictExactKeys = false))
+            }
+            list
+        } else {
+            emptyList()
+        }
+
         return RecruitmentPostListResult(
             items = items,
             pageSize = pageSize,
             hasMore = hasMore,
             nextCursor = nextCursor,
-            snapshotToken = snapshotToken
+            snapshotToken = snapshotToken,
+            industrialParks = industrialParks
+        )
+    }
+
+    private fun parseIndustrialParkSummary(
+        parkObj: JSONObject,
+        strictExactKeys: Boolean = true
+    ): RecruitmentPostIndustrialParkSummary {
+        if (strictExactKeys) {
+            requireExactKeys(parkObj, INDUSTRIAL_PARK_KEYS, "industrial_park")
+        }
+        val industrialParkCode = requireNonEmptyString(parkObj, "industrial_park_code")
+        if (!LOCATION_CODE_PATTERN.matches(industrialParkCode)) {
+            throw contractInvalid("industrial_park_code không hợp lệ.")
+        }
+        val active = if (parkObj.has("active") && !parkObj.isNull("active")) {
+            requireBoolean(parkObj, "active")
+        } else if (!strictExactKeys) {
+            true
+        } else {
+            requireBoolean(parkObj, "active")
+        }
+        return RecruitmentPostIndustrialParkSummary(
+            industrialParkId = requireUuid(parkObj, "industrial_park_id"),
+            industrialParkCode = industrialParkCode,
+            displayName = requireNonEmptyString(parkObj, "display_name"),
+            active = active
         )
     }
 

@@ -584,6 +584,47 @@ object HrpIsoDateUtils {
         return cal.get(Calendar.DAY_OF_MONTH)
     }
 
+    fun weekdayShortLabelVi(isoDate: String): String {
+        val cal = parseUtcNoonCalendar(isoDate) ?: return "T2"
+        return when (cal.get(Calendar.DAY_OF_WEEK)) {
+            Calendar.MONDAY -> "T2"
+            Calendar.TUESDAY -> "T3"
+            Calendar.WEDNESDAY -> "T4"
+            Calendar.THURSDAY -> "T5"
+            Calendar.FRIDAY -> "T6"
+            Calendar.SATURDAY -> "T7"
+            Calendar.SUNDAY -> "CN"
+            else -> "T2"
+        }
+    }
+
+    fun resolveSlidingWindowEnd(
+        selectedIso: String?,
+        currentWindowEnd: String?,
+        todayIso: String
+    ): String {
+        if (selectedIso == null) {
+            return if (currentWindowEnd != null && currentWindowEnd <= todayIso) {
+                currentWindowEnd
+            } else {
+                todayIso
+            }
+        }
+        val clampedSelected = minOf(selectedIso, todayIso)
+        if (currentWindowEnd != null) {
+            val safeEnd = minOf(currentWindowEnd, todayIso)
+            val winStart = addDays(safeEnd, -6)
+            if (clampedSelected in winStart..safeEnd) {
+                return safeEnd
+            }
+        }
+        return if (clampedSelected >= addDays(todayIso, -6)) {
+            todayIso
+        } else {
+            clampedSelected
+        }
+    }
+
     fun formatMonthYearVi(isoDate: String): String {
         val cal = parseUtcNoonCalendar(isoDate) ?: return isoDate
         return String.format(
@@ -633,6 +674,7 @@ fun HrpWeekStripDateSelector(
     modifier: Modifier = Modifier,
     allowFutureDates: Boolean = false,
     showAllOption: Boolean = false,
+    showTodayChip: Boolean = true,
     allDatesSelected: Boolean = selectedDateIso == null,
     onSelectAllDates: (() -> Unit)? = null,
     markedDates: Set<String> = emptySet(),
@@ -644,28 +686,53 @@ fun HrpWeekStripDateSelector(
     val safeTodayIso = remember(todayIso) {
         if (HrpIsoDateUtils.isValidIsoDate(todayIso)) todayIso.trim() else HrpIsoDateUtils.todayIsoVietnam()
     }
-    val validSelectedIso = remember(selectedDateIso) {
-        selectedDateIso?.trim()?.takeIf { HrpIsoDateUtils.isValidIsoDate(it) }
+    val validSelectedIso = remember(selectedDateIso, safeTodayIso, allowFutureDates) {
+        selectedDateIso?.trim()
+            ?.takeIf { HrpIsoDateUtils.isValidIsoDate(it) }
+            ?.let { if (!allowFutureDates && it > safeTodayIso) safeTodayIso else it }
     }
 
     var displayedMondayIso by remember {
         mutableStateOf(HrpIsoDateUtils.mondayOfWeek(validSelectedIso ?: safeTodayIso, safeTodayIso))
     }
+    var windowEndIso by remember {
+        mutableStateOf(
+            HrpIsoDateUtils.resolveSlidingWindowEnd(
+                selectedIso = validSelectedIso,
+                currentWindowEnd = null,
+                todayIso = safeTodayIso
+            )
+        )
+    }
 
-    LaunchedEffect(validSelectedIso, safeTodayIso) {
-        if (validSelectedIso != null) {
-            displayedMondayIso = HrpIsoDateUtils.mondayOfWeek(validSelectedIso, safeTodayIso)
+    LaunchedEffect(validSelectedIso, safeTodayIso, allowFutureDates) {
+        if (allowFutureDates) {
+            if (validSelectedIso != null) {
+                displayedMondayIso = HrpIsoDateUtils.mondayOfWeek(validSelectedIso, safeTodayIso)
+            }
+        } else {
+            windowEndIso = HrpIsoDateUtils.resolveSlidingWindowEnd(
+                selectedIso = validSelectedIso,
+                currentWindowEnd = windowEndIso,
+                todayIso = safeTodayIso
+            )
         }
     }
 
-    val weekDates = remember(displayedMondayIso) {
-        (0..6).map { offset -> HrpIsoDateUtils.addDays(displayedMondayIso, offset) }
+    val weekDates = remember(allowFutureDates, displayedMondayIso, windowEndIso) {
+        if (allowFutureDates) {
+            (0..6).map { offset -> HrpIsoDateUtils.addDays(displayedMondayIso, offset) }
+        } else {
+            (6 downTo 0).map { offset -> HrpIsoDateUtils.addDays(windowEndIso, -offset) }
+        }
     }
-    val headerAnchorIso = remember(displayedMondayIso, validSelectedIso, weekDates) {
+    val headerAnchorIso = remember(allowFutureDates, displayedMondayIso, windowEndIso, validSelectedIso, weekDates) {
         if (validSelectedIso != null && validSelectedIso in weekDates) {
             validSelectedIso
-        } else {
+        } else if (allowFutureDates) {
             HrpIsoDateUtils.addDays(displayedMondayIso, 3)
+        } else {
+            windowEndIso
         }
     }
     val monthHeaderLabel = remember(headerAnchorIso) {
@@ -674,7 +741,7 @@ fun HrpWeekStripDateSelector(
     val nextWeekMondayIso = remember(displayedMondayIso) {
         HrpIsoDateUtils.addDays(displayedMondayIso, 7)
     }
-    val canAdvanceWeek = allowFutureDates || nextWeekMondayIso <= safeTodayIso
+    val canAdvanceWeek = if (allowFutureDates) true else windowEndIso < safeTodayIso
     val isTodayActive = !allDatesSelected && validSelectedIso == safeTodayIso
 
     val containerModifier = if (wrapInCardSurface) {
@@ -710,7 +777,11 @@ fun HrpWeekStripDateSelector(
                         .clip(CircleShape)
                         .clickable {
                             HrpHaptics.tick(haptic)
-                            displayedMondayIso = HrpIsoDateUtils.addDays(displayedMondayIso, -7)
+                            if (allowFutureDates) {
+                                displayedMondayIso = HrpIsoDateUtils.addDays(displayedMondayIso, -7)
+                            } else {
+                                windowEndIso = HrpIsoDateUtils.addDays(windowEndIso, -7)
+                            }
                         }
                         .testTag("${tagPrefix}_prev_week")
                 ) {
@@ -751,7 +822,15 @@ fun HrpWeekStripDateSelector(
                                     } else {
                                         picked
                                     }
-                                    displayedMondayIso = HrpIsoDateUtils.mondayOfWeek(clamped, safeTodayIso)
+                                    if (allowFutureDates) {
+                                        displayedMondayIso = HrpIsoDateUtils.mondayOfWeek(clamped, safeTodayIso)
+                                    } else {
+                                        windowEndIso = HrpIsoDateUtils.resolveSlidingWindowEnd(
+                                            selectedIso = clamped,
+                                            currentWindowEnd = null,
+                                            todayIso = safeTodayIso
+                                        )
+                                    }
                                     onSelectDate(clamped)
                                 },
                                 initYear,
@@ -829,42 +908,45 @@ fun HrpWeekStripDateSelector(
                     }
                 }
 
-                Surface(
-                    shape = CircleShape,
-                    color = if (isTodayActive) {
-                        MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
-                    } else {
-                        SemanticColors.SurfaceSubtle
-                    },
-                    border = BorderStroke(
-                        1.dp,
-                        if (isTodayActive) {
-                            MaterialTheme.colorScheme.primary.copy(alpha = 0.55f)
-                        } else {
-                            SemanticColors.SurfaceBorder
-                        }
-                    ),
-                    modifier = Modifier
-                        .clip(CircleShape)
-                        .clickable {
-                            HrpHaptics.tick(haptic)
-                            displayedMondayIso = HrpIsoDateUtils.mondayOfWeek(safeTodayIso, safeTodayIso)
-                            onSelectDate(safeTodayIso)
-                        }
-                        .testTag("${tagPrefix}_today_chip")
-                ) {
-                    Text(
-                        text = "Hôm nay",
-                        style = MaterialTheme.typography.labelSmall,
-                        fontWeight = FontWeight.Bold,
+                if (showTodayChip) {
+                    Surface(
+                        shape = CircleShape,
                         color = if (isTodayActive) {
-                            MaterialTheme.colorScheme.primary
+                            MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
                         } else {
-                            MaterialTheme.colorScheme.onSurfaceVariant
+                            SemanticColors.SurfaceSubtle
                         },
-                        maxLines = 1,
-                        modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp)
-                    )
+                        border = BorderStroke(
+                            1.dp,
+                            if (isTodayActive) {
+                                MaterialTheme.colorScheme.primary.copy(alpha = 0.55f)
+                            } else {
+                                SemanticColors.SurfaceBorder
+                            }
+                        ),
+                        modifier = Modifier
+                            .clip(CircleShape)
+                            .clickable {
+                                HrpHaptics.tick(haptic)
+                                displayedMondayIso = HrpIsoDateUtils.mondayOfWeek(safeTodayIso, safeTodayIso)
+                                windowEndIso = safeTodayIso
+                                onSelectDate(safeTodayIso)
+                            }
+                            .testTag("${tagPrefix}_today_chip")
+                    ) {
+                        Text(
+                            text = "Hôm nay",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = if (isTodayActive) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                            maxLines = 1,
+                            modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp)
+                        )
+                    }
                 }
 
                 Surface(
@@ -876,7 +958,11 @@ fun HrpWeekStripDateSelector(
                         .alpha(if (canAdvanceWeek) 1f else 0.35f)
                         .clickable(enabled = canAdvanceWeek) {
                             HrpHaptics.tick(haptic)
-                            displayedMondayIso = nextWeekMondayIso
+                            if (allowFutureDates) {
+                                displayedMondayIso = nextWeekMondayIso
+                            } else {
+                                windowEndIso = minOf(HrpIsoDateUtils.addDays(windowEndIso, 7), safeTodayIso)
+                            }
                         }
                         .testTag("${tagPrefix}_next_week")
                 ) {
@@ -897,8 +983,8 @@ fun HrpWeekStripDateSelector(
             horizontalArrangement = Arrangement.spacedBy(4.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            weekDates.forEachIndexed { idx, dayIso ->
-                val weekdayLabel = HrpIsoDateUtils.WEEKDAY_LABELS_VI[idx]
+            weekDates.forEach { dayIso ->
+                val weekdayLabel = HrpIsoDateUtils.weekdayShortLabelVi(dayIso)
                 val dayNum = HrpIsoDateUtils.dayOfMonth(dayIso)
                 val isSelected = !allDatesSelected && validSelectedIso == dayIso
                 val isToday = dayIso == safeTodayIso

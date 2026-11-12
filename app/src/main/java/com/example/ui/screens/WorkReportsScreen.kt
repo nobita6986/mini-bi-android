@@ -165,7 +165,7 @@ fun WorkReportsScreen(
     val canViewAnalytics = actor.hasCapability("report_analytics_view") && hasTeamOrAllScope
 
     var selectedTab by remember { mutableIntStateOf(0) }
-    var selectedFilterDate by remember { mutableStateOf<String?>(null) }
+    val selectedFilterDate by viewModel.workReportFilterDate.collectAsStateWithLifecycle()
     val todayIso = remember { AttendanceExplanationContract.todayVietnamIsoDate() }
 
     val availableTemplates = remember(reports, reviewQueue, serverTemplates, analyticsSnapshot) {
@@ -313,16 +313,16 @@ fun WorkReportsScreen(
                     HrpWeekStripDateSelector(
                         selectedDateIso = selectedFilterDate ?: todayIso,
                         todayIso = todayIso,
-                        allowFutureDates = true,
+                        allowFutureDates = false,
                         showAllOption = true,
                         allDatesSelected = selectedFilterDate == null,
                         markedDates = currentTabMarkedDates,
                         tagPrefix = "work_reports_week_strip",
                         onSelectDate = { picked ->
-                            selectedFilterDate = picked
+                            viewModel.setWorkReportFilterDate(picked)
                         },
                         onSelectAllDates = {
-                            selectedFilterDate = null
+                            viewModel.setWorkReportFilterDate(null)
                         }
                     )
                 }

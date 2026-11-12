@@ -90,6 +90,7 @@ fun RecruitmentPostsScreen(
     viewModel: MiniBiViewModel
 ) {
     val items by viewModel.recruitmentPosts.collectAsState()
+    val catalogIndustrialParks by viewModel.recruitmentIndustrialParks.collectAsState()
     val loading by viewModel.recruitmentPostsLoading.collectAsState()
     val loadingMore by viewModel.recruitmentPostsLoadingMore.collectAsState()
     val error by viewModel.recruitmentPostsError.collectAsState()
@@ -104,14 +105,39 @@ fun RecruitmentPostsScreen(
     val selectedLaborTypeKey by viewModel.selectedRecruitmentLaborTypeKey.collectAsState()
     val haptic = LocalHapticFeedback.current
 
+    androidx.compose.runtime.LaunchedEffect(Unit) {
+        if (!accessDenied && !featureUnavailable && error == null) {
+            if (items.isEmpty() && !loading) {
+                viewModel.loadRecruitmentPosts(reset = true, autoLoadAllPages = true)
+            } else if (hasMore && !loading && !loadingMore) {
+                viewModel.ensureAllRecruitmentPostsLoaded(maxAutoPages = 50)
+            }
+        }
+    }
+
     val cardModels = remember(items) {
         items.map { RecruitmentPostContract.toCardViewModel(it) }
     }
 
+    val kcnJobCounts = remember(cardModels) {
+        cardModels.groupingBy { it.industrialParkId.lowercase(java.util.Locale.ROOT) }.eachCount()
+    }
+    val laborTypeJobCounts = remember(cardModels) {
+        val counts = LinkedHashMap<String, Int>()
+        cardModels.forEach { card ->
+            card.laborTypes
+                .map { it.laborTypeKey.lowercase(java.util.Locale.ROOT) }
+                .distinct()
+                .forEach { key ->
+                    counts[key] = (counts[key] ?: 0) + 1
+                }
+        }
+        counts
+    }
+
     val viCollator = remember { java.text.Collator.getInstance(java.util.Locale.forLanguageTag("vi-VN")) }
-    val kcnOptions = remember(items, viCollator) {
-        items
-            .map { it.industrialPark }
+    val kcnOptions = remember(items, catalogIndustrialParks, viCollator) {
+        (catalogIndustrialParks + items.map { it.industrialPark })
             .filter { it.industrialParkId.isNotBlank() && it.displayName.isNotBlank() }
             .distinctBy { it.industrialParkId.lowercase(java.util.Locale.ROOT) }
             .sortedWith { a, b -> viCollator.compare(a.displayName, b.displayName) }
@@ -138,7 +164,7 @@ fun RecruitmentPostsScreen(
     var kcnMenuExpanded by remember { mutableStateOf(false) }
     var laborMenuExpanded by remember { mutableStateOf(false) }
 
-    val selectedParkLabel = remember(selectedParkId, kcnOptions, cardModels) {
+    val selectedParkLabel = remember(selectedParkId, kcnOptions, cardModels, kcnJobCounts) {
         val cleanId = selectedParkId?.trim().orEmpty()
         if (cleanId.isEmpty()) {
             "KCN: Tất cả"
@@ -146,23 +172,25 @@ fun RecruitmentPostsScreen(
             val name = kcnOptions.firstOrNull { it.industrialParkId.equals(cleanId, ignoreCase = true) }?.displayName
                 ?: cardModels.firstOrNull { it.industrialParkId.equals(cleanId, ignoreCase = true) }?.industrialParkName
                 ?: cleanId
-            "KCN: $name"
+            val count = kcnJobCounts[cleanId.lowercase(java.util.Locale.ROOT)] ?: 0
+            "KCN: $name ($count)"
         }
     }
-    val selectedLaborLabel = remember(selectedLaborTypeKey, laborTypeOptions) {
+    val selectedLaborLabel = remember(selectedLaborTypeKey, laborTypeOptions, laborTypeJobCounts) {
         val cleanKey = selectedLaborTypeKey?.trim().orEmpty()
         if (cleanKey.isEmpty()) {
             "Hình thức: Tất cả"
         } else {
             val name = laborTypeOptions.firstOrNull { it.laborTypeKey.equals(cleanKey, ignoreCase = true) }?.displayName
                 ?: cleanKey
-            "Hình thức: $name"
+            val count = laborTypeJobCounts[cleanKey.lowercase(java.util.Locale.ROOT)] ?: 0
+            "Hình thức: $name ($count)"
         }
     }
 
     val onRefresh: () -> Unit = {
         HrpHaptics.tick(haptic)
-        viewModel.loadRecruitmentPosts(reset = true)
+        viewModel.loadRecruitmentPosts(reset = true, autoLoadAllPages = true)
     }
 
     Column(
@@ -243,7 +271,8 @@ fun RecruitmentPostsScreen(
                                 DropdownMenuItem(
                                     text = {
                                         Text(
-                                            text = "Tất cả KCN",
+                                            text = "Tất cả KCN (${cardModels.size})",
+                                            style = MaterialTheme.typography.bodyMedium.tabularNums(),
                                             fontWeight = if (selectedParkId.isNullOrBlank()) FontWeight.Bold else FontWeight.Normal
                                         )
                                     },
@@ -267,10 +296,12 @@ fun RecruitmentPostsScreen(
                                 kcnOptions.forEach { park ->
                                     val isSelected = selectedParkId != null &&
                                         park.industrialParkId.equals(selectedParkId, ignoreCase = true)
+                                    val parkJobCount = kcnJobCounts[park.industrialParkId.lowercase(java.util.Locale.ROOT)] ?: 0
                                     DropdownMenuItem(
                                         text = {
                                             Text(
-                                                text = park.displayName,
+                                                text = "${park.displayName} ($parkJobCount)",
+                                                style = MaterialTheme.typography.bodyMedium.tabularNums(),
                                                 fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
                                             )
                                         },
@@ -314,7 +345,8 @@ fun RecruitmentPostsScreen(
                                 DropdownMenuItem(
                                     text = {
                                         Text(
-                                            text = "Tất cả hình thức",
+                                            text = "Tất cả hình thức (${cardModels.size})",
+                                            style = MaterialTheme.typography.bodyMedium.tabularNums(),
                                             fontWeight = if (selectedLaborTypeKey.isNullOrBlank()) FontWeight.Bold else FontWeight.Normal
                                         )
                                     },
@@ -338,10 +370,12 @@ fun RecruitmentPostsScreen(
                                 laborTypeOptions.forEach { labor ->
                                     val isSelected = selectedLaborTypeKey != null &&
                                         labor.laborTypeKey.equals(selectedLaborTypeKey, ignoreCase = true)
+                                    val laborJobCount = laborTypeJobCounts[labor.laborTypeKey.lowercase(java.util.Locale.ROOT)] ?: 0
                                     DropdownMenuItem(
                                         text = {
                                             Text(
-                                                text = labor.displayName,
+                                                text = "${labor.displayName} ($laborJobCount)",
+                                                style = MaterialTheme.typography.bodyMedium.tabularNums(),
                                                 fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
                                             )
                                         },
@@ -696,7 +730,7 @@ private fun RecruitmentFilterDropdownChip(
         ) {
             Text(
                 text = label,
-                style = MaterialTheme.typography.labelMedium,
+                style = MaterialTheme.typography.labelMedium.tabularNums(),
                 fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
                 color = if (selected) {
                     MaterialTheme.colorScheme.primary

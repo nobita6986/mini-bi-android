@@ -6952,7 +6952,7 @@ class WorkerUiAuthorizationRobolectricTest {
                                           "ok": true,
                                           "data": {
                                             "items": [
-                                              ${buildPostJson(brief1, "Dự Án 1 Trùng", "Người Tạo 1")},
+                                              ${buildPostJson(brief1, "Dự Án 1 Trùng", "Người Tạo Chính Xác")},
                                               ${buildPostJson(brief2, "Dự Án 2 Mới", "Người Tạo 2")}
                                             ],
                                             "page_size": 10,
@@ -7042,16 +7042,20 @@ class WorkerUiAuthorizationRobolectricTest {
             }
         }
 
-        // Navigate to RECRUITMENT -> loads page 1 with page_size=10 and no cursor/snapshot_token
+        // Navigate to RECRUITMENT -> loads page 1 with page_size=10 and auto-loads page 2 via snapshot_token + cursor
         vm.navigateTo(com.example.ui.MainDestination.RECRUITMENT)
         composeTestRule.waitUntil(timeoutMillis = 5_000) {
             org.robolectric.shadows.ShadowLooper.idleMainLooper()
-            vm.recruitmentPosts.value.size == 1 && !vm.recruitmentPostsLoading.value
+            vm.recruitmentPosts.value.size == 2 &&
+                !vm.recruitmentPostsLoading.value &&
+                !vm.recruitmentPostsLoadingMore.value
         }
         composeTestRule.waitForIdle()
 
         assertTrue(recordedPaths.contains("/api/recruitment-posts?page_size=10"))
         assertFalse(recordedPaths.any { it.contains("/api/recruitment-posts/context") })
+        assertTrue(recordedPaths.any { it.contains("cursor=cur-p2") && it.contains("snapshot_token=snap-p1") })
+        assertEquals(listOf(brief1, brief2), vm.recruitmentPosts.value.map { it.briefId })
 
         // Card displays created_by_display_name, NEVER manager_name, and has no edit/withdraw/create buttons
         composeTestRule.onNodeWithText("Người Tạo Chính Xác", substring = true).assertIsDisplayed()
@@ -7059,15 +7063,6 @@ class WorkerUiAuthorizationRobolectricTest {
         composeTestRule.onNodeWithText("Đăng tin").assertDoesNotExist()
         composeTestRule.onNodeWithText("Chỉnh sửa").assertDoesNotExist()
         composeTestRule.onNodeWithText("Thu hồi").assertDoesNotExist()
-
-        // Load more sends snapshot_token from page 1 + cursor, and deduplicates brief1
-        vm.loadMoreRecruitmentPosts()
-        composeTestRule.waitUntil(timeoutMillis = 5_000) {
-            org.robolectric.shadows.ShadowLooper.idleMainLooper()
-            vm.recruitmentPosts.value.size == 2 && !vm.recruitmentPostsLoadingMore.value
-        }
-        assertTrue(recordedPaths.any { it.contains("cursor=cur-p2") && it.contains("snapshot_token=snap-p1") })
-        assertEquals(listOf(brief1, brief2), vm.recruitmentPosts.value.map { it.briefId })
 
         // Open detail for brief1 -> renders 4 sections and created_by_display_name, then close
         vm.openRecruitmentPostDetail(brief1)
@@ -8834,5 +8829,387 @@ class WorkerUiAuthorizationRobolectricTest {
         composeTestRule.waitForIdle()
         composeTestRule.onNodeWithText("Dự Án Quang Châu 1").assertIsDisplayed()
         composeTestRule.onNodeWithText("Dự Án Vân Trung 2").assertIsDisplayed()
+    }
+
+    @Test
+    @Config(qualifiers = "w390dp-h844dp-xxhdpi")
+    fun `v1 0 2 sync - recruitment auto-loads all pages with KCN counts, attendance syncs single day without redundant chips, and week strips eliminate future dates`() {
+        val actorId = "aaaa1211-2222-4333-8444-555555555512"
+        val parkBaThienId = "aaaa1111-1111-4222-8333-444444440001"
+        val parkKhaiQuangId = "aaaa1111-1111-4222-8333-444444440002"
+        val todayIso = com.example.ui.components.HrpIsoDateUtils.todayIsoVietnam()
+        val tomorrowIso = com.example.ui.components.HrpIsoDateUtils.addDays(todayIso, 1)
+        val yesterdayIso = com.example.ui.components.HrpIsoDateUtils.addDays(todayIso, -1)
+
+        fun buildPost(
+            briefId: String,
+            projectName: String,
+            parkId: String,
+            parkCode: String,
+            parkName: String,
+            laborKey: String,
+            laborLabel: String
+        ): String = """
+            {
+              "brief_id": "$briefId",
+              "version": 1,
+              "status": "PUBLISHED",
+              "project": {
+                "project_id": "aaaaaaaa-1111-4222-8333-444444440099",
+                "display_name": "$projectName"
+              },
+              "industrial_park": {
+                "industrial_park_id": "$parkId",
+                "industrial_park_code": "$parkCode",
+                "display_name": "$parkName",
+                "active": true
+              },
+              "province": {
+                "province_id": "aaaaaaaa-1111-4222-8333-444444440088",
+                "province_code": "VINH_PHUC",
+                "display_name": "Vĩnh Phúc"
+              },
+              "published_at": "2026-11-12T08:00:00Z",
+              "updated_at": "2026-11-12T08:00:00Z",
+              "withdrawn_at": null,
+              "created_by_display_name": "Phạm Thái Sâm",
+              "updated_by_display_name": "Phạm Thái Sâm",
+              "withdrawn_by_display_name": null,
+              "general": {
+                "customer_name": "Công ty Điện tử",
+                "investment_origin": "FDI",
+                "manufacturing_industry": "Linh kiện",
+                "job_description": "Lắp ráp",
+                "environment_types": ["CLEAN_ROOM"],
+                "work_postures": ["SITTING"],
+                "shift_pattern": "TWO_SHIFTS",
+                "shift_details": "Ca 12h",
+                "manager_name": "Quản lý",
+                "manager_phone": "0988777666",
+                "labor_types": [{"labor_type_key": "$laborKey", "display_name": "$laborLabel"}],
+                "supply_schedule_text": "Đi làm ngay",
+                "expected_headcount": 50
+              },
+              "candidate": {
+                "age_min": 18,
+                "age_max": 38,
+                "gender_requirement": "ANY",
+                "education_requirement": "NONE",
+                "experience_required": false,
+                "experience_details": null,
+                "accept_former_customer_workers": true,
+                "entry_assessment_text": null,
+                "other_requirements_text": null
+              },
+              "compensation": {
+                "base_salary_vnd": "6000000",
+                "base_salary_conditions": null,
+                "attendance_bonus_vnd": "500000",
+                "attendance_bonus_conditions": null,
+                "living_allowance_vnd": null,
+                "living_allowance_conditions": null,
+                "seniority_allowance_vnd": null,
+                "seniority_allowance_conditions": null,
+                "eyesight_allowance_vnd": null,
+                "eyesight_allowance_conditions": null,
+                "other_allowance_text": null,
+                "average_income_min_vnd": "9000000",
+                "average_income_max_vnd": "13000000",
+                "salary_payment_schedule": "Ngày 15",
+                "salary_advance_available": true,
+                "salary_advance_amount_vnd": "1000000",
+                "salary_advance_schedule": "Thứ 6",
+                "weekly_salary_available": false,
+                "weekly_salary_payment_schedule": null,
+                "day_shift_8h_vnd": null,
+                "day_shift_11h_vnd": null,
+                "night_shift_8h_vnd": null,
+                "night_shift_11h_vnd": null,
+                "sunday_day_11h_vnd": null,
+                "sunday_night_11h_vnd": null,
+                "holiday_day_11h_vnd": null,
+                "holiday_night_11h_vnd": null,
+                "ppe_provided": true,
+                "ppe_details": null,
+                "other_benefits": null
+              },
+              "documents": {
+                "require_original_cccd_and_copy": true,
+                "require_certified_resume": false,
+                "require_health_certificate_within_6_months": false,
+                "require_photo_3x4": false,
+                "require_degree_or_certificate": false,
+                "require_social_insurance_book": false,
+                "require_other_documents": false,
+                "other_documents_text": null
+              },
+              "allowed_actions": {
+                "can_edit": false,
+                "can_withdraw": false
+              }
+            }
+        """.trimIndent()
+
+        val page1Items = (1..2).map { i ->
+            buildPost(
+                briefId = "11111111-1111-4111-8111-11111111000$i",
+                projectName = "Dự Án Bá Thiện $i",
+                parkId = parkBaThienId,
+                parkCode = "KCN_BA_THIEN_1",
+                parkName = "KCN Bá Thiện 1",
+                laborKey = "THOI_VU",
+                laborLabel = "Thời vụ"
+            )
+        }
+        val page2Items = (1..5).map { i ->
+            buildPost(
+                briefId = "22222222-2222-4222-8222-22222222000$i",
+                projectName = "Dự Án Khai Quang $i",
+                parkId = parkKhaiQuangId,
+                parkCode = "KCN_KHAI_QUANG",
+                parkName = "KCN Khai Quang",
+                laborKey = "CHINH_THUC",
+                laborLabel = "Chính thức"
+            )
+        }
+
+        val recordedPaths = java.util.Collections.synchronizedList(mutableListOf<String>())
+        val server = MockWebServer()
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val path = request.path.orEmpty()
+                recordedPaths.add(path)
+                return when {
+                    path.startsWith("/api/auth/session") || path.startsWith("/api/direct-entry/session") ->
+                        MockResponse()
+                            .setResponseCode(200)
+                            .setHeader("Content-Type", "application/json")
+                            .setBody(
+                                """
+                                {
+                                  "ok": true,
+                                  "actor": {
+                                    "app_user_id": "$actorId",
+                                    "display_name": "Phạm Thái Sâm",
+                                    "capabilities": ["entry_read", "report_submit"],
+                                    "scopes": [{"kind": "own", "reference": "$actorId", "valid_from": "2026-01-01", "valid_to": null}],
+                                    "self_recruiter_suggestion": null,
+                                    "allowed_worker_tabs": ["managed"]
+                                  }
+                                }
+                                """.trimIndent()
+                            )
+                    path.startsWith("/api/attendance/time") ->
+                        MockResponse()
+                            .setResponseCode(200)
+                            .setHeader("Content-Type", "application/json")
+                            .setBody(
+                                """
+                                {
+                                  "ok": true,
+                                  "server_time": "${todayIso}T08:00:00.000Z",
+                                  "expires_at": "${todayIso}T08:10:00.000Z",
+                                  "time_token": "tok-1211"
+                                }
+                                """.trimIndent()
+                            )
+                    path.startsWith("/api/attendance/history") ->
+                        MockResponse()
+                            .setResponseCode(200)
+                            .setHeader("Content-Type", "application/json")
+                            .setBody(
+                                """
+                                {
+                                  "ok": true,
+                                  "report": {
+                                    "pagination": {"page": 1, "page_size": 50, "total_items": 0, "total_pages": 0, "has_more": false},
+                                    "items": []
+                                  }
+                                }
+                                """.trimIndent()
+                            )
+                    path.startsWith("/api/attendance/explanations") ->
+                        MockResponse()
+                            .setResponseCode(200)
+                            .setHeader("Content-Type", "application/json")
+                            .setBody(
+                                """
+                                {
+                                  "ok": true,
+                                  "viewer": {
+                                    "app_user_id": "$actorId",
+                                    "can_submit_explanation": true,
+                                    "can_approve_explanations": false,
+                                    "is_shared_non_employee": false
+                                  },
+                                  "today_local": "$todayIso",
+                                  "selected_date": "$todayIso",
+                                  "day_evaluation": {
+                                    "business_date": "$todayIso",
+                                    "policy_profile_code_used": "DEFAULT",
+                                    "policy_profile_name_used": "Hành chính",
+                                    "policy_is_default_used": true,
+                                    "slots": []
+                                  },
+                                  "items": [],
+                                  "pagination": {"limit": 50, "offset": 0, "total": 0}
+                                }
+                                """.trimIndent()
+                            )
+                    path.startsWith("/api/recruitment-posts?") -> {
+                        if (path.contains("cursor=cur-p2")) {
+                            MockResponse()
+                                .setResponseCode(200)
+                                .setHeader("Content-Type", "application/json")
+                                .setBody(
+                                    """
+                                    {
+                                      "ok": true,
+                                      "data": {
+                                        "items": [${page2Items.joinToString(",")}],
+                                        "page_size": 10,
+                                        "has_more": false,
+                                        "next_cursor": null,
+                                        "snapshot_token": "snap-1211"
+                                      }
+                                    }
+                                    """.trimIndent()
+                                )
+                        } else {
+                            MockResponse()
+                                .setResponseCode(200)
+                                .setHeader("Content-Type", "application/json")
+                                .setBody(
+                                    """
+                                    {
+                                      "ok": true,
+                                      "data": {
+                                        "items": [${page1Items.joinToString(",")}],
+                                        "page_size": 10,
+                                        "has_more": true,
+                                        "next_cursor": "cur-p2",
+                                        "snapshot_token": "snap-1211"
+                                      }
+                                    }
+                                    """.trimIndent()
+                                )
+                        }
+                    }
+                    else ->
+                        MockResponse()
+                            .setResponseCode(200)
+                            .setHeader("Content-Type", "application/json")
+                            .setBody("""{"ok":true,"items":[],"obligations":[]}""")
+                }
+            }
+        }
+        server.start()
+
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val db = buildTestDb(app)
+        val cookieFile = File(app.cacheDir, "v102_cookie_${System.nanoTime()}.enc")
+        val prefsFile = File(app.cacheDir, "v102_prefs_${System.nanoTime()}.preferences_pb")
+        val anchorFile = File(app.cacheDir, "v102_anchor_${System.nanoTime()}.enc")
+        val savedCredsFile = File(app.cacheDir, "v102_saved_${System.nanoTime()}.enc")
+        val repo = MiniBiRepository(
+            context = app,
+            database = db,
+            defaultServerUrl = server.url("/").toString().trimEnd('/'),
+            allowDebugUrlOverride = true,
+            cookieStorageFile = cookieFile,
+            preferencesStorageFile = prefsFile,
+            timeAnchorStorageFile = anchorFile,
+            savedCredentialsStorageFile = savedCredsFile,
+            cookieCipher = JvmAes256GcmCookieCipher()
+        )
+        repo.cookieJar.saveFromResponse(
+            server.url("/api/auth/session"),
+            listOf(
+                Cookie.Builder()
+                    .name("mini_bi_sid")
+                    .value("sid_v102")
+                    .hostOnlyDomain(server.hostName)
+                    .path("/")
+                    .expiresAt(System.currentTimeMillis() + 3_600_000L)
+                    .build()
+            )
+        )
+        val vm = MiniBiViewModel(app, repo)
+        registerTestResourcesCleanup(vm, db, server, cookieFile, prefsFile, anchorFile, savedCredsFile)
+
+        composeTestRule.setContent {
+            MyApplicationTheme {
+                MiniBiAppRoot(viewModel = vm)
+            }
+        }
+
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            !vm.sessionBootstrapping.value && vm.currentActor.value != null
+        }
+        composeTestRule.waitForIdle()
+
+        // 1. Attendance Screen: default today selected, NO "Tất cả" or "Hôm nay" chips, NO future date cells, single-day history query
+        composeTestRule.onNodeWithTag("checkin_history_week_strip_all_chip").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("checkin_history_week_strip_today_chip").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("checkin_history_week_strip_day_$todayIso").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("checkin_history_week_strip_day_$tomorrowIso").assertDoesNotExist()
+
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            recordedPaths.any { it.startsWith("/api/attendance/history") }
+        }
+        assertTrue(
+            "Attendance history sync must query only single selected day (from_date == to_date == $todayIso)",
+            recordedPaths.any {
+                it.startsWith("/api/attendance/history?from_date=$todayIso&to_date=$todayIso&page=1&page_size=50")
+            }
+        )
+
+        // Selecting yesterday on week strip queries only yesterday
+        composeTestRule.onNodeWithTag("checkin_history_week_strip_day_$yesterdayIso").performClick()
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            recordedPaths.any {
+                it.startsWith("/api/attendance/history?from_date=$yesterdayIso&to_date=$yesterdayIso&page=1&page_size=50")
+            }
+        }
+
+        // 2. Explanation Tab: duplicate manual date input row removed, week strip has no future dates
+        vm.selectAttendanceTab(com.example.data.AttendanceAreaTab.EXPLANATION)
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("explanation_week_strip").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("explanation_week_strip_day_$tomorrowIso").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("explanation_selected_date_input").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("explanation_date_picker_button").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("explanation_today_button").assertDoesNotExist()
+
+        // 3. WorkReports Screen: week strip has no future dates
+        vm.navigateTo(com.example.ui.MainDestination.WORK_REPORTS)
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("work_reports_week_strip").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("work_reports_week_strip_day_$todayIso").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("work_reports_week_strip_day_$tomorrowIso").assertDoesNotExist()
+
+        // 4. Recruitment Screen: auto-loads page 1 + page 2 (total 7 jobs) and shows KCN Khai Quang (5) without calling /context
+        vm.navigateTo(com.example.ui.MainDestination.RECRUITMENT)
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            vm.recruitmentPosts.value.size == 7 &&
+                !vm.recruitmentPostsLoading.value &&
+                !vm.recruitmentPostsLoadingMore.value
+        }
+        composeTestRule.waitForIdle()
+        assertFalse(recordedPaths.any { it.contains("/api/recruitment-posts/context") })
+
+        composeTestRule.onNodeWithTag("recruitment_filter_kcn").performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithText("Tất cả KCN (7)").assertIsDisplayed()
+        composeTestRule.onNodeWithText("KCN Bá Thiện 1 (2)").assertIsDisplayed()
+        composeTestRule.onNodeWithText("KCN Khai Quang (5)").assertIsDisplayed().performClick()
+        composeTestRule.waitForIdle()
+
+        composeTestRule.onNodeWithText("KCN: KCN Khai Quang (5)").assertIsDisplayed()
+        composeTestRule.onNodeWithText("5/7").assertIsDisplayed()
     }
 }
