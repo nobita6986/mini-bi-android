@@ -6952,7 +6952,7 @@ class WorkerUiAuthorizationRobolectricTest {
                                           "ok": true,
                                           "data": {
                                             "items": [
-                                              ${buildPostJson(brief1, "Dự Án 1 Trùng", "Người Tạo 1")},
+                                              ${buildPostJson(brief1, "Dự Án 1 Trùng", "Người Tạo Chính Xác")},
                                               ${buildPostJson(brief2, "Dự Án 2 Mới", "Người Tạo 2")}
                                             ],
                                             "page_size": 10,
