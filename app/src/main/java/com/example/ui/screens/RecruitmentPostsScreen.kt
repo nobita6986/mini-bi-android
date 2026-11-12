@@ -177,7 +177,11 @@ fun RecruitmentPostsScreen(
         }
     }
 
-    val totalPublishedJobs = totalCount ?: cardModels.size
+    val facetParkSum = remember(catalogIndustrialParks) {
+        val counts = catalogIndustrialParks.mapNotNull { it.jobCount }
+        if (counts.isNotEmpty()) counts.sum() else null
+    }
+    val totalPublishedJobs = totalCount ?: facetParkSum ?: cardModels.size
     val hasActiveFilter = !selectedParkId.isNullOrBlank() || !selectedLaborTypeKey.isNullOrBlank()
     val filteredCards = remember(cardModels, selectedParkId, selectedLaborTypeKey) {
         cardModels.filter { card ->
@@ -186,6 +190,33 @@ fun RecruitmentPostsScreen(
             val matchesLabor = selectedLaborTypeKey.isNullOrBlank() ||
                 card.laborTypes.any { it.laborTypeKey.equals(selectedLaborTypeKey, ignoreCase = true) }
             matchesPark && matchesLabor
+        }
+    }
+    val activeFilterJobCount = remember(
+        selectedParkId,
+        selectedLaborTypeKey,
+        kcnOptions,
+        laborTypeOptions,
+        kcnJobCounts,
+        laborTypeJobCounts,
+        filteredCards.size
+    ) {
+        val hasPark = !selectedParkId.isNullOrBlank()
+        val hasLabor = !selectedLaborTypeKey.isNullOrBlank()
+        when {
+            hasPark && !hasLabor -> {
+                val cleanId = selectedParkId.trim()
+                kcnOptions.firstOrNull { it.industrialParkId.equals(cleanId, ignoreCase = true) }?.jobCount
+                    ?: kcnJobCounts[cleanId.lowercase(java.util.Locale.ROOT)]
+                    ?: filteredCards.size
+            }
+            !hasPark && hasLabor -> {
+                val cleanKey = selectedLaborTypeKey.trim()
+                laborTypeOptions.firstOrNull { it.laborTypeKey.equals(cleanKey, ignoreCase = true) }?.jobCount
+                    ?: laborTypeJobCounts[cleanKey.lowercase(java.util.Locale.ROOT)]
+                    ?: filteredCards.size
+            }
+            else -> filteredCards.size
         }
     }
 
@@ -259,11 +290,11 @@ fun RecruitmentPostsScreen(
                         fontWeight = FontWeight.Bold,
                         color = SemanticColors.TextPrimary
                     )
-                    if (cardModels.isNotEmpty() || (hasActiveFilter && totalPublishedJobs > 0)) {
+                    if (cardModels.isNotEmpty() || totalPublishedJobs > 0) {
                         val badgeText = if (hasActiveFilter) {
-                            "${filteredCards.size}${if (hasMore) "+" else ""}/$totalPublishedJobs"
+                            "$activeFilterJobCount/$totalPublishedJobs"
                         } else {
-                            "${cardModels.size}${if (hasMore) "+" else ""}"
+                            "$totalPublishedJobs"
                         }
                         HrpStatusBadge(
                             text = badgeText,

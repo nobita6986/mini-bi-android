@@ -9248,7 +9248,8 @@ class WorkerUiAuthorizationRobolectricTest {
             "App must stop at page 1 and NOT auto-fetch cursor=cur-p2 on screen entry",
             recordedPaths.any { it.contains("cursor=cur-p2") }
         )
-        composeTestRule.onNodeWithText("2+").assertIsDisplayed()
+        composeTestRule.onNodeWithText("7").assertIsDisplayed()
+        composeTestRule.onNodeWithText("2+").assertDoesNotExist()
         composeTestRule.onNodeWithTag("recruitment_posts_load_more_button").assertIsDisplayed()
 
         // KCN dropdown already has full facets from page 1 response (including KCN Khai Quang (5) from page 2)
