@@ -131,8 +131,7 @@ fun LoginScreen(
                 })
             }
             .statusBarsPadding()
-            .navigationBarsPadding()
-            .imePadding(),
+            .navigationBarsPadding(),
         contentAlignment = Alignment.TopCenter
     ) {
         Column(
@@ -140,7 +139,8 @@ fun LoginScreen(
                 .fillMaxWidth()
                 .widthIn(max = 420.dp)
                 .verticalScroll(scrollState)
-                .padding(start = 20.dp, end = 20.dp, top = 56.dp, bottom = 20.dp),
+                .imePadding()
+                .padding(start = 20.dp, end = 20.dp, top = 36.dp, bottom = 20.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Surface(

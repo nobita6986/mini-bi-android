@@ -277,29 +277,16 @@ fun MiniBiAppRoot(viewModel: MiniBiViewModel) {
 
     val authenticatedActor = actor
     if (authenticatedActor == null) {
-        Scaffold(
-            modifier = Modifier.fillMaxSize(),
-            containerColor = MaterialTheme.colorScheme.background,
-            contentWindowInsets = WindowInsets.safeDrawing
-        ) { innerPadding ->
-            Box(
-                modifier = Modifier
-                    .padding(innerPadding)
-                    .consumeWindowInsets(innerPadding)
-                    .imePadding()
-            ) {
-                LoginScreen(
-                    busy = loginBusy,
-                    error = loginError,
-                    brandBadgeLabel = brandBadgeLabel,
-                    savedAccounts = savedAccounts,
-                    onRemoveSavedAccount = { viewModel.removeSavedAccount(it) },
-                    onLoginSubmit = { identifier, password, rememberAccount ->
-                        viewModel.login(identifier, password, rememberAccount)
-                    }
-                )
+        LoginScreen(
+            busy = loginBusy,
+            error = loginError,
+            brandBadgeLabel = brandBadgeLabel,
+            savedAccounts = savedAccounts,
+            onRemoveSavedAccount = { viewModel.removeSavedAccount(it) },
+            onLoginSubmit = { identifier, password, rememberAccount ->
+                viewModel.login(identifier, password, rememberAccount)
             }
-        }
+        )
         return
     }
 
