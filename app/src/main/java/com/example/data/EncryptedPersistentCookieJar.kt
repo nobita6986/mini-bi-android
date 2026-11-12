@@ -344,6 +344,37 @@ class SavedCredentialsStore(
         }
     }
 
+    fun updateDisplayName(identifierOrHandle: String, resolvedDisplayName: String): Boolean {
+        val cleanName = resolvedDisplayName.trim()
+        val rawTarget = identifierOrHandle.trim().lowercase(java.util.Locale.ROOT)
+        if (cleanName.isEmpty() || rawTarget.isEmpty()) return false
+        val targetLocalPart = rawTarget.substringBefore('@').trim()
+        synchronized(lock) {
+            ensureLoadedLocked()
+            var changed = false
+            for (i in accounts.indices) {
+                val acc = accounts[i]
+                val accIdLower = acc.identifier.trim().lowercase(java.util.Locale.ROOT)
+                val accLocalLower = accIdLower.substringBefore('@').trim()
+                val accNameLower = acc.displayName.trim().lowercase(java.util.Locale.ROOT)
+                if (accIdLower == rawTarget ||
+                    (targetLocalPart.isNotEmpty() && accLocalLower == targetLocalPart) ||
+                    accNameLower == rawTarget ||
+                    (targetLocalPart.isNotEmpty() && accNameLower == targetLocalPart)
+                ) {
+                    if (acc.displayName != cleanName) {
+                        accounts[i] = acc.copy(displayName = cleanName)
+                        changed = true
+                    }
+                }
+            }
+            if (changed) {
+                persistLocked()
+            }
+            return changed
+        }
+    }
+
     fun removeAccount(identifier: String) {
         val keyLower = identifier.trim().lowercase(java.util.Locale.ROOT)
         if (keyLower.isEmpty()) return

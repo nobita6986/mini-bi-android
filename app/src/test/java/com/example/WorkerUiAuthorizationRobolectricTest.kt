@@ -18,8 +18,11 @@ import androidx.compose.ui.test.assertIsFocused
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertIsNotFocused
 import androidx.compose.ui.test.assertTextContains
+import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.onFirst
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
@@ -8548,5 +8551,288 @@ class WorkerUiAuthorizationRobolectricTest {
         assertTrue(requestedPaths.any { it.contains("/api/direct-entry/entries/$entryId") })
         composeTestRule.onNodeWithText("Sửa trực tiếp hồ sơ").assertIsDisplayed()
         composeTestRule.onNodeWithText("Lê Văn Sửa Trực Tiếp (HRP00999) · v3").assertIsDisplayed()
+    }
+
+    @Test
+    @Config(qualifiers = "w360dp-h800dp-xxhdpi")
+    fun `v1_0_1_12112026 ux sync - resolves sampt_td to Pham Thai Sam, removes recruitment refresh button, numbers posts, uses Nam_Nu label, and filters by KCN and Hinh thuc`() {
+        val actorId = "aaaa0112-2222-4333-8444-555555555555"
+        val brief1 = "11111111-2222-4333-8444-555555555801"
+        val brief2 = "22222222-2222-4333-8444-555555555802"
+        val park1Id = "aaaaaaaa-1111-4222-8333-444444444801"
+        val park2Id = "bbbbbbbb-1111-4222-8333-444444444802"
+
+        fun buildPostJson(
+            briefId: String,
+            projectName: String,
+            parkId: String,
+            parkCode: String,
+            parkName: String,
+            laborKey: String,
+            laborName: String
+        ): String = """
+            {
+              "brief_id": "$briefId",
+              "version": 1,
+              "status": "PUBLISHED",
+              "project": {"project_id": "PRJ_$parkCode", "display_name": "$projectName"},
+              "industrial_park": {
+                "industrial_park_id": "$parkId",
+                "industrial_park_code": "$parkCode",
+                "display_name": "$parkName",
+                "active": true
+              },
+              "province": {
+                "province_id": "cccccccc-1111-4222-8333-444444444803",
+                "province_code": "BAC_GIANG",
+                "display_name": "Bắc Giang"
+              },
+              "published_at": "2026-11-11T08:00:00Z",
+              "updated_at": "2026-11-11T08:00:00Z",
+              "withdrawn_at": null,
+              "created_by_display_name": "Phạm Thái Sâm",
+              "updated_by_display_name": "Phạm Thái Sâm",
+              "withdrawn_by_display_name": null,
+              "general": {
+                "customer_name": "Công ty Điện tử",
+                "investment_origin": null,
+                "manufacturing_industry": "Linh kiện",
+                "job_description": "Lắp ráp",
+                "environment_types": ["CLEAN_ROOM"],
+                "work_postures": ["SITTING"],
+                "shift_pattern": "TWO_SHIFTS",
+                "shift_details": "2 ca",
+                "manager_name": "Quản lý Ẩn",
+                "manager_phone": "0912345678",
+                "labor_types": [{"labor_type_key": "$laborKey", "display_name": "$laborName"}],
+                "supply_schedule_text": null,
+                "expected_headcount": 100
+              },
+              "candidate": {
+                "age_min": 18,
+                "age_max": 35,
+                "gender_requirement": "ANY",
+                "education_requirement": "NONE",
+                "experience_required": false,
+                "experience_details": null,
+                "accept_former_customer_workers": true,
+                "entry_assessment_text": null,
+                "other_requirements_text": null
+              },
+              "compensation": {
+                "base_salary_vnd": "8500000",
+                "base_salary_conditions": null,
+                "attendance_bonus_vnd": null,
+                "attendance_bonus_conditions": null,
+                "living_allowance_vnd": null,
+                "living_allowance_conditions": null,
+                "seniority_allowance_vnd": null,
+                "seniority_allowance_conditions": null,
+                "eyesight_allowance_vnd": null,
+                "eyesight_allowance_conditions": null,
+                "other_allowance_text": null,
+                "average_income_min_vnd": "9000000",
+                "average_income_max_vnd": "13000000",
+                "salary_payment_schedule": "Ngày 10",
+                "salary_advance_available": false,
+                "salary_advance_amount_vnd": null,
+                "salary_advance_schedule": null,
+                "weekly_salary_available": false,
+                "weekly_salary_payment_schedule": null,
+                "day_shift_8h_vnd": null,
+                "day_shift_11h_vnd": null,
+                "night_shift_8h_vnd": null,
+                "night_shift_11h_vnd": null,
+                "sunday_day_11h_vnd": null,
+                "sunday_night_11h_vnd": null,
+                "holiday_day_11h_vnd": null,
+                "holiday_night_11h_vnd": null,
+                "ppe_provided": false,
+                "ppe_details": null,
+                "other_benefits": null
+              },
+              "documents": {
+                "require_original_cccd_and_copy": true,
+                "require_certified_resume": false,
+                "require_health_certificate_within_6_months": false,
+                "require_photo_3x4": false,
+                "require_degree_or_certificate": false,
+                "require_social_insurance_book": false,
+                "require_other_documents": false,
+                "other_documents_text": null
+              },
+              "allowed_actions": {"can_edit": false, "can_withdraw": false}
+            }
+        """.trimIndent()
+
+        val post1Json = buildPostJson(brief1, "Dự Án Quang Châu 1", park1Id, "KCN_QC", "KCN Quang Châu", "THOI_VU", "Thời vụ")
+        val post2Json = buildPostJson(brief2, "Dự Án Vân Trung 2", park2Id, "KCN_VT", "KCN Vân Trung", "CHINH_THUC", "Chính thức")
+
+        val server = MockWebServer()
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val path = request.path.orEmpty()
+                return when {
+                    path.startsWith("/api/auth/session") -> MockResponse()
+                        .setResponseCode(401)
+                        .setHeader("Content-Type", "application/json")
+                        .setBody("""{"ok":false,"code":"UNAUTHENTICATED","message":"Unauthenticated"}""")
+                    path.startsWith("/api/auth/login") -> MockResponse()
+                        .setResponseCode(200)
+                        .setHeader("Set-Cookie", "mini_bi_session=sess-sam; Path=/; HttpOnly")
+                        .setHeader("Content-Type", "application/json")
+                        .setBody(
+                            """
+                            {
+                              "ok": true,
+                              "actor": {
+                                "app_user_id": "$actorId",
+                                "display_name": "sampt.td",
+                                "capabilities": ["entry_read"],
+                                "scopes": [{"kind": "own", "reference": "self", "valid_from": "2026-01-01", "valid_to": null}],
+                                "self_recruiter_suggestion": null,
+                                "allowed_worker_tabs": ["recruited"]
+                              }
+                            }
+                            """.trimIndent()
+                        )
+                    path.startsWith("/api/leave/me") -> MockResponse()
+                        .setResponseCode(200)
+                        .setHeader("Content-Type", "application/json")
+                        .setBody(
+                            """
+                            {
+                              "ok": true,
+                              "data": {
+                                "leave_year": 2026,
+                                "authority": {
+                                  "app_user_id": "$actorId",
+                                  "role_key": "RECRUITER",
+                                  "can_submit_own_request": true,
+                                  "can_approve_requests": false,
+                                  "is_shared_non_employee": false
+                                },
+                                "account": {
+                                  "app_user_id": "$actorId",
+                                  "display_name": "Phạm Thái Sâm",
+                                  "personnel_code": "HRP001",
+                                  "recruiter_id": null,
+                                  "team_id": null,
+                                  "team_display_name": "Nhóm Tuyển dụng"
+                                },
+                                "balance": {
+                                  "quota_units": 12.0,
+                                  "used_units": 1.0,
+                                  "pending_units": 0.0,
+                                  "remaining_units": 11.0,
+                                  "available_units": 11.0
+                                },
+                                "requests": []
+                              }
+                            }
+                            """.trimIndent()
+                        )
+                    path.startsWith("/api/recruitment-posts") -> MockResponse()
+                        .setResponseCode(200)
+                        .setHeader("Content-Type", "application/json")
+                        .setBody(
+                            """
+                            {
+                              "ok": true,
+                              "data": {
+                                "items": [$post1Json, $post2Json],
+                                "page_size": 10,
+                                "has_more": false,
+                                "next_cursor": null,
+                                "snapshot_token": "snap-ux"
+                              }
+                            }
+                            """.trimIndent()
+                        )
+                    else -> MockResponse()
+                        .setResponseCode(200)
+                        .setHeader("Content-Type", "application/json")
+                        .setBody("""{"ok":true,"items":[]}""")
+                }
+            }
+        }
+        server.start()
+
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val db = buildTestDb(app)
+        val cookieFile = File(app.cacheDir, "ux_sync_cookie_${System.nanoTime()}.enc")
+        val prefsFile = File(app.cacheDir, "ux_sync_prefs_${System.nanoTime()}.preferences_pb")
+        val repo = MiniBiRepository(
+            context = app,
+            database = db,
+            defaultServerUrl = server.url("/").toString().trimEnd('/'),
+            allowDebugUrlOverride = true,
+            cookieStorageFile = cookieFile,
+            preferencesStorageFile = prefsFile,
+            cookieCipher = JvmAes256GcmCookieCipher()
+        )
+        val vm = MiniBiViewModel(app, repo)
+        registerTestResourcesCleanup(vm, db, server, cookieFile, prefsFile)
+
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            !vm.sessionBootstrapping.value
+        }
+
+        vm.login("sampt.td", "pass123", rememberAccount = true)
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            !vm.loginBusy.value && vm.currentActor.value?.displayName == "Phạm Thái Sâm"
+        }
+        assertEquals("Phạm Thái Sâm", vm.currentActor.value?.displayName)
+
+        composeTestRule.setContent {
+            MyApplicationTheme {
+                com.example.ui.screens.RecruitmentPostsScreen(viewModel = vm)
+            }
+        }
+
+        vm.navigateTo(com.example.ui.MainDestination.RECRUITMENT)
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            vm.recruitmentPosts.value.size == 2 && !vm.recruitmentPostsLoading.value
+        }
+        composeTestRule.waitForIdle()
+
+        // 1. Refresh button is removed
+        composeTestRule.onNodeWithTag("recruitment_posts_refresh_button").assertDoesNotExist()
+
+        // 2. Numbered project titles (1., 2.) and Nam/Nữ gender label
+        composeTestRule.onNodeWithTag("recruitment_post_index_$brief1", useUnmergedTree = true).assertTextEquals("1.")
+        composeTestRule.onNodeWithTag("recruitment_post_index_$brief2", useUnmergedTree = true).assertTextEquals("2.")
+        composeTestRule.onNodeWithText("Dự Án Quang Châu 1").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Dự Án Vân Trung 2").assertIsDisplayed()
+        composeTestRule.onAllNodesWithText("Nam/Nữ · Độ tuổi: 18 – 35 tuổi").onFirst().assertIsDisplayed()
+        composeTestRule.onNodeWithText("Cặp Nam/Nữ", substring = true).assertDoesNotExist()
+
+        // 3. Filter by KCN -> only post 1 shown, badge shows 1/2, clear button shown
+        composeTestRule.onNodeWithTag("recruitment_filter_kcn").assertIsDisplayed().performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("recruitment_filter_kcn_option_$park1Id").performClick()
+        composeTestRule.waitForIdle()
+
+        composeTestRule.onNodeWithText("1/2").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Dự Án Quang Châu 1").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Dự Án Vân Trung 2").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("recruitment_filter_clear").assertIsDisplayed()
+
+        // 4. Filter by Hình thức -> Chính thức (while KCN Quang Châu is selected) -> empty filtered box
+        composeTestRule.onNodeWithTag("recruitment_filter_labor_type").assertIsDisplayed().performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("recruitment_filter_labor_type_option_CHINH_THUC").performClick()
+        composeTestRule.waitForIdle()
+
+        composeTestRule.onNodeWithTag("recruitment_posts_filtered_empty_box").assertIsDisplayed()
+
+        // 5. Clear filters -> both posts shown again
+        composeTestRule.onNodeWithTag("recruitment_filter_clear").performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithText("Dự Án Quang Châu 1").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Dự Án Vân Trung 2").assertIsDisplayed()
     }
 }

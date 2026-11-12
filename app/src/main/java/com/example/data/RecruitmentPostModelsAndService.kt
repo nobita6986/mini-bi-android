@@ -156,7 +156,9 @@ data class RecruitmentPostCardViewModel(
     val contactPhoneDisplay: String,
     val contactDisplay: String,
     val createdByDisplayName: String,
-    val updatedAtDisplay: String
+    val updatedAtDisplay: String,
+    val industrialParkId: String = "",
+    val laborTypes: List<RecruitmentPostLaborTypeSummary> = emptyList()
 )
 
 data class RecruitmentPostDetailGeneralViewModel(
@@ -298,7 +300,7 @@ object RecruitmentPostContract {
     val GENDER_REQUIREMENT_LABELS: Map<String, String> = mapOf(
         "FEMALE" to "Nữ",
         "MALE" to "Nam",
-        "ANY" to "Cặp Nam/Nữ"
+        "ANY" to "Nam/Nữ"
     )
 
     val EDUCATION_REQUIREMENT_LABELS: Map<String, String> = mapOf(
@@ -595,7 +597,9 @@ object RecruitmentPostContract {
             contactPhoneDisplay = contactPhoneDisplay,
             contactDisplay = contactDisplay,
             createdByDisplayName = createdByDisplayName,
-            updatedAtDisplay = updatedAtDisplay
+            updatedAtDisplay = updatedAtDisplay,
+            industrialParkId = item.industrialPark.industrialParkId,
+            laborTypes = item.general.laborTypes
         )
     }
 

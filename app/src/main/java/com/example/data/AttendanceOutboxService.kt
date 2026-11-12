@@ -812,7 +812,8 @@ class AttendanceOutboxService(
     private val timeAnchorManager: AttendanceTimeAnchorManager,
     private val isNetworkAvailable: () -> Boolean = { isDeviceNetworkConnected(context) },
     private val idempotencyKeyGenerator: () -> String = { UUID.randomUUID().toString() },
-    private val outboxWorkScheduler: (() -> Unit)? = null
+    private val outboxWorkScheduler: (() -> Unit)? = null,
+    var onResolvedEmployeeDisplayName: (suspend (String, String) -> Unit)? = null
 ) {
 
     data class EnqueuedOutboxWorkRecord(
@@ -1119,6 +1120,13 @@ class AttendanceOutboxService(
 
         if (collected.isEmpty()) return@withContext 0
 
+        val resolvedEmployeeName = collected
+            .map { it.employeeDisplayName.trim() }
+            .firstOrNull { it.isNotEmpty() && !ActorContractParser.looksLikeLoginHandle(it, actor.displayIdentifier) }
+        if (resolvedEmployeeName != null) {
+            runCatching { onResolvedEmployeeDisplayName?.invoke(cleanUserId, resolvedEmployeeName) }
+        }
+
         val dailyCounts = collected
             .groupBy { it.businessDate }
             .mapValues { (_, list) ->
@@ -1129,9 +1137,25 @@ class AttendanceOutboxService(
         for (item in collected) {
             val existing = dao.getAttendanceByServerCheckinId(cleanUserId, item.checkinId)
             val resolvedDailyCount = dailyCounts[item.businessDate]
+            val itemFullName = item.employeeDisplayName.trim()
+                .takeIf { it.isNotEmpty() && !ActorContractParser.looksLikeLoginHandle(it, actor.displayIdentifier) }
+                ?: resolvedEmployeeName
             if (existing != null) {
-                if (existing.serverDailyCount == null && resolvedDailyCount != null) {
-                    dao.updateAttendance(existing.copy(serverDailyCount = resolvedDailyCount))
+                val upgradedName = if (itemFullName != null &&
+                    ActorContractParser.looksLikeLoginHandle(existing.userDisplayName, actor.displayIdentifier)
+                ) {
+                    itemFullName
+                } else {
+                    existing.userDisplayName
+                }
+                val nextDailyCount = existing.serverDailyCount ?: resolvedDailyCount
+                if (upgradedName != existing.userDisplayName || nextDailyCount != existing.serverDailyCount) {
+                    dao.updateAttendance(
+                        existing.copy(
+                            userDisplayName = upgradedName,
+                            serverDailyCount = nextDailyCount
+                        )
+                    )
                 }
                 continue
             }
@@ -1148,7 +1172,7 @@ class AttendanceOutboxService(
                 AttendanceEntity(
                     idempotencyKey = "server-sync-${item.checkinId}",
                     appUserId = cleanUserId,
-                    userDisplayName = item.employeeDisplayName.ifBlank { actor.displayName },
+                    userDisplayName = itemFullName ?: item.employeeDisplayName.ifBlank { actor.displayName },
                     latitude = item.latitude ?: 0.0,
                     longitude = item.longitude ?: 0.0,
                     accuracyMeters = item.accuracyMeters ?: 0f,
