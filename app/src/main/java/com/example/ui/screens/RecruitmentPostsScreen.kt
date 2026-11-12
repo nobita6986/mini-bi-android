@@ -90,7 +90,9 @@ fun RecruitmentPostsScreen(
     viewModel: MiniBiViewModel
 ) {
     val items by viewModel.recruitmentPosts.collectAsState()
+    val totalCount by viewModel.recruitmentTotalCount.collectAsState()
     val catalogIndustrialParks by viewModel.recruitmentIndustrialParks.collectAsState()
+    val catalogLaborTypes by viewModel.recruitmentLaborTypes.collectAsState()
     val loading by viewModel.recruitmentPostsLoading.collectAsState()
     val loadingMore by viewModel.recruitmentPostsLoadingMore.collectAsState()
     val error by viewModel.recruitmentPostsError.collectAsState()
@@ -106,12 +108,8 @@ fun RecruitmentPostsScreen(
     val haptic = LocalHapticFeedback.current
 
     androidx.compose.runtime.LaunchedEffect(Unit) {
-        if (!accessDenied && !featureUnavailable && error == null) {
-            if (items.isEmpty() && !loading) {
-                viewModel.loadRecruitmentPosts(reset = true, autoLoadAllPages = true)
-            } else if (hasMore && !loading && !loadingMore) {
-                viewModel.ensureAllRecruitmentPostsLoaded(maxAutoPages = 50)
-            }
+        if (!accessDenied && !featureUnavailable && error == null && items.isEmpty() && !loading) {
+            viewModel.loadRecruitmentPosts(reset = true)
         }
     }
 
@@ -119,10 +117,20 @@ fun RecruitmentPostsScreen(
         items.map { RecruitmentPostContract.toCardViewModel(it) }
     }
 
-    val kcnJobCounts = remember(cardModels) {
-        cardModels.groupingBy { it.industrialParkId.lowercase(java.util.Locale.ROOT) }.eachCount()
+    val kcnJobCounts = remember(cardModels, catalogIndustrialParks) {
+        val counts = HashMap<String, Int>()
+        cardModels.forEach { card ->
+            val id = card.industrialParkId.lowercase(java.util.Locale.ROOT)
+            counts[id] = (counts[id] ?: 0) + 1
+        }
+        catalogIndustrialParks.forEach { park ->
+            park.jobCount?.let { jc ->
+                counts[park.industrialParkId.lowercase(java.util.Locale.ROOT)] = jc
+            }
+        }
+        counts
     }
-    val laborTypeJobCounts = remember(cardModels) {
+    val laborTypeJobCounts = remember(cardModels, catalogLaborTypes) {
         val counts = LinkedHashMap<String, Int>()
         cardModels.forEach { card ->
             card.laborTypes
@@ -132,24 +140,44 @@ fun RecruitmentPostsScreen(
                     counts[key] = (counts[key] ?: 0) + 1
                 }
         }
+        catalogLaborTypes.forEach { lt ->
+            lt.jobCount?.let { jc ->
+                counts[lt.laborTypeKey.lowercase(java.util.Locale.ROOT)] = jc
+            }
+        }
         counts
     }
 
     val viCollator = remember { java.text.Collator.getInstance(java.util.Locale.forLanguageTag("vi-VN")) }
-    val kcnOptions = remember(items, catalogIndustrialParks, viCollator) {
-        (catalogIndustrialParks + items.map { it.industrialPark })
-            .filter { it.industrialParkId.isNotBlank() && it.displayName.isNotBlank() }
-            .distinctBy { it.industrialParkId.lowercase(java.util.Locale.ROOT) }
-            .sortedWith { a, b -> viCollator.compare(a.displayName, b.displayName) }
+    val kcnOptions = remember(items, catalogIndustrialParks, totalCount, viCollator) {
+        if (totalCount != null || catalogIndustrialParks.any { it.jobCount != null }) {
+            catalogIndustrialParks
+                .filter { it.industrialParkId.isNotBlank() && it.displayName.isNotBlank() }
+                .distinctBy { it.industrialParkId.lowercase(java.util.Locale.ROOT) }
+        } else {
+            (catalogIndustrialParks + items.map { it.industrialPark })
+                .filter { it.industrialParkId.isNotBlank() && it.displayName.isNotBlank() }
+                .distinctBy { it.industrialParkId.lowercase(java.util.Locale.ROOT) }
+                .sortedWith { a, b ->
+                    val cmp = viCollator.compare(a.displayName, b.displayName)
+                    if (cmp != 0) cmp else a.industrialParkCode.compareTo(b.industrialParkCode)
+                }
+        }
     }
-    val laborTypeOptions = remember(items, viCollator) {
-        items
-            .flatMap { it.general.laborTypes }
-            .filter { it.laborTypeKey.isNotBlank() && it.displayName.isNotBlank() }
-            .distinctBy { it.laborTypeKey.lowercase(java.util.Locale.ROOT) }
-            .sortedWith { a, b -> viCollator.compare(a.displayName, b.displayName) }
+    val laborTypeOptions = remember(items, catalogLaborTypes, totalCount, viCollator) {
+        if (totalCount != null || catalogLaborTypes.any { it.jobCount != null }) {
+            catalogLaborTypes
+                .filter { it.laborTypeKey.isNotBlank() && it.displayName.isNotBlank() }
+                .distinctBy { it.laborTypeKey.lowercase(java.util.Locale.ROOT) }
+        } else {
+            (catalogLaborTypes + items.flatMap { it.general.laborTypes })
+                .filter { it.laborTypeKey.isNotBlank() && it.displayName.isNotBlank() }
+                .distinctBy { it.laborTypeKey.lowercase(java.util.Locale.ROOT) }
+                .sortedWith { a, b -> viCollator.compare(a.displayName, b.displayName) }
+        }
     }
 
+    val totalPublishedJobs = totalCount ?: cardModels.size
     val hasActiveFilter = !selectedParkId.isNullOrBlank() || !selectedLaborTypeKey.isNullOrBlank()
     val filteredCards = remember(cardModels, selectedParkId, selectedLaborTypeKey) {
         cardModels.filter { card ->
@@ -169,10 +197,11 @@ fun RecruitmentPostsScreen(
         if (cleanId.isEmpty()) {
             "KCN: Tất cả"
         } else {
-            val name = kcnOptions.firstOrNull { it.industrialParkId.equals(cleanId, ignoreCase = true) }?.displayName
+            val matchedOption = kcnOptions.firstOrNull { it.industrialParkId.equals(cleanId, ignoreCase = true) }
+            val name = matchedOption?.displayName
                 ?: cardModels.firstOrNull { it.industrialParkId.equals(cleanId, ignoreCase = true) }?.industrialParkName
                 ?: cleanId
-            val count = kcnJobCounts[cleanId.lowercase(java.util.Locale.ROOT)] ?: 0
+            val count = matchedOption?.jobCount ?: kcnJobCounts[cleanId.lowercase(java.util.Locale.ROOT)] ?: 0
             "KCN: $name ($count)"
         }
     }
@@ -181,16 +210,16 @@ fun RecruitmentPostsScreen(
         if (cleanKey.isEmpty()) {
             "Hình thức: Tất cả"
         } else {
-            val name = laborTypeOptions.firstOrNull { it.laborTypeKey.equals(cleanKey, ignoreCase = true) }?.displayName
-                ?: cleanKey
-            val count = laborTypeJobCounts[cleanKey.lowercase(java.util.Locale.ROOT)] ?: 0
+            val matchedOption = laborTypeOptions.firstOrNull { it.laborTypeKey.equals(cleanKey, ignoreCase = true) }
+            val name = matchedOption?.displayName ?: cleanKey
+            val count = matchedOption?.jobCount ?: laborTypeJobCounts[cleanKey.lowercase(java.util.Locale.ROOT)] ?: 0
             "Hình thức: $name ($count)"
         }
     }
 
     val onRefresh: () -> Unit = {
         HrpHaptics.tick(haptic)
-        viewModel.loadRecruitmentPosts(reset = true, autoLoadAllPages = true)
+        viewModel.loadRecruitmentPosts(reset = true)
     }
 
     Column(
@@ -230,9 +259,9 @@ fun RecruitmentPostsScreen(
                         fontWeight = FontWeight.Bold,
                         color = SemanticColors.TextPrimary
                     )
-                    if (cardModels.isNotEmpty()) {
+                    if (cardModels.isNotEmpty() || (hasActiveFilter && totalPublishedJobs > 0)) {
                         val badgeText = if (hasActiveFilter) {
-                            "${filteredCards.size}/${cardModels.size}"
+                            "${filteredCards.size}${if (hasMore) "+" else ""}/$totalPublishedJobs"
                         } else {
                             "${cardModels.size}${if (hasMore) "+" else ""}"
                         }
@@ -244,7 +273,7 @@ fun RecruitmentPostsScreen(
                     }
                 }
 
-                if (cardModels.isNotEmpty() || hasActiveFilter) {
+                if (cardModels.isNotEmpty() || hasActiveFilter || totalPublishedJobs > 0) {
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -271,7 +300,7 @@ fun RecruitmentPostsScreen(
                                 DropdownMenuItem(
                                     text = {
                                         Text(
-                                            text = "Tất cả KCN (${cardModels.size})",
+                                            text = "Tất cả KCN ($totalPublishedJobs)",
                                             style = MaterialTheme.typography.bodyMedium.tabularNums(),
                                             fontWeight = if (selectedParkId.isNullOrBlank()) FontWeight.Bold else FontWeight.Normal
                                         )
@@ -296,7 +325,9 @@ fun RecruitmentPostsScreen(
                                 kcnOptions.forEach { park ->
                                     val isSelected = selectedParkId != null &&
                                         park.industrialParkId.equals(selectedParkId, ignoreCase = true)
-                                    val parkJobCount = kcnJobCounts[park.industrialParkId.lowercase(java.util.Locale.ROOT)] ?: 0
+                                    val parkJobCount = park.jobCount
+                                        ?: kcnJobCounts[park.industrialParkId.lowercase(java.util.Locale.ROOT)]
+                                        ?: 0
                                     DropdownMenuItem(
                                         text = {
                                             Text(
@@ -345,7 +376,7 @@ fun RecruitmentPostsScreen(
                                 DropdownMenuItem(
                                     text = {
                                         Text(
-                                            text = "Tất cả hình thức (${cardModels.size})",
+                                            text = "Tất cả hình thức ($totalPublishedJobs)",
                                             style = MaterialTheme.typography.bodyMedium.tabularNums(),
                                             fontWeight = if (selectedLaborTypeKey.isNullOrBlank()) FontWeight.Bold else FontWeight.Normal
                                         )
@@ -370,7 +401,9 @@ fun RecruitmentPostsScreen(
                                 laborTypeOptions.forEach { labor ->
                                     val isSelected = selectedLaborTypeKey != null &&
                                         labor.laborTypeKey.equals(selectedLaborTypeKey, ignoreCase = true)
-                                    val laborJobCount = laborTypeJobCounts[labor.laborTypeKey.lowercase(java.util.Locale.ROOT)] ?: 0
+                                    val laborJobCount = labor.jobCount
+                                        ?: laborTypeJobCounts[labor.laborTypeKey.lowercase(java.util.Locale.ROOT)]
+                                        ?: 0
                                     DropdownMenuItem(
                                         text = {
                                             Text(
@@ -486,29 +519,7 @@ fun RecruitmentPostsScreen(
                     testTag = "recruitment_posts_error_box"
                 )
             }
-            cardModels.isEmpty() -> {
-                PullToRefreshBox(
-                    isRefreshing = loading,
-                    onRefresh = onRefresh,
-                    modifier = Modifier.fillMaxSize()
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .verticalScroll(rememberScrollState()),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        RecruitmentPostStatusBox(
-                            title = "Chưa có tin tuyển dụng",
-                            message = "Hiện chưa có tin tuyển dụng nào đang hiệu lực.",
-                            actionLabel = "Làm mới",
-                            onAction = onRefresh,
-                            testTag = "recruitment_posts_empty_box"
-                        )
-                    }
-                }
-            }
-            filteredCards.isEmpty() -> {
+            hasActiveFilter && filteredCards.isEmpty() -> {
                 PullToRefreshBox(
                     isRefreshing = loading || loadingMore,
                     onRefresh = onRefresh,
@@ -529,6 +540,28 @@ fun RecruitmentPostsScreen(
                                 viewModel.clearRecruitmentPostFilters()
                             },
                             testTag = "recruitment_posts_filtered_empty_box"
+                        )
+                    }
+                }
+            }
+            cardModels.isEmpty() -> {
+                PullToRefreshBox(
+                    isRefreshing = loading,
+                    onRefresh = onRefresh,
+                    modifier = Modifier.fillMaxSize()
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .verticalScroll(rememberScrollState()),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        RecruitmentPostStatusBox(
+                            title = "Chưa có tin tuyển dụng",
+                            message = "Hiện chưa có tin tuyển dụng nào đang hiệu lực.",
+                            actionLabel = "Làm mới",
+                            onAction = onRefresh,
+                            testTag = "recruitment_posts_empty_box"
                         )
                     }
                 }
