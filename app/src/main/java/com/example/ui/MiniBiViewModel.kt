@@ -46,6 +46,7 @@ import com.example.data.OwnSubmissionItem
 import com.example.data.PendingDuplicateCccdSubmission
 import com.example.data.PendingEntryAttachmentTask
 import com.example.data.RecruitmentPostContract
+import com.example.data.RecruitmentPostIndustrialParkSummary
 import com.example.data.RecruitmentPostItem
 import com.example.data.CreateSalaryAdvanceValidationResult
 import com.example.data.SalaryAdvanceActorContext
@@ -410,6 +411,12 @@ class MiniBiViewModel internal constructor(
     private val _activeAttendanceTab = MutableStateFlow(AttendanceAreaTab.CHECK_IN)
     val activeAttendanceTab: StateFlow<AttendanceAreaTab> = _activeAttendanceTab.asStateFlow()
 
+    private val _selectedAttendanceHistoryDateIso = MutableStateFlow(DirectEntryContract.todayIsoInHcm())
+    val selectedAttendanceHistoryDateIso: StateFlow<String> = _selectedAttendanceHistoryDateIso.asStateFlow()
+
+    private val _workReportFilterDate = MutableStateFlow<String?>(null)
+    val workReportFilterDate: StateFlow<String?> = _workReportFilterDate.asStateFlow()
+
     private val _leaveYear = MutableStateFlow(LeaveContract.currentVietnamLeaveYear())
     val leaveYear: StateFlow<Int> = _leaveYear.asStateFlow()
 
@@ -667,6 +674,9 @@ class MiniBiViewModel internal constructor(
     private val _recruitmentPosts = MutableStateFlow<List<RecruitmentPostItem>>(emptyList())
     val recruitmentPosts: StateFlow<List<RecruitmentPostItem>> = _recruitmentPosts.asStateFlow()
 
+    private val _recruitmentIndustrialParks = MutableStateFlow<List<RecruitmentPostIndustrialParkSummary>>(emptyList())
+    val recruitmentIndustrialParks: StateFlow<List<RecruitmentPostIndustrialParkSummary>> = _recruitmentIndustrialParks.asStateFlow()
+
     private val _recruitmentPostsLoading = MutableStateFlow(false)
     val recruitmentPostsLoading: StateFlow<Boolean> = _recruitmentPostsLoading.asStateFlow()
 
@@ -923,7 +933,7 @@ class MiniBiViewModel internal constructor(
                 }
             }
             MainDestination.RECRUITMENT -> {
-                loadRecruitmentPosts(reset = true, actorOverride = actor)
+                loadRecruitmentPosts(reset = true, actorOverride = actor, autoLoadAllPages = true)
             }
             MainDestination.NEW_ENTRY -> {
                 if (actor.canAccessNewEntryScreen()) {
@@ -1041,7 +1051,14 @@ class MiniBiViewModel internal constructor(
                     !_recruitmentPostsAccessDenied.value &&
                     !_recruitmentPostsFeatureUnavailable.value
                 ) {
-                    loadRecruitmentPosts(reset = true, actorOverride = actor)
+                    loadRecruitmentPosts(reset = true, actorOverride = actor, autoLoadAllPages = true)
+                } else if (
+                    _recruitmentPostsHasMore.value &&
+                    _recruitmentPostsError.value == null &&
+                    !_recruitmentPostsLoading.value &&
+                    !_recruitmentPostsLoadingMore.value
+                ) {
+                    ensureAllRecruitmentPostsLoaded(actorOverride = actor)
                 }
             }
             MainDestination.ATTENDANCE -> {
@@ -1419,7 +1436,9 @@ class MiniBiViewModel internal constructor(
         _reviewQueue.value = emptyList()
         _analyticsSnapshot.value = null
         _availableReportTemplates.value = emptyList()
+        _workReportFilterDate.value = null
         _activeAttendanceTab.value = AttendanceAreaTab.CHECK_IN
+        _selectedAttendanceHistoryDateIso.value = DirectEntryContract.todayIsoInHcm()
         _leaveYear.value = LeaveContract.currentVietnamLeaveYear()
         _myLeaveSummary.value = null
         _myLeaveLoading.value = false
@@ -4646,9 +4665,17 @@ class MiniBiViewModel internal constructor(
                     if (shouldFetchHistory && WorkReportsContract.isUuid(targetActor.appUserId)) {
                         val histOk = runCatching {
                             val todayIso = resolveReferenceTodayIsoHcm(targetActor.appUserId)
+                            val targetDateIso = _selectedAttendanceHistoryDateIso.value.trim()
+                                .takeIf { it.matches(Regex("^\\d{4}-\\d{2}-\\d{2}$")) }
+                                ?.let { minOf(it, todayIso) }
+                                ?: todayIso
+                            _selectedAttendanceHistoryDateIso.value = targetDateIso
                             repository.attendanceOutboxService.syncServerHistoryForUser(
                                 actor = targetActor,
-                                referenceTodayIso = todayIso
+                                referenceTodayIso = targetDateIso,
+                                daysBack = 0,
+                                maxPages = 1,
+                                pageSize = 50
                             )
                             true
                         }.onFailure { it.rethrowIfCancelled() }.getOrDefault(false)
@@ -4697,12 +4724,50 @@ class MiniBiViewModel internal constructor(
         }
     }
 
-    fun syncAttendanceHistoryFromServer(actor: AppActor? = currentActor.value) {
+    fun selectAttendanceHistoryDate(
+        dateIso: String,
+        actorOverride: AppActor? = null
+    ) {
+        val resolvedActor = resolveSessionActor(actorOverride)
+        val todayIso = if (resolvedActor != null && resolvedActor.appUserId.isNotBlank()) {
+            resolveReferenceTodayIsoHcm(resolvedActor.appUserId)
+        } else {
+            DirectEntryContract.todayIsoInHcm()
+        }
+        val cleanDate = dateIso.trim().takeIf { it.matches(Regex("^\\d{4}-\\d{2}-\\d{2}$")) } ?: todayIso
+        val clampedDate = minOf(cleanDate, todayIso)
+        _selectedAttendanceHistoryDateIso.value = clampedDate
+        if (resolvedActor != null && resolvedActor.appUserId.isNotBlank()) {
+            syncAttendanceHistoryFromServer(actor = resolvedActor, targetDateIso = clampedDate)
+        }
+    }
+
+    fun setWorkReportFilterDate(dateIso: String?) {
+        val clean = dateIso?.trim()?.takeIf { it.matches(Regex("^\\d{4}-\\d{2}-\\d{2}$")) }
+        if (clean == null) {
+            _workReportFilterDate.value = null
+            return
+        }
+        val todayIso = AttendanceExplanationContract.todayVietnamIsoDate()
+        _workReportFilterDate.value = minOf(clean, todayIso)
+    }
+
+    fun syncAttendanceHistoryFromServer(
+        actor: AppActor? = currentActor.value,
+        targetDateIso: String? = null
+    ) {
         val resolvedActor = actor ?: return
         if (resolvedActor.appUserId.isBlank()) return
+        val todayIso = resolveReferenceTodayIsoHcm(resolvedActor.appUserId)
+        val clampedTargetDate = (targetDateIso ?: _selectedAttendanceHistoryDateIso.value).trim()
+            .takeIf { it.matches(Regex("^\\d{4}-\\d{2}-\\d{2}$")) }
+            ?.let { minOf(it, todayIso) }
+            ?: todayIso
+        _selectedAttendanceHistoryDateIso.value = clampedTargetDate
         launchDeduplicatedSessionJob(
-            key = "attendance_history_sync",
-            actorOverride = resolvedActor
+            key = "attendance_history_sync:$clampedTargetDate",
+            actorOverride = resolvedActor,
+            force = targetDateIso != null
         ) { targetActor, gen ->
             val flushSummary = runCatching {
                 repository.attendanceOutboxService.flushRetryableOutbox(
@@ -4721,10 +4786,12 @@ class MiniBiViewModel internal constructor(
                 return@launchDeduplicatedSessionJob
             }
             val histOk = runCatching {
-                val todayIso = resolveReferenceTodayIsoHcm(targetActor.appUserId)
                 repository.attendanceOutboxService.syncServerHistoryForUser(
                     actor = targetActor,
-                    referenceTodayIso = todayIso
+                    referenceTodayIso = clampedTargetDate,
+                    daysBack = 0,
+                    maxPages = 1,
+                    pageSize = 50
                 )
                 true
             }.onFailure { it.rethrowIfCancelled() }.getOrDefault(false)
@@ -4786,9 +4853,13 @@ class MiniBiViewModel internal constructor(
                 if (outcome.isSynced && WorkReportsContract.isUuid(actor.appUserId)) {
                     runCatching {
                         val todayIso = resolveReferenceTodayIsoHcm(actor.appUserId)
+                        val targetDate = minOf(_selectedAttendanceHistoryDateIso.value, todayIso)
                         repository.attendanceOutboxService.syncServerHistoryForUser(
                             actor = actor,
-                            referenceTodayIso = todayIso
+                            referenceTodayIso = targetDate,
+                            daysBack = 0,
+                            maxPages = 1,
+                            pageSize = 50
                         )
                         historyLoadedUserIds.add(actor.appUserId.trim().lowercase(Locale.ROOT))
                     }.onFailure { it.rethrowIfCancelled() }
@@ -4822,9 +4893,13 @@ class MiniBiViewModel internal constructor(
                 if (summary.syncedCount > 0 && WorkReportsContract.isUuid(actor.appUserId)) {
                     runCatching {
                         val todayIso = resolveReferenceTodayIsoHcm(actor.appUserId)
+                        val targetDate = minOf(_selectedAttendanceHistoryDateIso.value, todayIso)
                         repository.attendanceOutboxService.syncServerHistoryForUser(
                             actor = actor,
-                            referenceTodayIso = todayIso
+                            referenceTodayIso = targetDate,
+                            daysBack = 0,
+                            maxPages = 1,
+                            pageSize = 50
                         )
                         historyLoadedUserIds.add(actor.appUserId.trim().lowercase(Locale.ROOT))
                     }.onFailure { it.rethrowIfCancelled() }
@@ -5379,15 +5454,10 @@ class MiniBiViewModel internal constructor(
         val todayLocal = _myExplanationsOverview.value?.todayLocal
             ?.takeIf { AttendanceExplanationContract.isValidIsoDate(it) }
             ?: AttendanceExplanationContract.todayVietnamIsoDate()
-        if (cleanDate > todayLocal) {
-            val msg = AttendanceExplanationContract.ERROR_MESSAGES.getValue("ATTENDANCE_EXPLANATION_DATE_FUTURE")
-            _explanationMutationError.value = msg
-            showBanner(msg, isError = true)
-            return
-        }
+        val clampedDate = minOf(cleanDate, todayLocal)
         _explanationMutationError.value = null
-        _explanationSelectedDate.value = cleanDate
-        refreshMyAttendanceExplanations(businessDate = cleanDate)
+        _explanationSelectedDate.value = clampedDate
+        refreshMyAttendanceExplanations(businessDate = clampedDate)
     }
 
     fun refreshMyAttendanceExplanations(
@@ -6944,6 +7014,7 @@ class MiniBiViewModel internal constructor(
     fun resetRecruitmentPostsState() {
         cancelInFlightRecruitmentPostRequests()
         _recruitmentPosts.value = emptyList()
+        _recruitmentIndustrialParks.value = emptyList()
         _recruitmentPostsError.value = null
         _recruitmentPostsErrorCode.value = null
         _recruitmentPostsHasMore.value = false
@@ -6981,10 +7052,17 @@ class MiniBiViewModel internal constructor(
         _selectedRecruitmentLaborTypeKey.value = null
     }
 
-    fun ensureAllRecruitmentPostsLoadedForFiltering(actorOverride: AppActor? = null) {
+    fun ensureAllRecruitmentPostsLoaded(
+        maxAutoPages: Int = 50,
+        actorOverride: AppActor? = null
+    ) {
         if (_recruitmentPostsAccessDenied.value || _recruitmentPostsFeatureUnavailable.value) return
         if (_recruitmentPosts.value.isEmpty() && !_recruitmentPostsLoading.value) {
-            loadRecruitmentPosts(reset = true, actorOverride = actorOverride)
+            loadRecruitmentPosts(
+                reset = true,
+                actorOverride = actorOverride,
+                autoLoadAllPages = true
+            )
             return
         }
         if (_recruitmentPostsHasMore.value &&
@@ -6992,18 +7070,30 @@ class MiniBiViewModel internal constructor(
             !_recruitmentPostsLoading.value &&
             !_recruitmentPostsLoadingMore.value
         ) {
-            loadMoreRecruitmentPosts(actorOverride = actorOverride)
+            loadRecruitmentPostsInternal(
+                reset = false,
+                actorOverride = actorOverride,
+                isSnapshotInvalidRetry = false,
+                autoLoadAllPages = true,
+                maxAutoPages = maxAutoPages
+            )
         }
+    }
+
+    fun ensureAllRecruitmentPostsLoadedForFiltering(actorOverride: AppActor? = null) {
+        ensureAllRecruitmentPostsLoaded(maxAutoPages = 50, actorOverride = actorOverride)
     }
 
     fun loadRecruitmentPosts(
         reset: Boolean = true,
-        actorOverride: AppActor? = null
+        actorOverride: AppActor? = null,
+        autoLoadAllPages: Boolean = false
     ) {
         loadRecruitmentPostsInternal(
             reset = reset,
             actorOverride = actorOverride,
-            isSnapshotInvalidRetry = false
+            isSnapshotInvalidRetry = false,
+            autoLoadAllPages = autoLoadAllPages
         )
     }
 
@@ -7025,14 +7115,34 @@ class MiniBiViewModel internal constructor(
         loadRecruitmentPostsInternal(
             reset = false,
             actorOverride = actorOverride,
-            isSnapshotInvalidRetry = false
+            isSnapshotInvalidRetry = false,
+            autoLoadAllPages = false
         )
+    }
+
+    private fun mergeIndustrialParks(
+        current: List<RecruitmentPostIndustrialParkSummary>,
+        incoming: List<RecruitmentPostIndustrialParkSummary>
+    ): List<RecruitmentPostIndustrialParkSummary> {
+        if (incoming.isEmpty()) return current
+        val map = LinkedHashMap<String, RecruitmentPostIndustrialParkSummary>()
+        for (item in current) {
+            val id = item.industrialParkId.trim().lowercase(Locale.ROOT)
+            if (id.isNotEmpty()) map[id] = item
+        }
+        for (item in incoming) {
+            val id = item.industrialParkId.trim().lowercase(Locale.ROOT)
+            if (id.isNotEmpty()) map[id] = item
+        }
+        return map.values.toList()
     }
 
     private fun loadRecruitmentPostsInternal(
         reset: Boolean,
         actorOverride: AppActor? = null,
-        isSnapshotInvalidRetry: Boolean
+        isSnapshotInvalidRetry: Boolean,
+        autoLoadAllPages: Boolean = false,
+        maxAutoPages: Int = 50
     ) {
         val actor = resolveSessionActor(actorOverride) ?: return
         val expectedGen = bindActorGeneration(actor)
@@ -7059,6 +7169,7 @@ class MiniBiViewModel internal constructor(
             _recruitmentPostsNextCursor.value = null
             _recruitmentPostsSnapshotToken.value = null
             _recruitmentPostsHasMore.value = false
+            _recruitmentIndustrialParks.value = emptyList()
         } else {
             _recruitmentPostsLoadingMore.value = true
             _recruitmentPostsError.value = null
@@ -7087,11 +7198,19 @@ class MiniBiViewModel internal constructor(
                         current = _recruitmentPosts.value,
                         incoming = res.items
                     )
+                    _recruitmentIndustrialParks.value = mergeIndustrialParks(
+                        current = _recruitmentIndustrialParks.value,
+                        incoming = res.industrialParks
+                    )
                     _recruitmentPostsSnapshotToken.value = expectedSnapshot
                 } else {
                     _recruitmentPosts.value = RecruitmentPostContract.mergeUniqueItems(
                         current = emptyList(),
                         incoming = res.items
+                    )
+                    _recruitmentIndustrialParks.value = mergeIndustrialParks(
+                        current = emptyList(),
+                        incoming = res.industrialParks
                     )
                     _recruitmentPostsSnapshotToken.value = res.snapshotToken
                 }
@@ -7103,9 +7222,11 @@ class MiniBiViewModel internal constructor(
                 _recruitmentPostsFeatureUnavailable.value = false
 
                 var pagesLoadedInBatch = 1
+                val safeMaxAutoPages = maxAutoPages.coerceIn(1, 100)
                 while (
-                    pagesLoadedInBatch < 20 &&
-                    (_selectedRecruitmentIndustrialParkId.value != null ||
+                    pagesLoadedInBatch < safeMaxAutoPages &&
+                    (autoLoadAllPages ||
+                        _selectedRecruitmentIndustrialParkId.value != null ||
                         _selectedRecruitmentLaborTypeKey.value != null) &&
                     _recruitmentPostsHasMore.value &&
                     !_recruitmentPostsNextCursor.value.isNullOrBlank() &&
@@ -7128,6 +7249,10 @@ class MiniBiViewModel internal constructor(
                     _recruitmentPosts.value = RecruitmentPostContract.mergeUniqueItems(
                         current = _recruitmentPosts.value,
                         incoming = nextRes.items
+                    )
+                    _recruitmentIndustrialParks.value = mergeIndustrialParks(
+                        current = _recruitmentIndustrialParks.value,
+                        incoming = nextRes.industrialParks
                     )
                     _recruitmentPostsHasMore.value = nextRes.hasMore
                     _recruitmentPostsNextCursor.value = nextRes.nextCursor
@@ -7158,15 +7283,22 @@ class MiniBiViewModel internal constructor(
                     _recruitmentPostsError.value = RecruitmentPostContract.errorMessageForCode(deniedCode)
                     return@launch
                 }
-                if (code == "RECRUITMENT_POST_SNAPSHOT_INVALID" || (e.statusCode == 400 && !reset)) {
-                    if (!isSnapshotInvalidRetry && code == "RECRUITMENT_POST_SNAPSHOT_INVALID") {
+                val isSnapshotOrCursorExpired = code in setOf(
+                    "RECRUITMENT_POST_SNAPSHOT_INVALID",
+                    "SNAPSHOT_EXPIRED",
+                    "INVALID_CURSOR"
+                )
+                if (isSnapshotOrCursorExpired || (e.statusCode == 400 && (!reset || _recruitmentPosts.value.isNotEmpty()))) {
+                    if (!isSnapshotInvalidRetry && isSnapshotOrCursorExpired) {
                         retryingSnapshot = true
                         _recruitmentPostsLoading.value = false
                         _recruitmentPostsLoadingMore.value = false
                         loadRecruitmentPostsInternal(
                             reset = true,
                             actorOverride = actor,
-                            isSnapshotInvalidRetry = true
+                            isSnapshotInvalidRetry = true,
+                            autoLoadAllPages = autoLoadAllPages,
+                            maxAutoPages = maxAutoPages
                         )
                         return@launch
                     }

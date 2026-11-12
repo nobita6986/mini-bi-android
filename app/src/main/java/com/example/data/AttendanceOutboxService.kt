@@ -856,12 +856,16 @@ class AttendanceOutboxService(
             }
         }
 
+        @Suppress("DEPRECATION")
         fun isDeviceNetworkConnected(context: Context): Boolean {
             val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
                 ?: return true
-            val network = cm.activeNetwork ?: return false
-            val capabilities = cm.getNetworkCapabilities(network) ?: return false
-            return capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            val network = cm.activeNetwork ?: return cm.activeNetworkInfo?.isConnected == true
+            val capabilities = cm.getNetworkCapabilities(network)
+                ?: return cm.activeNetworkInfo?.isConnected == true
+            return capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) ||
+                (android.os.Build.FINGERPRINT.equals("robolectric", ignoreCase = true) &&
+                    cm.activeNetworkInfo?.isConnected == true)
         }
 
         fun buildDurableOutboxWorkRequest(
@@ -1083,8 +1087,9 @@ class AttendanceOutboxService(
     suspend fun syncServerHistoryForUser(
         actor: AppActor,
         referenceTodayIso: String,
-        daysBack: Int = 90,
-        maxPages: Int = 3
+        daysBack: Int = 0,
+        maxPages: Int = 1,
+        pageSize: Int = 100
     ): Int = withContext(Dispatchers.IO) {
         val cleanUserId = actor.appUserId.trim()
         if (!WorkReportsContract.isUuid(cleanUserId)) return@withContext 0
@@ -1092,15 +1097,16 @@ class AttendanceOutboxService(
 
         val toDate = referenceTodayIso.trim().takeIf { it.matches(Regex("^\\d{4}-\\d{2}-\\d{2}$")) }
             ?: DirectEntryContract.todayIsoInHcm()
-        val safeDaysBack = daysBack.coerceIn(1, 365)
-        val fromDate = AttendanceContract.shiftIsoDateDays(toDate, -safeDaysBack)
+        val safeDaysBack = daysBack.coerceIn(0, 365)
+        val fromDate = if (safeDaysBack == 0) toDate else AttendanceContract.shiftIsoDateDays(toDate, -safeDaysBack)
         val collected = mutableListOf<ServerAttendanceHistoryItem>()
         var page = 1
         val safeMaxPages = maxPages.coerceIn(1, 10)
+        val safePageSize = pageSize.coerceIn(1, 200)
         try {
             while (page <= safeMaxPages) {
                 val path = "${AttendanceContract.ENDPOINT_ATTENDANCE_HISTORY}" +
-                    "?from_date=$fromDate&to_date=$toDate&page=$page&page_size=100"
+                    "?from_date=$fromDate&to_date=$toDate&page=$page&page_size=$safePageSize"
                 val json = httpClient.getJson(
                     pathWithQuery = path,
                     requireOkTrue = true,

@@ -2472,6 +2472,33 @@ class DirectEntryAndWorkerContractTest {
         assertTrue(parsedList.hasMore)
         assertEquals("cursor-page-2", parsedList.nextCursor)
         assertEquals("snap-token-1", parsedList.snapshotToken)
+        assertTrue(parsedList.industrialParks.isEmpty())
+
+        val listPayloadWithCatalogParks = JSONObject(
+            """
+            {
+              "ok": true,
+              "data": {
+                "items": [$samplePostJson],
+                "page_size": 10,
+                "has_more": false,
+                "next_cursor": null,
+                "snapshot_token": "snap-token-1",
+                "industrial_parks": [
+                  {
+                    "industrial_park_id": "bbbbbbbb-1111-4222-8333-444444444409",
+                    "industrial_park_code": "KCN_KHAI_QUANG",
+                    "display_name": "KCN Khai Quang",
+                    "active": true
+                  }
+                ]
+              }
+            }
+            """.trimIndent()
+        )
+        val parsedWithCatalogParks = com.example.data.RecruitmentPostContract.parseListEnvelope(listPayloadWithCatalogParks)
+        assertEquals(1, parsedWithCatalogParks.industrialParks.size)
+        assertEquals("KCN Khai Quang", parsedWithCatalogParks.industrialParks.first().displayName)
 
         val card = com.example.data.RecruitmentPostContract.toCardViewModel(parsedList.items.first())
         assertEquals("Nguyễn Người Tạo Tin", card.contactPersonDisplay)

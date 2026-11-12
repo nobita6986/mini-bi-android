@@ -218,10 +218,14 @@ fun AttendanceScreen(
     var capturedPhotoTime by remember { mutableStateOf<CapturedAttendanceTime?>(null) }
     var captureError by remember { mutableStateOf<String?>(null) }
     var selectedRecordDetail by remember { mutableStateOf<AttendanceEntity?>(null) }
-    var selectedHistoryDateIso by remember { mutableStateOf<String?>(null) }
+    val rawSelectedHistoryDateIso by viewModel.selectedAttendanceHistoryDateIso.collectAsStateWithLifecycle()
 
     val todayDateStr = remember(actor.appUserId, timeAnchorState.hasValidAnchor, timeAnchorState.serverTimeIso) {
         viewModel.resolveReferenceTodayIsoHcm(actor.appUserId)
+    }
+    val selectedHistoryDateIso = remember(rawSelectedHistoryDateIso, todayDateStr) {
+        val clean = rawSelectedHistoryDateIso.trim()
+        if (HrpIsoDateUtils.isValidIsoDate(clean) && clean <= todayDateStr) clean else todayDateStr
     }
     val liveClockText = remember(
         actor.appUserId,
@@ -251,14 +255,9 @@ fun AttendanceScreen(
         }.toSet()
     }
     val filteredAttendanceRecords = remember(attendanceRecords, selectedHistoryDateIso) {
-        val targetDate = selectedHistoryDateIso
-        if (targetDate == null) {
-            attendanceRecords
-        } else {
-            attendanceRecords.filter { record ->
-                record.syncStatus != AttendanceOutboxStatus.SYNCED ||
-                    (record.serverBusinessDate ?: record.clientCapturedAtIso.take(10)) == targetDate
-            }
+        attendanceRecords.filter { record ->
+            val effectiveDate = (record.serverBusinessDate ?: record.clientCapturedAtIso.take(10)).trim()
+            effectiveDate == selectedHistoryDateIso
         }
     }
 
@@ -972,14 +971,9 @@ fun AttendanceScreen(
                         ) {
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
-                                    text = "Nhật ký chấm công (${attendanceRecords.size})",
+                                    text = "Nhật ký chấm công (${filteredAttendanceRecords.size})",
                                     style = MaterialTheme.typography.titleMedium.tabularNums(),
                                     fontWeight = FontWeight.Bold
-                                )
-                                Text(
-                                    text = "Lọc nhanh theo tuần hoặc xem toàn bộ lịch sử & hàng đợi",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
                             if (retryableCount > 0) {
@@ -1006,14 +1000,12 @@ fun AttendanceScreen(
                             selectedDateIso = selectedHistoryDateIso,
                             todayIso = todayDateStr,
                             onSelectDate = { pickedIso ->
-                                selectedHistoryDateIso = pickedIso
+                                viewModel.selectAttendanceHistoryDate(pickedIso, actor)
                             },
                             allowFutureDates = false,
-                            showAllOption = true,
-                            allDatesSelected = selectedHistoryDateIso == null,
-                            onSelectAllDates = {
-                                selectedHistoryDateIso = null
-                            },
+                            showAllOption = false,
+                            showTodayChip = false,
+                            allDatesSelected = false,
                             markedDates = historyMarkedDates,
                             tagPrefix = "checkin_history_week_strip"
                         )
@@ -1036,23 +1028,9 @@ fun AttendanceScreen(
                                     modifier = Modifier.size(32.dp)
                                 )
                                 Text(
-                                    text = if (selectedHistoryDateIso == null) {
-                                        "Chưa có lượt chấm công nào"
-                                    } else {
-                                        "Không có lượt chấm công ngày ${LeaveContract.formatIsoDateVi(selectedHistoryDateIso)}"
-                                    },
-                                    style = MaterialTheme.typography.titleSmall,
+                                    text = "Chưa có nhật ký chấm công trong ngày ${LeaveContract.formatIsoDateVi(selectedHistoryDateIso)}.",
+                                    style = MaterialTheme.typography.titleSmall.tabularNums(),
                                     fontWeight = FontWeight.SemiBold,
-                                    textAlign = TextAlign.Center
-                                )
-                                Text(
-                                    text = if (selectedHistoryDateIso == null) {
-                                        "Bấm nút CHẤM CÔNG NGAY phía trên để chụp ảnh và ghi nhận định vị GPS."
-                                    } else {
-                                        "Bấm chip Tất cả trên thanh tuần để xem toàn bộ lịch sử các ngày khác."
-                                    },
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     textAlign = TextAlign.Center
                                 )
                             }
@@ -3645,7 +3623,6 @@ private fun AttendanceExplanationTabContent(
     val mutationBusy by viewModel.explanationMutationBusy.collectAsStateWithLifecycle()
     val mutationError by viewModel.explanationMutationError.collectAsStateWithLifecycle()
 
-    var dateInputText by remember(selectedDate) { mutableStateOf(selectedDate) }
     var activeSubmitSlot by remember { mutableStateOf<AttendanceExplanationDaySlotEvaluationProjection?>(null) }
     var activeSubmitSlotIndex by remember { mutableStateOf(1) }
     var submitReasonInput by remember { mutableStateOf("") }
@@ -3783,71 +3760,17 @@ private fun AttendanceExplanationTabContent(
                     )
 
                     HrpWeekStripDateSelector(
-                        selectedDateIso = selectedDate,
+                        selectedDateIso = minOf(selectedDate, todayIso),
                         todayIso = todayIso,
                         allowFutureDates = false,
+                        showTodayChip = false,
                         markedDates = explanationMarkedDates,
                         wrapInCardSurface = false,
                         tagPrefix = "explanation_week_strip",
                         onSelectDate = { picked ->
-                            dateInputText = picked
-                            viewModel.setExplanationSelectedDate(picked)
+                            viewModel.setExplanationSelectedDate(minOf(picked, todayIso))
                         }
                     )
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        OutlinedTextField(
-                            value = dateInputText,
-                            onValueChange = { raw ->
-                                dateInputText = raw.trim()
-                                if (AttendanceExplanationContract.isValidIsoDate(dateInputText)) {
-                                    viewModel.setExplanationSelectedDate(dateInputText)
-                                }
-                            },
-                            label = { Text("Ngày kiểm tra (YYYY-MM-DD)") },
-                            textStyle = MaterialTheme.typography.bodyMedium.tabularNums(),
-                            singleLine = true,
-                            trailingIcon = {
-                                IconButton(
-                                    onClick = {
-                                        openIsoDatePicker(
-                                            context = context,
-                                            initialIsoDate = dateInputText,
-                                            onDatePicked = { picked ->
-                                                dateInputText = picked
-                                                viewModel.setExplanationSelectedDate(picked)
-                                            }
-                                        )
-                                    },
-                                    modifier = Modifier.testTag("explanation_date_picker_button")
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.CalendarMonth,
-                                        contentDescription = "Chọn ngày kiểm tra"
-                                    )
-                                }
-                            },
-                            modifier = Modifier
-                                .weight(1f)
-                                .testTag("explanation_selected_date_input")
-                        )
-
-                        OutlinedButton(
-                            onClick = {
-                                HrpHaptics.tick(haptic)
-                                dateInputText = todayIso
-                                viewModel.setExplanationSelectedDate(todayIso)
-                            },
-                            shape = RoundedCornerShape(10.dp),
-                            modifier = Modifier.testTag("explanation_today_button")
-                        ) {
-                            Text("Hôm nay")
-                        }
-                    }
 
                     val currentOverview = overview
                     if (currentOverview != null) {

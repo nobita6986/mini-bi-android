@@ -29,8 +29,8 @@ android {
     applicationId = "vn.hrpartner.bi"
     minSdk = 24
     targetSdk = 36
-    versionCode = 32
-    versionName = "1.0.1.12112026"
+    versionCode = 33
+    versionName = "1.0.2.12112026"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -105,6 +105,64 @@ android {
   dependenciesInfo {
     includeInApk = false
     includeInBundle = true
+  }
+}
+
+// Ensure pre-stripped third-party JNI libraries (ML Kit, CameraX, DataStore, Compose Graphics)
+// still emit valid ELF debug metadata (.so.dbg with matching GNU Build ID) so Google Play Console
+// receives complete BUNDLE-METADATA/com.android.tools.build.debugsymbols entries.
+val configuredSdkDirPath: String? = Properties().apply {
+  val localProps = rootProject.file("local.properties")
+  if (localProps.isFile) {
+    localProps.inputStream().use { load(it) }
+  }
+}.getProperty("sdk.dir") ?: System.getenv("ANDROID_HOME") ?: System.getenv("ANDROID_SDK_ROOT")
+
+tasks.matching { it.name == "extractReleaseNativeDebugMetadata" }.configureEach {
+  val sdkDirSnapshot = configuredSdkDirPath
+  val mergedNativeLibsDirProvider = layout.buildDirectory
+    .dir("intermediates/merged_native_libs/release/mergeReleaseNativeLibs/out/lib")
+  val metadataOutDirProvider = layout.buildDirectory
+    .dir("intermediates/native_debug_metadata/release/extractReleaseNativeDebugMetadata/out")
+  doLast {
+    val mergedNativeLibsDir = mergedNativeLibsDirProvider.get().asFile
+    val metadataOutDir = metadataOutDirProvider.get().asFile
+    if (!mergedNativeLibsDir.isDirectory) return@doLast
+
+    val ndkRoot = sdkDirSnapshot?.let { File(it, "ndk") }
+    val objcopyExe = ndkRoot
+      ?.listFiles()
+      ?.filter { it.isDirectory }
+      ?.sortedByDescending { it.name }
+      ?.firstNotNullOfOrNull { ndkVerDir ->
+        val prebuiltRoot = File(ndkVerDir, "toolchains/llvm/prebuilt")
+        prebuiltRoot.listFiles()?.firstNotNullOfOrNull { hostDir ->
+          listOf("llvm-objcopy.exe", "llvm-objcopy")
+            .map { File(hostDir, "bin/$it") }
+            .firstOrNull { it.isFile }
+        }
+      } ?: return@doLast
+
+    mergedNativeLibsDir.walkTopDown()
+      .filter { it.isFile && it.extension.equals("so", ignoreCase = true) }
+      .forEach { soFile ->
+        val abi = soFile.parentFile.name
+        val outAbiDir = File(metadataOutDir, abi).apply { mkdirs() }
+        val dbgFile = File(outAbiDir, "${soFile.name}.dbg")
+        val symFile = File(outAbiDir, "${soFile.name}.sym")
+        if (!dbgFile.exists() && !symFile.exists()) {
+          val proc = ProcessBuilder(
+            objcopyExe.absolutePath,
+            "--only-keep-debug",
+            soFile.absolutePath,
+            dbgFile.absolutePath
+          ).redirectErrorStream(true).start()
+          proc.inputStream.bufferedReader().readText()
+          if (proc.waitFor() != 0 || !dbgFile.isFile) {
+            soFile.copyTo(dbgFile, overwrite = true)
+          }
+        }
+      }
   }
 }
 
