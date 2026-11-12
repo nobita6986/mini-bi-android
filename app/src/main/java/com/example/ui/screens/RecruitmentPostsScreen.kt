@@ -201,19 +201,19 @@ fun RecruitmentPostsScreen(
         laborTypeJobCounts,
         filteredCards.size
     ) {
-        val hasPark = !selectedParkId.isNullOrBlank()
-        val hasLabor = !selectedLaborTypeKey.isNullOrBlank()
+        val cleanParkId = selectedParkId?.trim().orEmpty()
+        val cleanLaborKey = selectedLaborTypeKey?.trim().orEmpty()
+        val hasPark = cleanParkId.isNotEmpty()
+        val hasLabor = cleanLaborKey.isNotEmpty()
         when {
             hasPark && !hasLabor -> {
-                val cleanId = selectedParkId.trim()
-                kcnOptions.firstOrNull { it.industrialParkId.equals(cleanId, ignoreCase = true) }?.jobCount
-                    ?: kcnJobCounts[cleanId.lowercase(java.util.Locale.ROOT)]
+                kcnOptions.firstOrNull { it.industrialParkId.equals(cleanParkId, ignoreCase = true) }?.jobCount
+                    ?: kcnJobCounts[cleanParkId.lowercase(java.util.Locale.ROOT)]
                     ?: filteredCards.size
             }
             !hasPark && hasLabor -> {
-                val cleanKey = selectedLaborTypeKey.trim()
-                laborTypeOptions.firstOrNull { it.laborTypeKey.equals(cleanKey, ignoreCase = true) }?.jobCount
-                    ?: laborTypeJobCounts[cleanKey.lowercase(java.util.Locale.ROOT)]
+                laborTypeOptions.firstOrNull { it.laborTypeKey.equals(cleanLaborKey, ignoreCase = true) }?.jobCount
+                    ?: laborTypeJobCounts[cleanLaborKey.lowercase(java.util.Locale.ROOT)]
                     ?: filteredCards.size
             }
             else -> filteredCards.size
