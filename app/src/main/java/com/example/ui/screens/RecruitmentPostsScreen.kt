@@ -22,19 +22,22 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Campaign
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.Payments
 import androidx.compose.material.icons.filled.Phone
-import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -48,7 +51,9 @@ import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -95,10 +100,64 @@ fun RecruitmentPostsScreen(
     val detailLoading by viewModel.recruitmentPostDetailLoading.collectAsState()
     val detailError by viewModel.recruitmentPostDetailError.collectAsState()
     val detailBriefId by viewModel.recruitmentPostDetailBriefId.collectAsState()
+    val selectedParkId by viewModel.selectedRecruitmentIndustrialParkId.collectAsState()
+    val selectedLaborTypeKey by viewModel.selectedRecruitmentLaborTypeKey.collectAsState()
     val haptic = LocalHapticFeedback.current
 
     val cardModels = remember(items) {
         items.map { RecruitmentPostContract.toCardViewModel(it) }
+    }
+
+    val viCollator = remember { java.text.Collator.getInstance(java.util.Locale.forLanguageTag("vi-VN")) }
+    val kcnOptions = remember(items, viCollator) {
+        items
+            .map { it.industrialPark }
+            .filter { it.industrialParkId.isNotBlank() && it.displayName.isNotBlank() }
+            .distinctBy { it.industrialParkId.lowercase(java.util.Locale.ROOT) }
+            .sortedWith { a, b -> viCollator.compare(a.displayName, b.displayName) }
+    }
+    val laborTypeOptions = remember(items, viCollator) {
+        items
+            .flatMap { it.general.laborTypes }
+            .filter { it.laborTypeKey.isNotBlank() && it.displayName.isNotBlank() }
+            .distinctBy { it.laborTypeKey.lowercase(java.util.Locale.ROOT) }
+            .sortedWith { a, b -> viCollator.compare(a.displayName, b.displayName) }
+    }
+
+    val hasActiveFilter = !selectedParkId.isNullOrBlank() || !selectedLaborTypeKey.isNullOrBlank()
+    val filteredCards = remember(cardModels, selectedParkId, selectedLaborTypeKey) {
+        cardModels.filter { card ->
+            val matchesPark = selectedParkId.isNullOrBlank() ||
+                card.industrialParkId.equals(selectedParkId, ignoreCase = true)
+            val matchesLabor = selectedLaborTypeKey.isNullOrBlank() ||
+                card.laborTypes.any { it.laborTypeKey.equals(selectedLaborTypeKey, ignoreCase = true) }
+            matchesPark && matchesLabor
+        }
+    }
+
+    var kcnMenuExpanded by remember { mutableStateOf(false) }
+    var laborMenuExpanded by remember { mutableStateOf(false) }
+
+    val selectedParkLabel = remember(selectedParkId, kcnOptions, cardModels) {
+        val cleanId = selectedParkId?.trim().orEmpty()
+        if (cleanId.isEmpty()) {
+            "KCN: Tất cả"
+        } else {
+            val name = kcnOptions.firstOrNull { it.industrialParkId.equals(cleanId, ignoreCase = true) }?.displayName
+                ?: cardModels.firstOrNull { it.industrialParkId.equals(cleanId, ignoreCase = true) }?.industrialParkName
+                ?: cleanId
+            "KCN: $name"
+        }
+    }
+    val selectedLaborLabel = remember(selectedLaborTypeKey, laborTypeOptions) {
+        val cleanKey = selectedLaborTypeKey?.trim().orEmpty()
+        if (cleanKey.isEmpty()) {
+            "Hình thức: Tất cả"
+        } else {
+            val name = laborTypeOptions.firstOrNull { it.laborTypeKey.equals(cleanKey, ignoreCase = true) }?.displayName
+                ?: cleanKey
+            "Hình thức: $name"
+        }
     }
 
     val onRefresh: () -> Unit = {
@@ -116,17 +175,13 @@ fun RecruitmentPostsScreen(
             color = SemanticColors.SurfaceLight,
             modifier = Modifier.fillMaxWidth()
         ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 10.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
+            Column(modifier = Modifier.fillMaxWidth()) {
                 Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 10.dp),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    modifier = Modifier.weight(1f)
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     Surface(
                         shape = RoundedCornerShape(10.dp),
@@ -148,34 +203,205 @@ fun RecruitmentPostsScreen(
                         color = SemanticColors.TextPrimary
                     )
                     if (cardModels.isNotEmpty()) {
+                        val badgeText = if (hasActiveFilter) {
+                            "${filteredCards.size}/${cardModels.size}"
+                        } else {
+                            "${cardModels.size}${if (hasMore) "+" else ""}"
+                        }
                         HrpStatusBadge(
-                            text = "${cardModels.size}${if (hasMore) "+" else ""}",
+                            text = badgeText,
                             containerColor = SemanticColors.InfoBg,
                             contentColor = SemanticColors.InfoText
                         )
                     }
                 }
-                OutlinedButton(
-                    onClick = onRefresh,
-                    enabled = !loading && !loadingMore,
-                    shape = RoundedCornerShape(HrpDesignTokens.RadiusXS),
-                    border = BorderStroke(1.dp, SemanticColors.SurfaceBorder),
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-                    modifier = Modifier
-                        .height(36.dp)
-                        .testTag("recruitment_posts_refresh_button")
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Refresh,
-                        contentDescription = null,
-                        modifier = Modifier.size(16.dp)
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(
-                        text = "Làm mới",
-                        style = MaterialTheme.typography.labelMedium,
-                        fontWeight = FontWeight.SemiBold
-                    )
+
+                if (cardModels.isNotEmpty() || hasActiveFilter) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(start = 16.dp, end = 16.dp, bottom = 10.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(modifier = Modifier.weight(1f)) {
+                            RecruitmentFilterDropdownChip(
+                                label = selectedParkLabel,
+                                selected = !selectedParkId.isNullOrBlank(),
+                                onClick = {
+                                    HrpHaptics.tick(haptic)
+                                    kcnMenuExpanded = true
+                                },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("recruitment_filter_kcn")
+                            )
+                            DropdownMenu(
+                                expanded = kcnMenuExpanded,
+                                onDismissRequest = { kcnMenuExpanded = false }
+                            ) {
+                                DropdownMenuItem(
+                                    text = {
+                                        Text(
+                                            text = "Tất cả KCN",
+                                            fontWeight = if (selectedParkId.isNullOrBlank()) FontWeight.Bold else FontWeight.Normal
+                                        )
+                                    },
+                                    trailingIcon = if (selectedParkId.isNullOrBlank()) {
+                                        {
+                                            Icon(
+                                                imageVector = Icons.Default.Check,
+                                                contentDescription = null,
+                                                tint = MaterialTheme.colorScheme.primary,
+                                                modifier = Modifier.size(16.dp)
+                                            )
+                                        }
+                                    } else null,
+                                    onClick = {
+                                        HrpHaptics.tick(haptic)
+                                        kcnMenuExpanded = false
+                                        viewModel.setRecruitmentIndustrialParkFilter(null)
+                                    },
+                                    modifier = Modifier.testTag("recruitment_filter_kcn_all")
+                                )
+                                kcnOptions.forEach { park ->
+                                    val isSelected = selectedParkId != null &&
+                                        park.industrialParkId.equals(selectedParkId, ignoreCase = true)
+                                    DropdownMenuItem(
+                                        text = {
+                                            Text(
+                                                text = park.displayName,
+                                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
+                                            )
+                                        },
+                                        trailingIcon = if (isSelected) {
+                                            {
+                                                Icon(
+                                                    imageVector = Icons.Default.Check,
+                                                    contentDescription = null,
+                                                    tint = MaterialTheme.colorScheme.primary,
+                                                    modifier = Modifier.size(16.dp)
+                                                )
+                                            }
+                                        } else null,
+                                        onClick = {
+                                            HrpHaptics.tick(haptic)
+                                            kcnMenuExpanded = false
+                                            viewModel.setRecruitmentIndustrialParkFilter(park.industrialParkId)
+                                        },
+                                        modifier = Modifier.testTag("recruitment_filter_kcn_option_${park.industrialParkId}")
+                                    )
+                                }
+                            }
+                        }
+
+                        Box(modifier = Modifier.weight(1f)) {
+                            RecruitmentFilterDropdownChip(
+                                label = selectedLaborLabel,
+                                selected = !selectedLaborTypeKey.isNullOrBlank(),
+                                onClick = {
+                                    HrpHaptics.tick(haptic)
+                                    laborMenuExpanded = true
+                                },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("recruitment_filter_labor_type")
+                            )
+                            DropdownMenu(
+                                expanded = laborMenuExpanded,
+                                onDismissRequest = { laborMenuExpanded = false }
+                            ) {
+                                DropdownMenuItem(
+                                    text = {
+                                        Text(
+                                            text = "Tất cả hình thức",
+                                            fontWeight = if (selectedLaborTypeKey.isNullOrBlank()) FontWeight.Bold else FontWeight.Normal
+                                        )
+                                    },
+                                    trailingIcon = if (selectedLaborTypeKey.isNullOrBlank()) {
+                                        {
+                                            Icon(
+                                                imageVector = Icons.Default.Check,
+                                                contentDescription = null,
+                                                tint = MaterialTheme.colorScheme.primary,
+                                                modifier = Modifier.size(16.dp)
+                                            )
+                                        }
+                                    } else null,
+                                    onClick = {
+                                        HrpHaptics.tick(haptic)
+                                        laborMenuExpanded = false
+                                        viewModel.setRecruitmentLaborTypeFilter(null)
+                                    },
+                                    modifier = Modifier.testTag("recruitment_filter_labor_type_all")
+                                )
+                                laborTypeOptions.forEach { labor ->
+                                    val isSelected = selectedLaborTypeKey != null &&
+                                        labor.laborTypeKey.equals(selectedLaborTypeKey, ignoreCase = true)
+                                    DropdownMenuItem(
+                                        text = {
+                                            Text(
+                                                text = labor.displayName,
+                                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
+                                            )
+                                        },
+                                        trailingIcon = if (isSelected) {
+                                            {
+                                                Icon(
+                                                    imageVector = Icons.Default.Check,
+                                                    contentDescription = null,
+                                                    tint = MaterialTheme.colorScheme.primary,
+                                                    modifier = Modifier.size(16.dp)
+                                                )
+                                            }
+                                        } else null,
+                                        onClick = {
+                                            HrpHaptics.tick(haptic)
+                                            laborMenuExpanded = false
+                                            viewModel.setRecruitmentLaborTypeFilter(labor.laborTypeKey)
+                                        },
+                                        modifier = Modifier.testTag("recruitment_filter_labor_type_option_${labor.laborTypeKey}")
+                                    )
+                                }
+                            }
+                        }
+
+                        if (hasActiveFilter) {
+                            Surface(
+                                shape = RoundedCornerShape(50),
+                                color = SemanticColors.SurfaceSubtle,
+                                border = BorderStroke(1.dp, SemanticColors.SurfaceBorder),
+                                modifier = Modifier
+                                    .height(34.dp)
+                                    .clip(RoundedCornerShape(50))
+                                    .clickable {
+                                        HrpHaptics.tick(haptic)
+                                        viewModel.clearRecruitmentPostFilters()
+                                    }
+                                    .testTag("recruitment_filter_clear")
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Close,
+                                        contentDescription = "Xóa lọc",
+                                        tint = SemanticColors.TextSecondary,
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                    Text(
+                                        text = "Xóa lọc",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = SemanticColors.TextSecondary,
+                                        maxLines = 1
+                                    )
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -227,13 +453,51 @@ fun RecruitmentPostsScreen(
                 )
             }
             cardModels.isEmpty() -> {
-                RecruitmentPostStatusBox(
-                    title = "Chưa có tin tuyển dụng",
-                    message = "Hiện chưa có tin tuyển dụng nào đang hiệu lực.",
-                    actionLabel = "Làm mới",
-                    onAction = onRefresh,
-                    testTag = "recruitment_posts_empty_box"
-                )
+                PullToRefreshBox(
+                    isRefreshing = loading,
+                    onRefresh = onRefresh,
+                    modifier = Modifier.fillMaxSize()
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .verticalScroll(rememberScrollState()),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        RecruitmentPostStatusBox(
+                            title = "Chưa có tin tuyển dụng",
+                            message = "Hiện chưa có tin tuyển dụng nào đang hiệu lực.",
+                            actionLabel = "Làm mới",
+                            onAction = onRefresh,
+                            testTag = "recruitment_posts_empty_box"
+                        )
+                    }
+                }
+            }
+            filteredCards.isEmpty() -> {
+                PullToRefreshBox(
+                    isRefreshing = loading || loadingMore,
+                    onRefresh = onRefresh,
+                    modifier = Modifier.fillMaxSize()
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .verticalScroll(rememberScrollState()),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        RecruitmentPostStatusBox(
+                            title = "Không có tin tuyển dụng phù hợp",
+                            message = "Không tìm thấy tin tuyển dụng nào khớp với bộ lọc đã chọn.",
+                            actionLabel = "Xóa bộ lọc",
+                            onAction = {
+                                HrpHaptics.tick(haptic)
+                                viewModel.clearRecruitmentPostFilters()
+                            },
+                            testTag = "recruitment_posts_filtered_empty_box"
+                        )
+                    }
+                }
             }
             else -> {
                 PullToRefreshBox(
@@ -289,8 +553,9 @@ fun RecruitmentPostsScreen(
                             }
                         }
 
-                        items(cardModels, key = { it.briefId }) { card ->
+                        itemsIndexed(filteredCards, key = { _, it -> it.briefId }) { idx, card ->
                             RecruitmentPostSummaryCard(
+                                index = idx + 1,
                                 card = card,
                                 onOpenDetail = { viewModel.openRecruitmentPostDetail(card.briefId) }
                             )
@@ -395,9 +660,72 @@ private fun RecruitmentPostStatusBox(
     }
 }
 
+@Composable
+private fun RecruitmentFilterDropdownChip(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        shape = RoundedCornerShape(50),
+        color = if (selected) {
+            MaterialTheme.colorScheme.primaryContainer
+        } else {
+            SemanticColors.SurfaceLight
+        },
+        border = BorderStroke(
+            width = 1.dp,
+            color = if (selected) {
+                MaterialTheme.colorScheme.primary.copy(alpha = 0.45f)
+            } else {
+                SemanticColors.SurfaceBorder
+            }
+        ),
+        modifier = modifier
+            .height(34.dp)
+            .clip(RoundedCornerShape(50))
+            .clickable(onClick = onClick)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                color = if (selected) {
+                    MaterialTheme.colorScheme.primary
+                } else {
+                    SemanticColors.TextSecondary
+                },
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f)
+            )
+            Spacer(modifier = Modifier.width(4.dp))
+            Icon(
+                imageVector = Icons.Default.ArrowDropDown,
+                contentDescription = null,
+                tint = if (selected) {
+                    MaterialTheme.colorScheme.primary
+                } else {
+                    SemanticColors.TextSecondary
+                },
+                modifier = Modifier.size(18.dp)
+            )
+        }
+    }
+}
+
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun RecruitmentPostSummaryCard(
+    index: Int,
     card: RecruitmentPostCardViewModel,
     onOpenDetail: () -> Unit
 ) {
@@ -432,14 +760,27 @@ private fun RecruitmentPostSummaryCard(
             .padding(14.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        // Tier 1: Full-width Project Name
-        Text(
-            text = card.projectName,
-            style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.Bold,
-            color = MaterialTheme.colorScheme.primary,
-            modifier = Modifier.fillMaxWidth()
-        )
+        // Tier 1: Numbered Project Name
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.Top,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Text(
+                text = "$index.",
+                style = MaterialTheme.typography.titleMedium.tabularNums(),
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.testTag("recruitment_post_index_${card.briefId}")
+            )
+            Text(
+                text = card.projectName,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.weight(1f)
+            )
+        }
 
         // Tier 2: Highlighted Salary & Income Range Banner
         Surface(

@@ -868,7 +868,8 @@ object WorkReportsContract {
 class WorkReportsAndReportingService(
     private val httpClient: BackendHttpClient,
     private val dao: MiniBiDao,
-    private val idempotencyStore: IntentIdempotencyStore = IntentIdempotencyStore()
+    private val idempotencyStore: IntentIdempotencyStore = IntentIdempotencyStore(),
+    var onResolvedAssigneeDisplayName: (suspend (String, String) -> Unit)? = null
 ) {
 
     // =========================================================================
@@ -898,6 +899,7 @@ class WorkReportsAndReportingService(
                 dao.getCachedWorkReportsSnapshot().associateBy { it.obligationId }
             }.getOrDefault(emptyMap())
 
+            var discoveredAssigneePair: Pair<String, String>? = null
             val parsed = buildList {
                 for (i in 0 until dataArr.length()) {
                     val obj = dataArr.optJSONObject(i) ?: throw BackendApiException(
@@ -906,9 +908,21 @@ class WorkReportsAndReportingService(
                         backendCode = "WORK_REPORT_ITEM_INVALID",
                         message = " Phần tử nghĩa vụ báo cáo không đúng định dạng."
                     )
+                    if (discoveredAssigneePair == null) {
+                        val aId = obj.optString("assignee_app_user_id", "").trim()
+                        val aName = (obj.optNullableText("assignee_display_name")
+                            ?: obj.optNullableText("assignee_label"))?.trim().orEmpty()
+                        if (aId.isNotEmpty() && aName.isNotEmpty() && !ActorContractParser.looksLikeLoginHandle(aName)) {
+                            discoveredAssigneePair = aId to aName
+                        }
+                    }
                     val id = obj.optString("obligation_id", "")
                     add(WorkReportsContract.parseObligationItem(obj, existingById[id]))
                 }
+            }
+
+            discoveredAssigneePair?.let { (aId, aName) ->
+                runCatching { onResolvedAssigneeDisplayName?.invoke(aId, aName) }
             }
 
             if (status == null) {
@@ -931,6 +945,16 @@ class WorkReportsAndReportingService(
             pathWithQuery = "/api/work-reports/obligations/$validId",
             requireOkTrue = true
         )
+        runCatching {
+            val dataObj = json.optJSONObject("data")
+            val obObj = dataObj?.optJSONObject("obligation")
+            val aId = obObj?.optString("assignee_app_user_id", "")?.trim().orEmpty()
+            val aName = (obObj?.optNullableText("assignee_display_name")
+                ?: dataObj?.optNullableText("assignee_display_name"))?.trim().orEmpty()
+            if (aId.isNotEmpty() && aName.isNotEmpty() && !ActorContractParser.looksLikeLoginHandle(aName)) {
+                onResolvedAssigneeDisplayName?.invoke(aId, aName)
+            }
+        }
         val entity = WorkReportsContract.parseObligationDetailEnvelope(json, fallback)
         dao.upsertWorkReportCache(entity)
         entity

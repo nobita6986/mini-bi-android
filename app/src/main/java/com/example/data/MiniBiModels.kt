@@ -893,6 +893,9 @@ interface MiniBiDao {
     @Query("SELECT * FROM attendance_outbox WHERE appUserId = :appUserId ORDER BY epochMillis DESC")
     fun observeAttendanceForUser(appUserId: String): Flow<List<AttendanceEntity>>
 
+    @Query("SELECT * FROM attendance_outbox WHERE appUserId = :appUserId ORDER BY epochMillis DESC")
+    suspend fun getAttendanceForUser(appUserId: String): List<AttendanceEntity>
+
     @Query("SELECT * FROM attendance_outbox ORDER BY epochMillis DESC")
     fun observeAllAttendance(): Flow<List<AttendanceEntity>>
 

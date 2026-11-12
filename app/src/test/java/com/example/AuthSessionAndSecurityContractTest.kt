@@ -640,4 +640,54 @@ class AuthSessionAndSecurityContractTest {
             runCatching { sharedPrefsFile.delete() }
         }
     }
+
+    @Test
+    fun `looksLikeLoginHandle and updateResolvedActorDisplayName upgrade handle display_name without extra HTTP calls`() = runBlocking {
+        assertTrue(ActorContractParser.looksLikeLoginHandle("sampt.td"))
+        assertTrue(ActorContractParser.looksLikeLoginHandle("sampt.td", "sampt.td@hrpartner.vn"))
+        assertTrue(ActorContractParser.looksLikeLoginHandle("sampt.td@hrpartner.vn"))
+        assertFalse(ActorContractParser.looksLikeLoginHandle("Phạm Thái Sâm", "sampt.td@hrpartner.vn"))
+        assertFalse(ActorContractParser.looksLikeLoginHandle("Nguyễn Văn An"))
+
+        val userId = "aaaa1111-2222-4333-8444-555555555555"
+        val repo = createRepository()
+        val handleActorJson = """
+            {
+              "ok": true,
+              "actor": {
+                "app_user_id": "$userId",
+                "display_name": "sampt.td",
+                "capabilities": ["entry_read"],
+                "scopes": [{"kind": "own", "reference": "self", "valid_from": "2026-01-01", "valid_to": null}],
+                "self_recruiter_suggestion": null,
+                "allowed_worker_tabs": ["recruited"]
+              }
+            }
+        """.trimIndent()
+
+        // 1. Login initially receives "sampt.td"
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(200)
+                .setHeader("Set-Cookie", "mini_bi_session=tok-sam; Path=/; HttpOnly")
+                .setBody(handleActorJson)
+        )
+        val loginRes = repo.login("sampt.td", "pass123", rememberAccount = true)
+        assertTrue(loginRes.isSuccess)
+        assertEquals("sampt.td", repo.currentActorFlow.value?.displayName)
+
+        // 2. Resolving full name updates currentActorFlow, savedAccountsFlow, and persists in prefsDataStore
+        repo.updateResolvedActorDisplayName(userId, "Phạm Thái Sâm")
+        assertEquals("Phạm Thái Sâm", repo.currentActorFlow.value?.displayName)
+        assertEquals("Phạm Thái Sâm", repo.savedAccountsFlow.value.firstOrNull()?.displayName)
+
+        // 3. Subsequent bootstrapSession upgrades "sampt.td" -> "Phạm Thái Sâm" from local cache with only 1 HTTP request
+        val countBeforeBootstrap = server.requestCount
+        server.enqueue(MockResponse().setResponseCode(200).setBody(handleActorJson))
+        val bootRes = repo.bootstrapSession(scheduleOutboxWork = false)
+        assertTrue(bootRes.isSuccess)
+        assertEquals("Phạm Thái Sâm", bootRes.getOrThrow().displayName)
+        assertEquals("Phạm Thái Sâm", repo.currentActorFlow.value?.displayName)
+        assertEquals(countBeforeBootstrap + 1, server.requestCount)
+    }
 }

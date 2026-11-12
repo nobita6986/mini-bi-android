@@ -66,8 +66,32 @@ object ActorContractParser {
         "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
         RegexOption.IGNORE_CASE
     )
+    private val LOGIN_HANDLE_ASCII_REGEX = Regex("^[A-Za-z0-9._-]+$")
     private val VALID_SCOPE_KINDS = setOf("own", "team", "all")
     val ALLOWED_WORKER_TABS = setOf("managed", "recruited", "team", "uploader", "all")
+
+    /**
+     * Returns true when [text] looks like a login handle / account code (e.g., "sampt.td" or "sampt.td@hrpartner.vn")
+     * rather than a real Vietnamese full name (e.g., "Phạm Thái Sâm").
+     */
+    fun looksLikeLoginHandle(text: String, loginIdentifier: String? = null): Boolean {
+        val trimmed = text.trim()
+        if (trimmed.isEmpty()) return true
+        val cleanLogin = loginIdentifier?.trim()?.takeIf { it.isNotEmpty() }
+        if (cleanLogin != null) {
+            val localPart = cleanLogin.substringBefore('@').trim()
+            if (trimmed.equals(cleanLogin, ignoreCase = true) ||
+                (localPart.isNotEmpty() && trimmed.equals(localPart, ignoreCase = true))
+            ) {
+                return true
+            }
+        }
+        if (trimmed.contains('@')) return true
+        if (!trimmed.any { it.isWhitespace() } && LOGIN_HANDLE_ASCII_REGEX.matches(trimmed)) {
+            return true
+        }
+        return false
+    }
 
     /**
      * Strict fail-closed parser for `allowed_worker_tabs`.
@@ -391,6 +415,9 @@ class MiniBiRepository(
         private val KEY_DEBUG_SERVER_URL = stringPreferencesKey("debug_server_url")
         private val KEY_THEME_ID = stringPreferencesKey("theme_id")
 
+        internal fun resolvedFullNamePrefKey(appUserId: String): Preferences.Key<String> =
+            stringPreferencesKey("resolved_full_name_${appUserId.trim().lowercase(Locale.ROOT)}")
+
         @Volatile
         private var sharedInstance: MiniBiRepository? = null
 
@@ -454,7 +481,10 @@ class MiniBiRepository(
 
     val workReportsAndReportingService = WorkReportsAndReportingService(
         httpClient = httpClient,
-        dao = dao
+        dao = dao,
+        onResolvedAssigneeDisplayName = { userId, fullName ->
+            updateResolvedActorDisplayName(userId, fullName)
+        }
     )
 
     val leaveService = LeaveService(
@@ -485,7 +515,10 @@ class MiniBiRepository(
         context = context,
         httpClient = httpClient,
         dao = dao,
-        timeAnchorManager = attendanceTimeAnchorManager
+        timeAnchorManager = attendanceTimeAnchorManager,
+        onResolvedEmployeeDisplayName = { userId, fullName ->
+            updateResolvedActorDisplayName(userId, fullName)
+        }
     )
 
     val imageLoader: ImageLoader by lazy {
@@ -633,6 +666,72 @@ class MiniBiRepository(
         result
     }
 
+    private suspend fun upgradeActorDisplayNameFromLocalCache(actor: AppActor): AppActor {
+        if (!ActorContractParser.looksLikeLoginHandle(actor.displayName, actor.displayIdentifier)) {
+            return actor
+        }
+        val prefKey = resolvedFullNamePrefKey(actor.appUserId)
+        val cachedInPrefs = runCatching { safePrefsFlow.first()[prefKey]?.trim() }.getOrNull()
+        if (!cachedInPrefs.isNullOrEmpty() &&
+            !ActorContractParser.looksLikeLoginHandle(cachedInPrefs, actor.displayIdentifier)
+        ) {
+            return actor.copy(displayName = cachedInPrefs)
+        }
+        val cachedFromAttendance = runCatching {
+            dao.getAttendanceForUser(actor.appUserId)
+                .map { it.userDisplayName.trim() }
+                .firstOrNull {
+                    it.isNotEmpty() && !ActorContractParser.looksLikeLoginHandle(it, actor.displayIdentifier)
+                }
+        }.getOrNull()
+        if (!cachedFromAttendance.isNullOrEmpty()) {
+            runCatching {
+                prefsDataStore.edit { prefs ->
+                    prefs[prefKey] = cachedFromAttendance
+                }
+            }
+            return actor.copy(displayName = cachedFromAttendance)
+        }
+        return actor
+    }
+
+    suspend fun updateResolvedActorDisplayName(appUserId: String, resolvedFullName: String) {
+        val cleanUserId = appUserId.trim()
+        val cleanName = resolvedFullName.trim()
+        if (cleanUserId.isEmpty() || cleanName.isEmpty()) return
+        val current = _activeActor.value
+        val loginHint = if (current != null && current.appUserId.equals(cleanUserId, ignoreCase = true)) {
+            current.displayIdentifier
+        } else {
+            null
+        }
+        if (ActorContractParser.looksLikeLoginHandle(cleanName, loginHint)) return
+
+        runCatching {
+            prefsDataStore.edit { prefs ->
+                prefs[resolvedFullNamePrefKey(cleanUserId)] = cleanName
+            }
+        }
+
+        if (current != null && current.appUserId.equals(cleanUserId, ignoreCase = true)) {
+            if (current.displayName != cleanName) {
+                _activeActor.value = current.copy(displayName = cleanName)
+            }
+            var credsUpdated = false
+            current.displayIdentifier?.let { idHint ->
+                if (savedCredentialsStore.updateDisplayName(idHint, cleanName)) {
+                    credsUpdated = true
+                }
+            }
+            if (savedCredentialsStore.updateDisplayName(current.displayName, cleanName)) {
+                credsUpdated = true
+            }
+            if (credsUpdated) {
+                _savedAccounts.value = savedCredentialsStore.loadAll()
+            }
+        }
+    }
+
     private suspend fun executeBootstrapSessionNetworkFetch(
         startEpoch: Long,
         shouldScheduleOutbox: java.util.concurrent.atomic.AtomicBoolean,
@@ -648,7 +747,8 @@ class MiniBiRepository(
             if (authSessionEpoch.get() != startEpoch) {
                 return buildSessionSupersededFailure()
             }
-            val actor = ActorContractParser.parseEnvelopeActor(json, displayHint)
+            val parsedActor = ActorContractParser.parseEnvelopeActor(json, displayHint)
+            val actor = upgradeActorDisplayNameFromLocalCache(parsedActor)
             if (authSessionEpoch.get() != startEpoch) {
                 return buildSessionSupersededFailure()
             }
@@ -728,7 +828,8 @@ class MiniBiRepository(
                 )
             }
             val displayId = formatDisplayIdentifier(trimmedIdentifier)
-            val actor = ActorContractParser.parseEnvelopeActor(json, displayId)
+            val parsedActor = ActorContractParser.parseEnvelopeActor(json, displayId)
+            val actor = upgradeActorDisplayNameFromLocalCache(parsedActor)
             prefsDataStore.edit { prefs ->
                 prefs[KEY_DISPLAY_IDENTIFIER] = displayId
             }

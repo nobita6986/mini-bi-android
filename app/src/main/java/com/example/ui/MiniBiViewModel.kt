@@ -706,6 +706,12 @@ class MiniBiViewModel internal constructor(
     private val _recruitmentPostDetailBriefId = MutableStateFlow<String?>(null)
     val recruitmentPostDetailBriefId: StateFlow<String?> = _recruitmentPostDetailBriefId.asStateFlow()
 
+    private val _selectedRecruitmentIndustrialParkId = MutableStateFlow<String?>(null)
+    val selectedRecruitmentIndustrialParkId: StateFlow<String?> = _selectedRecruitmentIndustrialParkId.asStateFlow()
+
+    private val _selectedRecruitmentLaborTypeKey = MutableStateFlow<String?>(null)
+    val selectedRecruitmentLaborTypeKey: StateFlow<String?> = _selectedRecruitmentLaborTypeKey.asStateFlow()
+
     private var recruitmentPostsFetchJob: Job? = null
     private var recruitmentPostsFetchToken: Long = 0L
     private var recruitmentPostDetailFetchJob: Job? = null
@@ -964,6 +970,7 @@ class MiniBiViewModel internal constructor(
                         destination = targetDestination,
                         forceTimeAnchor = false
                     )
+                    resolveActorFullNameIfHandle(resolvedActor, expectedGen)
                 } else {
                     _sessionBootstrapping.value = false
                 }
@@ -1166,6 +1173,7 @@ class MiniBiViewModel internal constructor(
                         destination = targetDestination,
                         forceTimeAnchor = true
                     )
+                    resolveActorFullNameIfHandle(resolvedActor, postResetGen)
                 }.onFailure { err ->
                     err.rethrowIfCancelled()
                     if (sessionGeneration == loginGen) {
@@ -1183,6 +1191,123 @@ class MiniBiViewModel internal constructor(
     fun removeSavedAccount(identifier: String) {
         viewModelScope.launch {
             repository.removeSavedAccount(identifier)
+        }
+    }
+
+    private fun tryExtractActorFullNameFromCatalogAndLeave(
+        actor: AppActor,
+        catalog: DirectEntryCatalog? = _catalog.value,
+        leaveSummary: LeaveMeSummaryProjection? = _myLeaveSummary.value
+    ): String? {
+        val leaveDisplayName = leaveSummary?.account?.displayName?.trim().orEmpty()
+        if (leaveDisplayName.isNotEmpty() &&
+            !ActorContractParser.looksLikeLoginHandle(leaveDisplayName, actor.displayIdentifier)
+        ) {
+            return leaveDisplayName
+        }
+
+        val recruiters = catalog?.recruiters.orEmpty()
+        if (recruiters.isNotEmpty()) {
+            val candidateRecruiterIds = listOfNotNull(
+                actor.selfRecruiterSuggestion?.trim(),
+                leaveSummary?.account?.recruiterId?.trim()
+            ).filter { it.isNotEmpty() }
+            val candidatePersonnelCode = leaveSummary?.account?.personnelCode?.trim()?.takeIf { it.isNotEmpty() }
+            val matchedRecruiter = recruiters.firstOrNull { r ->
+                (candidateRecruiterIds.isNotEmpty() &&
+                    candidateRecruiterIds.any { id -> id.equals(r.recruiterId, ignoreCase = true) }) ||
+                    (candidatePersonnelCode != null &&
+                        r.personnelCode.isNotBlank() &&
+                        r.personnelCode.equals(candidatePersonnelCode, ignoreCase = true))
+            }
+            val recruiterName = matchedRecruiter?.displayName?.trim().orEmpty()
+            if (recruiterName.isNotEmpty() &&
+                !ActorContractParser.looksLikeLoginHandle(recruiterName, actor.displayIdentifier)
+            ) {
+                return recruiterName
+            }
+        }
+        return null
+    }
+
+    private fun resolveActorFullNameIfHandle(actor: AppActor, expectedGen: Long) {
+        if (!ActorContractParser.looksLikeLoginHandle(actor.displayName, actor.displayIdentifier)) {
+            return
+        }
+        launchDeduplicatedSessionJob(
+            key = "resolve_actor_full_name:${actor.appUserId}",
+            actorOverride = actor
+        ) { targetActor, gen ->
+            if (gen != expectedGen || !isSessionValid(gen, targetActor.appUserId)) return@launchDeduplicatedSessionJob
+            val current = currentActor.value ?: targetActor
+            if (!ActorContractParser.looksLikeLoginHandle(current.displayName, current.displayIdentifier)) {
+                return@launchDeduplicatedSessionJob
+            }
+
+            suspend fun applyResolvedName(name: String): Boolean {
+                val clean = name.trim()
+                if (clean.isEmpty() || ActorContractParser.looksLikeLoginHandle(clean, targetActor.displayIdentifier)) {
+                    return false
+                }
+                if (!isSessionValid(gen, targetActor.appUserId)) return false
+                val prevBanner = _statusBannerMessage.value
+                repository.updateResolvedActorDisplayName(targetActor.appUserId, clean)
+                if (prevBanner == "Xin chào ${targetActor.displayName}" || prevBanner == "Xin chào") {
+                    _statusBannerMessage.value = "Xin chào $clean"
+                }
+                return true
+            }
+
+            // Step 1: /api/leave/me
+            var leaveSummary: LeaveMeSummaryProjection? = _myLeaveSummary.value
+            if (leaveSummary == null) {
+                leaveSummary = runCatching {
+                    repository.leaveService.fetchMyLeaveSummary(leaveYear = _leaveYear.value)
+                }.onFailure { it.rethrowIfCancelled() }.getOrNull()
+                if (leaveSummary != null && isSessionValid(gen, targetActor.appUserId) && _myLeaveSummary.value == null) {
+                    _myLeaveSummary.value = leaveSummary
+                }
+            }
+            if (!isSessionValid(gen, targetActor.appUserId)) return@launchDeduplicatedSessionJob
+            tryExtractActorFullNameFromCatalogAndLeave(targetActor, _catalog.value, leaveSummary)?.let {
+                if (applyResolvedName(it)) return@launchDeduplicatedSessionJob
+            }
+
+            // Step 2: /api/work-reports/obligations
+            runCatching {
+                repository.workReportsAndReportingService.fetchMyObligations()
+            }.onFailure { it.rethrowIfCancelled() }
+            if (!isSessionValid(gen, targetActor.appUserId)) return@launchDeduplicatedSessionJob
+            val afterObligations = currentActor.value
+            if (afterObligations != null &&
+                afterObligations.appUserId.equals(targetActor.appUserId, ignoreCase = true) &&
+                !ActorContractParser.looksLikeLoginHandle(afterObligations.displayName, afterObligations.displayIdentifier)
+            ) {
+                val prevBanner = _statusBannerMessage.value
+                if (prevBanner == "Xin chào ${targetActor.displayName}" || prevBanner == "Xin chào") {
+                    _statusBannerMessage.value = "Xin chào ${afterObligations.displayName}"
+                }
+                return@launchDeduplicatedSessionJob
+            }
+
+            // Step 3: /api/direct-entry/catalog
+            val canTryCatalog = !targetActor.selfRecruiterSuggestion.isNullOrBlank() ||
+                !leaveSummary?.account?.recruiterId.isNullOrBlank() ||
+                !leaveSummary?.account?.personnelCode.isNullOrBlank() ||
+                targetActor.canLoadDirectEntryCatalog()
+            if (canTryCatalog) {
+                val loadedCatalog = _catalog.value ?: runCatching {
+                    repository.directEntryService.fetchCatalog()
+                }.onFailure { it.rethrowIfCancelled() }.getOrNull()
+                if (loadedCatalog != null && isSessionValid(gen, targetActor.appUserId)) {
+                    if (_catalog.value == null) {
+                        _catalog.value = loadedCatalog
+                    }
+                    tryExtractActorFullNameFromCatalogAndLeave(targetActor, loadedCatalog, leaveSummary)?.let {
+                        if (applyResolvedName(it)) return@launchDeduplicatedSessionJob
+                    }
+                }
+            }
         }
     }
 
@@ -2519,6 +2644,14 @@ class MiniBiViewModel internal constructor(
                 }
                 if (!isSessionValid(gen, targetActor.appUserId)) return@launchDeduplicatedSessionJob
                 _reviewQueue.value = loadedReviews
+                loadedReviews.firstOrNull {
+                    it.assigneeUserId.equals(targetActor.appUserId, ignoreCase = true) &&
+                        it.assigneeDisplayName.isNotBlank() &&
+                        it.assigneeDisplayName != "Nhân sự" &&
+                        !ActorContractParser.looksLikeLoginHandle(it.assigneeDisplayName, targetActor.displayIdentifier)
+                }?.let { matchedReview ->
+                    repository.updateResolvedActorDisplayName(targetActor.appUserId, matchedReview.assigneeDisplayName)
+                }
 
                 val canAnalytics = targetActor.hasCapability("report_analytics_view") &&
                     (targetActor.hasScopeKind("team") || targetActor.hasScopeKind("all"))
@@ -2855,6 +2988,9 @@ class MiniBiViewModel internal constructor(
                 val loaded = repository.directEntryService.fetchCatalog(effectiveDateIso)
                 if (isSessionValid(gen, targetActor.appUserId)) {
                     _catalog.value = loaded
+                    tryExtractActorFullNameFromCatalogAndLeave(targetActor, loaded, _myLeaveSummary.value)?.let { fullName ->
+                        repository.updateResolvedActorDisplayName(targetActor.appUserId, fullName)
+                    }
                 }
             } catch (e: Exception) {
                 e.rethrowIfCancelled()
@@ -4964,6 +5100,9 @@ class MiniBiViewModel internal constructor(
                 val summary = repository.leaveService.fetchMyLeaveSummary(leaveYear = year)
                 if (!isSessionValid(gen, targetActor.appUserId)) return@launchDeduplicatedSessionJob
                 _myLeaveSummary.value = summary
+                tryExtractActorFullNameFromCatalogAndLeave(targetActor, _catalog.value, summary)?.let { fullName ->
+                    repository.updateResolvedActorDisplayName(targetActor.appUserId, fullName)
+                }
                 _leaveYear.value = summary.leaveYear
                 _myLeaveError.value = null
                 _myLeaveErrorCode.value = null
@@ -6815,6 +6954,46 @@ class MiniBiViewModel internal constructor(
         _selectedRecruitmentPostDetail.value = null
         _recruitmentPostDetailError.value = null
         _recruitmentPostDetailBriefId.value = null
+        _selectedRecruitmentIndustrialParkId.value = null
+        _selectedRecruitmentLaborTypeKey.value = null
+    }
+
+    fun setRecruitmentIndustrialParkFilter(parkId: String?) {
+        val normalized = parkId?.trim()?.takeIf { it.isNotEmpty() }
+        if (_selectedRecruitmentIndustrialParkId.value == normalized) return
+        _selectedRecruitmentIndustrialParkId.value = normalized
+        if (normalized != null || _selectedRecruitmentLaborTypeKey.value != null) {
+            ensureAllRecruitmentPostsLoadedForFiltering()
+        }
+    }
+
+    fun setRecruitmentLaborTypeFilter(laborTypeKey: String?) {
+        val normalized = laborTypeKey?.trim()?.takeIf { it.isNotEmpty() }
+        if (_selectedRecruitmentLaborTypeKey.value == normalized) return
+        _selectedRecruitmentLaborTypeKey.value = normalized
+        if (normalized != null || _selectedRecruitmentIndustrialParkId.value != null) {
+            ensureAllRecruitmentPostsLoadedForFiltering()
+        }
+    }
+
+    fun clearRecruitmentPostFilters() {
+        _selectedRecruitmentIndustrialParkId.value = null
+        _selectedRecruitmentLaborTypeKey.value = null
+    }
+
+    fun ensureAllRecruitmentPostsLoadedForFiltering(actorOverride: AppActor? = null) {
+        if (_recruitmentPostsAccessDenied.value || _recruitmentPostsFeatureUnavailable.value) return
+        if (_recruitmentPosts.value.isEmpty() && !_recruitmentPostsLoading.value) {
+            loadRecruitmentPosts(reset = true, actorOverride = actorOverride)
+            return
+        }
+        if (_recruitmentPostsHasMore.value &&
+            _recruitmentPostsError.value == null &&
+            !_recruitmentPostsLoading.value &&
+            !_recruitmentPostsLoadingMore.value
+        ) {
+            loadMoreRecruitmentPosts(actorOverride = actorOverride)
+        }
     }
 
     fun loadRecruitmentPosts(
@@ -6922,6 +7101,38 @@ class MiniBiViewModel internal constructor(
                 _recruitmentPostsErrorCode.value = null
                 _recruitmentPostsAccessDenied.value = false
                 _recruitmentPostsFeatureUnavailable.value = false
+
+                var pagesLoadedInBatch = 1
+                while (
+                    pagesLoadedInBatch < 20 &&
+                    (_selectedRecruitmentIndustrialParkId.value != null ||
+                        _selectedRecruitmentLaborTypeKey.value != null) &&
+                    _recruitmentPostsHasMore.value &&
+                    !_recruitmentPostsNextCursor.value.isNullOrBlank() &&
+                    !_recruitmentPostsSnapshotToken.value.isNullOrBlank() &&
+                    token == recruitmentPostsFetchToken &&
+                    isSessionValid(expectedGen, expectedUserId)
+                ) {
+                    _recruitmentPostsLoading.value = false
+                    _recruitmentPostsLoadingMore.value = true
+                    val nextCur = _recruitmentPostsNextCursor.value?.trim() ?: break
+                    val snapTok = _recruitmentPostsSnapshotToken.value?.trim() ?: break
+                    val nextRes = repository.recruitmentPostService.listRecruitmentPosts(
+                        pageSize = RecruitmentPostContract.DEFAULT_PAGE_SIZE,
+                        cursor = nextCur,
+                        snapshotToken = snapTok
+                    )
+                    if (token != recruitmentPostsFetchToken || !isSessionValid(expectedGen, expectedUserId)) {
+                        return@launch
+                    }
+                    _recruitmentPosts.value = RecruitmentPostContract.mergeUniqueItems(
+                        current = _recruitmentPosts.value,
+                        incoming = nextRes.items
+                    )
+                    _recruitmentPostsHasMore.value = nextRes.hasMore
+                    _recruitmentPostsNextCursor.value = nextRes.nextCursor
+                    pagesLoadedInBatch += 1
+                }
             } catch (e: BackendApiException) {
                 if (token != recruitmentPostsFetchToken) {
                     return@launch

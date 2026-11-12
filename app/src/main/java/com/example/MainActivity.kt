@@ -662,20 +662,13 @@ fun MiniBiAppRoot(viewModel: MiniBiViewModel) {
                                         )
                                     }
                                 }
-                                val topBarSubtitleLabel = when {
-                                    currentDestination == MainDestination.WORKERS && salaryAdvanceDialogOpen ->
-                                        "Ứng lương"
-                                    currentDestination == MainDestination.RECRUITMENT ->
-                                        "Tin tuyển dụng"
-                                    else ->
-                                        currentDestination.label
-                                }
                                 Text(
-                                    text = "$topBarSubtitleLabel · ${authenticatedActor.displayName}",
+                                    text = authenticatedActor.displayName,
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.testTag("topbar_user_fullname")
                                 )
                             }
 
