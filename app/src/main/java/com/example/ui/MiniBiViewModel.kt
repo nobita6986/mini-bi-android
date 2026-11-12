@@ -48,6 +48,8 @@ import com.example.data.PendingEntryAttachmentTask
 import com.example.data.RecruitmentPostContract
 import com.example.data.RecruitmentPostIndustrialParkSummary
 import com.example.data.RecruitmentPostItem
+import com.example.data.RecruitmentPostLaborTypeSummary
+import com.example.data.RecruitmentPostListResult
 import com.example.data.CreateSalaryAdvanceValidationResult
 import com.example.data.SalaryAdvanceActorContext
 import com.example.data.SalaryAdvanceContract
