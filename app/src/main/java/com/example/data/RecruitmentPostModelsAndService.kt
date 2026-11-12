@@ -16,7 +16,8 @@ data class RecruitmentPostIndustrialParkSummary(
     val industrialParkId: String,
     val industrialParkCode: String,
     val displayName: String,
-    val active: Boolean
+    val active: Boolean,
+    val jobCount: Int? = null
 )
 
 data class RecruitmentPostProvinceSummary(
@@ -27,7 +28,8 @@ data class RecruitmentPostProvinceSummary(
 
 data class RecruitmentPostLaborTypeSummary(
     val laborTypeKey: String,
-    val displayName: String
+    val displayName: String,
+    val jobCount: Int? = null
 )
 
 data class RecruitmentPostGeneralSection(
@@ -133,7 +135,9 @@ data class RecruitmentPostListResult(
     val hasMore: Boolean,
     val nextCursor: String?,
     val snapshotToken: String,
-    val industrialParks: List<RecruitmentPostIndustrialParkSummary> = emptyList()
+    val totalCount: Int? = null,
+    val industrialParks: List<RecruitmentPostIndustrialParkSummary> = emptyList(),
+    val laborTypes: List<RecruitmentPostLaborTypeSummary> = emptyList()
 )
 
 data class RecruitmentPostCardViewModel(
@@ -422,7 +426,23 @@ object RecruitmentPostContract {
         "has_more",
         "next_cursor",
         "snapshot_token",
-        "industrial_parks"
+        "total_count",
+        "industrial_parks",
+        "labor_types"
+    )
+
+    private val FACET_INDUSTRIAL_PARK_KEYS = setOf(
+        "industrial_park_id",
+        "industrial_park_code",
+        "display_name",
+        "active",
+        "job_count"
+    )
+
+    private val FACET_LABOR_TYPE_KEYS = setOf(
+        "labor_type_key",
+        "display_name",
+        "job_count"
     )
 
     private val DETAIL_DATA_KEYS = setOf("post")
@@ -442,15 +462,29 @@ object RecruitmentPostContract {
     fun buildListPath(
         pageSize: Int = DEFAULT_PAGE_SIZE,
         cursor: String? = null,
-        snapshotToken: String? = null
+        snapshotToken: String? = null,
+        industrialParkId: String? = null,
+        laborTypeKey: String? = null,
+        includeFacets: Boolean = false
     ): String {
         val safePageSize = pageSize.coerceIn(1, MAX_PAGE_SIZE)
         val cleanCursor = cursor?.trim().orEmpty()
         val cleanSnapshot = snapshotToken?.trim().orEmpty()
+        val cleanParkId = industrialParkId?.trim().orEmpty()
+        val cleanLaborKey = laborTypeKey?.trim().orEmpty()
         val builder = "https://placeholder.local/api/recruitment-posts"
             .toHttpUrlOrNull()!!
             .newBuilder()
-            .addQueryParameter("page_size", safePageSize.toString())
+        if (includeFacets) {
+            builder.addQueryParameter("include_facets", "true")
+        }
+        builder.addQueryParameter("page_size", safePageSize.toString())
+        if (cleanParkId.isNotEmpty()) {
+            builder.addQueryParameter("industrial_park_id", cleanParkId)
+        }
+        if (cleanLaborKey.isNotEmpty()) {
+            builder.addQueryParameter("labor_type_key", cleanLaborKey)
+        }
         if (cleanCursor.isNotEmpty() && cleanSnapshot.isNotEmpty()) {
             builder.addQueryParameter("snapshot_token", cleanSnapshot)
             builder.addQueryParameter("cursor", cleanCursor)
@@ -816,6 +850,12 @@ object RecruitmentPostContract {
             items.add(parsedItem)
         }
 
+        val totalCount = if (data.has("total_count")) {
+            requirePositiveInt(data, "total_count", 0, Int.MAX_VALUE)
+        } else {
+            null
+        }
+
         val industrialParks = if (data.has("industrial_parks") && !data.isNull("industrial_parks")) {
             val parksArr = data.optJSONArray("industrial_parks")
                 ?: throw contractInvalid("Trường industrial_parks phải là mảng.")
@@ -830,13 +870,30 @@ object RecruitmentPostContract {
             emptyList()
         }
 
+        val laborTypes = if (data.has("labor_types") && !data.isNull("labor_types")) {
+            val laborArr = data.optJSONArray("labor_types")
+                ?: throw contractInvalid("Trường labor_types phải là mảng.")
+            val list = ArrayList<RecruitmentPostLaborTypeSummary>(laborArr.length())
+            val seenLaborKeys = HashSet<String>()
+            for (i in 0 until laborArr.length()) {
+                val ltObj = laborArr.optJSONObject(i)
+                    ?: throw contractInvalid("Phần tử labor_types[$i] không phải object.")
+                list.add(parseLaborTypeFacetSummary(ltObj, seenLaborKeys))
+            }
+            list
+        } else {
+            emptyList()
+        }
+
         return RecruitmentPostListResult(
             items = items,
             pageSize = pageSize,
             hasMore = hasMore,
             nextCursor = nextCursor,
             snapshotToken = snapshotToken,
-            industrialParks = industrialParks
+            totalCount = totalCount,
+            industrialParks = industrialParks,
+            laborTypes = laborTypes
         )
     }
 
@@ -846,23 +903,61 @@ object RecruitmentPostContract {
     ): RecruitmentPostIndustrialParkSummary {
         if (strictExactKeys) {
             requireExactKeys(parkObj, INDUSTRIAL_PARK_KEYS, "industrial_park")
+        } else {
+            val actualKeys = HashSet<String>()
+            val iter = parkObj.keys()
+            while (iter.hasNext()) {
+                actualKeys.add(iter.next())
+            }
+            if (!actualKeys.containsAll(INDUSTRIAL_PARK_KEYS) || !FACET_INDUSTRIAL_PARK_KEYS.containsAll(actualKeys)) {
+                throw contractInvalid("Cấu trúc industrial_parks facet không khớp contract.")
+            }
         }
         val industrialParkCode = requireNonEmptyString(parkObj, "industrial_park_code")
         if (!LOCATION_CODE_PATTERN.matches(industrialParkCode)) {
             throw contractInvalid("industrial_park_code không hợp lệ.")
         }
-        val active = if (parkObj.has("active") && !parkObj.isNull("active")) {
-            requireBoolean(parkObj, "active")
-        } else if (!strictExactKeys) {
-            true
+        val active = requireBoolean(parkObj, "active")
+        val jobCount = if (!strictExactKeys && parkObj.has("job_count")) {
+            requirePositiveInt(parkObj, "job_count", 0, Int.MAX_VALUE)
         } else {
-            requireBoolean(parkObj, "active")
+            null
         }
         return RecruitmentPostIndustrialParkSummary(
             industrialParkId = requireUuid(parkObj, "industrial_park_id"),
             industrialParkCode = industrialParkCode,
             displayName = requireNonEmptyString(parkObj, "display_name"),
-            active = active
+            active = active,
+            jobCount = jobCount
+        )
+    }
+
+    private fun parseLaborTypeFacetSummary(
+        ltObj: JSONObject,
+        seenLaborKeys: MutableSet<String>
+    ): RecruitmentPostLaborTypeSummary {
+        val actualKeys = HashSet<String>()
+        val iter = ltObj.keys()
+        while (iter.hasNext()) {
+            actualKeys.add(iter.next())
+        }
+        if (!actualKeys.containsAll(LABOR_TYPE_KEYS) || !FACET_LABOR_TYPE_KEYS.containsAll(actualKeys)) {
+            throw contractInvalid("Cấu trúc labor_types facet không khớp contract.")
+        }
+        val key = requireNonEmptyString(ltObj, "labor_type_key")
+        if (!LABOR_TYPE_KEY_PATTERN.matches(key) || !seenLaborKeys.add(key.lowercase(Locale.ROOT))) {
+            throw contractInvalid("labor_type_key facet không hợp lệ hoặc bị trùng.")
+        }
+        val displayName = requireNonEmptyString(ltObj, "display_name")
+        val jobCount = if (ltObj.has("job_count")) {
+            requirePositiveInt(ltObj, "job_count", 0, Int.MAX_VALUE)
+        } else {
+            null
+        }
+        return RecruitmentPostLaborTypeSummary(
+            laborTypeKey = key,
+            displayName = displayName,
+            jobCount = jobCount
         )
     }
 
@@ -1360,12 +1455,18 @@ class RecruitmentPostService(
     suspend fun listRecruitmentPosts(
         pageSize: Int = RecruitmentPostContract.DEFAULT_PAGE_SIZE,
         cursor: String? = null,
-        snapshotToken: String? = null
+        snapshotToken: String? = null,
+        industrialParkId: String? = null,
+        laborTypeKey: String? = null,
+        includeFacets: Boolean = true
     ): RecruitmentPostListResult {
         val path = RecruitmentPostContract.buildListPath(
             pageSize = pageSize,
             cursor = cursor,
-            snapshotToken = snapshotToken
+            snapshotToken = snapshotToken,
+            industrialParkId = industrialParkId,
+            laborTypeKey = laborTypeKey,
+            includeFacets = includeFacets
         )
         val root = httpClient.getJson(path)
         return RecruitmentPostContract.parseListEnvelope(root)

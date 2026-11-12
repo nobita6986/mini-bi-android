@@ -7042,20 +7042,19 @@ class WorkerUiAuthorizationRobolectricTest {
             }
         }
 
-        // Navigate to RECRUITMENT -> loads page 1 with page_size=10 and auto-loads page 2 via snapshot_token + cursor
+        // Navigate to RECRUITMENT -> loads page 1 with include_facets=true&page_size=10 and stops waiting for user to click load more
         vm.navigateTo(com.example.ui.MainDestination.RECRUITMENT)
         composeTestRule.waitUntil(timeoutMillis = 5_000) {
             org.robolectric.shadows.ShadowLooper.idleMainLooper()
-            vm.recruitmentPosts.value.size == 2 &&
+            vm.recruitmentPosts.value.size == 1 &&
                 !vm.recruitmentPostsLoading.value &&
                 !vm.recruitmentPostsLoadingMore.value
         }
         composeTestRule.waitForIdle()
 
-        assertTrue(recordedPaths.contains("/api/recruitment-posts?page_size=10"))
+        assertTrue(recordedPaths.contains("/api/recruitment-posts?include_facets=true&page_size=10"))
         assertFalse(recordedPaths.any { it.contains("/api/recruitment-posts/context") })
-        assertTrue(recordedPaths.any { it.contains("cursor=cur-p2") && it.contains("snapshot_token=snap-p1") })
-        assertEquals(listOf(brief1, brief2), vm.recruitmentPosts.value.map { it.briefId })
+        assertFalse(recordedPaths.any { it.contains("cursor=cur-p2") })
 
         // Card displays created_by_display_name, NEVER manager_name, and has no edit/withdraw/create buttons
         composeTestRule.onNodeWithText("Người Tạo Chính Xác", substring = true).assertIsDisplayed()
@@ -7063,6 +7062,16 @@ class WorkerUiAuthorizationRobolectricTest {
         composeTestRule.onNodeWithText("Đăng tin").assertDoesNotExist()
         composeTestRule.onNodeWithText("Chỉnh sửa").assertDoesNotExist()
         composeTestRule.onNodeWithText("Thu hồi").assertDoesNotExist()
+
+        // Click "Tải thêm tin tuyển dụng" -> loads page 2 via snapshot_token + cursor and deduplicates brief1
+        composeTestRule.onNodeWithTag("recruitment_posts_load_more_button").assertIsDisplayed().performClick()
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            vm.recruitmentPosts.value.size == 2 && !vm.recruitmentPostsLoadingMore.value
+        }
+        composeTestRule.waitForIdle()
+        assertTrue(recordedPaths.any { it.contains("cursor=cur-p2") && it.contains("snapshot_token=snap-p1") })
+        assertEquals(listOf(brief1, brief2), vm.recruitmentPosts.value.map { it.briefId })
 
         // Open detail for brief1 -> renders 4 sections and created_by_display_name, then close
         vm.openRecruitmentPostDetail(brief1)
@@ -9057,7 +9066,38 @@ class WorkerUiAuthorizationRobolectricTest {
                                 """.trimIndent()
                             )
                     path.startsWith("/api/recruitment-posts?") -> {
-                        if (path.contains("cursor=cur-p2")) {
+                        val facetsFieldsJson = """
+                            "total_count": 7,
+                            "industrial_parks": [
+                              {
+                                "industrial_park_id": "$parkBaThienId",
+                                "industrial_park_code": "KCN_BA_THIEN_1",
+                                "display_name": "KCN Bá Thiện 1",
+                                "active": true,
+                                "job_count": 2
+                              },
+                              {
+                                "industrial_park_id": "$parkKhaiQuangId",
+                                "industrial_park_code": "KCN_KHAI_QUANG",
+                                "display_name": "KCN Khai Quang",
+                                "active": true,
+                                "job_count": 5
+                              }
+                            ],
+                            "labor_types": [
+                              {
+                                "labor_type_key": "CHINH_THUC",
+                                "display_name": "Chính thức",
+                                "job_count": 5
+                              },
+                              {
+                                "labor_type_key": "THOI_VU",
+                                "display_name": "Thời vụ",
+                                "job_count": 2
+                              }
+                            ]
+                        """.trimIndent()
+                        if (path.contains("industrial_park_id=$parkKhaiQuangId") || path.contains("cursor=cur-p2")) {
                             MockResponse()
                                 .setResponseCode(200)
                                 .setHeader("Content-Type", "application/json")
@@ -9070,7 +9110,8 @@ class WorkerUiAuthorizationRobolectricTest {
                                         "page_size": 10,
                                         "has_more": false,
                                         "next_cursor": null,
-                                        "snapshot_token": "snap-1211"
+                                        "snapshot_token": "snap-1211",
+                                        $facetsFieldsJson
                                       }
                                     }
                                     """.trimIndent()
@@ -9088,7 +9129,8 @@ class WorkerUiAuthorizationRobolectricTest {
                                         "page_size": 10,
                                         "has_more": true,
                                         "next_cursor": "cur-p2",
-                                        "snapshot_token": "snap-1211"
+                                        "snapshot_token": "snap-1211",
+                                        $facetsFieldsJson
                                       }
                                     }
                                     """.trimIndent()
@@ -9191,24 +9233,40 @@ class WorkerUiAuthorizationRobolectricTest {
         composeTestRule.onNodeWithTag("work_reports_week_strip_day_$todayIso").assertIsDisplayed()
         composeTestRule.onNodeWithTag("work_reports_week_strip_day_$tomorrowIso").assertDoesNotExist()
 
-        // 4. Recruitment Screen: auto-loads page 1 + page 2 (total 7 jobs) and shows KCN Khai Quang (5) without calling /context
+        // 4. Recruitment Screen: loads ONLY page 1 (stops at page 1, waiting for user click) while facets show KCN Khai Quang (5)
         vm.navigateTo(com.example.ui.MainDestination.RECRUITMENT)
         composeTestRule.waitUntil(timeoutMillis = 5_000) {
             org.robolectric.shadows.ShadowLooper.idleMainLooper()
-            vm.recruitmentPosts.value.size == 7 &&
+            vm.recruitmentPosts.value.size == 2 &&
                 !vm.recruitmentPostsLoading.value &&
                 !vm.recruitmentPostsLoadingMore.value
         }
         composeTestRule.waitForIdle()
         assertFalse(recordedPaths.any { it.contains("/api/recruitment-posts/context") })
+        assertTrue(recordedPaths.contains("/api/recruitment-posts?include_facets=true&page_size=10"))
+        assertFalse(
+            "App must stop at page 1 and NOT auto-fetch cursor=cur-p2 on screen entry",
+            recordedPaths.any { it.contains("cursor=cur-p2") }
+        )
+        composeTestRule.onNodeWithText("2+").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("recruitment_posts_load_more_button").assertIsDisplayed()
 
+        // KCN dropdown already has full facets from page 1 response (including KCN Khai Quang (5) from page 2)
         composeTestRule.onNodeWithTag("recruitment_filter_kcn").performClick()
         composeTestRule.waitForIdle()
         composeTestRule.onNodeWithText("Tất cả KCN (7)").assertIsDisplayed()
         composeTestRule.onNodeWithText("KCN Bá Thiện 1 (2)").assertIsDisplayed()
         composeTestRule.onNodeWithText("KCN Khai Quang (5)").assertIsDisplayed().performClick()
+
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            vm.recruitmentPosts.value.size == 5 && !vm.recruitmentPostsLoading.value
+        }
         composeTestRule.waitForIdle()
 
+        assertTrue(
+            recordedPaths.contains("/api/recruitment-posts?include_facets=true&page_size=10&industrial_park_id=$parkKhaiQuangId")
+        )
         composeTestRule.onNodeWithText("KCN: KCN Khai Quang (5)").assertIsDisplayed()
         composeTestRule.onNodeWithText("5/7").assertIsDisplayed()
     }

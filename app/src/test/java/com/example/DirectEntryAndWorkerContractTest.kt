@@ -2481,15 +2481,43 @@ class DirectEntryAndWorkerContractTest {
               "data": {
                 "items": [$samplePostJson],
                 "page_size": 10,
-                "has_more": false,
-                "next_cursor": null,
-                "snapshot_token": "snap-token-1",
+                "has_more": true,
+                "next_cursor": "C1.1.a1b2c3d4e5f60718293a4b5c6d7e8f90.1762761600123456.33333333-3333-4333-8333-333333333333",
+                "snapshot_token": "S1.1.a1b2c3d4e5f60718293a4b5c6d7e8f90",
+                "total_count": 25,
                 "industrial_parks": [
                   {
-                    "industrial_park_id": "bbbbbbbb-1111-4222-8333-444444444409",
-                    "industrial_park_code": "KCN_KHAI_QUANG",
-                    "display_name": "KCN Khai Quang",
-                    "active": true
+                    "industrial_park_id": "10000000-0000-4000-8000-000000000301",
+                    "industrial_park_code": "ZZ_AN_NFD",
+                    "display_name": "KCN Án",
+                    "active": true,
+                    "job_count": 2
+                  },
+                  {
+                    "industrial_park_id": "10000000-0000-4000-8000-000000000302",
+                    "industrial_park_code": "AA_ANG",
+                    "display_name": "KCN Ang",
+                    "active": true,
+                    "job_count": 3
+                  },
+                  {
+                    "industrial_park_id": "55555555-5555-4555-8555-555555555555",
+                    "industrial_park_code": "VP_BA_THIEN_1",
+                    "display_name": "KCN Bá Thiện 1",
+                    "active": true,
+                    "job_count": 20
+                  }
+                ],
+                "labor_types": [
+                  {
+                    "labor_type_key": "CHINH_THUC",
+                    "display_name": "Chính thức",
+                    "job_count": 20
+                  },
+                  {
+                    "labor_type_key": "THOI_VU",
+                    "display_name": "Thời vụ",
+                    "job_count": 5
                   }
                 ]
               }
@@ -2497,8 +2525,17 @@ class DirectEntryAndWorkerContractTest {
             """.trimIndent()
         )
         val parsedWithCatalogParks = com.example.data.RecruitmentPostContract.parseListEnvelope(listPayloadWithCatalogParks)
-        assertEquals(1, parsedWithCatalogParks.industrialParks.size)
-        assertEquals("KCN Khai Quang", parsedWithCatalogParks.industrialParks.first().displayName)
+        assertEquals(25, parsedWithCatalogParks.totalCount)
+        assertEquals(3, parsedWithCatalogParks.industrialParks.size)
+        assertEquals("KCN Án", parsedWithCatalogParks.industrialParks[0].displayName)
+        assertEquals(2, parsedWithCatalogParks.industrialParks[0].jobCount)
+        assertEquals("KCN Bá Thiện 1", parsedWithCatalogParks.industrialParks[2].displayName)
+        assertEquals(20, parsedWithCatalogParks.industrialParks[2].jobCount)
+        assertEquals(2, parsedWithCatalogParks.laborTypes.size)
+        assertEquals("CHINH_THUC", parsedWithCatalogParks.laborTypes[0].laborTypeKey)
+        assertEquals(20, parsedWithCatalogParks.laborTypes[0].jobCount)
+        assertEquals("THOI_VU", parsedWithCatalogParks.laborTypes[1].laborTypeKey)
+        assertEquals(5, parsedWithCatalogParks.laborTypes[1].jobCount)
 
         val card = com.example.data.RecruitmentPostContract.toCardViewModel(parsedList.items.first())
         assertEquals("Nguyễn Người Tạo Tin", card.contactPersonDisplay)
@@ -2545,6 +2582,24 @@ class DirectEntryAndWorkerContractTest {
                 pageSize = 10,
                 cursor = "cursor-page-2",
                 snapshotToken = "snap-token-1"
+            )
+        )
+        assertEquals(
+            "/api/recruitment-posts?include_facets=true&page_size=10",
+            com.example.data.RecruitmentPostContract.buildListPath(
+                pageSize = 10,
+                includeFacets = true
+            )
+        )
+        assertEquals(
+            "/api/recruitment-posts?include_facets=true&page_size=10&industrial_park_id=55555555-5555-4555-8555-555555555555&labor_type_key=CHINH_THUC&snapshot_token=S1.1&cursor=C1.1",
+            com.example.data.RecruitmentPostContract.buildListPath(
+                pageSize = 10,
+                cursor = "C1.1",
+                snapshotToken = "S1.1",
+                industrialParkId = "55555555-5555-4555-8555-555555555555",
+                laborTypeKey = "CHINH_THUC",
+                includeFacets = true
             )
         )
         val duplicatePostJson = JSONObject(samplePostJson).apply { put("version", 99) }

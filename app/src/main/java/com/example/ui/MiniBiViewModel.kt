@@ -48,6 +48,8 @@ import com.example.data.PendingEntryAttachmentTask
 import com.example.data.RecruitmentPostContract
 import com.example.data.RecruitmentPostIndustrialParkSummary
 import com.example.data.RecruitmentPostItem
+import com.example.data.RecruitmentPostLaborTypeSummary
+import com.example.data.RecruitmentPostListResult
 import com.example.data.CreateSalaryAdvanceValidationResult
 import com.example.data.SalaryAdvanceActorContext
 import com.example.data.SalaryAdvanceContract
@@ -674,8 +676,14 @@ class MiniBiViewModel internal constructor(
     private val _recruitmentPosts = MutableStateFlow<List<RecruitmentPostItem>>(emptyList())
     val recruitmentPosts: StateFlow<List<RecruitmentPostItem>> = _recruitmentPosts.asStateFlow()
 
+    private val _recruitmentTotalCount = MutableStateFlow<Int?>(null)
+    val recruitmentTotalCount: StateFlow<Int?> = _recruitmentTotalCount.asStateFlow()
+
     private val _recruitmentIndustrialParks = MutableStateFlow<List<RecruitmentPostIndustrialParkSummary>>(emptyList())
     val recruitmentIndustrialParks: StateFlow<List<RecruitmentPostIndustrialParkSummary>> = _recruitmentIndustrialParks.asStateFlow()
+
+    private val _recruitmentLaborTypes = MutableStateFlow<List<RecruitmentPostLaborTypeSummary>>(emptyList())
+    val recruitmentLaborTypes: StateFlow<List<RecruitmentPostLaborTypeSummary>> = _recruitmentLaborTypes.asStateFlow()
 
     private val _recruitmentPostsLoading = MutableStateFlow(false)
     val recruitmentPostsLoading: StateFlow<Boolean> = _recruitmentPostsLoading.asStateFlow()
@@ -933,7 +941,7 @@ class MiniBiViewModel internal constructor(
                 }
             }
             MainDestination.RECRUITMENT -> {
-                loadRecruitmentPosts(reset = true, actorOverride = actor, autoLoadAllPages = true)
+                loadRecruitmentPosts(reset = true, actorOverride = actor)
             }
             MainDestination.NEW_ENTRY -> {
                 if (actor.canAccessNewEntryScreen()) {
@@ -1051,14 +1059,7 @@ class MiniBiViewModel internal constructor(
                     !_recruitmentPostsAccessDenied.value &&
                     !_recruitmentPostsFeatureUnavailable.value
                 ) {
-                    loadRecruitmentPosts(reset = true, actorOverride = actor, autoLoadAllPages = true)
-                } else if (
-                    _recruitmentPostsHasMore.value &&
-                    _recruitmentPostsError.value == null &&
-                    !_recruitmentPostsLoading.value &&
-                    !_recruitmentPostsLoadingMore.value
-                ) {
-                    ensureAllRecruitmentPostsLoaded(actorOverride = actor)
+                    loadRecruitmentPosts(reset = true, actorOverride = actor)
                 }
             }
             MainDestination.ATTENDANCE -> {
@@ -7014,7 +7015,9 @@ class MiniBiViewModel internal constructor(
     fun resetRecruitmentPostsState() {
         cancelInFlightRecruitmentPostRequests()
         _recruitmentPosts.value = emptyList()
+        _recruitmentTotalCount.value = null
         _recruitmentIndustrialParks.value = emptyList()
+        _recruitmentLaborTypes.value = emptyList()
         _recruitmentPostsError.value = null
         _recruitmentPostsErrorCode.value = null
         _recruitmentPostsHasMore.value = false
@@ -7033,23 +7036,21 @@ class MiniBiViewModel internal constructor(
         val normalized = parkId?.trim()?.takeIf { it.isNotEmpty() }
         if (_selectedRecruitmentIndustrialParkId.value == normalized) return
         _selectedRecruitmentIndustrialParkId.value = normalized
-        if (normalized != null || _selectedRecruitmentLaborTypeKey.value != null) {
-            ensureAllRecruitmentPostsLoadedForFiltering()
-        }
+        loadRecruitmentPosts(reset = true)
     }
 
     fun setRecruitmentLaborTypeFilter(laborTypeKey: String?) {
         val normalized = laborTypeKey?.trim()?.takeIf { it.isNotEmpty() }
         if (_selectedRecruitmentLaborTypeKey.value == normalized) return
         _selectedRecruitmentLaborTypeKey.value = normalized
-        if (normalized != null || _selectedRecruitmentIndustrialParkId.value != null) {
-            ensureAllRecruitmentPostsLoadedForFiltering()
-        }
+        loadRecruitmentPosts(reset = true)
     }
 
     fun clearRecruitmentPostFilters() {
+        if (_selectedRecruitmentIndustrialParkId.value == null && _selectedRecruitmentLaborTypeKey.value == null) return
         _selectedRecruitmentIndustrialParkId.value = null
         _selectedRecruitmentLaborTypeKey.value = null
+        loadRecruitmentPosts(reset = true)
     }
 
     fun ensureAllRecruitmentPostsLoaded(
@@ -7137,6 +7138,50 @@ class MiniBiViewModel internal constructor(
         return map.values.toList()
     }
 
+    private fun mergeLaborTypes(
+        current: List<RecruitmentPostLaborTypeSummary>,
+        incoming: List<RecruitmentPostLaborTypeSummary>
+    ): List<RecruitmentPostLaborTypeSummary> {
+        if (incoming.isEmpty()) return current
+        val map = LinkedHashMap<String, RecruitmentPostLaborTypeSummary>()
+        for (item in current) {
+            val key = item.laborTypeKey.trim().lowercase(Locale.ROOT)
+            if (key.isNotEmpty()) map[key] = item
+        }
+        for (item in incoming) {
+            val key = item.laborTypeKey.trim().lowercase(Locale.ROOT)
+            if (key.isNotEmpty()) map[key] = item
+        }
+        return map.values.toList()
+    }
+
+    private fun applyRecruitmentFacets(
+        res: RecruitmentPostListResult,
+        reset: Boolean
+    ) {
+        val hasAuthoritativeFacets = res.totalCount != null ||
+            res.industrialParks.any { it.jobCount != null } ||
+            res.laborTypes.any { it.jobCount != null }
+        if (hasAuthoritativeFacets) {
+            _recruitmentTotalCount.value = res.totalCount
+            _recruitmentIndustrialParks.value = res.industrialParks
+            _recruitmentLaborTypes.value = res.laborTypes
+        } else {
+            if (res.industrialParks.isNotEmpty()) {
+                _recruitmentIndustrialParks.value = mergeIndustrialParks(
+                    current = if (reset) emptyList() else _recruitmentIndustrialParks.value,
+                    incoming = res.industrialParks
+                )
+            }
+            if (res.laborTypes.isNotEmpty()) {
+                _recruitmentLaborTypes.value = mergeLaborTypes(
+                    current = if (reset) emptyList() else _recruitmentLaborTypes.value,
+                    incoming = res.laborTypes
+                )
+            }
+        }
+    }
+
     private fun loadRecruitmentPostsInternal(
         reset: Boolean,
         actorOverride: AppActor? = null,
@@ -7157,6 +7202,8 @@ class MiniBiViewModel internal constructor(
             return
         }
 
+        val activeParkId = _selectedRecruitmentIndustrialParkId.value
+        val activeLaborKey = _selectedRecruitmentLaborTypeKey.value
         val token = ++recruitmentPostsFetchToken
         recruitmentPostsFetchJob?.cancel()
         if (reset) {
@@ -7169,7 +7216,6 @@ class MiniBiViewModel internal constructor(
             _recruitmentPostsNextCursor.value = null
             _recruitmentPostsSnapshotToken.value = null
             _recruitmentPostsHasMore.value = false
-            _recruitmentIndustrialParks.value = emptyList()
         } else {
             _recruitmentPostsLoadingMore.value = true
             _recruitmentPostsError.value = null
@@ -7182,7 +7228,10 @@ class MiniBiViewModel internal constructor(
                 val res = repository.recruitmentPostService.listRecruitmentPosts(
                     pageSize = RecruitmentPostContract.DEFAULT_PAGE_SIZE,
                     cursor = expectedCursor,
-                    snapshotToken = expectedSnapshot
+                    snapshotToken = expectedSnapshot,
+                    industrialParkId = activeParkId,
+                    laborTypeKey = activeLaborKey,
+                    includeFacets = true
                 )
                 if (token != recruitmentPostsFetchToken || !isSessionValid(expectedGen, expectedUserId)) {
                     return@launch
@@ -7198,20 +7247,14 @@ class MiniBiViewModel internal constructor(
                         current = _recruitmentPosts.value,
                         incoming = res.items
                     )
-                    _recruitmentIndustrialParks.value = mergeIndustrialParks(
-                        current = _recruitmentIndustrialParks.value,
-                        incoming = res.industrialParks
-                    )
+                    applyRecruitmentFacets(res = res, reset = false)
                     _recruitmentPostsSnapshotToken.value = expectedSnapshot
                 } else {
                     _recruitmentPosts.value = RecruitmentPostContract.mergeUniqueItems(
                         current = emptyList(),
                         incoming = res.items
                     )
-                    _recruitmentIndustrialParks.value = mergeIndustrialParks(
-                        current = emptyList(),
-                        incoming = res.industrialParks
-                    )
+                    applyRecruitmentFacets(res = res, reset = true)
                     _recruitmentPostsSnapshotToken.value = res.snapshotToken
                 }
                 _recruitmentPostsHasMore.value = res.hasMore
@@ -7224,10 +7267,8 @@ class MiniBiViewModel internal constructor(
                 var pagesLoadedInBatch = 1
                 val safeMaxAutoPages = maxAutoPages.coerceIn(1, 100)
                 while (
+                    autoLoadAllPages &&
                     pagesLoadedInBatch < safeMaxAutoPages &&
-                    (autoLoadAllPages ||
-                        _selectedRecruitmentIndustrialParkId.value != null ||
-                        _selectedRecruitmentLaborTypeKey.value != null) &&
                     _recruitmentPostsHasMore.value &&
                     !_recruitmentPostsNextCursor.value.isNullOrBlank() &&
                     !_recruitmentPostsSnapshotToken.value.isNullOrBlank() &&
@@ -7241,7 +7282,10 @@ class MiniBiViewModel internal constructor(
                     val nextRes = repository.recruitmentPostService.listRecruitmentPosts(
                         pageSize = RecruitmentPostContract.DEFAULT_PAGE_SIZE,
                         cursor = nextCur,
-                        snapshotToken = snapTok
+                        snapshotToken = snapTok,
+                        industrialParkId = activeParkId,
+                        laborTypeKey = activeLaborKey,
+                        includeFacets = true
                     )
                     if (token != recruitmentPostsFetchToken || !isSessionValid(expectedGen, expectedUserId)) {
                         return@launch
@@ -7250,10 +7294,7 @@ class MiniBiViewModel internal constructor(
                         current = _recruitmentPosts.value,
                         incoming = nextRes.items
                     )
-                    _recruitmentIndustrialParks.value = mergeIndustrialParks(
-                        current = _recruitmentIndustrialParks.value,
-                        incoming = nextRes.industrialParks
-                    )
+                    applyRecruitmentFacets(res = nextRes, reset = false)
                     _recruitmentPostsHasMore.value = nextRes.hasMore
                     _recruitmentPostsNextCursor.value = nextRes.nextCursor
                     pagesLoadedInBatch += 1
