@@ -1,5 +1,6 @@
 package com.example
 
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
@@ -135,9 +136,12 @@ import com.example.ui.theme.MiniBiThemes
 import com.example.ui.theme.MyApplicationTheme
 import com.example.ui.theme.SemanticColors
 import com.example.ui.theme.tabularNums
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
+    private val pendingBulletinDeepLinkId = MutableStateFlow<String?>(null)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge(
             statusBarStyle = SystemBarStyle.light(
@@ -150,17 +154,37 @@ class MainActivity : ComponentActivity() {
             )
         )
         super.onCreate(savedInstanceState)
+        extractBulletinDeepLink(intent)
         setContent {
             val viewModel: MiniBiViewModel = viewModel()
             val themeId by viewModel.themeId.collectAsStateWithLifecycle()
+            val pendingBulletinId by pendingBulletinDeepLinkId.collectAsStateWithLifecycle()
 
             LaunchedEffect(viewModel) {
                 Coil.setImageLoader(viewModel.imageLoader)
             }
 
             MyApplicationTheme(themeId = themeId) {
-                MiniBiAppRoot(viewModel = viewModel)
+                MiniBiAppRoot(
+                    viewModel = viewModel,
+                    pendingBulletinId = pendingBulletinId,
+                    onConsumePendingBulletinId = { pendingBulletinDeepLinkId.value = null }
+                )
             }
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        extractBulletinDeepLink(intent)
+    }
+
+    private fun extractBulletinDeepLink(intent: Intent?) {
+        val bulletinId = intent?.getStringExtra(HrpBulletinManager.EXTRA_BULLETIN_ID)?.trim().orEmpty()
+        if (bulletinId.isNotEmpty()) {
+            pendingBulletinDeepLinkId.value = bulletinId
+            intent?.removeExtra(HrpBulletinManager.EXTRA_BULLETIN_ID)
         }
     }
 }
@@ -182,7 +206,11 @@ internal fun resolveBrandBadgeLabel(serverUrl: String = BuildConfig.DEFAULT_SERV
 }
 
 @Composable
-fun MiniBiAppRoot(viewModel: MiniBiViewModel) {
+fun MiniBiAppRoot(
+    viewModel: MiniBiViewModel,
+    pendingBulletinId: String? = null,
+    onConsumePendingBulletinId: () -> Unit = {}
+) {
     val sessionBootstrapping by viewModel.sessionBootstrapping.collectAsStateWithLifecycle()
     val actor by viewModel.currentActor.collectAsStateWithLifecycle()
     val themeId by viewModel.themeId.collectAsStateWithLifecycle()
@@ -307,6 +335,20 @@ fun MiniBiAppRoot(viewModel: MiniBiViewModel) {
         bulletinManager.unreadCountForActor(authenticatedActor.appUserId)
     }
     var bulletinDialogOpen by remember { mutableStateOf(false) }
+    var bulletinDialogInitialId by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(authenticatedActor.appUserId, bulletinManager) {
+        bulletinManager.notifyNewBulletinsIfNeeded(authenticatedActor.appUserId)
+    }
+
+    LaunchedEffect(pendingBulletinId, authenticatedActor.appUserId) {
+        val targetId = pendingBulletinId?.trim().orEmpty()
+        if (targetId.isNotEmpty()) {
+            bulletinDialogInitialId = targetId
+            bulletinDialogOpen = true
+            onConsumePendingBulletinId()
+        }
+    }
 
     LaunchedEffect(taskReminderManager) {
         taskReminderManager.reconcileExpiredOnceReminders()
@@ -695,6 +737,7 @@ fun MiniBiAppRoot(viewModel: MiniBiViewModel) {
                                         .clip(CircleShape)
                                         .clickable {
                                             HrpHaptics.tick(hapticFeedback)
+                                            bulletinDialogInitialId = null
                                             bulletinDialogOpen = true
                                         }
                                         .testTag("topbar_bulletin_button")
@@ -1065,7 +1108,11 @@ fun MiniBiAppRoot(viewModel: MiniBiViewModel) {
             HrpBulletinDialog(
                 actor = authenticatedActor,
                 bulletinManager = bulletinManager,
-                onDismiss = { bulletinDialogOpen = false }
+                initialBulletinId = bulletinDialogInitialId,
+                onDismiss = {
+                    bulletinDialogOpen = false
+                    bulletinDialogInitialId = null
+                }
             )
         }
     }

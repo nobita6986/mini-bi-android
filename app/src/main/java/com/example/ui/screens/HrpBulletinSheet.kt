@@ -1,11 +1,17 @@
 package com.example.ui.screens
 
+import android.Manifest
+import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Color as AndroidColor
 import android.graphics.pdf.PdfRenderer
+import android.os.Build
 import android.os.ParcelFileDescriptor
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -51,6 +57,8 @@ import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Notifications
+import androidx.compose.material.icons.filled.NotificationsOff
 import androidx.compose.material.icons.filled.PictureAsPdf
 import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.VerifiedUser
@@ -144,14 +152,34 @@ private fun resolveBulletinCategoryIcon(category: HrpBulletinCategory): ImageVec
 fun HrpBulletinDialog(
     actor: AppActor,
     bulletinManager: HrpBulletinManager,
+    initialBulletinId: String? = null,
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
     val hapticFeedback = LocalHapticFeedback.current
     val readIdsVersion by bulletinManager.readIdsVersionFlow.collectAsStateWithLifecycle()
+    val notificationEnabled by bulletinManager.notificationEnabledFlow.collectAsStateWithLifecycle()
+
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { _ -> }
+
+    fun ensureNotificationPermissionIfNeeded() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            runCatching {
+                val granted = ContextCompat.checkSelfPermission(
+                    context,
+                    Manifest.permission.POST_NOTIFICATIONS
+                ) == PackageManager.PERMISSION_GRANTED
+                if (!granted) {
+                    notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                }
+            }
+        }
+    }
 
     var selectedCategory by remember { mutableStateOf(HrpBulletinCategory.ALL) }
-    var selectedBulletinId by remember { mutableStateOf<String?>(null) }
+    var selectedBulletinId by remember(initialBulletinId) { mutableStateOf(initialBulletinId) }
     var activeImageAttachment by remember { mutableStateOf<HrpBulletinAttachment?>(null) }
     var activePdfAttachment by remember { mutableStateOf<HrpBulletinAttachment?>(null) }
 
@@ -305,22 +333,83 @@ fun HrpBulletinDialog(
                         }
                     }
 
-                    TextButton(
-                        onClick = {
-                            HrpHaptics.tick(hapticFeedback)
-                            onDismiss()
-                        },
-                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-                        modifier = Modifier
-                            .defaultMinSize(minWidth = 48.dp, minHeight = 40.dp)
-                            .testTag("bulletin_close_button")
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
-                        Text(
-                            text = "Đóng",
-                            style = MaterialTheme.typography.labelLarge,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.primary
-                        )
+                        if (selectedBulletin == null) {
+                            Surface(
+                                shape = CircleShape,
+                                color = if (notificationEnabled) {
+                                    MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.65f)
+                                } else {
+                                    SemanticColors.SurfaceSubtle
+                                },
+                                border = BorderStroke(
+                                    width = 1.dp,
+                                    color = if (notificationEnabled) {
+                                        MaterialTheme.colorScheme.primary.copy(alpha = 0.30f)
+                                    } else {
+                                        SemanticColors.SurfaceBorder
+                                    }
+                                ),
+                                modifier = Modifier
+                                    .size(36.dp)
+                                    .clip(CircleShape)
+                                    .clickable {
+                                        HrpHaptics.tick(hapticFeedback)
+                                        val nextState = !notificationEnabled
+                                        bulletinManager.setNewBulletinNotificationEnabled(nextState)
+                                        if (nextState) {
+                                            ensureNotificationPermissionIfNeeded()
+                                            bulletinManager.notifyNewBulletinsIfNeeded(actor.appUserId)
+                                        }
+                                    }
+                                    .testTag("bulletin_notification_toggle_button")
+                            ) {
+                                Box(
+                                    modifier = Modifier.fillMaxSize(),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = if (notificationEnabled) {
+                                            Icons.Default.Notifications
+                                        } else {
+                                            Icons.Default.NotificationsOff
+                                        },
+                                        contentDescription = if (notificationEnabled) {
+                                            "Đang bật thông báo tin mới"
+                                        } else {
+                                            "Đang tắt thông báo tin mới"
+                                        },
+                                        tint = if (notificationEnabled) {
+                                            MaterialTheme.colorScheme.primary
+                                        } else {
+                                            MaterialTheme.colorScheme.onSurfaceVariant
+                                        },
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
+                            }
+                        }
+
+                        TextButton(
+                            onClick = {
+                                HrpHaptics.tick(hapticFeedback)
+                                onDismiss()
+                            },
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                            modifier = Modifier
+                                .defaultMinSize(minWidth = 48.dp, minHeight = 40.dp)
+                                .testTag("bulletin_close_button")
+                        ) {
+                            Text(
+                                text = "Đóng",
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
                     }
                 }
 

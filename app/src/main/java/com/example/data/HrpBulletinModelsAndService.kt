@@ -1,6 +1,10 @@
 package com.example.data
 
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.Context
+import android.content.Intent
 import android.content.SharedPreferences
 import android.graphics.Bitmap
 import android.graphics.Canvas
@@ -9,6 +13,10 @@ import android.graphics.Paint
 import android.graphics.RectF
 import android.graphics.Typeface
 import android.graphics.pdf.PdfDocument
+import android.os.Build
+import androidx.core.app.NotificationCompat
+import com.example.MainActivity
+import com.example.R
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -1013,8 +1021,35 @@ class HrpBulletinManager(
     private val _readIdsVersionFlow = MutableStateFlow(0L)
     val readIdsVersionFlow: StateFlow<Long> = _readIdsVersionFlow.asStateFlow()
 
+    private val _notificationEnabledFlow = MutableStateFlow(
+        prefs.getBoolean(KEY_NOTIFY_NEW_BULLETINS_ENABLED, true)
+    )
+    val notificationEnabledFlow: StateFlow<Boolean> = _notificationEnabledFlow.asStateFlow()
+
+    fun isNewBulletinNotificationEnabled(): Boolean {
+        synchronized(lock) {
+            return prefs.getBoolean(KEY_NOTIFY_NEW_BULLETINS_ENABLED, true)
+        }
+    }
+
+    fun setNewBulletinNotificationEnabled(enabled: Boolean) {
+        synchronized(lock) {
+            prefs.edit().putBoolean(KEY_NOTIFY_NEW_BULLETINS_ENABLED, enabled).apply()
+            _notificationEnabledFlow.value = enabled
+            _readIdsVersionFlow.value = _readIdsVersionFlow.value + 1L
+        }
+    }
+
     fun getReadBulletinIds(appUserId: String?): Set<String> {
         val key = prefKeyForUser(appUserId)
+        synchronized(lock) {
+            val raw = prefs.getStringSet(key, emptySet()).orEmpty()
+            return raw.map { it.trim() }.filter { it.isNotEmpty() }.toSet()
+        }
+    }
+
+    fun getNotifiedBulletinIds(appUserId: String?): Set<String> {
+        val key = notifiedPrefKeyForUser(appUserId)
         synchronized(lock) {
             val raw = prefs.getStringSet(key, emptySet()).orEmpty()
             return raw.map { it.trim() }.filter { it.isNotEmpty() }.toSet()
@@ -1050,19 +1085,69 @@ class HrpBulletinManager(
     fun markBulletinRead(appUserId: String?, bulletinId: String) {
         val cleanId = bulletinId.trim()
         if (cleanId.isEmpty()) return
-        val key = prefKeyForUser(appUserId)
+        val readKey = prefKeyForUser(appUserId)
+        val notifiedKey = notifiedPrefKeyForUser(appUserId)
         synchronized(lock) {
-            val existing = prefs.getStringSet(key, emptySet()).orEmpty().toMutableSet()
-            if (existing.add(cleanId)) {
-                prefs.edit().putStringSet(key, existing).apply()
+            val existingRead = prefs.getStringSet(readKey, emptySet()).orEmpty().toMutableSet()
+            val existingNotified = prefs.getStringSet(notifiedKey, emptySet()).orEmpty().toMutableSet()
+            val changedRead = existingRead.add(cleanId)
+            val changedNotified = existingNotified.add(cleanId)
+            if (changedRead || changedNotified) {
+                prefs.edit()
+                    .putStringSet(readKey, existingRead)
+                    .putStringSet(notifiedKey, existingNotified)
+                    .apply()
                 _readIdsVersionFlow.value = _readIdsVersionFlow.value + 1L
             }
         }
     }
 
+    /**
+     * Checks for unread bulletins that have not yet been notified for `appUserId`.
+     * Records them into `notified_bulletin_ids_<user>` so each new bulletin triggers a system
+     * notification at most once per user, and posts an Android system notification when
+     * `isNewBulletinNotificationEnabled()` is true.
+     */
+    fun notifyNewBulletinsIfNeeded(
+        appUserId: String?,
+        seedItems: List<HrpBulletinItem> = HrpBulletinContract.defaultMockupItems,
+        postSystemNotification: Boolean = true
+    ): List<HrpBulletinItem> {
+        val newlyDetected: List<HrpBulletinItem>
+        val shouldPost: Boolean
+        synchronized(lock) {
+            val enabled = prefs.getBoolean(KEY_NOTIFY_NEW_BULLETINS_ENABLED, true)
+            if (!enabled) {
+                return emptyList()
+            }
+            val readKey = prefKeyForUser(appUserId)
+            val notifiedKey = notifiedPrefKeyForUser(appUserId)
+            val readIds = prefs.getStringSet(readKey, emptySet()).orEmpty()
+            val notifiedIds = prefs.getStringSet(notifiedKey, emptySet()).orEmpty().toMutableSet()
+            val sorted = HrpBulletinContract.sortBulletins(seedItems)
+            newlyDetected = sorted.filter { item ->
+                !item.isRead &&
+                    !readIds.contains(item.bulletinId) &&
+                    !notifiedIds.contains(item.bulletinId)
+            }
+            if (newlyDetected.isEmpty()) {
+                return emptyList()
+            }
+            newlyDetected.forEach { notifiedIds.add(it.bulletinId) }
+            prefs.edit().putStringSet(notifiedKey, notifiedIds).apply()
+            _readIdsVersionFlow.value = _readIdsVersionFlow.value + 1L
+            shouldPost = postSystemNotification && enabled
+        }
+        if (shouldPost && newlyDetected.isNotEmpty()) {
+            postNewBulletinNotification(appContext, newlyDetected)
+        }
+        return newlyDetected
+    }
+
     fun clearAllForTest() {
         synchronized(lock) {
             prefs.edit().clear().commit()
+            _notificationEnabledFlow.value = true
             _readIdsVersionFlow.value = _readIdsVersionFlow.value + 1L
         }
     }
@@ -1072,8 +1157,18 @@ class HrpBulletinManager(
         return "read_bulletin_ids_$cleanUser"
     }
 
+    private fun notifiedPrefKeyForUser(appUserId: String?): String {
+        val cleanUser = appUserId?.trim()?.ifEmpty { "anonymous" } ?: "anonymous"
+        return "notified_bulletin_ids_$cleanUser"
+    }
+
     companion object {
         const val PREFS_NAME = "hrp_bulletin_read_state_prefs"
+        private const val KEY_NOTIFY_NEW_BULLETINS_ENABLED = "notify_new_bulletins_enabled"
+        const val ACTION_OPEN_BULLETIN = "vn.hrpartner.bi.ACTION_OPEN_BULLETIN"
+        const val EXTRA_BULLETIN_ID = "extra_bulletin_id"
+        const val NOTIFICATION_CHANNEL_ID = "hrp_bulletin_new_channel"
+        const val NOTIFICATION_ID_NEW_BULLETIN = 20261113
 
         @Volatile
         private var instance: HrpBulletinManager? = null
@@ -1081,6 +1176,71 @@ class HrpBulletinManager(
         fun getInstance(context: Context): HrpBulletinManager {
             return instance ?: synchronized(this) {
                 instance ?: HrpBulletinManager(context.applicationContext).also { instance = it }
+            }
+        }
+
+        internal fun postNewBulletinNotification(
+            context: Context,
+            newItems: List<HrpBulletinItem>
+        ) {
+            if (newItems.isEmpty()) return
+            runCatching {
+                val appContext = context.applicationContext
+                val notificationManager =
+                    appContext.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
+
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    val existing = notificationManager.getNotificationChannel(NOTIFICATION_CHANNEL_ID)
+                    if (existing == null) {
+                        val channel = NotificationChannel(
+                            NOTIFICATION_CHANNEL_ID,
+                            "Bản tin HRPartner",
+                            NotificationManager.IMPORTANCE_HIGH
+                        ).apply {
+                            description = "Thông báo khi có bản tin nội bộ, lịch nghỉ lễ hoặc quy định mới từ HRPartner"
+                            enableVibration(true)
+                        }
+                        notificationManager.createNotificationChannel(channel)
+                    }
+                }
+
+                val primaryItem = newItems.first()
+                val tapIntent = Intent(appContext, MainActivity::class.java).apply {
+                    action = ACTION_OPEN_BULLETIN
+                    putExtra(EXTRA_BULLETIN_ID, primaryItem.bulletinId)
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
+                }
+                val tapPendingIntent = PendingIntent.getActivity(
+                    appContext,
+                    primaryItem.bulletinId.hashCode(),
+                    tapIntent,
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                )
+
+                val titleText = if (newItems.size == 1) {
+                    "Bản tin HRPartner mới · ${primaryItem.categoryDisplay}"
+                } else {
+                    "Bản tin HRPartner (${newItems.size} tin mới)"
+                }
+                val summaryText = primaryItem.title
+                val expandedBody = if (newItems.size == 1) {
+                    "${primaryItem.title}\n${primaryItem.summary}"
+                } else {
+                    newItems.take(4).joinToString("\n") { "• [${it.categoryDisplay}] ${it.title}" }
+                }
+
+                val notification = NotificationCompat.Builder(appContext, NOTIFICATION_CHANNEL_ID)
+                    .setSmallIcon(R.mipmap.ic_launcher)
+                    .setContentTitle(titleText)
+                    .setContentText(summaryText)
+                    .setStyle(NotificationCompat.BigTextStyle().bigText(expandedBody))
+                    .setPriority(NotificationCompat.PRIORITY_HIGH)
+                    .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+                    .setAutoCancel(true)
+                    .setContentIntent(tapPendingIntent)
+                    .build()
+
+                notificationManager.notify(NOTIFICATION_ID_NEW_BULLETIN, notification)
             }
         }
     }

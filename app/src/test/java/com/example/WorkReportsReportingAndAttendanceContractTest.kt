@@ -2749,5 +2749,21 @@ class WorkReportsReportingAndAttendanceContractTest {
             defaultMockups[0].attachments.first { it.kind == com.example.data.HrpBulletinAttachmentKind.IMAGE }
         )
         assertTrue("Generated mockup PNG must exist and be non-empty", generatedPng.exists() && generatedPng.length() > 500L)
+
+        // Verify once-per-bulletin new notification tracking & toggle
+        val manager = com.example.data.HrpBulletinManager(context, prefsName = "test_bulletin_notify_${System.nanoTime()}")
+        assertTrue(manager.isNewBulletinNotificationEnabled())
+        val firstBatch = manager.notifyNewBulletinsIfNeeded("usr-notify-1", defaultMockups, postSystemNotification = true)
+        assertEquals(3, firstBatch.size)
+        assertEquals(3, manager.getNotifiedBulletinIds("usr-notify-1").size)
+
+        // Subsequent check with same items must not re-notify
+        val secondBatch = manager.notifyNewBulletinsIfNeeded("usr-notify-1", defaultMockups, postSystemNotification = true)
+        assertTrue(secondBatch.isEmpty())
+
+        // Disabling notifications suppresses notification for a new user
+        manager.setNewBulletinNotificationEnabled(false)
+        assertFalse(manager.isNewBulletinNotificationEnabled())
+        assertTrue(manager.notifyNewBulletinsIfNeeded("usr-notify-2", defaultMockups, postSystemNotification = true).isEmpty())
     }
 }

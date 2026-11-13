@@ -9370,7 +9370,9 @@ class WorkerUiAuthorizationRobolectricTest {
 
             composeTestRule.onNodeWithTag("hrp_bulletin_dialog").assertIsDisplayed()
             composeTestRule.onNodeWithText("Bản tin HRPartner").assertIsDisplayed()
+            composeTestRule.onNodeWithTag("bulletin_notification_toggle_button").assertIsDisplayed()
             composeTestRule.onNodeWithTag("bulletin_mockup_banner").assertIsDisplayed()
+            assertEquals(3, bulletinManager.getNotifiedBulletinIds(actorUserId).size)
             composeTestRule.onNodeWithText("Tin nhân sự ngày 13-11-2026").assertIsDisplayed()
             composeTestRule.onNodeWithText("Lịch nghỉ lễ ngày Văn hóa Việt Nam").assertIsDisplayed()
             composeTestRule.onNodeWithText("Hướng dẫn rà soát bảng công & giải trình chấm công tháng 11-2026").assertIsDisplayed()
