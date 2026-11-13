@@ -826,10 +826,34 @@ object HrpBulletinContract {
                 pdfDocument.writeTo(out)
                 out.flush()
             }
+        } catch (_: Throwable) {
+            writeMinimalPdfFallback(outFile, attachment, totalPages)
         } finally {
-            pdfDocument.close()
+            runCatching { pdfDocument.close() }
         }
         return outFile
+    }
+
+    private fun writeMinimalPdfFallback(
+        outFile: File,
+        attachment: HrpBulletinAttachment,
+        totalPages: Int
+    ) {
+        val safeTitle = attachment.title.replace("(", "\\(").replace(")", "\\)")
+        val pdfText = buildString {
+            appendLine("%PDF-1.4")
+            appendLine("1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj")
+            val kids = (1..totalPages).joinToString(" ") { "${it + 2} 0 R" }
+            appendLine("2 0 obj << /Type /Pages /Kids [$kids] /Count $totalPages >> endobj")
+            for (page in 1..totalPages) {
+                val objId = page + 2
+                appendLine("$objId 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] >> endobj")
+            }
+            appendLine("% HRPartner Bulletin PDF: $safeTitle")
+            appendLine("trailer << /Root 1 0 R >>")
+            appendLine("%%EOF")
+        }
+        outFile.writeBytes(pdfText.toByteArray(Charsets.UTF_8))
     }
 
     private fun generateSampleImageFile(outFile: File, attachment: HrpBulletinAttachment): File {
