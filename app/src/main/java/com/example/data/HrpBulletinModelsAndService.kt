@@ -234,9 +234,7 @@ object HrpBulletinContract {
         }
         val pageSize = dataObj.optInt("page_size", DEFAULT_PAGE_SIZE).coerceAtLeast(1)
         val hasMore = dataObj.optBoolean("has_more", false)
-        val nextCursor = dataObj.optString("next_cursor").trim().takeIf {
-            it.isNotEmpty() && !dataObj.isNull("next_cursor")
-        }
+        val nextCursor = dataObj.optCleanString("next_cursor")
         return HrpBulletinListResult(
             items = sortedItems,
             unreadCount = unreadCount,
@@ -276,53 +274,46 @@ object HrpBulletinContract {
         return !root.has("ok") || root.optBoolean("ok", false)
     }
 
+    private fun JSONObject.optCleanString(vararg keys: String): String? {
+        for (key in keys) {
+            if (has(key) && !isNull(key)) {
+                val value = optString(key).trim()
+                if (value.isNotEmpty() && !value.equals("null", ignoreCase = true)) {
+                    return value
+                }
+            }
+        }
+        return null
+    }
+
     internal fun parseBulletinItemObject(obj: JSONObject): HrpBulletinItem {
-        val bulletinId = obj.optString("bulletin_id")
-            .ifBlank { obj.optString("id") }
-            .trim()
+        val bulletinId = obj.optCleanString("bulletin_id", "id").orEmpty()
         require(bulletinId.isNotEmpty()) { "bulletin_id is required" }
 
-        val title = obj.optString("title").trim().ifEmpty { "Bản tin HRPartner" }
-        val rawCategory = obj.optString("category")
-            .ifBlank { obj.optString("category_key") }
-            .trim()
+        val title = obj.optCleanString("title") ?: "Bản tin HRPartner"
+        val rawCategory = obj.optCleanString("category", "category_key").orEmpty()
         val category = HrpBulletinCategory.fromWireKey(rawCategory)
-        val categoryDisplay = obj.optString("category_display")
-            .ifBlank { obj.optString("category_label") }
-            .trim()
-            .ifEmpty { category.labelVi }
+        val categoryDisplay = obj.optCleanString("category_display", "category_label")
+            ?: category.labelVi
 
-        val badgeText = obj.optString("badge_text")
-            .ifBlank { obj.optString("badge") }
-            .trim()
-            .takeIf { it.isNotEmpty() && !obj.isNull("badge_text") && !obj.isNull("badge") }
+        val badgeText = obj.optCleanString("badge_text", "badge")
 
         val isPinned = obj.optBoolean("is_pinned", obj.optBoolean("pinned", false))
         val isRead = obj.optBoolean("is_read", obj.optBoolean("read", false))
 
-        val publishedAtIso = obj.optString("published_at")
-            .ifBlank { obj.optString("published_at_iso") }
-            .trim()
-            .takeIf { it.isNotEmpty() && !obj.isNull("published_at") }
+        val publishedAtIso = obj.optCleanString("published_at", "published_at_iso")
 
-        val rawPublishedDateDisplay = obj.optString("published_date_display")
-            .ifBlank { obj.optString("published_date") }
-            .trim()
+        val rawPublishedDateDisplay = obj.optCleanString("published_date_display", "published_date").orEmpty()
         val publishedDateDisplay = if (rawPublishedDateDisplay.isNotEmpty()) {
             rawPublishedDateDisplay
         } else {
             formatIsoToDisplayDate(publishedAtIso, fallback = "13-11-2026")
         }
 
-        val authorDisplay = obj.optString("author_display")
-            .ifBlank { obj.optString("author_name") }
-            .ifBlank { obj.optString("department_name") }
-            .trim()
-            .ifEmpty { "HRPartner" }
+        val authorDisplay = obj.optCleanString("author_display", "author_name", "department_name")
+            ?: "HRPartner"
 
-        val summary = obj.optString("summary")
-            .ifBlank { obj.optString("excerpt") }
-            .trim()
+        val summary = obj.optCleanString("summary", "excerpt").orEmpty()
 
         val attachments = mutableListOf<HrpBulletinAttachment>()
         val attachmentsArr = obj.optJSONArray("attachments")
@@ -399,43 +390,23 @@ object HrpBulletinContract {
     }
 
     internal fun parseAttachmentObject(obj: JSONObject, index: Int = 0): HrpBulletinAttachment {
-        val attachmentId = obj.optString("attachment_id")
-            .ifBlank { obj.optString("id") }
-            .trim()
-            .ifEmpty { "att-$index" }
-        val fileName = obj.optString("file_name")
-            .ifBlank { obj.optString("filename") }
-            .trim()
-            .ifEmpty { "$attachmentId.bin" }
-        val mimeType = obj.optString("mime_type")
-            .ifBlank { obj.optString("content_type") }
-            .trim()
-            .ifEmpty {
-                if (fileName.lowercase(Locale.ROOT).endsWith(".pdf")) "application/pdf" else "image/png"
-            }
+        val attachmentId = obj.optCleanString("attachment_id", "id") ?: "att-$index"
+        val fileName = obj.optCleanString("file_name", "filename") ?: "$attachmentId.bin"
+        val mimeType = obj.optCleanString("mime_type", "content_type")
+            ?: if (fileName.lowercase(Locale.ROOT).endsWith(".pdf")) "application/pdf" else "image/png"
         val kind = HrpBulletinAttachmentKind.fromWireKeyOrMime(
-            rawKind = obj.optString("kind").ifBlank { obj.optString("type") },
+            rawKind = obj.optCleanString("kind", "type").orEmpty(),
             mimeType = mimeType,
             fileName = fileName
         )
-        val title = obj.optString("title")
-            .ifBlank { obj.optString("display_name") }
-            .trim()
-            .ifEmpty { fileName }
+        val title = obj.optCleanString("title", "display_name") ?: fileName
         val fileSizeBytes = obj.optLong("file_size_bytes", obj.optLong("size_bytes", 0L)).coerceAtLeast(0L)
-        val url = obj.optString("url")
-            .ifBlank { obj.optString("download_url") }
-            .trim()
-        val thumbnailUrl = obj.optString("thumbnail_url")
-            .trim()
-            .takeIf { it.isNotEmpty() && !obj.isNull("thumbnail_url") }
+        val url = obj.optCleanString("url", "download_url").orEmpty()
+        val thumbnailUrl = obj.optCleanString("thumbnail_url")
         val width = if (obj.has("width") && !obj.isNull("width")) obj.optInt("width").takeIf { it > 0 } else null
         val height = if (obj.has("height") && !obj.isNull("height")) obj.optInt("height").takeIf { it > 0 } else null
         val pageCount = if (obj.has("page_count") && !obj.isNull("page_count")) obj.optInt("page_count").takeIf { it > 0 } else null
-        val sha256 = obj.optString("sha256")
-            .trim()
-            .lowercase(Locale.ROOT)
-            .takeIf { it.isNotEmpty() && !obj.isNull("sha256") }
+        val sha256 = obj.optCleanString("sha256")?.lowercase(Locale.ROOT)
 
         return HrpBulletinAttachment(
             attachmentId = attachmentId,

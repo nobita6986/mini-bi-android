@@ -9278,6 +9278,7 @@ class WorkerUiAuthorizationRobolectricTest {
     @Test
     fun `hrp bulletin topbar button opens sheet filters categories marks read and makes zero network calls when remote flag disabled`() {
         val app = ApplicationProvider.getApplicationContext<Application>()
+        val actorUserId = "11111111-2222-4333-8444-555555555555"
         val recordedPaths = java.util.Collections.synchronizedList(mutableListOf<String>())
         val server = MockWebServer()
         server.dispatcher = object : Dispatcher() {
@@ -9285,31 +9286,29 @@ class WorkerUiAuthorizationRobolectricTest {
                 val path = request.path.orEmpty()
                 recordedPaths.add(path)
                 return when {
-                    path.startsWith("/api/auth/session") -> MockResponse()
-                        .setResponseCode(200)
-                        .setHeader("Content-Type", "application/json")
-                        .setBody(
-                            """
-                            {
-                              "ok": true,
-                              "authenticated": true,
-                              "actor": {
-                                "app_user_id": "usr-bulletin-tester",
-                                "display_name": "Nguyễn Đức Thuận",
-                                "capabilities": ["reporting_view", "work_report_Create", "attendance_CheckIn"],
-                                "scopes": [{"kind": "own", "reference": "rec_1", "valid_from": "2026-01-01", "valid_to": null}]
-                              }
-                            }
-                            """.trimIndent()
-                        )
-                    path.startsWith("/api/reporting/overview") -> MockResponse()
-                        .setResponseCode(200)
-                        .setHeader("Content-Type", "application/json")
-                        .setBody("""{"ok":true,"summary":{"total":0,"on":0,"off":0,"unconfirmed":0}}""")
-                    else -> MockResponse()
-                        .setResponseCode(200)
-                        .setHeader("Content-Type", "application/json")
-                        .setBody("""{"ok":true}""")
+                    path.startsWith("/api/auth/session") || path.startsWith("/api/direct-entry/session") ->
+                        MockResponse()
+                            .setResponseCode(200)
+                            .setHeader("Content-Type", "application/json")
+                            .setBody(
+                                """
+                                {
+                                  "ok": true,
+                                  "actor": {
+                                    "app_user_id": "$actorUserId",
+                                    "display_name": "Nguyễn Đức Thuận",
+                                    "capabilities": ["entry_read", "entry_create", "submission_create"],
+                                    "scopes": [{"kind": "own", "reference": "$actorUserId", "valid_from": "2026-01-01", "valid_to": null}],
+                                    "allowed_worker_tabs": ["uploader"]
+                                  }
+                                }
+                                """.trimIndent()
+                            )
+                    else ->
+                        MockResponse()
+                            .setResponseCode(200)
+                            .setHeader("Content-Type", "application/json")
+                            .setBody("""{"ok":true,"data":{}}""")
                 }
             }
         }
@@ -9362,8 +9361,8 @@ class WorkerUiAuthorizationRobolectricTest {
             // 1. Top bar displays bulletin button next to bell reminder button with unread badge = 3
             composeTestRule.onNodeWithTag("topbar_bulletin_button").assertIsDisplayed()
             composeTestRule.onNodeWithTag("topbar_bell_reminder_button").assertIsDisplayed()
-            composeTestRule.onNodeWithTag("topbar_bulletin_badge").assertIsDisplayed()
-            assertEquals(3, bulletinManager.unreadCountForActor("usr-bulletin-tester"))
+            composeTestRule.onNodeWithTag("topbar_bulletin_badge", useUnmergedTree = true).assertIsDisplayed()
+            assertEquals(3, bulletinManager.unreadCountForActor(actorUserId))
 
             // 2. Tap bulletin button -> opens "Bản tin HRPartner" dialog with mockup banner & 3 items
             composeTestRule.onNodeWithTag("topbar_bulletin_button").performClick()
@@ -9395,15 +9394,15 @@ class WorkerUiAuthorizationRobolectricTest {
             composeTestRule.waitForIdle()
 
             composeTestRule.onNodeWithTag("bulletin_detail_view").assertIsDisplayed()
-            composeTestRule.onNodeWithTag("bulletin_attachment_att-holiday-vn-culture-pdf-2026").assertIsDisplayed()
-            composeTestRule.onNodeWithTag("bulletin_open_pdf_att-holiday-vn-culture-pdf-2026").assertIsDisplayed()
-            assertEquals(2, bulletinManager.unreadCountForActor("usr-bulletin-tester"))
+            composeTestRule.onNodeWithTag("bulletin_attachment_att-holiday-vn-culture-pdf-2026").performScrollTo().assertIsDisplayed()
+            composeTestRule.onNodeWithTag("bulletin_open_pdf_att-holiday-vn-culture-pdf-2026", useUnmergedTree = true).assertIsDisplayed()
+            assertEquals(2, bulletinManager.unreadCountForActor(actorUserId))
 
             // 5. Return to list -> unread dot for opened item is gone, then close dialog
             composeTestRule.onNodeWithTag("bulletin_detail_back_button").performClick()
             composeTestRule.waitForIdle()
-            composeTestRule.onNodeWithTag("bulletin_unread_dot_hrp-bulletin-2026-11-13-holiday-vn-culture").assertDoesNotExist()
-            composeTestRule.onNodeWithTag("bulletin_unread_dot_hrp-bulletin-2026-11-13-hr-news").assertIsDisplayed()
+            composeTestRule.onNodeWithTag("bulletin_unread_dot_hrp-bulletin-2026-11-13-holiday-vn-culture", useUnmergedTree = true).assertDoesNotExist()
+            composeTestRule.onNodeWithTag("bulletin_unread_dot_hrp-bulletin-2026-11-13-hr-news", useUnmergedTree = true).assertIsDisplayed()
 
             composeTestRule.onNodeWithTag("bulletin_close_button").performClick()
             composeTestRule.waitForIdle()
