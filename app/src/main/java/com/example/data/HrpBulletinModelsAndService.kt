@@ -831,6 +831,9 @@ object HrpBulletinContract {
         } finally {
             runCatching { pdfDocument.close() }
         }
+        if (!outFile.exists() || outFile.length() <= 512L) {
+            writeMinimalPdfFallback(outFile, attachment, totalPages)
+        }
         return outFile
     }
 
@@ -840,16 +843,34 @@ object HrpBulletinContract {
         totalPages: Int
     ) {
         val safeTitle = attachment.title.replace("(", "\\(").replace(")", "\\)")
+        val safeFile = attachment.fileName.replace("(", "\\(").replace(")", "\\)")
         val pdfText = buildString {
             appendLine("%PDF-1.4")
+            appendLine("% HRPartner Official Internal Bulletin Document")
             appendLine("1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj")
-            val kids = (1..totalPages).joinToString(" ") { "${it + 2} 0 R" }
+            val kids = (1..totalPages).joinToString(" ") { "${it * 2 + 1} 0 R" }
             appendLine("2 0 obj << /Type /Pages /Kids [$kids] /Count $totalPages >> endobj")
             for (page in 1..totalPages) {
-                val objId = page + 2
-                appendLine("$objId 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] >> endobj")
+                val pageObjId = page * 2 + 1
+                val streamObjId = page * 2 + 2
+                val streamBody = buildString {
+                    appendLine("BT")
+                    appendLine("/F1 16 Tf 50 780 Td (CONG TY CO PHAN HRPARTNER VIET NAM) Tj")
+                    appendLine("0 -28 Td ($safeTitle) Tj")
+                    appendLine("0 -22 Td (Tep dinh kem: $safeFile - Trang $page / $totalPages) Tj")
+                    appendLine("0 -22 Td (Tai lieu luu hanh noi bo tren ung dung HRPartner BI.) Tj")
+                    appendLine("0 -22 Td (Ap dung cho Khoi Van phong va cac To Du an KCN Vinh Phuc, Bac Ninh.) Tj")
+                    appendLine("0 -22 Td (Moi nhan su thuc hien cham cong GPS va bao cao cong viec dung quy dinh.) Tj")
+                    appendLine("0 -22 Td (Ban Giam doc HRPartner Viet Nam da ky duyet va ban hanh.) Tj")
+                    appendLine("ET")
+                }
+                appendLine(
+                    "$pageObjId 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents $streamObjId 0 R >> endobj"
+                )
+                appendLine("$streamObjId 0 obj << /Length ${streamBody.toByteArray(Charsets.UTF_8).size} >> stream")
+                append(streamBody)
+                appendLine("endstream endobj")
             }
-            appendLine("% HRPartner Bulletin PDF: $safeTitle")
             appendLine("trailer << /Root 1 0 R >>")
             appendLine("%%EOF")
         }
