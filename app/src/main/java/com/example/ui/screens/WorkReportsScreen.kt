@@ -314,15 +314,15 @@ fun WorkReportsScreen(
                         selectedDateIso = selectedFilterDate ?: todayIso,
                         todayIso = todayIso,
                         allowFutureDates = false,
-                        showAllOption = true,
-                        allDatesSelected = selectedFilterDate == null,
+                        showAllOption = false,
+                        showTodayChip = false,
+                        allDatesSelected = false,
                         markedDates = currentTabMarkedDates,
                         tagPrefix = "work_reports_week_strip",
                         onSelectDate = { picked ->
-                            viewModel.setWorkReportFilterDate(picked)
-                        },
-                        onSelectAllDates = {
-                            viewModel.setWorkReportFilterDate(null)
+                            viewModel.setWorkReportFilterDate(
+                                if (selectedFilterDate == picked) null else picked
+                            )
                         }
                     )
                 }
@@ -385,7 +385,7 @@ fun WorkReportsScreen(
                             if (filterDate != null && activeObligations.isNotEmpty()) {
                                 EmptyReportBanner(
                                     title = "Không có báo cáo cần nộp ngày ${LeaveContract.formatIsoDateVi(filterDate)}",
-                                    subtitle = "Bấm 'Tất cả' trên thanh lịch tuần để xem toàn bộ báo cáo cần nộp."
+                                    subtitle = "Chọn một ngày khác trên thanh lịch tuần để xem báo cáo."
                                 )
                             } else {
                                 EmptyReportBanner(
@@ -421,7 +421,7 @@ fun WorkReportsScreen(
                             if (filterDate != null && historyObligations.isNotEmpty()) {
                                 EmptyReportBanner(
                                     title = "Không có báo cáo ngày ${LeaveContract.formatIsoDateVi(filterDate)}",
-                                    subtitle = "Bấm 'Tất cả' trên thanh lịch tuần để xem toàn bộ lịch sử báo cáo."
+                                    subtitle = "Chọn một ngày khác trên thanh lịch tuần để xem báo cáo."
                                 )
                             } else {
                                 EmptyReportBanner(
@@ -460,7 +460,7 @@ fun WorkReportsScreen(
                             if (filterDate != null && reviewQueue.isNotEmpty()) {
                                 EmptyReportBanner(
                                     title = "Không có báo cáo chờ duyệt ngày ${LeaveContract.formatIsoDateVi(filterDate)}",
-                                    subtitle = "Bấm 'Tất cả' trên thanh lịch tuần để xem toàn bộ hàng đợi duyệt."
+                                    subtitle = "Chọn một ngày khác trên thanh lịch tuần để xem báo cáo."
                                 )
                             } else {
                                 EmptyReportBanner(

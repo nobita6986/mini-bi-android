@@ -8410,8 +8410,9 @@ class WorkerUiAuthorizationRobolectricTest {
         }
         composeTestRule.waitForIdle()
 
-        // 1. Default launch ("Tất cả") MUST display all active obligations across different dates
-        composeTestRule.onNodeWithTag("work_reports_week_strip_all_chip").assertIsDisplayed()
+        // 1. Default launch MUST NOT show "Tất cả" or "Hôm nay" chips (matching AttendanceScreen), while displaying obligations
+        composeTestRule.onNodeWithTag("work_reports_week_strip_all_chip").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("work_reports_week_strip_today_chip").assertDoesNotExist()
         composeTestRule.onNodeWithText("Báo cáo Ngày Hôm Nay P2").assertIsDisplayed()
         composeTestRule.onNodeWithText("Báo cáo Ngày Khác Trong Tuần P2").assertIsDisplayed()
 
@@ -8422,8 +8423,8 @@ class WorkerUiAuthorizationRobolectricTest {
         composeTestRule.onNodeWithText("Báo cáo Ngày Hôm Nay P2").assertIsDisplayed()
         composeTestRule.onNodeWithText("Báo cáo Ngày Khác Trong Tuần P2").assertDoesNotExist()
 
-        // 3. Tap "Tất cả" chip -> restores full list immediately
-        composeTestRule.onNodeWithTag("work_reports_week_strip_all_chip").performClick()
+        // 3. Tap today's cell again -> clears single-day filter and restores full list immediately
+        composeTestRule.onNodeWithTag("work_reports_week_strip_day_$todayIso").performClick()
         composeTestRule.waitForIdle()
 
         composeTestRule.onNodeWithText("Báo cáo Ngày Hôm Nay P2").assertIsDisplayed()
@@ -9226,10 +9227,12 @@ class WorkerUiAuthorizationRobolectricTest {
         composeTestRule.onNodeWithTag("explanation_date_picker_button").assertDoesNotExist()
         composeTestRule.onNodeWithTag("explanation_today_button").assertDoesNotExist()
 
-        // 3. WorkReports Screen: week strip has no future dates
+        // 3. WorkReports Screen: week strip has no future dates and no "Tất cả" / "Hôm nay" chips
         vm.navigateTo(com.example.ui.MainDestination.WORK_REPORTS)
         composeTestRule.waitForIdle()
         composeTestRule.onNodeWithTag("work_reports_week_strip").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("work_reports_week_strip_all_chip").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("work_reports_week_strip_today_chip").assertDoesNotExist()
         composeTestRule.onNodeWithTag("work_reports_week_strip_day_$todayIso").assertIsDisplayed()
         composeTestRule.onNodeWithTag("work_reports_week_strip_day_$tomorrowIso").assertDoesNotExist()
 
@@ -9248,7 +9251,8 @@ class WorkerUiAuthorizationRobolectricTest {
             "App must stop at page 1 and NOT auto-fetch cursor=cur-p2 on screen entry",
             recordedPaths.any { it.contains("cursor=cur-p2") }
         )
-        composeTestRule.onNodeWithText("2+").assertIsDisplayed()
+        composeTestRule.onNodeWithText("7").assertIsDisplayed()
+        composeTestRule.onNodeWithText("2+").assertDoesNotExist()
         composeTestRule.onNodeWithTag("recruitment_posts_load_more_button").assertIsDisplayed()
 
         // KCN dropdown already has full facets from page 1 response (including KCN Khai Quang (5) from page 2)
