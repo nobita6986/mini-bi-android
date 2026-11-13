@@ -2727,7 +2727,7 @@ class WorkReportsReportingAndAttendanceContractTest {
             fileName = "cached-doc.pdf",
             sha256 = validSha
         )
-        val storedFile = com.example.data.HrpBulletinContract.storeAttachmentBytesInCache(app, cachedAtt, samplePayload)
+        val storedFile = com.example.data.HrpBulletinContract.storeAttachmentBytesInCache(context, cachedAtt, samplePayload)
         assertTrue(storedFile.exists())
         assertTrue(com.example.data.HrpBulletinContract.isCachedAttachmentValid(storedFile, validSha))
         assertFalse(com.example.data.HrpBulletinContract.isCachedAttachmentValid(storedFile, "0000deadbeef"))
@@ -2739,13 +2739,13 @@ class WorkReportsReportingAndAttendanceContractTest {
         assertEquals("Hướng dẫn rà soát bảng công & giải trình chấm công tháng 11-2026", defaultMockups[2].title)
 
         val generatedPdf = com.example.data.HrpBulletinContract.ensureMockupAttachmentFile(
-            app,
+            context,
             defaultMockups[1].attachments.first { it.kind == com.example.data.HrpBulletinAttachmentKind.PDF }
         )
         assertTrue("Generated mockup PDF must exist and be non-empty", generatedPdf.exists() && generatedPdf.length() > 500L)
 
         val generatedPng = com.example.data.HrpBulletinContract.ensureMockupAttachmentFile(
-            app,
+            context,
             defaultMockups[0].attachments.first { it.kind == com.example.data.HrpBulletinAttachmentKind.IMAGE }
         )
         assertTrue("Generated mockup PNG must exist and be non-empty", generatedPng.exists() && generatedPng.length() > 500L)

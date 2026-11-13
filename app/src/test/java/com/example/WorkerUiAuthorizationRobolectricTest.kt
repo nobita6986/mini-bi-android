@@ -9277,6 +9277,7 @@ class WorkerUiAuthorizationRobolectricTest {
 
     @Test
     fun `hrp bulletin topbar button opens sheet filters categories marks read and makes zero network calls when remote flag disabled`() {
+        val app = ApplicationProvider.getApplicationContext<Application>()
         val recordedPaths = java.util.Collections.synchronizedList(mutableListOf<String>())
         val server = MockWebServer()
         server.dispatcher = object : Dispatcher() {
