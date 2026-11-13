@@ -59,6 +59,7 @@ import androidx.compose.material.icons.outlined.Analytics
 import androidx.compose.material.icons.outlined.CameraAlt
 import androidx.compose.material.icons.outlined.Campaign
 import androidx.compose.material.icons.outlined.Groups
+import androidx.compose.material.icons.outlined.Newspaper
 import androidx.compose.material.icons.outlined.PersonAdd
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DrawerValue
@@ -108,6 +109,7 @@ import androidx.compose.ui.zIndex
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.Coil
+import com.example.data.HrpBulletinManager
 import com.example.data.TaskReminderManager
 import com.example.ui.MainDestination
 import com.example.ui.MiniBiViewModel
@@ -121,6 +123,7 @@ import com.example.ui.components.hrpMutedTile
 import com.example.ui.screens.AttendanceScreen
 import com.example.ui.screens.DashboardScreen
 import com.example.ui.screens.DirectEntryNewWorkersScreen
+import com.example.ui.screens.HrpBulletinDialog
 import com.example.ui.screens.LoginScreen
 import com.example.ui.screens.RecruitmentPostsScreen
 import com.example.ui.screens.TaskReminderDialog
@@ -297,6 +300,13 @@ fun MiniBiAppRoot(viewModel: MiniBiViewModel) {
     val taskReminders by taskReminderManager.remindersFlow.collectAsStateWithLifecycle()
     val enabledReminderCount = taskReminders.count { it.isEnabled }
     var reminderDialogOpen by remember { mutableStateOf(false) }
+
+    val bulletinManager = remember(context) { HrpBulletinManager.getInstance(context) }
+    val bulletinReadVersion by bulletinManager.readIdsVersionFlow.collectAsStateWithLifecycle()
+    val unreadBulletinCount = remember(authenticatedActor.appUserId, bulletinReadVersion) {
+        bulletinManager.unreadCountForActor(authenticatedActor.appUserId)
+    }
+    var bulletinDialogOpen by remember { mutableStateOf(false) }
 
     LaunchedEffect(taskReminderManager) {
         taskReminderManager.reconcileExpiredOnceReminders()
@@ -659,7 +669,71 @@ fun MiniBiAppRoot(viewModel: MiniBiViewModel) {
                                 )
                             }
 
-                            Spacer(modifier = Modifier.width(8.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+
+                            Box(
+                                modifier = Modifier.size(40.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Surface(
+                                    shape = CircleShape,
+                                    color = if (unreadBulletinCount > 0) {
+                                        MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.65f)
+                                    } else {
+                                        SemanticColors.SurfaceSubtle
+                                    },
+                                    border = BorderStroke(
+                                        width = 1.dp,
+                                        color = if (unreadBulletinCount > 0) {
+                                            MaterialTheme.colorScheme.primary.copy(alpha = 0.25f)
+                                        } else {
+                                            SemanticColors.SurfaceBorder
+                                        }
+                                    ),
+                                    modifier = Modifier
+                                        .size(36.dp)
+                                        .clip(CircleShape)
+                                        .clickable {
+                                            HrpHaptics.tick(hapticFeedback)
+                                            bulletinDialogOpen = true
+                                        }
+                                        .testTag("topbar_bulletin_button")
+                                ) {
+                                    Box(
+                                        modifier = Modifier.fillMaxSize(),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Outlined.Newspaper,
+                                            contentDescription = "Bản tin HRPartner",
+                                            tint = MaterialTheme.colorScheme.primary,
+                                            modifier = Modifier.size(19.dp)
+                                        )
+                                    }
+                                }
+
+                                if (unreadBulletinCount > 0) {
+                                    Surface(
+                                        shape = CircleShape,
+                                        color = SemanticColors.ErrorLight,
+                                        border = BorderStroke(1.dp, SemanticColors.SurfaceLight),
+                                        modifier = Modifier
+                                            .align(Alignment.TopEnd)
+                                            .testTag("topbar_bulletin_badge")
+                                    ) {
+                                        Text(
+                                            text = unreadBulletinCount.coerceAtMost(99).toString(),
+                                            style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp).tabularNums(),
+                                            fontWeight = FontWeight.Bold,
+                                            color = Color.White,
+                                            maxLines = 1,
+                                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                                        )
+                                    }
+                                }
+                            }
+
+                            Spacer(modifier = Modifier.width(6.dp))
 
                             Box(
                                 modifier = Modifier.size(40.dp),
@@ -984,6 +1058,14 @@ fun MiniBiAppRoot(viewModel: MiniBiViewModel) {
             TaskReminderDialog(
                 taskReminderManager = taskReminderManager,
                 onDismiss = { reminderDialogOpen = false }
+            )
+        }
+
+        if (bulletinDialogOpen) {
+            HrpBulletinDialog(
+                actor = authenticatedActor,
+                bulletinManager = bulletinManager,
+                onDismiss = { bulletinDialogOpen = false }
             )
         }
     }

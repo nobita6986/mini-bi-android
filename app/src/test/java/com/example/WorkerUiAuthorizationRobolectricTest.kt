@@ -9274,4 +9274,147 @@ class WorkerUiAuthorizationRobolectricTest {
         composeTestRule.onNodeWithText("KCN: KCN Khai Quang (5)").assertIsDisplayed()
         composeTestRule.onNodeWithText("5/7").assertIsDisplayed()
     }
+
+    @Test
+    fun `hrp bulletin topbar button opens sheet filters categories marks read and makes zero network calls when remote flag disabled`() {
+        val recordedPaths = java.util.Collections.synchronizedList(mutableListOf<String>())
+        val server = MockWebServer()
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val path = request.path.orEmpty()
+                recordedPaths.add(path)
+                return when {
+                    path.startsWith("/api/auth/session") -> MockResponse()
+                        .setResponseCode(200)
+                        .setHeader("Content-Type", "application/json")
+                        .setBody(
+                            """
+                            {
+                              "ok": true,
+                              "authenticated": true,
+                              "actor": {
+                                "app_user_id": "usr-bulletin-tester",
+                                "display_name": "Nguyễn Đức Thuận",
+                                "capabilities": ["reporting_view", "work_report_Create", "attendance_CheckIn"],
+                                "scopes": [{"kind": "own", "reference": "rec_1", "valid_from": "2026-01-01", "valid_to": null}]
+                              }
+                            }
+                            """.trimIndent()
+                        )
+                    path.startsWith("/api/reporting/overview") -> MockResponse()
+                        .setResponseCode(200)
+                        .setHeader("Content-Type", "application/json")
+                        .setBody("""{"ok":true,"summary":{"total":0,"on":0,"off":0,"unconfirmed":0}}""")
+                    else -> MockResponse()
+                        .setResponseCode(200)
+                        .setHeader("Content-Type", "application/json")
+                        .setBody("""{"ok":true}""")
+                }
+            }
+        }
+        server.start()
+
+        val bulletinManager = com.example.data.HrpBulletinManager.getInstance(app)
+        bulletinManager.clearAllForTest()
+
+        val db = buildTestDb(app)
+        val cookieFile = File(app.cacheDir, "bulletin_cookie_${System.nanoTime()}.enc")
+        val prefsFile = File(app.cacheDir, "bulletin_prefs_${System.nanoTime()}.preferences_pb")
+        val cipher = JvmAes256GcmCookieCipher()
+        val repo = MiniBiRepository(
+            context = app,
+            database = db,
+            defaultServerUrl = server.url("/").toString().trimEnd('/'),
+            allowDebugUrlOverride = true,
+            cookieStorageFile = cookieFile,
+            preferencesStorageFile = prefsFile,
+            cookieCipher = cipher
+        )
+        repo.cookieJar.saveFromResponse(
+            server.url("/api/auth/session"),
+            listOf(
+                Cookie.Builder()
+                    .name("mini_bi_sid")
+                    .value("valid_bulletin_sid")
+                    .hostOnlyDomain(server.hostName)
+                    .path("/")
+                    .expiresAt(System.currentTimeMillis() + 3_600_000L)
+                    .build()
+            )
+        )
+        val vm = MiniBiViewModel(app, repo)
+        registerTestResourcesCleanup(vm, db, server, cookieFile, prefsFile)
+
+        try {
+            composeTestRule.setContent {
+                MyApplicationTheme {
+                    MiniBiAppRoot(viewModel = vm)
+                }
+            }
+
+            composeTestRule.waitUntil(timeoutMillis = 5_000) {
+                org.robolectric.shadows.ShadowLooper.idleMainLooper()
+                !vm.sessionBootstrapping.value && vm.currentActor.value != null
+            }
+            composeTestRule.waitForIdle()
+
+            // 1. Top bar displays bulletin button next to bell reminder button with unread badge = 3
+            composeTestRule.onNodeWithTag("topbar_bulletin_button").assertIsDisplayed()
+            composeTestRule.onNodeWithTag("topbar_bell_reminder_button").assertIsDisplayed()
+            composeTestRule.onNodeWithTag("topbar_bulletin_badge").assertIsDisplayed()
+            assertEquals(3, bulletinManager.unreadCountForActor("usr-bulletin-tester"))
+
+            // 2. Tap bulletin button -> opens "Bản tin HRPartner" dialog with mockup banner & 3 items
+            composeTestRule.onNodeWithTag("topbar_bulletin_button").performClick()
+            composeTestRule.waitForIdle()
+
+            composeTestRule.onNodeWithTag("hrp_bulletin_dialog").assertIsDisplayed()
+            composeTestRule.onNodeWithText("Bản tin HRPartner").assertIsDisplayed()
+            composeTestRule.onNodeWithTag("bulletin_mockup_banner").assertIsDisplayed()
+            composeTestRule.onNodeWithText("Tin nhân sự ngày 13-11-2026").assertIsDisplayed()
+            composeTestRule.onNodeWithText("Lịch nghỉ lễ ngày Văn hóa Việt Nam").assertIsDisplayed()
+            composeTestRule.onNodeWithText("Hướng dẫn rà soát bảng công & giải trình chấm công tháng 11-2026").assertIsDisplayed()
+
+            // 3. Filter by category chips
+            composeTestRule.onNodeWithTag("bulletin_category_chip_HOLIDAY_SCHEDULE").performClick()
+            composeTestRule.waitForIdle()
+            composeTestRule.onNodeWithText("Lịch nghỉ lễ ngày Văn hóa Việt Nam").assertIsDisplayed()
+            composeTestRule.onNodeWithText("Tin nhân sự ngày 13-11-2026").assertDoesNotExist()
+
+            composeTestRule.onNodeWithTag("bulletin_category_chip_INTERNAL_POLICY").performClick()
+            composeTestRule.waitForIdle()
+            composeTestRule.onNodeWithText("Hướng dẫn rà soát bảng công & giải trình chấm công tháng 11-2026").assertIsDisplayed()
+            composeTestRule.onNodeWithText("Lịch nghỉ lễ ngày Văn hóa Việt Nam").assertDoesNotExist()
+
+            composeTestRule.onNodeWithTag("bulletin_category_chip_ALL").performClick()
+            composeTestRule.waitForIdle()
+
+            // 4. Open holiday bulletin detail -> marks as read, decrements unread count from 3 to 2, shows PDF & image attachments
+            composeTestRule.onNodeWithTag("bulletin_card_hrp-bulletin-2026-11-13-holiday-vn-culture").performClick()
+            composeTestRule.waitForIdle()
+
+            composeTestRule.onNodeWithTag("bulletin_detail_view").assertIsDisplayed()
+            composeTestRule.onNodeWithTag("bulletin_attachment_att-holiday-vn-culture-pdf-2026").assertIsDisplayed()
+            composeTestRule.onNodeWithTag("bulletin_open_pdf_att-holiday-vn-culture-pdf-2026").assertIsDisplayed()
+            assertEquals(2, bulletinManager.unreadCountForActor("usr-bulletin-tester"))
+
+            // 5. Return to list -> unread dot for opened item is gone, then close dialog
+            composeTestRule.onNodeWithTag("bulletin_detail_back_button").performClick()
+            composeTestRule.waitForIdle()
+            composeTestRule.onNodeWithTag("bulletin_unread_dot_hrp-bulletin-2026-11-13-holiday-vn-culture").assertDoesNotExist()
+            composeTestRule.onNodeWithTag("bulletin_unread_dot_hrp-bulletin-2026-11-13-hr-news").assertIsDisplayed()
+
+            composeTestRule.onNodeWithTag("bulletin_close_button").performClick()
+            composeTestRule.waitForIdle()
+            composeTestRule.onNodeWithTag("hrp_bulletin_dialog").assertDoesNotExist()
+
+            // 6. Verify ZERO HTTP calls were made to /api/bulletins while BULLETIN_REMOTE_API_ENABLED == false
+            assertFalse(
+                "No HTTP request to /api/bulletins may be sent when BULLETIN_REMOTE_API_ENABLED is false",
+                recordedPaths.any { it.contains("/api/bulletins") }
+            )
+        } finally {
+            bulletinManager.clearAllForTest()
+        }
+    }
 }

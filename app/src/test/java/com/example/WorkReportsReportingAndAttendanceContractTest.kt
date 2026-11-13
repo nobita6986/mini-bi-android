@@ -2578,4 +2578,176 @@ class WorkReportsReportingAndAttendanceContractTest {
             vm.cancelScopeForTest()
         }
     }
+
+    @Test
+    fun `hrp bulletin contract parses list detail mark-read sorts pinned first and verifies sha256 session cache`() {
+        assertFalse(
+            "BULLETIN_REMOTE_API_ENABLED must remain false while backend /api/bulletins is not yet live",
+            com.example.data.BULLETIN_REMOTE_API_ENABLED
+        )
+        assertEquals(
+            "/api/bulletins?page_size=10",
+            com.example.data.HrpBulletinContract.buildListPath(category = com.example.data.HrpBulletinCategory.ALL, pageSize = 10)
+        )
+        assertEquals(
+            "/api/bulletins?category=HOLIDAY_SCHEDULE&page_size=10&cursor=cur-next-1",
+            com.example.data.HrpBulletinContract.buildListPath(
+                category = com.example.data.HrpBulletinCategory.HOLIDAY_SCHEDULE,
+                pageSize = 10,
+                cursor = "cur-next-1"
+            )
+        )
+        assertEquals(
+            "/api/bulletins/bul-001",
+            com.example.data.HrpBulletinContract.buildDetailPath("bul-001")
+        )
+        assertEquals(
+            "/api/bulletins/bul-001/read",
+            com.example.data.HrpBulletinContract.buildMarkReadPath("bul-001")
+        )
+
+        val listJson = """
+            {
+              "ok": true,
+              "data": {
+                "unread_count": 2,
+                "page_size": 10,
+                "has_more": true,
+                "next_cursor": "cursor-page-2",
+                "items": [
+                  {
+                    "bulletin_id": "bul-unpinned-newer",
+                    "title": "Thông báo chung không ghim",
+                    "category": "UNKNOWN_FUTURE_CATEGORY",
+                    "is_pinned": false,
+                    "is_read": false,
+                    "published_at": "2026-11-13T10:00:00Z",
+                    "author_display": "Ban Hành chính",
+                    "summary": "Tóm tắt bản tin thường",
+                    "image_count": 0,
+                    "pdf_count": 1
+                  },
+                  {
+                    "bulletin_id": "bul-pinned-older",
+                    "title": "Tin nhân sự ghim ưu tiên",
+                    "category": "HR_NEWS",
+                    "badge_text": "Mới",
+                    "is_pinned": true,
+                    "is_read": false,
+                    "published_at": "2026-11-12T08:00:00Z",
+                    "author_display": "Ban Nhân sự",
+                    "summary": "Tóm tắt bản tin ghim",
+                    "image_count": 2,
+                    "pdf_count": 0
+                  }
+                ]
+              }
+            }
+        """.trimIndent()
+
+        val parsedList = com.example.data.HrpBulletinContract.parseListResponse(listJson)
+        assertEquals(2, parsedList.unreadCount)
+        assertTrue(parsedList.hasMore)
+        assertEquals("cursor-page-2", parsedList.nextCursor)
+        assertEquals(2, parsedList.items.size)
+        // Pinned item must be sorted before unpinned item even if published_at is earlier
+        assertEquals("bul-pinned-older", parsedList.items[0].bulletinId)
+        assertEquals(com.example.data.HrpBulletinCategory.HR_NEWS, parsedList.items[0].category)
+        assertEquals("Mới", parsedList.items[0].badgeText)
+        assertEquals("12-11-2026", parsedList.items[0].publishedDateDisplay)
+
+        // Unknown category falls back safely to GENERAL ("Thông báo chung")
+        assertEquals("bul-unpinned-newer", parsedList.items[1].bulletinId)
+        assertEquals(com.example.data.HrpBulletinCategory.GENERAL, parsedList.items[1].category)
+        assertEquals("Thông báo chung", parsedList.items[1].categoryDisplay)
+
+        val detailJson = """
+            {
+              "ok": true,
+              "data": {
+                "item": {
+                  "bulletin_id": "bul-detail-01",
+                  "title": "Lịch nghỉ lễ ngày Văn hóa Việt Nam",
+                  "category": "HOLIDAY_SCHEDULE",
+                  "badge_text": "Lịch nghỉ lễ",
+                  "is_pinned": true,
+                  "is_read": true,
+                  "published_at": "2026-11-13T07:30:00Z",
+                  "author_display": "Phòng Hành chính - Nhân sự HRPartner",
+                  "summary": "Tóm tắt lịch nghỉ lễ",
+                  "content_sections": [
+                    "Mục 1: Thời gian nghỉ lễ",
+                    "Mục 2: Bố trí trực KCN"
+                  ],
+                  "attachments": [
+                    {
+                      "attachment_id": "att-pdf-1",
+                      "kind": "PDF",
+                      "file_name": "Thong-bao-nghi-le.pdf",
+                      "title": "Công văn nghỉ lễ",
+                      "mime_type": "application/pdf",
+                      "file_size_bytes": 245760,
+                      "url": "https://bi.hrpartner.vn/files/Thong-bao-nghi-le.pdf",
+                      "page_count": 2
+                    },
+                    {
+                      "attachment_id": "att-img-1",
+                      "kind": "IMAGE",
+                      "file_name": "lich-truc.png",
+                      "title": "Ảnh lịch trực",
+                      "mime_type": "image/png",
+                      "file_size_bytes": 162800,
+                      "url": "https://bi.hrpartner.vn/files/lich-truc.png",
+                      "width": 1200,
+                      "height": 800
+                    }
+                  ]
+                }
+              }
+            }
+        """.trimIndent()
+
+        val detail = com.example.data.HrpBulletinContract.parseDetailResponse(detailJson)
+        assertEquals("bul-detail-01", detail.bulletinId)
+        assertEquals(com.example.data.HrpBulletinCategory.HOLIDAY_SCHEDULE, detail.category)
+        assertEquals(2, detail.contentSections.size)
+        assertEquals(1, detail.pdfCount)
+        assertEquals(1, detail.imageCount)
+        assertEquals(2, detail.attachments.size)
+        assertEquals(com.example.data.HrpBulletinAttachmentKind.PDF, detail.attachments[0].kind)
+        assertEquals(2, detail.attachments[0].pageCount)
+        assertEquals("240 KB", detail.attachments[0].formattedFileSize)
+        assertTrue(com.example.data.HrpBulletinContract.parseMarkReadResponse("""{"ok":true}"""))
+
+        // Verify SHA-256 attachment caching & local mockup PDF/PNG generation
+        val samplePayload = "hrpartner-bulletin-cache-test".toByteArray(Charsets.UTF_8)
+        val validSha = com.example.data.HrpBulletinContract.computeSha256Hex(samplePayload)
+        val cachedAtt = detail.attachments[0].copy(
+            attachmentId = "att-cache-sha",
+            fileName = "cached-doc.pdf",
+            sha256 = validSha
+        )
+        val storedFile = com.example.data.HrpBulletinContract.storeAttachmentBytesInCache(app, cachedAtt, samplePayload)
+        assertTrue(storedFile.exists())
+        assertTrue(com.example.data.HrpBulletinContract.isCachedAttachmentValid(storedFile, validSha))
+        assertFalse(com.example.data.HrpBulletinContract.isCachedAttachmentValid(storedFile, "0000deadbeef"))
+
+        val defaultMockups = com.example.data.HrpBulletinContract.defaultMockupItems
+        assertEquals(3, defaultMockups.size)
+        assertEquals("Tin nhân sự ngày 13-11-2026", defaultMockups[0].title)
+        assertEquals("Lịch nghỉ lễ ngày Văn hóa Việt Nam", defaultMockups[1].title)
+        assertEquals("Hướng dẫn rà soát bảng công & giải trình chấm công tháng 11-2026", defaultMockups[2].title)
+
+        val generatedPdf = com.example.data.HrpBulletinContract.ensureMockupAttachmentFile(
+            app,
+            defaultMockups[1].attachments.first { it.kind == com.example.data.HrpBulletinAttachmentKind.PDF }
+        )
+        assertTrue("Generated mockup PDF must exist and be non-empty", generatedPdf.exists() && generatedPdf.length() > 500L)
+
+        val generatedPng = com.example.data.HrpBulletinContract.ensureMockupAttachmentFile(
+            app,
+            defaultMockups[0].attachments.first { it.kind == com.example.data.HrpBulletinAttachmentKind.IMAGE }
+        )
+        assertTrue("Generated mockup PNG must exist and be non-empty", generatedPng.exists() && generatedPng.length() > 500L)
+    }
 }
