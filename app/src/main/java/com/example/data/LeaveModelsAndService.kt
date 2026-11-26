@@ -410,15 +410,16 @@ object LeaveContract {
         else -> status
     }
 
-    fun leaveUnitKindLabel(unitKind: String): String = when (unitKind.trim().uppercase(Locale.ROOT)) {
-        "RECRUITMENT" -> "Tuyển dụng"
-        "MARKETING" -> "Marketing"
-        "IT" -> "IT"
-        "ACCOUNTING" -> "Kế toán"
-        "MANAGEMENT_BOD" -> "Ban Giám đốc / Quản lý"
-        "UNCLASSIFIED" -> "Chưa phân loại"
-        else -> unitKind
-    }
+    fun leaveUnitKindLabel(unitKind: String, departmentName: String? = null): String =
+        when (unitKind.trim().uppercase(Locale.ROOT)) {
+            "RECRUITMENT" -> "Tuyển dụng"
+            "MARKETING" -> "Marketing"
+            "IT" -> "IT"
+            "ACCOUNTING" -> "Kế toán"
+            "MANAGEMENT_BOD" -> "Ban Giám đốc / Quản lý"
+            "UNCLASSIFIED" -> departmentName?.trim()?.takeIf { it.isNotEmpty() } ?: "Chưa phân loại"
+            else -> unitKind
+        }
 
     fun leaveRequestStatusLabel(status: String): String = when (status.trim().uppercase(Locale.ROOT)) {
         "PENDING" -> "Chờ duyệt"
@@ -542,13 +543,21 @@ object LeaveContract {
     fun leaveRouteKindLabel(
         routeKind: String,
         teamName: String? = null,
-        unitKind: String? = null
+        unitKind: String? = null,
+        departmentName: String? = null
     ): String = when (routeKind.trim().uppercase(Locale.ROOT)) {
         "TEAM_LEADER" -> if (!teamName.isNullOrBlank()) "Team Leader ($teamName)" else "Team Leader"
-        "DEPARTMENT_HEAD" -> if (!unitKind.isNullOrBlank()) {
-            "Trưởng bộ phận (${leaveUnitKindLabel(unitKind)})"
-        } else {
-            "Trưởng bộ phận"
+        "DEPARTMENT_HEAD" -> {
+            val unitLabel = if (!unitKind.isNullOrBlank()) {
+                leaveUnitKindLabel(unitKind, departmentName)
+            } else {
+                departmentName?.trim()?.takeIf { it.isNotEmpty() }
+            }
+            if (!unitLabel.isNullOrBlank()) {
+                "Trưởng bộ phận ($unitLabel)"
+            } else {
+                "Trưởng bộ phận"
+            }
         }
         "ADMIN_BOD_DIRECT" -> "Admin / Ban Giám đốc (trực tiếp)"
         "ADMIN_BOD_FALLBACK" -> "Admin / Ban Giám đốc (hàng đợi dự phòng)"
@@ -1033,11 +1042,33 @@ object LeaveContract {
         )
     }
 
-    fun parseRoutingProjection(obj: JSONObject?): LeaveRoutingProjection {
+    private fun resolveUnitKindWithDepartmentName(
+        rawUnitKind: String,
+        departmentName: String?
+    ): String {
+        val cleanUnit = rawUnitKind.trim()
+        val cleanDept = departmentName?.trim()?.takeIf { it.isNotEmpty() }
+        return if (cleanUnit.equals("UNCLASSIFIED", ignoreCase = true) && cleanDept != null) {
+            cleanDept
+        } else {
+            cleanUnit
+        }
+    }
+
+    fun parseRoutingProjection(
+        obj: JSONObject?,
+        defaultDepartmentName: String? = null
+    ): LeaveRoutingProjection {
         val safe = obj ?: JSONObject()
+        val deptName = safe.optJSONObject("org_department")?.optNullableString("department_name")
+            ?: safe.optNullableString("department_name")
+            ?: defaultDepartmentName
         return LeaveRoutingProjection(
             routeKind = safe.optString("route_kind", "ADMIN_BOD_FALLBACK").trim(),
-            unitKind = safe.optString("unit_kind", "UNCLASSIFIED").trim(),
+            unitKind = resolveUnitKindWithDepartmentName(
+                safe.optString("unit_kind", "UNCLASSIFIED"),
+                deptName
+            ),
             primaryApproverAppUserId = safe.optNullableString("primary_approver_app_user_id"),
             teamId = safe.optNullableString("team_id"),
             teamCode = safe.optNullableString("team_code"),
@@ -1061,8 +1092,15 @@ object LeaveContract {
         )
     }
 
-    fun parseBalanceProjection(obj: JSONObject?, defaultYear: Int): LeaveBalanceProjection {
+    fun parseBalanceProjection(
+        obj: JSONObject?,
+        defaultYear: Int,
+        defaultDepartmentName: String? = null
+    ): LeaveBalanceProjection {
         val safe = obj ?: JSONObject()
+        val deptName = safe.optJSONObject("org_department")?.optNullableString("department_name")
+            ?: safe.optNullableString("department_name")
+            ?: defaultDepartmentName
         val lotsArr = safe.optJSONArray("lots") ?: JSONArray()
         val lots = buildList {
             for (i in 0 until lotsArr.length()) {
@@ -1096,7 +1134,10 @@ object LeaveContract {
             hasProfile = safe.optBoolean("has_profile", false),
             profileConfigured = safe.optBoolean("profile_configured", false),
             employmentStatus = safe.optString("employment_status", "UNCONFIGURED").trim(),
-            unitKind = safe.optString("unit_kind", "UNCLASSIFIED").trim(),
+            unitKind = resolveUnitKindWithDepartmentName(
+                safe.optString("unit_kind", "UNCLASSIFIED"),
+                deptName
+            ),
             workStartDate = safe.optNullableString("work_start_date"),
             officialEffectiveDate = safe.optNullableString("official_effective_date"),
             nextSeniorityEffectiveDate = safe.optNullableString("next_seniority_effective_date"),
@@ -1125,7 +1166,13 @@ object LeaveContract {
         )
     }
 
-    fun parseRequestProjection(obj: JSONObject): LeaveRequestProjection {
+    fun parseRequestProjection(
+        obj: JSONObject,
+        defaultDepartmentName: String? = null
+    ): LeaveRequestProjection {
+        val deptName = obj.optJSONObject("org_department")?.optNullableString("department_name")
+            ?: obj.optNullableString("department_name")
+            ?: defaultDepartmentName
         val daysArr = obj.optJSONArray("days") ?: JSONArray()
         val days = buildList {
             for (i in 0 until daysArr.length()) {
@@ -1211,7 +1258,10 @@ object LeaveContract {
             status = obj.optString("status", "PENDING").trim(),
             payTreatment = obj.optString("pay_treatment", "PAID_LEAVE").trim(),
             employmentStatusSnapshot = obj.optString("employment_status_snapshot", "UNCONFIGURED").trim(),
-            unitKindSnapshot = obj.optString("unit_kind_snapshot", "UNCLASSIFIED").trim(),
+            unitKindSnapshot = resolveUnitKindWithDepartmentName(
+                obj.optString("unit_kind_snapshot", "UNCLASSIFIED"),
+                deptName
+            ),
             profileConfiguredAtSubmit = obj.optBoolean("profile_configured_at_submit", false),
             requestedUnits = requestedUnits,
             reason = obj.optNullableString("reason").orEmpty(),
@@ -1248,12 +1298,14 @@ object LeaveContract {
             message = "Phản hồi máy chủ thiếu dữ liệu hồ sơ nghỉ phép."
         )
         val leaveYear = dataObj.optInt("leave_year", currentVietnamLeaveYear())
+        val orgDepartmentName = dataObj.optJSONObject("org_department")?.optNullableString("department_name")
+            ?: dataObj.optNullableString("department_name")
         val authority = parseAuthorityProjection(dataObj.optJSONObject("authority"))
         val requestsArr = dataObj.optJSONArray("requests") ?: JSONArray()
         val requests = buildList {
             for (i in 0 until requestsArr.length()) {
                 val r = requestsArr.optJSONObject(i) ?: continue
-                add(parseRequestProjection(r))
+                add(parseRequestProjection(r, defaultDepartmentName = orgDepartmentName))
             }
         }
         val ledgerArr = dataObj.optJSONArray("ledger_entries") ?: JSONArray()
@@ -1282,9 +1334,13 @@ object LeaveContract {
             leaveYear = leaveYear,
             account = parseAccountProjection(dataObj.optJSONObject("account")),
             authority = authority,
-            routing = parseRoutingProjection(dataObj.optJSONObject("routing")),
+            routing = parseRoutingProjection(dataObj.optJSONObject("routing"), defaultDepartmentName = orgDepartmentName),
             policy = parsePolicyProjection(dataObj.optJSONObject("policy")),
-            balance = parseBalanceProjection(dataObj.optJSONObject("balance"), leaveYear),
+            balance = parseBalanceProjection(
+                dataObj.optJSONObject("balance"),
+                leaveYear,
+                defaultDepartmentName = orgDepartmentName
+            ),
             requests = requests,
             ledgerEntries = ledgerEntries
         )

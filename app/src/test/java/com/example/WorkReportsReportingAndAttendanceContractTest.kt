@@ -2766,4 +2766,198 @@ class WorkReportsReportingAndAttendanceContractTest {
         assertFalse(manager.isNewBulletinNotificationEnabled())
         assertTrue(manager.notifyNewBulletinsIfNeeded("usr-notify-2", defaultMockups, postSystemNotification = true).isEmpty())
     }
+
+    @Test
+    fun `refactor golive contract parses effective_report_review_scopes prioritizes analytics options uses report_form_manage and resolves custom leave department name`() = runTest {
+        val server = MockWebServer()
+        val recordedPaths = java.util.Collections.synchronizedList(mutableListOf<String>())
+        val analyticsTplId = "11111111-aaaa-4111-8111-111111111111"
+        val fallbackTplId = "22222222-bbbb-4222-8222-222222222222"
+        var analyticsReturnsEmpty = false
+
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val path = request.path.orEmpty()
+                recordedPaths.add(path)
+                return when {
+                    path.startsWith("/api/work-reports/analytics/options") -> MockResponse()
+                        .setResponseCode(200)
+                        .setHeader("Content-Type", "application/json")
+                        .setBody(
+                            if (analyticsReturnsEmpty) {
+                                """{"ok":true,"data":{"templates":[]}}"""
+                            } else {
+                                """
+                                {
+                                  "ok": true,
+                                  "data": {
+                                    "templates": [
+                                      {"template_id": "$analyticsTplId", "display_name": "Báo cáo Ngày (Analytics)", "status": "ACTIVE"},
+                                      {"template_id": "33333333-cccc-4333-8333-333333333333", "display_name": "Mẫu lưu trữ", "status": "ARCHIVED"}
+                                    ]
+                                  }
+                                }
+                                """.trimIndent()
+                            }
+                        )
+                    path.startsWith("/api/work-reports/templates") -> MockResponse()
+                        .setResponseCode(200)
+                        .setHeader("Content-Type", "application/json")
+                        .setBody(
+                            """
+                            {
+                              "ok": true,
+                              "data": {
+                                "items": [
+                                  {"template_id": "$fallbackTplId", "display_name": "Báo cáo Quản lý mẫu", "status": "ACTIVE"}
+                                ]
+                              }
+                            }
+                            """.trimIndent()
+                        )
+                    else -> MockResponse()
+                        .setResponseCode(200)
+                        .setHeader("Content-Type", "application/json")
+                        .setBody("""{"ok":true,"data":{}}""")
+                }
+            }
+        }
+        server.start()
+
+        try {
+            val context = ApplicationProvider.getApplicationContext<Application>()
+            val db = Room.inMemoryDatabaseBuilder(context, MiniBiDatabase::class.java)
+                .allowMainThreadQueries()
+                .build()
+            val cookieFile = File(context.cacheDir, "refactor_contract_cookie_${System.nanoTime()}.enc")
+            val prefsFile = File(context.cacheDir, "refactor_contract_prefs_${System.nanoTime()}.preferences_pb")
+            val repo = MiniBiRepository(
+                context = context,
+                database = db,
+                defaultServerUrl = server.url("/").toString().trimEnd('/'),
+                allowDebugUrlOverride = true,
+                cookieStorageFile = cookieFile,
+                preferencesStorageFile = prefsFile,
+                cookieCipher = JvmAes256GcmCookieCipher()
+            )
+            try {
+                // 1. Parse effective_report_review_scopes from direct-entry/session
+                val actorId = "aaaaaaaa-1111-4111-8111-111111111111"
+                val sessionJson = JSONObject(
+                    """
+                    {
+                      "ok": true,
+                      "actor": {
+                        "app_user_id": "$actorId",
+                        "allowed_worker_tabs": ["recruited"],
+                        "effective_report_review_scopes": [
+                          {"scope_kind": "team", "scope_id": "TEAM_NORTH"},
+                          "dept:MARKETING"
+                        ]
+                      }
+                    }
+                    """.trimIndent()
+                )
+                val parsedReviewScopes = ActorContractParser.parseDirectEntrySessionEffectiveReportReviewScopes(
+                    json = sessionJson,
+                    expectedAppUserId = actorId
+                )
+                assertEquals(listOf("team:TEAM_NORTH", "dept:MARKETING"), parsedReviewScopes)
+
+                val delegatedReviewer = AppActor(
+                    appUserId = actorId,
+                    displayName = "Người duyệt ủy quyền",
+                    capabilities = listOf("report_view"),
+                    scopes = listOf(ActorScope("own", "self", "2026-01-01", null)),
+                    selfRecruiterSuggestion = null,
+                    allowedWorkerTabs = listOf("recruited"),
+                    effectiveReportReviewScopes = parsedReviewScopes
+                )
+                assertTrue(delegatedReviewer.canReviewWorkReports())
+                assertTrue(delegatedReviewer.canAccessDashboard())
+                assertFalse(delegatedReviewer.canViewDeepWorkforceReport())
+
+                // 2. fetchSelectableTemplates prioritizes /api/work-reports/analytics/options for report_analytics_view
+                val analyticsViewer = AppActor(
+                    appUserId = actorId,
+                    displayName = "Board Viewer",
+                    capabilities = listOf("report_analytics_view"),
+                    scopes = listOf(ActorScope("all", "ALL", "2026-01-01", null)),
+                    selfRecruiterSuggestion = null
+                )
+                val analyticsTemplates = repo.workReportsAndReportingService.fetchSelectableTemplates(analyticsViewer)
+                assertEquals(1, analyticsTemplates.size)
+                assertEquals(analyticsTplId, analyticsTemplates.single().templateId)
+                assertEquals("Báo cáo Ngày (Analytics)", analyticsTemplates.single().displayName)
+                assertTrue(recordedPaths.any { it.startsWith("/api/work-reports/analytics/options") })
+
+                // 3. Fallback uses report_form_manage instead of dead report_template_manage
+                recordedPaths.clear()
+                analyticsReturnsEmpty = true
+                val formManager = AppActor(
+                    appUserId = actorId,
+                    displayName = "Form Manager",
+                    capabilities = listOf("report_form_manage"),
+                    scopes = listOf(ActorScope("all", "ALL", "2026-01-01", null)),
+                    selfRecruiterSuggestion = null
+                )
+                val formTemplates = repo.workReportsAndReportingService.fetchSelectableTemplates(formManager)
+                assertEquals(1, formTemplates.size)
+                assertEquals(fallbackTplId, formTemplates.single().templateId)
+                assertTrue(recordedPaths.any { it.startsWith("/api/work-reports/templates") })
+
+                // 4. Leave summary resolves custom department_name when unit_kind == UNCLASSIFIED
+                val leaveEnvelope = JSONObject(
+                    """
+                    {
+                      "ok": true,
+                      "data": {
+                        "leave_year": 2026,
+                        "as_of_date": "2026-11-27",
+                        "org_department": {
+                          "department_id": "dept-1",
+                          "department_name": "Phòng Pháp chế & Tuân thủ"
+                        },
+                        "authority": {
+                          "app_user_id": "$actorId",
+                          "is_shared_non_employee": false,
+                          "can_submit_request": true,
+                          "can_approve_requests": false
+                        },
+                        "routing": {
+                          "route_kind": "DEPARTMENT_HEAD",
+                          "unit_kind": "UNCLASSIFIED",
+                          "profile_configured": true
+                        },
+                        "balance": {
+                          "leave_year": 2026,
+                          "as_of_date": "2026-11-27",
+                          "has_profile": true,
+                          "profile_configured": true,
+                          "employment_status": "OFFICIAL",
+                          "unit_kind": "UNCLASSIFIED",
+                          "available_units": 12
+                        },
+                        "requests": [],
+                        "ledger_entries": []
+                      }
+                    }
+                    """.trimIndent()
+                )
+                val summary = LeaveContract.parseMyLeaveSummary(leaveEnvelope)
+                assertEquals("Phòng Pháp chế & Tuân thủ", LeaveContract.leaveUnitKindLabel(summary.balance.unitKind))
+                assertEquals(
+                    "Trưởng bộ phận (Phòng Pháp chế & Tuân thủ)",
+                    LeaveContract.leaveRouteKindLabel(summary.routing.routeKind, summary.routing.teamName, summary.routing.unitKind)
+                )
+            } finally {
+                repo.closeForTest()
+                db.close()
+                cookieFile.delete()
+                prefsFile.delete()
+            }
+        } finally {
+            server.shutdown()
+        }
+    }
 }

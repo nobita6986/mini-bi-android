@@ -1034,7 +1034,30 @@ class WorkReportsAndReportingService(
     suspend fun fetchSelectableTemplates(actor: AppActor): List<WorkReportTemplateOption> =
         withContext(Dispatchers.IO) {
             val discovered = linkedMapOf<String, String>()
-            if (actor.hasCapability("report_assign")) {
+            if (actor.hasCapability("report_analytics_view")) {
+                runCatching {
+                    val json = httpClient.getJson(
+                        pathWithQuery = "/api/work-reports/analytics/options",
+                        requireOkTrue = true
+                    )
+                    val arr = json.optJSONObject("data")?.optJSONArray("templates")
+                        ?: json.optJSONArray("templates")
+                        ?: JSONArray()
+                    for (i in 0 until arr.length()) {
+                        val t = arr.optJSONObject(i) ?: continue
+                        val status = t.optString("status", "ACTIVE").trim()
+                        if (status == "ARCHIVED") continue
+                        val id = t.optString("template_id", "").trim()
+                        val name = t.optString("display_name", "")
+                            .ifBlank { t.optString("template_name", "") }
+                            .trim()
+                        if (WorkReportsContract.isUuid(id) && name.isNotEmpty()) {
+                            discovered[id] = name
+                        }
+                    }
+                }
+            }
+            if (discovered.isEmpty() && actor.hasCapability("report_assign")) {
                 runCatching {
                     val json = httpClient.getJson(
                         pathWithQuery = "/api/work-reports/assignments",
@@ -1053,7 +1076,7 @@ class WorkReportsAndReportingService(
                     }
                 }
             }
-            if (discovered.isEmpty() && actor.hasCapability("report_template_manage")) {
+            if (discovered.isEmpty() && actor.hasCapability("report_form_manage")) {
                 runCatching {
                     val json = httpClient.getJson(
                         pathWithQuery = "/api/work-reports/templates",

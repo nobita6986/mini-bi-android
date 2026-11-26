@@ -207,6 +207,67 @@ object ActorContractParser {
         return result.distinct()
     }
 
+    fun parseEffectiveReportReviewScopes(rawScopes: Any?): List<String> {
+        val arr = rawScopes as? JSONArray ?: return emptyList()
+        val result = mutableListOf<String>()
+        for (i in 0 until arr.length()) {
+            if (arr.isNull(i)) continue
+            val token = when (val elem = arr.opt(i)) {
+                is String -> elem.trim()
+                is JSONObject -> {
+                    val scopeKind = elem.optString("scope_kind", "")
+                        .ifBlank { elem.optString("kind", "") }
+                        .trim()
+                    val ref = elem.optString("scope_id", "")
+                        .ifBlank { elem.optString("reference", "") }
+                        .ifBlank { elem.optString("team_id", "") }
+                        .ifBlank { elem.optString("department_id", "") }
+                        .trim()
+                    when {
+                        scopeKind.isNotEmpty() && ref.isNotEmpty() -> "$scopeKind:$ref"
+                        ref.isNotEmpty() -> ref
+                        scopeKind.isNotEmpty() -> scopeKind
+                        else -> ""
+                    }
+                }
+                else -> ""
+            }
+            if (token.isNotEmpty()) {
+                result.add(token)
+            }
+        }
+        return result.distinct()
+    }
+
+    fun parseDirectEntrySessionEffectiveReportReviewScopes(
+        json: JSONObject,
+        expectedAppUserId: String
+    ): List<String> {
+        val cleanExpectedId = expectedAppUserId.trim()
+        if (!UUID_REGEX.matches(cleanExpectedId)) return emptyList()
+        if (!json.optBoolean("ok", false)) return emptyList()
+
+        val container = json.optJSONObject("actor")
+            ?: json.optJSONObject("session")
+            ?: json.optJSONObject("data")
+            ?: json
+
+        val sessionUserId = container.optString("app_user_id", "").trim()
+            .ifEmpty { json.optString("app_user_id", "").trim() }
+        if (!UUID_REGEX.matches(sessionUserId) || !sessionUserId.equals(cleanExpectedId, ignoreCase = true)) {
+            return emptyList()
+        }
+
+        val rawReviewScopes = when {
+            container.has("effective_report_review_scopes") && !container.isNull("effective_report_review_scopes") ->
+                container.opt("effective_report_review_scopes")
+            json.has("effective_report_review_scopes") && !json.isNull("effective_report_review_scopes") ->
+                json.opt("effective_report_review_scopes")
+            else -> null
+        }
+        return parseEffectiveReportReviewScopes(rawReviewScopes)
+    }
+
     fun parseEnvelopeActor(json: JSONObject, displayIdentifier: String? = null): AppActor {
         if (!json.optBoolean("ok", false)) {
             throw BackendApiException(
@@ -332,6 +393,15 @@ object ActorContractParser {
             emptyList()
         }
 
+        val effectiveReviewScopes = if (
+            actorObj.has("effective_report_review_scopes") &&
+            !actorObj.isNull("effective_report_review_scopes")
+        ) {
+            parseEffectiveReportReviewScopes(actorObj.opt("effective_report_review_scopes"))
+        } else {
+            emptyList()
+        }
+
         return AppActor(
             appUserId = appUserId,
             displayName = displayName,
@@ -339,7 +409,8 @@ object ActorContractParser {
             scopes = scopes,
             selfRecruiterSuggestion = suggestion,
             displayIdentifier = displayIdentifier?.trim()?.ifBlank { null },
-            allowedWorkerTabs = allowedWorkerTabs
+            allowedWorkerTabs = allowedWorkerTabs,
+            effectiveReportReviewScopes = effectiveReviewScopes
         )
     }
 
@@ -365,6 +436,7 @@ object ActorContractParser {
             )
             put("self_recruiter_suggestion", actor.selfRecruiterSuggestion ?: JSONObject.NULL)
             put("allowed_worker_tabs", JSONArray(actor.safeAllowedWorkerTabs))
+            put("effective_report_review_scopes", JSONArray(actor.effectiveReportReviewScopes))
             if (!actor.displayIdentifier.isNullOrBlank()) {
                 put("display_identifier", actor.displayIdentifier)
             }
@@ -880,9 +952,14 @@ class MiniBiRepository(
         val baseActor = actor ?: return@withContext null
         val startEpoch = authSessionEpoch.get()
         var sessionCapabilities: List<String> = emptyList()
+        var sessionReviewScopes: List<String> = emptyList()
         val resolvedTabs = try {
             val json = directEntryService.fetchDirectEntrySession()
             sessionCapabilities = ActorContractParser.parseDirectEntrySessionCapabilities(
+                json = json,
+                expectedAppUserId = baseActor.appUserId
+            )
+            sessionReviewScopes = ActorContractParser.parseDirectEntrySessionEffectiveReportReviewScopes(
                 json = json,
                 expectedAppUserId = baseActor.appUserId
             )
@@ -902,9 +979,11 @@ class MiniBiRepository(
             return@withContext current
         }
         val mergedCapabilities = (baseActor.capabilities + sessionCapabilities).distinct()
+        val mergedReviewScopes = (baseActor.effectiveReportReviewScopes + sessionReviewScopes).distinct()
         val updated = baseActor.copy(
             allowedWorkerTabs = resolvedTabs,
-            capabilities = mergedCapabilities
+            capabilities = mergedCapabilities,
+            effectiveReportReviewScopes = mergedReviewScopes
         )
         _activeActor.value = updated
         updated
