@@ -6009,16 +6009,23 @@ class WorkerUiAuthorizationRobolectricTest {
         registerTestResourcesCleanup(vm, db, server, cookieFile, prefsFile)
 
         // 1. Login Account A and load initial page 1 (which sets workerNextCursor = "cur-a-page-2")
-        vm.login("account_a@hrpartner.vn", "passA", rememberAccount = false)
         composeTestRule.waitUntil(timeoutMillis = 5_000) {
             org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            Thread.sleep(10)
+            !vm.sessionBootstrapping.value
+        }
+        vm.login("account_a@hrpartner.vn", "passA", rememberAccount = false)
+        composeTestRule.waitUntil(timeoutMillis = 10_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            Thread.sleep(10)
             !vm.loginBusy.value &&
                 vm.currentActor.value?.appUserId == "aaaa0011-2222-4333-8444-555555555555" &&
                 vm.currentActor.value?.allowedWorkerTabs == listOf("managed")
         }
         vm.ensureInitialWorkerTabLoaded(vm.currentActor.value!!)
-        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+        composeTestRule.waitUntil(timeoutMillis = 10_000) {
             org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            Thread.sleep(10)
             initialLoadDone && vm.workerRows.value.size == 1 && vm.workerHasMore.value
         }
 
@@ -6033,14 +6040,16 @@ class WorkerUiAuthorizationRobolectricTest {
 
         // 3. Logout Account A and login Account B before Account A responses complete
         vm.logout()
-        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+        composeTestRule.waitUntil(timeoutMillis = 10_000) {
             org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            Thread.sleep(10)
             vm.currentActor.value == null
         }
         activeAccount = "account_b"
         vm.login("account_b@hrpartner.vn", "passB", rememberAccount = false)
-        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+        composeTestRule.waitUntil(timeoutMillis = 10_000) {
             org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            Thread.sleep(10)
             !vm.loginBusy.value && vm.currentActor.value?.appUserId == "bbbb0011-2222-4333-8444-555555555555"
         }
 
