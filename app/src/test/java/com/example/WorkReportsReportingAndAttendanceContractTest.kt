@@ -2768,7 +2768,7 @@ class WorkReportsReportingAndAttendanceContractTest {
     }
 
     @Test
-    fun `refactor golive contract parses effective_report_review_scopes prioritizes analytics options uses report_form_manage and resolves custom leave department name`() = runTest {
+    fun `refactor golive contract parses effective_report_review_scopes prioritizes analytics options uses report_form_manage and resolves custom leave department name`() = runBlocking {
         val server = MockWebServer()
         val recordedPaths = java.util.Collections.synchronizedList(mutableListOf<String>())
         val analyticsTplId = "11111111-aaaa-4111-8111-111111111111"
@@ -2825,7 +2825,6 @@ class WorkReportsReportingAndAttendanceContractTest {
         server.start()
 
         try {
-            val context = ApplicationProvider.getApplicationContext<Application>()
             val db = Room.inMemoryDatabaseBuilder(context, MiniBiDatabase::class.java)
                 .allowMainThreadQueries()
                 .build()
@@ -2858,7 +2857,7 @@ class WorkReportsReportingAndAttendanceContractTest {
                     }
                     """.trimIndent()
                 )
-                val parsedReviewScopes = ActorContractParser.parseDirectEntrySessionEffectiveReportReviewScopes(
+                val parsedReviewScopes = com.example.data.ActorContractParser.parseDirectEntrySessionEffectiveReportReviewScopes(
                     json = sessionJson,
                     expectedAppUserId = actorId
                 )
