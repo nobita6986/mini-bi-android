@@ -2612,7 +2612,7 @@ fun WorkersAndDirectEntryScreen(
                     contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .defaultMinSize(minHeight = 40.dp)
+                        .height(40.dp)
                         .testTag("go_to_new_entry_from_workers")
                 ) {
                     Icon(
