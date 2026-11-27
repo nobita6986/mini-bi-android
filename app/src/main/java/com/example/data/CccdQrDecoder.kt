@@ -11,6 +11,10 @@ import com.google.mlkit.vision.barcode.BarcodeScannerOptions
 import com.google.mlkit.vision.barcode.BarcodeScanning
 import com.google.mlkit.vision.barcode.common.Barcode
 import com.google.mlkit.vision.common.InputImage
+import com.google.mlkit.vision.text.Text
+import com.google.mlkit.vision.text.TextRecognition
+import com.google.mlkit.vision.text.TextRecognizer
+import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.BinaryBitmap
 import com.google.zxing.DecodeHintType
@@ -49,6 +53,15 @@ object CccdQrDecoder {
     private val COMBINING_MARKS_REGEX = Regex("\\p{InCombiningDiacriticalMarks}+")
     private val MULTI_SPACE_REGEX = Regex("\\s+")
     private val MOJIBAKE_HINT_REGEX = Regex("[\\u00C2\\u00C3\\u00C4\\u00C5\\u00C6\\u00E1]")
+    private val CCCD_12_WORD_REGEX = Regex("\\b(\\d{12})\\b")
+    private val FLEX_DMY_REGEX = Regex("\\b(\\d{1,2})[/.-](\\d{1,2})[/.-](\\d{4})\\b")
+    private val VIET_NGAY_THANG_NAM_REGEX = Regex("ngay\\s+(\\d{1,2})\\s+thang\\s+(\\d{1,2})\\s+nam\\s+(\\d{4})")
+    private val MRZ_CHEVRON_SPLIT_REGEX = Regex("<+")
+    private val MRZ_LINE2_REGEX = Regex("^([0-9OQDILZSBG]{6})([0-9OQDILZSBG])([MF<])([0-9OQDILZSBG]{6})([0-9OQDILZSBG]).*VNM.*$")
+    private val MRZ_LINE2_CANDIDATE_REGEX = Regex("^[0-9OQDILZSBG]{6}[0-9OQDILZSBG][MF<][0-9OQDILZSBG]{6,}.*")
+    private val OCR_NO_DIGITS_REGEX = Regex(".*\\d.*")
+    private val OCR_NON_ALPHA_ONLY_REGEX = Regex("^[\\p{L}\\s'.-]+$")
+    private val OCR_DIACRITIC_REGEX = Regex("[\\u00C0-\\u024F\\u1E00-\\u1EFF]")
 
     private val ZXING_HINTS: Map<DecodeHintType, Any> = mapOf(
         DecodeHintType.POSSIBLE_FORMATS to listOf(BarcodeFormat.QR_CODE),
@@ -298,13 +311,60 @@ object CccdQrDecoder {
         return null
     }
 
-    private fun tryDecodeBitmapPass(bitmap: Bitmap, thresholds: IntArray = intArrayOf()): CccdDecodedQrPayload? {
+    /**
+     * Suppresses the cyan/teal guilloche security pattern on 2021 chip CCCD cards.
+     * Cyan pixels have high Green and Blue channels and low Red, so taking `max(G, B)`
+     * merges teal patterning into white while keeping black QR ink dark, then stretches contrast.
+     */
+    internal fun buildGreenBlueStretchedPixels(pixels: IntArray): IntArray {
+        val gbArray = IntArray(pixels.size)
+        var minGb = 255
+        var maxGb = 0
+        for (i in pixels.indices) {
+            val p = pixels[i]
+            val g = (p shr 8) and 0xFF
+            val b = p and 0xFF
+            val gb = maxOf(g, b)
+            gbArray[i] = gb
+            if (gb < minGb) minGb = gb
+            if (gb > maxGb) maxGb = gb
+        }
+        val out = IntArray(pixels.size)
+        val range = maxGb - minGb
+        for (i in gbArray.indices) {
+            val v = if (range > 10) {
+                ((gbArray[i] - minGb) * 255 / range).coerceIn(0, 255)
+            } else {
+                gbArray[i]
+            }
+            out[i] = (0xFF shl 24) or (v shl 16) or (v shl 8) or v
+        }
+        return out
+    }
+
+    internal fun createGreenBlueEnhancedBitmap(src: Bitmap): Bitmap? {
+        val w = src.width
+        val h = src.height
+        if (w <= 0 || h <= 0) return null
+        return runCatching {
+            val pixels = IntArray(w * h)
+            src.getPixels(pixels, 0, w, 0, 0, w, h)
+            val gbPixels = buildGreenBlueStretchedPixels(pixels)
+            Bitmap.createBitmap(gbPixels, w, h, Bitmap.Config.ARGB_8888)
+        }.getOrNull()
+    }
+
+    internal fun tryDecodeBitmapPass(bitmap: Bitmap, thresholds: IntArray = intArrayOf()): CccdDecodedQrPayload? {
         val w = bitmap.width
         val h = bitmap.height
         if (w <= 0 || h <= 0) return null
         val pixels = IntArray(w * h)
         bitmap.getPixels(pixels, 0, w, 0, 0, w, h)
         decodeFromRgbaPixels(pixels, w, h)?.let { return it }
+
+        // Green-Blue max(G, B) contrast-stretched pass to suppress 2021 CCCD cyan guilloche
+        val gbPixels = buildGreenBlueStretchedPixels(pixels)
+        decodeFromRgbaPixels(gbPixels, w, h)?.let { return it }
 
         // Contrast-stretched grayscale pass for low-contrast / guilloche background cards
         var minLum = 255
@@ -335,6 +395,13 @@ object CccdQrDecoder {
             for (thresh in thresholds) {
                 for (i in lumArray.indices) {
                     bwPixels[i] = if (lumArray[i] < thresh) 0xFF000000.toInt() else 0xFFFFFFFF.toInt()
+                }
+                decodeFromRgbaPixels(bwPixels, w, h)?.let { return it }
+            }
+            for (thresh in thresholds) {
+                for (i in gbPixels.indices) {
+                    val v = gbPixels[i] and 0xFF
+                    bwPixels[i] = if (v < thresh) 0xFF000000.toInt() else 0xFFFFFFFF.toInt()
                 }
                 decodeFromRgbaPixels(bwPixels, w, h)?.let { return it }
             }
@@ -428,6 +495,24 @@ object CccdQrDecoder {
             }
         }
 
+        // Pass 5b: Bottom-Right quadrant (portrait / 90°/270° sideways CCCD photos before rotation)
+        cropAndScale(bitmap, 0.45f, 0.40f, 0.55f, 0.60f, 1100)?.let { cropped ->
+            try {
+                tryDecodeBitmapPass(cropped, intArrayOf(120, 145))?.let { return it }
+            } finally {
+                if (cropped !== bitmap) cropped.recycle()
+            }
+        }
+
+        // Pass 5c: Bottom-Left quadrant (portrait / 90°/270° sideways CCCD photos before rotation)
+        cropAndScale(bitmap, 0.0f, 0.40f, 0.55f, 0.60f, 1100)?.let { cropped ->
+            try {
+                tryDecodeBitmapPass(cropped, intArrayOf(120, 145))?.let { return it }
+            } finally {
+                if (cropped !== bitmap) cropped.recycle()
+            }
+        }
+
         // Pass 6: Rotated orientations (90, 180, 270 degrees) for phone camera photos taken sideways
         for (angle in floatArrayOf(90f, 180f, 270f)) {
             val rotated = rotateBitmap(bitmap, angle) ?: continue
@@ -477,8 +562,565 @@ object CccdQrDecoder {
         return null
     }
 
+    internal fun createMlKitTextRecognizerOrNull(): TextRecognizer? {
+        return runCatching {
+            TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+        }.getOrNull()
+    }
+
+    internal suspend fun awaitTextOrNull(task: Task<Text>): Text? =
+        suspendCancellableCoroutine { cont ->
+            task.addOnSuccessListener { recognized ->
+                if (cont.isActive) cont.resume(recognized)
+            }.addOnFailureListener {
+                if (cont.isActive) cont.resume(null)
+            }.addOnCanceledListener {
+                if (cont.isActive) cont.resume(null)
+            }
+        }
+
     /**
-     * Asynchronous multi-engine decoder (Google ML Kit Barcode Scanning + Multi-pass ZXing fallback).
+     * Computes the ICAO Doc 9303 Modulo-10 check digit using repeating weights [7, 3, 1].
+     * Returns -1 if any character is outside `[0-9A-Z<]`.
+     */
+    internal fun computeMrzCheckDigit(field: String): Int {
+        val weights = intArrayOf(7, 3, 1)
+        var sum = 0
+        for (i in field.indices) {
+            val ch = field[i]
+            val value = when {
+                ch in '0'..'9' -> ch - '0'
+                ch in 'A'..'Z' -> (ch - 'A') + 10
+                ch == '<' -> 0
+                else -> return -1
+            }
+            sum += value * weights[i % 3]
+        }
+        return sum % 10
+    }
+
+    private fun fixMrzDigits(raw: String): String {
+        val sb = StringBuilder(raw.length)
+        for (ch in raw) {
+            when (ch) {
+                'O', 'Q', 'D' -> sb.append('0')
+                'I', 'L', '|' -> sb.append('1')
+                'Z' -> sb.append('2')
+                'S' -> sb.append('5')
+                'G' -> sb.append('6')
+                'B' -> sb.append('8')
+                else -> sb.append(ch)
+            }
+        }
+        return sb.toString()
+    }
+
+    private fun foldVietnameseLower(raw: String): String {
+        return COMBINING_MARKS_REGEX.replace(
+            Normalizer.normalize(raw, Normalizer.Form.NFD),
+            ""
+        ).replace('đ', 'd').replace('Đ', 'D').lowercase(Locale.ROOT)
+    }
+
+    private fun normalizeCompactMrzLine(raw: String): String {
+        return stripControlAndCollapseSpaces(raw)
+            .uppercase(Locale.ROOT)
+            .replace(" ", "")
+            .replace('«', '<')
+            .replace('‹', '<')
+    }
+
+    private fun isMrzLikeLine(rawLine: String): Boolean {
+        val compact = normalizeCompactMrzLine(rawLine)
+        if (compact.length < 10) return false
+        if (compact.startsWith("IDVNM")) return true
+        val idVnmIdx = compact.indexOf("IDVNM")
+        if (idVnmIdx >= 0 && compact.length - idVnmIdx >= 15) return true
+        if (compact.contains("<<<")) return true
+        if (MRZ_LINE2_REGEX.matches(compact)) return true
+        if (MRZ_LINE2_CANDIDATE_REGEX.matches(compact) && compact.contains("VNM")) return true
+        return false
+    }
+
+    private data class ParsedMrzBlock(
+        val cccd12: String,
+        val dateOfBirthUi: String?,
+        val genderPair: Pair<String, String>?,
+        val fullName: String?
+    )
+
+    private data class MrzParseOutcome(
+        val block: ParsedMrzBlock?,
+        val hasCorruptedMrz: Boolean
+    )
+
+    private fun deriveCenturyAndGenderFromCccd(cccd12: String, sexChar: Char): Pair<Int?, Pair<String, String>?> {
+        val centuryAndGender = when (cccd12.getOrNull(3)) {
+            '0' -> 1900 to ("MALE" to "Nam")
+            '1' -> 1900 to ("FEMALE" to "Nữ")
+            '2' -> 2000 to ("MALE" to "Nam")
+            '3' -> 2000 to ("FEMALE" to "Nữ")
+            '4' -> 2100 to ("MALE" to "Nam")
+            '5' -> 2100 to ("FEMALE" to "Nữ")
+            else -> null
+        }
+        if (centuryAndGender != null) {
+            return centuryAndGender.first to centuryAndGender.second
+        }
+        val fallbackGender = when (sexChar) {
+            'M' -> "MALE" to "Nam"
+            'F' -> "FEMALE" to "Nữ"
+            else -> null
+        }
+        return null to fallbackGender
+    }
+
+    private fun parseMrzBlock(lines: List<String>): MrzParseOutcome {
+        val compactLines = lines.map { normalizeCompactMrzLine(it) }
+        var line1Idx = -1
+        var line1Sliced = ""
+        for (i in compactLines.indices) {
+            val idx = compactLines[i].indexOf("IDVNM")
+            if (idx >= 0) {
+                val slice = compactLines[i].substring(idx)
+                if (slice.length >= 15) {
+                    line1Idx = i
+                    line1Sliced = slice
+                    break
+                }
+            }
+        }
+
+        val line2CandidateIdx = compactLines.indexOfFirst { c ->
+            !c.contains("IDVNM") && (MRZ_LINE2_REGEX.matches(c) || (MRZ_LINE2_CANDIDATE_REGEX.matches(c) && c.contains("VNM")))
+        }
+
+        if (line1Idx < 0) {
+            return MrzParseOutcome(block = null, hasCorruptedMrz = line2CandidateIdx >= 0)
+        }
+        if (line1Sliced.length < 27) {
+            return MrzParseOutcome(block = null, hasCorruptedMrz = true)
+        }
+
+        val doc9 = fixMrzDigits(line1Sliced.substring(5, 14))
+        val docCheckChar = fixMrzDigits(line1Sliced.substring(14, 15))
+        val cccd12 = fixMrzDigits(line1Sliced.substring(15, 27))
+        if (!doc9.all { it in '0'..'9' } ||
+            docCheckChar.length != 1 || docCheckChar[0] !in '0'..'9' ||
+            !CCCD_12_REGEX.matches(cccd12) || cccd12 == "000000000000" ||
+            computeMrzCheckDigit(doc9) != (docCheckChar[0] - '0') ||
+            cccd12.takeLast(9) != doc9
+        ) {
+            return MrzParseOutcome(block = null, hasCorruptedMrz = true)
+        }
+
+        var dobUi: String? = null
+        var genderPair: Pair<String, String>? = null
+        var line2Idx = -1
+
+        if (line2CandidateIdx >= 0) {
+            val line2Compact = compactLines[line2CandidateIdx]
+            val match = MRZ_LINE2_REGEX.matchEntire(line2Compact)
+                ?: return MrzParseOutcome(block = null, hasCorruptedMrz = true)
+            val dob6 = fixMrzDigits(match.groupValues[1])
+            val dobCheck = fixMrzDigits(match.groupValues[2])
+            val sexChar = match.groupValues[3].firstOrNull() ?: '<'
+            if (!dob6.all { it in '0'..'9' } || dobCheck.length != 1 || dobCheck[0] !in '0'..'9' ||
+                computeMrzCheckDigit(dob6) != (dobCheck[0] - '0')
+            ) {
+                return MrzParseOutcome(block = null, hasCorruptedMrz = true)
+            }
+            line2Idx = line2CandidateIdx
+            val (century, derivedGender) = deriveCenturyAndGenderFromCccd(cccd12, sexChar)
+            genderPair = derivedGender
+            if (century != null) {
+                val year = century + dob6.substring(0, 2).toInt()
+                val month = dob6.substring(2, 4).toInt()
+                val day = dob6.substring(4, 6).toInt()
+                if (isValidCalendarDay(day, month, year)) {
+                    dobUi = "%02d/%02d/%04d".format(Locale.US, day, month, year)
+                }
+            }
+        } else {
+            val (_, derivedGender) = deriveCenturyAndGenderFromCccd(cccd12, '<')
+            genderPair = derivedGender
+        }
+
+        var mrzName: String? = null
+        val nameSearchStart = if (line2Idx >= 0) line2Idx + 1 else line1Idx + 1
+        for (i in nameSearchStart until compactLines.size) {
+            val c = compactLines[i]
+            if (c.contains("<<") && !c.startsWith("IDVNM") && c.all { it in 'A'..'Z' || it == '<' }) {
+                val cleaned = c.replace(MRZ_CHEVRON_SPLIT_REGEX, " ")
+                    .replace(MULTI_SPACE_REGEX, " ")
+                    .trim()
+                if (cleaned.length >= 3 && cleaned.contains(' ') && !DirectEntryContract.isFormulaLikeCell(cleaned)) {
+                    mrzName = cleaned.take(256)
+                }
+                break
+            }
+        }
+        if (mrzName == null) {
+            for (c in compactLines) {
+                if (c.contains("<<") && !c.startsWith("IDVNM") && !c.contains("VNM") &&
+                    c.all { it in 'A'..'Z' || it == '<' }
+                ) {
+                    val cleaned = c.replace(MRZ_CHEVRON_SPLIT_REGEX, " ")
+                        .replace(MULTI_SPACE_REGEX, " ")
+                        .trim()
+                    if (cleaned.length >= 3 && cleaned.contains(' ') && !DirectEntryContract.isFormulaLikeCell(cleaned)) {
+                        mrzName = cleaned.take(256)
+                        break
+                    }
+                }
+            }
+        }
+
+        return MrzParseOutcome(
+            block = ParsedMrzBlock(
+                cccd12 = cccd12,
+                dateOfBirthUi = dobUi,
+                genderPair = genderPair,
+                fullName = mrzName
+            ),
+            hasCorruptedMrz = false
+        )
+    }
+
+    private fun extractDateFromLineText(rawLine: String): String? {
+        FLEX_DMY_REGEX.find(rawLine)?.let { m ->
+            val d = m.groupValues[1].toIntOrNull() ?: return@let
+            val mo = m.groupValues[2].toIntOrNull() ?: return@let
+            val y = m.groupValues[3].toIntOrNull() ?: return@let
+            if (isValidCalendarDay(d, mo, y)) {
+                return "%02d/%02d/%04d".format(Locale.US, d, mo, y)
+            }
+        }
+        val folded = foldVietnameseLower(rawLine)
+        VIET_NGAY_THANG_NAM_REGEX.find(folded)?.let { m ->
+            val d = m.groupValues[1].toIntOrNull() ?: return@let
+            val mo = m.groupValues[2].toIntOrNull() ?: return@let
+            val y = m.groupValues[3].toIntOrNull() ?: return@let
+            if (isValidCalendarDay(d, mo, y)) {
+                return "%02d/%02d/%04d".format(Locale.US, d, mo, y)
+            }
+        }
+        return null
+    }
+
+    private fun isKnownOcrFieldLabel(foldedLine: String): Boolean {
+        return foldedLine.contains("ho va ten") ||
+            foldedLine.contains("full name") ||
+            foldedLine.contains("ngay sinh") ||
+            foldedLine.contains("date of birth") ||
+            foldedLine.contains("gioi tinh") ||
+            foldedLine.contains("quoc tich") ||
+            foldedLine.contains("nationality") ||
+            foldedLine.contains("que quan") ||
+            foldedLine.contains("place of origin") ||
+            foldedLine.contains("noi thuong tru") ||
+            foldedLine.contains("place of residence") ||
+            foldedLine.contains("co gia tri") ||
+            foldedLine.contains("date of expiry") ||
+            foldedLine.contains("dac diem") ||
+            foldedLine.contains("personal identification") ||
+            foldedLine.contains("ngay, thang, nam") ||
+            foldedLine.contains("date, month, year") ||
+            foldedLine.contains("ngay cap") ||
+            foldedLine.contains("cuc truong") ||
+            foldedLine.contains("can cuoc cong dan") ||
+            foldedLine.contains("so / no") ||
+            foldedLine.contains("so/no")
+    }
+
+    private fun extractAfterLabelOnSameLine(line: String, labelEndHintFolded: List<String>): String {
+        val colonIdx = line.indexOf(':')
+        if (colonIdx >= 0 && colonIdx + 1 < line.length) {
+            return stripControlAndCollapseSpaces(line.substring(colonIdx + 1))
+        }
+        val folded = foldVietnameseLower(line)
+        for (hint in labelEndHintFolded) {
+            val idx = folded.indexOf(hint)
+            if (idx >= 0) {
+                val endIdx = idx + hint.length
+                if (endIdx < line.length) {
+                    val tail = stripControlAndCollapseSpaces(line.substring(endIdx).trimStart(':', '-', ' '))
+                    if (tail.isNotEmpty()) return tail
+                }
+            }
+        }
+        return ""
+    }
+
+    /**
+     * Parses ICAO Doc 9303 TD1 MRZ (`IDVNM...`) and Vietnamese front/back OCR text into a
+     * `CccdDecodedQrPayload`.
+     *
+     * When `requireMrz = true` (live camera MRZ fallback), strictly requires a valid Modulo-10
+     * MRZ block. When `requireMrz = false` (gallery/attachment OCR fallback), combines MRZ
+     * (preferring Vietnamese accented full name from front OCR when available) or structured
+     * front/back OCR fields, while returning `null` if any MRZ checksum is invalid and no valid
+     * front `Số / No.` label supplies the CCCD number.
+     */
+    fun parseCccdFromRecognizedText(rawText: String, requireMrz: Boolean = false): CccdDecodedQrPayload? {
+        if (rawText.isBlank()) return null
+        val allLines = rawText.lines()
+            .map { stripControlAndCollapseSpaces(it) }
+            .filter { it.isNotEmpty() }
+        if (allLines.isEmpty()) return null
+
+        val mrzOutcome = parseMrzBlock(allLines)
+        val mrz = mrzOutcome.block
+        if (requireMrz && mrz == null) return null
+
+        val nonMrzLines = allLines.filter { !isMrzLikeLine(it) }
+
+        var ocrCccd12: String? = null
+        var ocrCccdHadExplicitLabel = false
+        for (i in nonMrzLines.indices) {
+            val folded = foldVietnameseLower(nonMrzLines[i])
+            if (folded.contains("so / no") || folded.contains("so/no") ||
+                folded.startsWith("so:") || folded.startsWith("no.") || folded.startsWith("no:")
+            ) {
+                for (offset in 0..2) {
+                    val candidateLine = nonMrzLines.getOrNull(i + offset) ?: break
+                    val match = CCCD_12_WORD_REGEX.find(candidateLine)
+                    if (match != null && match.groupValues[1] != "000000000000") {
+                        ocrCccd12 = match.groupValues[1]
+                        ocrCccdHadExplicitLabel = true
+                        break
+                    }
+                }
+                if (ocrCccd12 != null) break
+            }
+        }
+
+        if (mrzOutcome.hasCorruptedMrz && ocrCccd12 == null) {
+            return null
+        }
+
+        val hasDocumentContext = nonMrzLines.any { line ->
+            val f = foldVietnameseLower(line)
+            f.contains("can cuoc") || f.contains("cong dan") || f.contains("identity card") ||
+                f.contains("ho va ten") || f.contains("full name") || f.contains("ngay sinh")
+        }
+        if (ocrCccd12 == null && !mrzOutcome.hasCorruptedMrz && hasDocumentContext) {
+            for (line in nonMrzLines) {
+                val match = CCCD_12_WORD_REGEX.find(line)
+                if (match != null && match.groupValues[1] != "000000000000") {
+                    ocrCccd12 = match.groupValues[1]
+                    break
+                }
+            }
+        }
+
+        var ocrFullName: String? = null
+        for (i in nonMrzLines.indices) {
+            val folded = foldVietnameseLower(nonMrzLines[i])
+            if (folded.contains("ho va ten") || folded.contains("full name")) {
+                val sameLine = extractAfterLabelOnSameLine(nonMrzLines[i], listOf("full name", "ho va ten"))
+                    .takeIf { candidate ->
+                        candidate.length >= 3 &&
+                            !OCR_NO_DIGITS_REGEX.matches(candidate) &&
+                            OCR_NON_ALPHA_ONLY_REGEX.matches(candidate) &&
+                            !isKnownOcrFieldLabel(foldVietnameseLower(candidate))
+                    }
+                if (sameLine != null) {
+                    if (!DirectEntryContract.isFormulaLikeCell(sameLine)) {
+                        ocrFullName = sameLine.take(256)
+                    }
+                    break
+                }
+                val nextLine = nonMrzLines.getOrNull(i + 1)?.trim().orEmpty()
+                if (nextLine.length >= 3 &&
+                    !OCR_NO_DIGITS_REGEX.matches(nextLine) &&
+                    OCR_NON_ALPHA_ONLY_REGEX.matches(nextLine) &&
+                    !isKnownOcrFieldLabel(foldVietnameseLower(nextLine)) &&
+                    !DirectEntryContract.isFormulaLikeCell(nextLine)
+                ) {
+                    val secondLine = nonMrzLines.getOrNull(i + 2)?.trim().orEmpty()
+                    val combined = if (secondLine.length in 2..30 &&
+                        !OCR_NO_DIGITS_REGEX.matches(secondLine) &&
+                        OCR_NON_ALPHA_ONLY_REGEX.matches(secondLine) &&
+                        !isKnownOcrFieldLabel(foldVietnameseLower(secondLine)) &&
+                        !nextLine.contains(' ')
+                    ) {
+                        "$nextLine $secondLine"
+                    } else {
+                        nextLine
+                    }
+                    ocrFullName = combined.take(256)
+                    break
+                }
+            }
+        }
+
+        var ocrDobUi: String? = null
+        for (i in nonMrzLines.indices) {
+            val folded = foldVietnameseLower(nonMrzLines[i])
+            if (folded.contains("ngay sinh") || folded.contains("date of birth")) {
+                for (offset in 0..1) {
+                    val line = nonMrzLines.getOrNull(i + offset) ?: break
+                    val date = extractDateFromLineText(line)
+                    if (date != null) {
+                        ocrDobUi = date
+                        break
+                    }
+                }
+                if (ocrDobUi != null) break
+            }
+        }
+
+        var ocrGenderPair: Pair<String, String>? = null
+        for (i in nonMrzLines.indices) {
+            val folded = foldVietnameseLower(nonMrzLines[i])
+            if (folded.contains("gioi tinh") || Regex("\\bsex\\b").containsMatchIn(folded)) {
+                val sameLineTail = extractAfterLabelOnSameLine(nonMrzLines[i], listOf("sex", "gioi tinh"))
+                val candidates = listOf(sameLineTail, nonMrzLines.getOrNull(i + 1).orEmpty())
+                for (cand in candidates) {
+                    val words = cand.split(' ', '/', ',', ';').filter { it.isNotBlank() }
+                    for (w in words) {
+                        val parsed = normalizeQrGender(w)
+                        if (parsed != null) {
+                            ocrGenderPair = parsed
+                            break
+                        }
+                    }
+                    if (ocrGenderPair != null) break
+                }
+                if (ocrGenderPair != null) break
+            }
+        }
+
+        fun extractAddressAfterKeyword(primaryKeys: List<String>, hintLabels: List<String>): String? {
+            for (i in nonMrzLines.indices) {
+                val folded = foldVietnameseLower(nonMrzLines[i])
+                if (primaryKeys.any { folded.contains(it) }) {
+                    val parts = mutableListOf<String>()
+                    val tail = extractAfterLabelOnSameLine(nonMrzLines[i], hintLabels)
+                    if (tail.isNotEmpty() && !isKnownOcrFieldLabel(foldVietnameseLower(tail))) {
+                        parts.add(tail)
+                    }
+                    for (offset in 1..2) {
+                        val next = nonMrzLines.getOrNull(i + offset) ?: break
+                        val nextFolded = foldVietnameseLower(next)
+                        if (isKnownOcrFieldLabel(nextFolded)) break
+                        parts.add(next)
+                    }
+                    val joined = parts.joinToString(", ")
+                        .replace(", ,", ",")
+                        .replace(MULTI_SPACE_REGEX, " ")
+                        .trim()
+                        .trimEnd(',')
+                    if (joined.length >= 4 && !DirectEntryContract.isFormulaLikeCell(joined)) {
+                        return joined.take(1024)
+                    }
+                }
+            }
+            return null
+        }
+
+        val ocrAddress = extractAddressAfterKeyword(
+            primaryKeys = listOf("noi thuong tru", "place of residence"),
+            hintLabels = listOf("place of residence", "noi thuong tru")
+        ) ?: extractAddressAfterKeyword(
+            primaryKeys = listOf("que quan", "place of origin"),
+            hintLabels = listOf("place of origin", "que quan")
+        )
+
+        var ocrIssueDateUi: String? = null
+        val dobForExclusion = mrz?.dateOfBirthUi ?: ocrDobUi
+        for (i in nonMrzLines.indices) {
+            val folded = foldVietnameseLower(nonMrzLines[i])
+            if (folded.contains("co gia tri") || folded.contains("date of expiry")) continue
+            if (folded.contains("date, month, year") ||
+                folded.contains("ngay, thang, nam") ||
+                folded.contains("ngay cap") ||
+                folded.contains("date of issue")
+            ) {
+                for (offset in listOf(0, 1, 2, -1)) {
+                    val idx = i + offset
+                    if (idx !in nonMrzLines.indices) continue
+                    val candLine = nonMrzLines[idx]
+                    val candFolded = foldVietnameseLower(candLine)
+                    if (candFolded.contains("co gia tri") || candFolded.contains("date of expiry")) continue
+                    val extracted = extractDateFromLineText(candLine)
+                    if (extracted != null && extracted != dobForExclusion) {
+                        ocrIssueDateUi = extracted
+                        break
+                    }
+                }
+                if (ocrIssueDateUi != null) break
+            }
+        }
+
+        val finalCccd12 = mrz?.cccd12 ?: ocrCccd12 ?: return null
+        if (mrz == null &&
+            ocrFullName == null &&
+            ocrDobUi == null &&
+            ocrGenderPair == null &&
+            ocrAddress == null &&
+            ocrIssueDateUi == null &&
+            !ocrCccdHadExplicitLabel
+        ) {
+            return null
+        }
+
+        val finalFullName = ocrFullName ?: mrz?.fullName
+        val finalDobUi = mrz?.dateOfBirthUi ?: ocrDobUi
+        val finalGenderPair = mrz?.genderPair ?: ocrGenderPair
+
+        return CccdDecodedQrPayload(
+            cccd12 = finalCccd12,
+            fullName = finalFullName,
+            dateOfBirthUi = finalDobUi,
+            genderCanonical = finalGenderPair?.first,
+            genderUi = finalGenderPair?.second,
+            address = ocrAddress,
+            issueDateUi = ocrIssueDateUi
+        )
+    }
+
+    internal suspend fun decodeOcrFallbackFromBitmap(bitmap: Bitmap): CccdDecodedQrPayload? =
+        withContext(Dispatchers.Default) {
+            val recognizer = createMlKitTextRecognizerOrNull() ?: return@withContext null
+            var bestPayload: CccdDecodedQrPayload? = null
+            var bestScore = -1
+            try {
+                for (rot in intArrayOf(0, 90, 270)) {
+                    val image = runCatching { InputImage.fromBitmap(bitmap, rot) }.getOrNull() ?: continue
+                    val recognized = runCatching { awaitTextOrNull(recognizer.process(image)) }.getOrNull() ?: continue
+                    val candidate = parseCccdFromRecognizedText(recognized.text, requireMrz = false) ?: continue
+                    val score = listOfNotNull(
+                        candidate.fullName,
+                        candidate.dateOfBirthUi,
+                        candidate.genderUi,
+                        candidate.address,
+                        candidate.issueDateUi
+                    ).size * 2 + if (!candidate.fullName.isNullOrBlank() && OCR_DIACRITIC_REGEX.containsMatchIn(candidate.fullName)) 3 else 0
+                    if (score > bestScore) {
+                        bestScore = score
+                        bestPayload = candidate
+                    }
+                    if (!candidate.fullName.isNullOrBlank() &&
+                        OCR_DIACRITIC_REGEX.containsMatchIn(candidate.fullName) &&
+                        !candidate.dateOfBirthUi.isNullOrBlank() &&
+                        (!candidate.issueDateUi.isNullOrBlank() || !candidate.address.isNullOrBlank())
+                    ) {
+                        return@withContext candidate
+                    }
+                }
+            } finally {
+                runCatching { recognizer.close() }
+            }
+            bestPayload
+        }
+
+    /**
+     * Asynchronous multi-engine decoder:
+     * 1. Google ML Kit Barcode Scanning (full frame + crops + cyan-filtered crops)
+     * 2. Multi-pass ZXing QR fallback (with Green-Blue `max(G, B)` channel + all 4 corners + rotations)
+     * 3. ML Kit Text Recognition OCR fallback (ICAO 9303 TD1 MRZ + Vietnamese front/back text)
      */
     suspend fun decodeFromBitmapAsync(bitmap: Bitmap): CccdDecodedQrPayload? = withContext(Dispatchers.Default) {
         val scanner = createMlKitScannerOrNull()
@@ -489,7 +1131,7 @@ object CccdQrDecoder {
                     tryMlKitOnBitmap(scanner, bitmap, rot)?.let { return@withContext it }
                 }
 
-                // 2. Top-right quadrant upscaled (standard CCCD/Căn cước QR corner)
+                // 2. Corner and center crops upscaled (standard & sideways CCCD/Căn cước QR)
                 val cropSpecs = arrayOf(
                     floatArrayOf(0.45f, 0.0f, 0.55f, 0.60f),
                     floatArrayOf(0.55f, 0.0f, 0.45f, 0.55f),
@@ -503,6 +1145,14 @@ object CccdQrDecoder {
                     val cropped = cropAndScale(bitmap, spec[0], spec[1], spec[2], spec[3], 1200) ?: continue
                     try {
                         tryMlKitOnBitmap(scanner, cropped, 0)?.let { return@withContext it }
+                        val gbCropped = createGreenBlueEnhancedBitmap(cropped)
+                        if (gbCropped != null) {
+                            try {
+                                tryMlKitOnBitmap(scanner, gbCropped, 0)?.let { return@withContext it }
+                            } finally {
+                                if (gbCropped !== cropped) gbCropped.recycle()
+                            }
+                        }
                     } finally {
                         if (cropped !== bitmap) cropped.recycle()
                     }
@@ -512,8 +1162,11 @@ object CccdQrDecoder {
             }
         }
 
-        // Fallback to multi-pass ZXing
-        decodeFromBitmap(bitmap)
+        // Fallback to multi-pass ZXing (includes max(G, B) + 4 quadrants + rotations)
+        decodeFromBitmap(bitmap)?.let { return@withContext it }
+
+        // Tier 2 fallback: MRZ (ICAO 9303) + Vietnamese OCR
+        decodeOcrFallbackFromBitmap(bitmap)
     }
 
     fun decodeFromImageBytes(imageBytes: ByteArray): CccdDecodedQrPayload? {

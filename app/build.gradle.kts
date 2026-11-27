@@ -29,8 +29,8 @@ android {
     applicationId = "vn.hrpartner.bi"
     minSdk = 24
     targetSdk = 36
-    versionCode = 36
-    versionName = "1.0.1.27112026"
+    versionCode = 37
+    versionName = "1.0.2.27112026"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -225,6 +225,7 @@ dependencies {
   implementation(libs.retrofit)
   implementation(libs.zxing.core)
   implementation(libs.mlkit.barcode.scanning)
+  implementation(libs.play.services.mlkit.text.recognition)
   testImplementation(libs.androidx.compose.ui.test.junit4)
   testImplementation(libs.androidx.core)
   testImplementation(libs.androidx.junit)
