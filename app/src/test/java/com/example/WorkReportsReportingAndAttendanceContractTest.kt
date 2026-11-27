@@ -2578,4 +2578,385 @@ class WorkReportsReportingAndAttendanceContractTest {
             vm.cancelScopeForTest()
         }
     }
+
+    @Test
+    fun `hrp bulletin contract parses list detail mark-read sorts pinned first and verifies sha256 session cache`() {
+        assertFalse(
+            "BULLETIN_REMOTE_API_ENABLED must remain false while backend /api/bulletins is not yet live",
+            com.example.data.BULLETIN_REMOTE_API_ENABLED
+        )
+        assertEquals(
+            "/api/bulletins?page_size=10",
+            com.example.data.HrpBulletinContract.buildListPath(category = com.example.data.HrpBulletinCategory.ALL, pageSize = 10)
+        )
+        assertEquals(
+            "/api/bulletins?category=HOLIDAY_SCHEDULE&page_size=10&cursor=cur-next-1",
+            com.example.data.HrpBulletinContract.buildListPath(
+                category = com.example.data.HrpBulletinCategory.HOLIDAY_SCHEDULE,
+                pageSize = 10,
+                cursor = "cur-next-1"
+            )
+        )
+        assertEquals(
+            "/api/bulletins/bul-001",
+            com.example.data.HrpBulletinContract.buildDetailPath("bul-001")
+        )
+        assertEquals(
+            "/api/bulletins/bul-001/read",
+            com.example.data.HrpBulletinContract.buildMarkReadPath("bul-001")
+        )
+
+        val listJson = """
+            {
+              "ok": true,
+              "data": {
+                "unread_count": 2,
+                "page_size": 10,
+                "has_more": true,
+                "next_cursor": "cursor-page-2",
+                "items": [
+                  {
+                    "bulletin_id": "bul-unpinned-newer",
+                    "title": "Thông báo chung không ghim",
+                    "category": "UNKNOWN_FUTURE_CATEGORY",
+                    "is_pinned": false,
+                    "is_read": false,
+                    "published_at": "2026-11-13T10:00:00Z",
+                    "author_display": "Ban Hành chính",
+                    "summary": "Tóm tắt bản tin thường",
+                    "image_count": 0,
+                    "pdf_count": 1
+                  },
+                  {
+                    "bulletin_id": "bul-pinned-older",
+                    "title": "Tin nhân sự ghim ưu tiên",
+                    "category": "HR_NEWS",
+                    "badge_text": "Mới",
+                    "is_pinned": true,
+                    "is_read": false,
+                    "published_at": "2026-11-12T08:00:00Z",
+                    "author_display": "Ban Nhân sự",
+                    "summary": "Tóm tắt bản tin ghim",
+                    "image_count": 2,
+                    "pdf_count": 0
+                  }
+                ]
+              }
+            }
+        """.trimIndent()
+
+        val parsedList = com.example.data.HrpBulletinContract.parseListResponse(listJson)
+        assertEquals(2, parsedList.unreadCount)
+        assertTrue(parsedList.hasMore)
+        assertEquals("cursor-page-2", parsedList.nextCursor)
+        assertEquals(2, parsedList.items.size)
+        // Pinned item must be sorted before unpinned item even if published_at is earlier
+        assertEquals("bul-pinned-older", parsedList.items[0].bulletinId)
+        assertEquals(com.example.data.HrpBulletinCategory.HR_NEWS, parsedList.items[0].category)
+        assertEquals("Mới", parsedList.items[0].badgeText)
+        assertEquals("12-11-2026", parsedList.items[0].publishedDateDisplay)
+
+        // Unknown category falls back safely to GENERAL ("Thông báo chung")
+        assertEquals("bul-unpinned-newer", parsedList.items[1].bulletinId)
+        assertEquals(com.example.data.HrpBulletinCategory.GENERAL, parsedList.items[1].category)
+        assertEquals("Thông báo chung", parsedList.items[1].categoryDisplay)
+
+        val detailJson = """
+            {
+              "ok": true,
+              "data": {
+                "item": {
+                  "bulletin_id": "bul-detail-01",
+                  "title": "Lịch nghỉ lễ ngày Văn hóa Việt Nam",
+                  "category": "HOLIDAY_SCHEDULE",
+                  "badge_text": "Lịch nghỉ lễ",
+                  "is_pinned": true,
+                  "is_read": true,
+                  "published_at": "2026-11-13T07:30:00Z",
+                  "author_display": "Phòng Hành chính - Nhân sự HRPartner",
+                  "summary": "Tóm tắt lịch nghỉ lễ",
+                  "content_sections": [
+                    "Mục 1: Thời gian nghỉ lễ",
+                    "Mục 2: Bố trí trực KCN"
+                  ],
+                  "attachments": [
+                    {
+                      "attachment_id": "att-pdf-1",
+                      "kind": "PDF",
+                      "file_name": "Thong-bao-nghi-le.pdf",
+                      "title": "Công văn nghỉ lễ",
+                      "mime_type": "application/pdf",
+                      "file_size_bytes": 245760,
+                      "url": "https://bi.hrpartner.vn/files/Thong-bao-nghi-le.pdf",
+                      "page_count": 2
+                    },
+                    {
+                      "attachment_id": "att-img-1",
+                      "kind": "IMAGE",
+                      "file_name": "lich-truc.png",
+                      "title": "Ảnh lịch trực",
+                      "mime_type": "image/png",
+                      "file_size_bytes": 162800,
+                      "url": "https://bi.hrpartner.vn/files/lich-truc.png",
+                      "width": 1200,
+                      "height": 800
+                    }
+                  ]
+                }
+              }
+            }
+        """.trimIndent()
+
+        val detail = com.example.data.HrpBulletinContract.parseDetailResponse(detailJson)
+        assertEquals("bul-detail-01", detail.bulletinId)
+        assertEquals(com.example.data.HrpBulletinCategory.HOLIDAY_SCHEDULE, detail.category)
+        assertEquals(2, detail.contentSections.size)
+        assertEquals(1, detail.pdfCount)
+        assertEquals(1, detail.imageCount)
+        assertEquals(2, detail.attachments.size)
+        assertEquals(com.example.data.HrpBulletinAttachmentKind.PDF, detail.attachments[0].kind)
+        assertEquals(2, detail.attachments[0].pageCount)
+        assertEquals("240 KB", detail.attachments[0].formattedFileSize)
+        assertTrue(com.example.data.HrpBulletinContract.parseMarkReadResponse("""{"ok":true}"""))
+
+        // Verify SHA-256 attachment caching & local mockup PDF/PNG generation
+        val samplePayload = "hrpartner-bulletin-cache-test".toByteArray(Charsets.UTF_8)
+        val validSha = com.example.data.HrpBulletinContract.computeSha256Hex(samplePayload)
+        val cachedAtt = detail.attachments[0].copy(
+            attachmentId = "att-cache-sha",
+            fileName = "cached-doc.pdf",
+            sha256 = validSha
+        )
+        val storedFile = com.example.data.HrpBulletinContract.storeAttachmentBytesInCache(context, cachedAtt, samplePayload)
+        assertTrue(storedFile.exists())
+        assertTrue(com.example.data.HrpBulletinContract.isCachedAttachmentValid(storedFile, validSha))
+        assertFalse(com.example.data.HrpBulletinContract.isCachedAttachmentValid(storedFile, "0000deadbeef"))
+
+        val defaultMockups = com.example.data.HrpBulletinContract.defaultMockupItems
+        assertEquals(3, defaultMockups.size)
+        assertEquals("Tin nhân sự ngày 13-11-2026", defaultMockups[0].title)
+        assertEquals("Lịch nghỉ lễ ngày Văn hóa Việt Nam", defaultMockups[1].title)
+        assertEquals("Hướng dẫn rà soát bảng công & giải trình chấm công tháng 11-2026", defaultMockups[2].title)
+
+        val generatedPdf = com.example.data.HrpBulletinContract.ensureMockupAttachmentFile(
+            context,
+            defaultMockups[1].attachments.first { it.kind == com.example.data.HrpBulletinAttachmentKind.PDF }
+        )
+        assertTrue("Generated mockup PDF must exist and be non-empty", generatedPdf.exists() && generatedPdf.length() > 500L)
+
+        val generatedPng = com.example.data.HrpBulletinContract.ensureMockupAttachmentFile(
+            context,
+            defaultMockups[0].attachments.first { it.kind == com.example.data.HrpBulletinAttachmentKind.IMAGE }
+        )
+        assertTrue("Generated mockup PNG must exist and be non-empty", generatedPng.exists() && generatedPng.length() > 500L)
+
+        // Verify once-per-bulletin new notification tracking & toggle
+        val manager = com.example.data.HrpBulletinManager(context, prefsName = "test_bulletin_notify_${System.nanoTime()}")
+        assertTrue(manager.isNewBulletinNotificationEnabled())
+        val firstBatch = manager.notifyNewBulletinsIfNeeded("usr-notify-1", defaultMockups, postSystemNotification = true)
+        assertEquals(3, firstBatch.size)
+        assertEquals(3, manager.getNotifiedBulletinIds("usr-notify-1").size)
+
+        // Subsequent check with same items must not re-notify
+        val secondBatch = manager.notifyNewBulletinsIfNeeded("usr-notify-1", defaultMockups, postSystemNotification = true)
+        assertTrue(secondBatch.isEmpty())
+
+        // Disabling notifications suppresses notification for a new user
+        manager.setNewBulletinNotificationEnabled(false)
+        assertFalse(manager.isNewBulletinNotificationEnabled())
+        assertTrue(manager.notifyNewBulletinsIfNeeded("usr-notify-2", defaultMockups, postSystemNotification = true).isEmpty())
+    }
+
+    @Test
+    fun `refactor golive contract parses effective_report_review_scopes prioritizes analytics options uses report_form_manage and resolves custom leave department name`() = runBlocking {
+        val server = MockWebServer()
+        val recordedPaths = java.util.Collections.synchronizedList(mutableListOf<String>())
+        val analyticsTplId = "11111111-aaaa-4111-8111-111111111111"
+        val fallbackTplId = "22222222-bbbb-4222-8222-222222222222"
+        var analyticsReturnsEmpty = false
+
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val path = request.path.orEmpty()
+                recordedPaths.add(path)
+                return when {
+                    path.startsWith("/api/work-reports/analytics/options") -> MockResponse()
+                        .setResponseCode(200)
+                        .setHeader("Content-Type", "application/json")
+                        .setBody(
+                            if (analyticsReturnsEmpty) {
+                                """{"ok":true,"data":{"templates":[]}}"""
+                            } else {
+                                """
+                                {
+                                  "ok": true,
+                                  "data": {
+                                    "templates": [
+                                      {"template_id": "$analyticsTplId", "display_name": "Báo cáo Ngày (Analytics)", "status": "ACTIVE"},
+                                      {"template_id": "33333333-cccc-4333-8333-333333333333", "display_name": "Mẫu lưu trữ", "status": "ARCHIVED"}
+                                    ]
+                                  }
+                                }
+                                """.trimIndent()
+                            }
+                        )
+                    path.startsWith("/api/work-reports/templates") -> MockResponse()
+                        .setResponseCode(200)
+                        .setHeader("Content-Type", "application/json")
+                        .setBody(
+                            """
+                            {
+                              "ok": true,
+                              "data": {
+                                "items": [
+                                  {"template_id": "$fallbackTplId", "display_name": "Báo cáo Quản lý mẫu", "status": "ACTIVE"}
+                                ]
+                              }
+                            }
+                            """.trimIndent()
+                        )
+                    else -> MockResponse()
+                        .setResponseCode(200)
+                        .setHeader("Content-Type", "application/json")
+                        .setBody("""{"ok":true,"data":{}}""")
+                }
+            }
+        }
+        server.start()
+
+        try {
+            val db = Room.inMemoryDatabaseBuilder(context, MiniBiDatabase::class.java)
+                .allowMainThreadQueries()
+                .build()
+            val cookieFile = File(context.cacheDir, "refactor_contract_cookie_${System.nanoTime()}.enc")
+            val prefsFile = File(context.cacheDir, "refactor_contract_prefs_${System.nanoTime()}.preferences_pb")
+            val repo = MiniBiRepository(
+                context = context,
+                database = db,
+                defaultServerUrl = server.url("/").toString().trimEnd('/'),
+                allowDebugUrlOverride = true,
+                cookieStorageFile = cookieFile,
+                preferencesStorageFile = prefsFile,
+                cookieCipher = JvmAes256GcmCookieCipher()
+            )
+            try {
+                // 1. Parse effective_report_review_scopes from direct-entry/session
+                val actorId = "aaaaaaaa-1111-4111-8111-111111111111"
+                val sessionJson = JSONObject(
+                    """
+                    {
+                      "ok": true,
+                      "actor": {
+                        "app_user_id": "$actorId",
+                        "allowed_worker_tabs": ["recruited"],
+                        "effective_report_review_scopes": [
+                          {"scope_kind": "team", "scope_id": "TEAM_NORTH"},
+                          "dept:MARKETING"
+                        ]
+                      }
+                    }
+                    """.trimIndent()
+                )
+                val parsedReviewScopes = com.example.data.ActorContractParser.parseDirectEntrySessionEffectiveReportReviewScopes(
+                    json = sessionJson,
+                    expectedAppUserId = actorId
+                )
+                assertEquals(listOf("team:TEAM_NORTH", "dept:MARKETING"), parsedReviewScopes)
+
+                val delegatedReviewer = AppActor(
+                    appUserId = actorId,
+                    displayName = "Người duyệt ủy quyền",
+                    capabilities = listOf("report_view"),
+                    scopes = listOf(ActorScope("own", "self", "2026-01-01", null)),
+                    selfRecruiterSuggestion = null,
+                    allowedWorkerTabs = listOf("recruited"),
+                    effectiveReportReviewScopes = parsedReviewScopes
+                )
+                assertTrue(delegatedReviewer.canReviewWorkReports())
+                assertTrue(delegatedReviewer.canAccessDashboard())
+                assertFalse(delegatedReviewer.canViewDeepWorkforceReport())
+
+                // 2. fetchSelectableTemplates prioritizes /api/work-reports/analytics/options for report_analytics_view
+                val analyticsViewer = AppActor(
+                    appUserId = actorId,
+                    displayName = "Board Viewer",
+                    capabilities = listOf("report_analytics_view"),
+                    scopes = listOf(ActorScope("all", "ALL", "2026-01-01", null)),
+                    selfRecruiterSuggestion = null
+                )
+                val analyticsTemplates = repo.workReportsAndReportingService.fetchSelectableTemplates(analyticsViewer)
+                assertEquals(1, analyticsTemplates.size)
+                assertEquals(analyticsTplId, analyticsTemplates.single().templateId)
+                assertEquals("Báo cáo Ngày (Analytics)", analyticsTemplates.single().displayName)
+                assertTrue(recordedPaths.any { it.startsWith("/api/work-reports/analytics/options") })
+
+                // 3. Fallback uses report_form_manage instead of dead report_template_manage
+                recordedPaths.clear()
+                analyticsReturnsEmpty = true
+                val formManager = AppActor(
+                    appUserId = actorId,
+                    displayName = "Form Manager",
+                    capabilities = listOf("report_form_manage"),
+                    scopes = listOf(ActorScope("all", "ALL", "2026-01-01", null)),
+                    selfRecruiterSuggestion = null
+                )
+                val formTemplates = repo.workReportsAndReportingService.fetchSelectableTemplates(formManager)
+                assertEquals(1, formTemplates.size)
+                assertEquals(fallbackTplId, formTemplates.single().templateId)
+                assertTrue(recordedPaths.any { it.startsWith("/api/work-reports/templates") })
+
+                // 4. Leave summary resolves custom department_name when unit_kind == UNCLASSIFIED
+                val leaveEnvelope = JSONObject(
+                    """
+                    {
+                      "ok": true,
+                      "data": {
+                        "leave_year": 2026,
+                        "as_of_date": "2026-11-27",
+                        "org_department": {
+                          "department_id": "dept-1",
+                          "department_name": "Phòng Pháp chế & Tuân thủ"
+                        },
+                        "authority": {
+                          "app_user_id": "$actorId",
+                          "is_shared_non_employee": false,
+                          "can_submit_request": true,
+                          "can_approve_requests": false
+                        },
+                        "routing": {
+                          "route_kind": "DEPARTMENT_HEAD",
+                          "unit_kind": "UNCLASSIFIED",
+                          "profile_configured": true
+                        },
+                        "balance": {
+                          "leave_year": 2026,
+                          "as_of_date": "2026-11-27",
+                          "has_profile": true,
+                          "profile_configured": true,
+                          "employment_status": "OFFICIAL",
+                          "unit_kind": "UNCLASSIFIED",
+                          "available_units": 12
+                        },
+                        "requests": [],
+                        "ledger_entries": []
+                      }
+                    }
+                    """.trimIndent()
+                )
+                val summary = LeaveContract.parseMyLeaveSummary(leaveEnvelope)
+                assertEquals("Phòng Pháp chế & Tuân thủ", LeaveContract.leaveUnitKindLabel(summary.balance.unitKind))
+                assertEquals(
+                    "Trưởng bộ phận (Phòng Pháp chế & Tuân thủ)",
+                    LeaveContract.leaveRouteKindLabel(summary.routing.routeKind, summary.routing.teamName, summary.routing.unitKind)
+                )
+            } finally {
+                repo.closeForTest()
+                db.close()
+                cookieFile.delete()
+                prefsFile.delete()
+            }
+        } finally {
+            server.shutdown()
+        }
+    }
 }

@@ -29,7 +29,8 @@ data class AppActor(
     val scopes: List<ActorScope>,
     val selfRecruiterSuggestion: String?,
     val displayIdentifier: String? = null, // Non-authoritative display-only login identifier
-    val allowedWorkerTabs: List<String> = emptyList()
+    val allowedWorkerTabs: List<String> = emptyList(),
+    val effectiveReportReviewScopes: List<String> = emptyList()
 ) {
     val safeAllowedWorkerTabs: List<String>
         get() = ActorContractParser.sanitizeAllowedWorkerTabs(allowedWorkerTabs)
@@ -39,7 +40,27 @@ data class AppActor(
     fun hasScopeKind(kind: String): Boolean = scopes.any { it.kind == kind }
 
     fun canLoadDirectEntryCatalog(): Boolean {
-        return hasCapability("entry_create") || hasCapability("entry_own")
+        return hasCapability("entry_create") ||
+            hasCapability("entry_own") ||
+            hasCapability("entry_privileged_edit")
+    }
+
+    fun canAccessDashboard(): Boolean {
+        return hasCapability("entry_own") ||
+            hasCapability("entry_team") ||
+            hasCapability("entry_admin") ||
+            hasCapability("report_view") ||
+            hasCapability("report_analytics_view")
+    }
+
+    fun canViewDeepWorkforceReport(): Boolean {
+        return hasScopeKind("all") &&
+            (hasCapability("entry_admin") || hasCapability("report_analytics_view"))
+    }
+
+    fun canReviewWorkReports(): Boolean {
+        return (hasCapability("report_review") && (hasScopeKind("team") || hasScopeKind("all"))) ||
+            effectiveReportReviewScopes.isNotEmpty()
     }
 
     fun canAccessNewEntryScreen(): Boolean {

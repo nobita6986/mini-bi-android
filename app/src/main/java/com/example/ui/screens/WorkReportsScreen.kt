@@ -161,7 +161,7 @@ fun WorkReportsScreen(
     }
 
     val hasTeamOrAllScope = actor.hasScopeKind("team") || actor.hasScopeKind("all")
-    val canReview = actor.hasCapability("report_review") && hasTeamOrAllScope
+    val canReview = actor.canReviewWorkReports()
     val canViewAnalytics = actor.hasCapability("report_analytics_view") && hasTeamOrAllScope
 
     var selectedTab by remember { mutableIntStateOf(0) }

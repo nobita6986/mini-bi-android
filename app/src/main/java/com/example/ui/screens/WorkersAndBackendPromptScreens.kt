@@ -313,7 +313,7 @@ fun DirectEntryNewWorkersScreen(
 
     LaunchedEffect(actor.appUserId) {
         viewModel.loadCatalogIfNeeded(actor = actor)
-        if (actor.hasCapability("submission_read") || actor.hasCapability("submission_create")) {
+        if ("uploader" in actor.safeAllowedWorkerTabs || actor.hasCapability("submission_create")) {
             viewModel.refreshOwnSubmissionsForHistory(actor = actor)
         }
     }
@@ -2447,6 +2447,8 @@ fun WorkersAndDirectEntryScreen(
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
     val canCreateNewEntry = actor.canAccessNewEntryScreen()
+    val isUploaderOnly = visibleTabs.isEmpty() &&
+        ("uploader" in actor.safeAllowedWorkerTabs || canCreateNewEntry)
 
     if (salaryAdvanceDialogOpen && canShowSalaryAdvance && salaryAdvanceContext != null) {
         SalaryAdvanceWorkspaceScreen(
@@ -2459,7 +2461,7 @@ fun WorkersAndDirectEntryScreen(
     val haptic = LocalHapticFeedback.current
 
     PullToRefreshBox(
-        isRefreshing = workerLoading && workers.isNotEmpty(),
+        isRefreshing = workerLoading && (workers.isNotEmpty() || ownSubmissions.isNotEmpty()),
         onRefresh = {
             focusManager.clearFocus()
             keyboardController?.hide()
@@ -2468,6 +2470,8 @@ fun WorkersAndDirectEntryScreen(
                     viewModel.loadSalaryAdvanceContextIfNeeded(actor = actor, force = true)
                 }
                 effectiveSelectTab(activeScopeKey)
+            } else if (isUploaderOnly) {
+                viewModel.refreshOwnSubmissionsForHistory(actor = actor)
             }
         },
         modifier = Modifier.fillMaxSize()
@@ -2595,7 +2599,7 @@ fun WorkersAndDirectEntryScreen(
                     )
                 }
             }
-        } else if (canCreateNewEntry) {
+        } else if (canCreateNewEntry || "uploader" in actor.safeAllowedWorkerTabs) {
             item {
                 Button(
                     onClick = {
@@ -2608,7 +2612,7 @@ fun WorkersAndDirectEntryScreen(
                     contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(38.dp)
+                        .height(40.dp)
                         .testTag("go_to_new_entry_from_workers")
                 ) {
                     Icon(
@@ -2741,7 +2745,24 @@ fun WorkersAndDirectEntryScreen(
         }
 
         if (visibleTabs.isEmpty()) {
-            if (workerError == null) {
+            if (isUploaderOnly) {
+                if (ownSubmissions.isEmpty() && !workerLoading && workerError == null) {
+                    item {
+                        EmptyWorkersCard(
+                            title = "Chưa có đợt nhập liệu",
+                            subtitle = "Bấm Cấp mới ở phía trên để tạo và gửi hồ sơ người lao động lên hệ thống."
+                        )
+                    }
+                } else {
+                    items(ownSubmissions, key = { it.submissionId }) { sub ->
+                        OwnSubmissionRowCard(
+                            item = sub,
+                            busy = mutationBusy,
+                            onSubmitDraft = { viewModel.submitExistingDraftSubmission(sub) }
+                        )
+                    }
+                }
+            } else if (workerError == null) {
                 item {
                     EmptyWorkersCard(
                         title = "Không có quyền truy cập",
@@ -3113,7 +3134,7 @@ internal fun WorkerOperationsRowCard(
                     contentColor = statusFg
                 )
 
-                if (actions.directEdit || actions.view) {
+                if (actions.directEdit || actions.proposeChange || actions.view) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(4.dp)
@@ -3153,6 +3174,32 @@ internal fun WorkerOperationsRowCard(
                                             modifier = Modifier.size(15.dp)
                                         )
                                     }
+                                }
+                            }
+                        } else if (actions.proposeChange) {
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = SemanticColors.InfoBg,
+                                border = BorderStroke(
+                                    1.dp,
+                                    SemanticColors.InfoText.copy(alpha = 0.30f)
+                                ),
+                                modifier = Modifier
+                                    .size(32.dp)
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .clickable(onClick = onProposeChange)
+                                    .testTag("worker_propose_${worker.entryId}")
+                            ) {
+                                Box(
+                                    modifier = Modifier.fillMaxSize(),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Edit,
+                                        contentDescription = "Đề xuất thay đổi",
+                                        tint = SemanticColors.InfoText,
+                                        modifier = Modifier.size(15.dp)
+                                    )
                                 }
                             }
                         }

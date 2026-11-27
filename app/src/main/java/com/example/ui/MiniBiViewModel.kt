@@ -107,13 +107,22 @@ enum class MainDestination(val route: String, val label: String) {
     NEW_ENTRY("new_entry", "Cấp mới")
 }
 
+fun canAccessWorkersDestination(actor: AppActor?): Boolean {
+    if (actor == null) return false
+    return resolveVisibleWorkerTabs(actor).isNotEmpty() ||
+        "uploader" in actor.safeAllowedWorkerTabs ||
+        actor.canAccessNewEntryScreen()
+}
+
 fun resolveMainNavigationDestinations(actor: AppActor?): List<MainDestination> {
     if (actor == null) return emptyList()
     return buildList {
-        add(MainDestination.DASHBOARD)
+        if (actor.canAccessDashboard()) {
+            add(MainDestination.DASHBOARD)
+        }
         add(MainDestination.WORK_REPORTS)
         add(MainDestination.ATTENDANCE)
-        if (resolveVisibleWorkerTabs(actor).isNotEmpty()) {
+        if (canAccessWorkersDestination(actor)) {
             add(MainDestination.WORKERS)
         }
         add(MainDestination.RECRUITMENT)
@@ -1007,7 +1016,7 @@ class MiniBiViewModel internal constructor(
         }
         val previousDestination = _currentDestination.value
         val actor = currentActor.value
-        if (destination == MainDestination.WORKERS && (actor == null || resolveVisibleWorkerTabs(actor).isEmpty())) {
+        if (destination == MainDestination.WORKERS && !canAccessWorkersDestination(actor)) {
             if (actor != null) {
                 ensureInitialWorkerTabLoaded(actor)
             }
@@ -1572,7 +1581,7 @@ class MiniBiViewModel internal constructor(
 
     fun refreshDashboardData(actor: AppActor? = currentActor.value) {
         val resolvedActor = actor ?: return
-        if (resolvedActor.hasScopeKind("all")) {
+        if (resolvedActor.canViewDeepWorkforceReport()) {
             refreshWorkforceDeep()
         } else {
             _workforceDeep.value = null
@@ -1583,7 +1592,7 @@ class MiniBiViewModel internal constructor(
 
     fun refreshWorkforceDeep(fromDate: String? = null, toDate: String? = null) {
         val actor = currentActor.value ?: return
-        if (!actor.hasScopeKind("all")) {
+        if (!actor.canViewDeepWorkforceReport()) {
             refreshScopedGeneralOverview(actor)
             return
         }
@@ -2266,7 +2275,8 @@ class MiniBiViewModel internal constructor(
             try {
                 if (cachedAdminTeamCodeMap == null &&
                     targetActor.hasScopeKind("all") &&
-                    targetActor.hasCapability("catalog_master_manage")
+                    (targetActor.hasCapability("catalog_master_manage") ||
+                        targetActor.hasCapability("team_master_manage"))
                 ) {
                     cachedAdminTeamCodeMap = repository.workReportsAndReportingService.fetchAdminTeamCodeMap()
                 }
@@ -2648,8 +2658,7 @@ class MiniBiViewModel internal constructor(
                 }
                 if (!isSessionValid(gen, targetActor.appUserId)) return@launchDeduplicatedSessionJob
 
-                val canReview = targetActor.hasCapability("report_review") &&
-                    (targetActor.hasScopeKind("team") || targetActor.hasScopeKind("all"))
+                val canReview = targetActor.canReviewWorkReports()
                 val loadedReviews = if (canReview) {
                     runCatching { repository.workReportsAndReportingService.fetchPendingReviews() }
                         .onFailure { err ->
@@ -2907,7 +2916,7 @@ class MiniBiViewModel internal constructor(
         reason: String
     ) {
         val actor = currentActor.value ?: return
-        if (!actor.hasCapability("report_review")) return
+        if (!actor.canReviewWorkReports() && !actor.hasCapability("report_review")) return
         if (_workReportMutationBusy.value) return
         val expectedGen = bindActorGeneration(actor)
         val expectedActorId = actor.appUserId
@@ -2986,10 +2995,11 @@ class MiniBiViewModel internal constructor(
     fun loadCatalogIfNeeded(
         effectiveDateIso: String = DirectEntryContract.todayIsoInHcm(),
         force: Boolean = false,
-        actor: AppActor? = null
+        actor: AppActor? = null,
+        allowRowLevelAttempt: Boolean = false
     ) {
         val resolvedActor = resolveSessionActor(actor)
-        if (resolvedActor == null || !resolvedActor.canLoadDirectEntryCatalog()) {
+        if (resolvedActor == null || (!allowRowLevelAttempt && !resolvedActor.canLoadDirectEntryCatalog())) {
             _catalog.value = null
             _catalogLoading.value = false
             return
@@ -3015,9 +3025,13 @@ class MiniBiViewModel internal constructor(
             } catch (e: Exception) {
                 e.rethrowIfCancelled()
                 if (isSessionValid(gen, targetActor.appUserId)) {
-                    _catalogError.value = (e as? BackendApiException)?.message
-                        ?: e.message
-                        ?: "Không thể tải danh mục từ máy chủ."
+                    if (allowRowLevelAttempt && (e as? BackendApiException)?.kind == BackendFailureKind.FORBIDDEN) {
+                        _catalogError.value = null
+                    } else {
+                        _catalogError.value = (e as? BackendApiException)?.message
+                            ?: e.message
+                            ?: "Không thể tải danh mục từ máy chủ."
+                    }
                 }
             } finally {
                 if (isSessionValid(gen, targetActor.appUserId)) {
@@ -3034,7 +3048,7 @@ class MiniBiViewModel internal constructor(
         if (resolvedActor == null ||
             (!resolvedActor.canAccessNewEntryScreen() &&
                 "uploader" !in resolvedActor.safeAllowedWorkerTabs &&
-                !resolvedActor.hasCapability("submission_read"))
+                !resolvedActor.hasCapability("submission_create"))
         ) {
             _ownSubmissions.value = emptyList()
             _submissionsHasMore.value = false
@@ -3607,14 +3621,19 @@ class MiniBiViewModel internal constructor(
             workerFetchJob = null
             _activeWorkerTabKey.value = ""
             _workerRows.value = emptyList()
-            _ownSubmissions.value = emptyList()
             _workerSummary.value = null
             _workerHasMore.value = false
             _workerNextCursor.value = null
-            _submissionsHasMore.value = false
-            _submissionsNextCursor.value = null
             _workerLoading.value = false
-            _workerError.value = "Tài khoản chưa được cấp quyền xem danh sách người lao động."
+            if ("uploader" in actor.safeAllowedWorkerTabs || actor.canAccessNewEntryScreen()) {
+                _workerError.value = null
+                refreshOwnSubmissionsForHistory(actor = actor)
+            } else {
+                _ownSubmissions.value = emptyList()
+                _submissionsHasMore.value = false
+                _submissionsNextCursor.value = null
+                _workerError.value = "Tài khoản chưa được cấp quyền xem danh sách người lao động."
+            }
             return
         }
         val currentTab = _activeWorkerTabKey.value
@@ -3947,14 +3966,14 @@ class MiniBiViewModel internal constructor(
         val cleanEntryId = worker.entryId.trim()
         if (cleanEntryId.isEmpty()) return
         val actor = resolveSessionActor(actorOverride) ?: return
-        if (!worker.allowedActions.proposeChange || !actor.hasCapability("entry_propose_change")) return
+        if (!worker.allowedActions.proposeChange) return
         val expectedGen = bindActorGeneration(actor)
         val expectedActorId = actor.appUserId
         val reqToken = ++openProposeChangeToken
         openProposeChangeExpectedEntryId = cleanEntryId
         openProposeChangeJob?.cancel()
         _workerMutationError.value = null
-        loadCatalogIfNeeded(actor = actor)
+        loadCatalogIfNeeded(actor = actor, allowRowLevelAttempt = true)
         openProposeChangeJob = viewModelScope.launch {
             val detail = if (worker.allowedActions.view) {
                 runCatching { repository.directEntryService.getEntryDetail(cleanEntryId) }
@@ -3991,7 +4010,9 @@ class MiniBiViewModel internal constructor(
         reason: String?
     ) {
         val actor = currentActor.value ?: return
-        if (!actor.hasCapability("entry_propose_change")) return
+        val canPropose = _proposeChangeTarget.value?.first?.allowedActions?.proposeChange == true ||
+            actor.hasCapability("change_request_create")
+        if (!canPropose) return
         if (_workerMutationBusy.value) return
         val expectedGen = bindActorGeneration(actor)
         val expectedActorId = actor.appUserId
@@ -4068,8 +4089,8 @@ class MiniBiViewModel internal constructor(
         _directEditProfileSaveMessage.value = null
         _workerMutationError.value = null
         _directEditLoadingEntryId.value = cleanEntryId
-        if (_catalog.value == null && actor.canLoadDirectEntryCatalog()) {
-            loadCatalogIfNeeded(actor = actor)
+        if (_catalog.value == null) {
+            loadCatalogIfNeeded(actor = actor, allowRowLevelAttempt = true)
         }
         openDirectEditJob = viewModelScope.launch {
             try {
@@ -4269,7 +4290,7 @@ class MiniBiViewModel internal constructor(
     ) {
         val actor = currentActor.value ?: return
         if (_workerMutationBusy.value) return
-        val canDirectEdit = actor.hasCapability("entry_direct_edit") ||
+        val canDirectEdit = actor.hasCapability("entry_privileged_edit") ||
             _directEditTarget.value?.first?.allowedActions?.directEdit == true
         val canUploadDocs = actor.hasCapability("document_upload")
         val hasProfilePatch = patch.length() > 0
