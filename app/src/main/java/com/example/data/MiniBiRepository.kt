@@ -575,6 +575,10 @@ class MiniBiRepository(
         httpClient = httpClient
     )
 
+    val hrpBulletinService = HrpBulletinService(
+        httpClient = httpClient
+    )
+
     val attendanceTimeAnchorManager = AttendanceTimeAnchorManager(
         context = context,
         httpClient = httpClient,
