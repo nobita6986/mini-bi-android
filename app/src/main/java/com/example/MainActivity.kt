@@ -110,6 +110,7 @@ import androidx.compose.ui.zIndex
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.Coil
+import com.example.data.BULLETIN_REMOTE_API_ENABLED
 import com.example.data.HrpBulletinManager
 import com.example.data.TaskReminderManager
 import com.example.ui.MainDestination
@@ -331,14 +332,25 @@ fun MiniBiAppRoot(
 
     val bulletinManager = remember(context) { HrpBulletinManager.getInstance(context) }
     val bulletinReadVersion by bulletinManager.readIdsVersionFlow.collectAsStateWithLifecycle()
-    val unreadBulletinCount = remember(authenticatedActor.appUserId, bulletinReadVersion) {
-        bulletinManager.unreadCountForActor(authenticatedActor.appUserId)
+    val remoteUnreadBulletinCount by viewModel.bulletinUnreadCount.collectAsStateWithLifecycle()
+    val unreadBulletinCount = remember(authenticatedActor.appUserId, bulletinReadVersion, remoteUnreadBulletinCount) {
+        if (BULLETIN_REMOTE_API_ENABLED) {
+            remoteUnreadBulletinCount
+        } else {
+            bulletinManager.unreadCountForActor(authenticatedActor.appUserId)
+        }
     }
     var bulletinDialogOpen by remember { mutableStateOf(false) }
     var bulletinDialogInitialId by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(authenticatedActor.appUserId, bulletinManager) {
-        bulletinManager.notifyNewBulletinsIfNeeded(authenticatedActor.appUserId)
+        if (!BULLETIN_REMOTE_API_ENABLED) {
+            bulletinManager.notifyNewBulletinsIfNeeded(authenticatedActor.appUserId)
+        }
+    }
+
+    LaunchedEffect(unreadBulletinCount) {
+        HrpBulletinManager.syncLauncherAppBadge(context, unreadBulletinCount)
     }
 
     LaunchedEffect(pendingBulletinId, authenticatedActor.appUserId) {
@@ -748,7 +760,7 @@ fun MiniBiAppRoot(
                                     ) {
                                         Icon(
                                             imageVector = Icons.Outlined.Newspaper,
-                                            contentDescription = "Bản tin HRPartner",
+                                            contentDescription = "Thông báo",
                                             tint = MaterialTheme.colorScheme.primary,
                                             modifier = Modifier.size(19.dp)
                                         )
@@ -1108,6 +1120,7 @@ fun MiniBiAppRoot(
             HrpBulletinDialog(
                 actor = authenticatedActor,
                 bulletinManager = bulletinManager,
+                viewModel = viewModel,
                 initialBulletinId = bulletinDialogInitialId,
                 onDismiss = {
                     bulletinDialogOpen = false

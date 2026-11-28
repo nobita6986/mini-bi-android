@@ -32,11 +32,11 @@ import java.security.MessageDigest
 import java.util.Locale
 
 /**
- * Safety flag: while BI backend has not enabled `/api/bulletins`, keep this `false`
- * so the Android app never sends any HTTP request to `/api/bulletins` during startup,
- * login, or when opening the HRPartner Bulletin sheet.
+ * Remote feature flag for `/api/bulletins*` REST + attachment endpoints.
+ * When `true`, bulletins load directly from the authenticated BI backend (falling back
+ * gracefully to an empty list on HTTP 404 for backends that have not deployed `/api/bulletins`).
  */
-const val BULLETIN_REMOTE_API_ENABLED: Boolean = false
+const val BULLETIN_REMOTE_API_ENABLED: Boolean = true
 
 enum class HrpBulletinCategory(
     val wireKey: String,
@@ -140,6 +140,9 @@ data class HrpBulletinListResult(
 object HrpBulletinContract {
     const val REMOTE_API_ENABLED: Boolean = BULLETIN_REMOTE_API_ENABLED
     const val DEFAULT_PAGE_SIZE: Int = 10
+    const val MARK_ALL_READ_PATH: String = "/api/bulletins/read-all"
+    const val ATTACHMENT_CACHE_MAX_AGE_DAYS: Int = 14
+    const val ATTACHMENT_CACHE_MAX_BYTES: Long = 50L * 1024L * 1024L
 
     fun formatFileSize(bytes: Long): String {
         val safeBytes = bytes.coerceAtLeast(0L)
@@ -282,6 +285,18 @@ object HrpBulletinContract {
         return !root.has("ok") || root.optBoolean("ok", false)
     }
 
+    fun parseMarkReadUnreadCount(bodyStr: String): Int? {
+        val root = runCatching { JSONObject(bodyStr) }.getOrNull() ?: return null
+        val dataObj = root.optJSONObject("data")
+        return when {
+            dataObj != null && dataObj.has("unread_count") && !dataObj.isNull("unread_count") ->
+                dataObj.optInt("unread_count", 0).coerceAtLeast(0)
+            root.has("unread_count") && !root.isNull("unread_count") ->
+                root.optInt("unread_count", 0).coerceAtLeast(0)
+            else -> null
+        }
+    }
+
     private fun JSONObject.optCleanString(vararg keys: String): String? {
         for (key in keys) {
             if (has(key) && !isNull(key)) {
@@ -315,7 +330,7 @@ object HrpBulletinContract {
         val publishedDateDisplay = if (rawPublishedDateDisplay.isNotEmpty()) {
             rawPublishedDateDisplay
         } else {
-            formatIsoToDisplayDate(publishedAtIso, fallback = "13-11-2026")
+            formatIsoToDisplayDate(publishedAtIso, fallback = "")
         }
 
         val authorDisplay = obj.optCleanString("author_display", "author_name", "department_name")
@@ -367,15 +382,20 @@ object HrpBulletinContract {
 
         val derivedImageCount = attachments.count { it.kind == HrpBulletinAttachmentKind.IMAGE }
         val derivedPdfCount = attachments.count { it.kind == HrpBulletinAttachmentKind.PDF }
-        val imageCount = if (obj.has("image_count") && !obj.isNull("image_count")) {
-            obj.optInt("image_count", derivedImageCount).coerceAtLeast(0)
-        } else {
-            derivedImageCount
+        val summaryObj = obj.optJSONObject("attachment_summary")
+        val imageCount = when {
+            obj.has("image_count") && !obj.isNull("image_count") ->
+                obj.optInt("image_count", derivedImageCount).coerceAtLeast(0)
+            summaryObj != null && summaryObj.has("image_count") && !summaryObj.isNull("image_count") ->
+                summaryObj.optInt("image_count", derivedImageCount).coerceAtLeast(0)
+            else -> derivedImageCount
         }
-        val pdfCount = if (obj.has("pdf_count") && !obj.isNull("pdf_count")) {
-            obj.optInt("pdf_count", derivedPdfCount).coerceAtLeast(0)
-        } else {
-            derivedPdfCount
+        val pdfCount = when {
+            obj.has("pdf_count") && !obj.isNull("pdf_count") ->
+                obj.optInt("pdf_count", derivedPdfCount).coerceAtLeast(0)
+            summaryObj != null && summaryObj.has("pdf_count") && !summaryObj.isNull("pdf_count") ->
+                summaryObj.optInt("pdf_count", derivedPdfCount).coerceAtLeast(0)
+            else -> derivedPdfCount
         }
 
         return HrpBulletinItem(
@@ -507,6 +527,48 @@ object HrpBulletinContract {
         return targetFile
     }
 
+    fun pruneBulletinAttachmentCache(
+        context: Context,
+        maxAgeDays: Int = ATTACHMENT_CACHE_MAX_AGE_DAYS,
+        maxTotalBytes: Long = ATTACHMENT_CACHE_MAX_BYTES,
+        nowMillis: Long = System.currentTimeMillis()
+    ): Int {
+        val cacheDir = File(context.cacheDir, "bulletins")
+        if (!cacheDir.exists() || !cacheDir.isDirectory) return 0
+        val files = cacheDir.listFiles()?.filter { it.isFile }?.toMutableList() ?: return 0
+        if (files.isEmpty()) return 0
+
+        var deletedCount = 0
+        val maxAgeMillis = maxAgeDays.coerceAtLeast(1).toLong() * 86_400_000L
+        val cutoffMillis = nowMillis - maxAgeMillis
+
+        val remaining = mutableListOf<File>()
+        for (file in files) {
+            if (file.lastModified() < cutoffMillis) {
+                if (runCatching { file.delete() }.getOrDefault(false)) {
+                    deletedCount++
+                }
+            } else {
+                remaining.add(file)
+            }
+        }
+
+        val safeMaxBytes = maxTotalBytes.coerceAtLeast(0L)
+        var totalBytes = remaining.sumOf { it.length().coerceAtLeast(0L) }
+        if (totalBytes > safeMaxBytes && remaining.isNotEmpty()) {
+            remaining.sortBy { it.lastModified() }
+            for (oldest in remaining) {
+                if (totalBytes <= safeMaxBytes) break
+                val size = oldest.length().coerceAtLeast(0L)
+                if (runCatching { oldest.delete() }.getOrDefault(false)) {
+                    totalBytes = (totalBytes - size).coerceAtLeast(0L)
+                    deletedCount++
+                }
+            }
+        }
+        return deletedCount
+    }
+
     suspend fun ensureAttachmentLocalFile(
         context: Context,
         attachment: HrpBulletinAttachment,
@@ -514,6 +576,7 @@ object HrpBulletinContract {
     ): File = withContext(Dispatchers.IO) {
         val cachedFile = resolveCachedAttachmentFile(context, attachment)
         if (isCachedAttachmentValid(cachedFile, attachment.sha256)) {
+            runCatching { cachedFile.setLastModified(System.currentTimeMillis()) }
             return@withContext cachedFile
         }
         if (attachment.url.startsWith("mockup://") || !BULLETIN_REMOTE_API_ENABLED) {
@@ -525,8 +588,34 @@ object HrpBulletinContract {
             backendCode = "BULLETIN_HTTP_CLIENT_MISSING",
             message = "Chưa khởi tạo kết nối tải tệp đính kèm."
         )
-        val (downloadedBytes, _) = client.getBinary(attachment.url)
-        storeAttachmentBytesInCache(context, attachment, downloadedBytes)
+        val cleanUrl = attachment.url.trim()
+        if (cleanUrl.isEmpty()) {
+            throw BackendApiException(
+                kind = BackendFailureKind.INVALID_REQUEST,
+                statusCode = null,
+                backendCode = "BULLETIN_ATTACHMENT_URL_EMPTY",
+                message = "Thiếu đường dẫn tải tệp đính kèm."
+            )
+        }
+        val downloadPath = if (
+            cleanUrl.startsWith("http://", ignoreCase = true) ||
+            cleanUrl.startsWith("https://", ignoreCase = true)
+        ) {
+            val parsed = cleanUrl.toHttpUrlOrNull() ?: throw BackendApiException(
+                kind = BackendFailureKind.INVALID_REQUEST,
+                statusCode = null,
+                backendCode = "BULLETIN_ATTACHMENT_URL_INVALID",
+                message = "Đường dẫn tải tệp đính kèm không hợp lệ."
+            )
+            val querySuffix = parsed.encodedQuery?.let { "?$it" }.orEmpty()
+            "${parsed.encodedPath}$querySuffix"
+        } else {
+            if (cleanUrl.startsWith("/")) cleanUrl else "/$cleanUrl"
+        }
+        val (downloadedBytes, _) = client.getBinary(downloadPath)
+        val storedFile = storeAttachmentBytesInCache(context, attachment, downloadedBytes)
+        pruneBulletinAttachmentCache(context)
+        storedFile
     }
 
     /**
@@ -1005,9 +1094,132 @@ object HrpBulletinContract {
 }
 
 /**
+ * Authenticated HTTP client for HRPartner Bulletin REST & attachment APIs:
+ * - `GET /api/bulletins?category=&page_size=&cursor=`
+ * - `GET /api/bulletins/{bulletinId}`
+ * - `POST /api/bulletins/{bulletinId}/read`
+ * - `POST /api/bulletins/read-all`
+ * - `GET /api/bulletins/{bulletinId}/attachments/{attachmentId}/content`
+ */
+class HrpBulletinService(
+    private val httpClient: BackendHttpClient
+) {
+    suspend fun fetchBulletins(
+        category: HrpBulletinCategory = HrpBulletinCategory.ALL,
+        pageSize: Int = HrpBulletinContract.DEFAULT_PAGE_SIZE,
+        cursor: String? = null,
+        clearSessionOn401: Boolean = false
+    ): HrpBulletinListResult {
+        val safePageSize = pageSize.coerceIn(1, 50)
+        val path = HrpBulletinContract.buildListPath(
+            category = category,
+            pageSize = safePageSize,
+            cursor = cursor
+        )
+        return try {
+            val json = httpClient.getJson(
+                pathWithQuery = path,
+                requireOkTrue = false,
+                clearSessionOn401 = clearSessionOn401
+            )
+            HrpBulletinContract.parseListResponse(json.toString())
+        } catch (e: BackendApiException) {
+            if (e.kind == BackendFailureKind.NOT_FOUND || e.statusCode == 404) {
+                HrpBulletinListResult(
+                    items = emptyList(),
+                    unreadCount = 0,
+                    pageSize = safePageSize,
+                    hasMore = false,
+                    nextCursor = null
+                )
+            } else {
+                throw e
+            }
+        }
+    }
+
+    suspend fun fetchBulletinDetail(
+        bulletinId: String,
+        clearSessionOn401: Boolean = false
+    ): HrpBulletinItem? {
+        val path = HrpBulletinContract.buildDetailPath(bulletinId)
+        return try {
+            val json = httpClient.getJson(
+                pathWithQuery = path,
+                requireOkTrue = false,
+                clearSessionOn401 = clearSessionOn401
+            )
+            HrpBulletinContract.parseDetailResponse(json.toString())
+        } catch (e: BackendApiException) {
+            if (e.kind == BackendFailureKind.NOT_FOUND || e.statusCode == 404) {
+                null
+            } else {
+                throw e
+            }
+        }
+    }
+
+    suspend fun markBulletinRead(
+        bulletinId: String,
+        clearSessionOn401: Boolean = false
+    ): Pair<Boolean, Int?> {
+        val path = HrpBulletinContract.buildMarkReadPath(bulletinId)
+        return try {
+            val json = httpClient.postJson(
+                path = path,
+                bodyJson = JSONObject(),
+                requireOkTrue = false,
+                clearSessionOn401 = clearSessionOn401
+            )
+            val raw = json.toString()
+            val ok = HrpBulletinContract.parseMarkReadResponse(raw)
+            val unread = HrpBulletinContract.parseMarkReadUnreadCount(raw)
+            ok to unread
+        } catch (e: BackendApiException) {
+            if (e.kind == BackendFailureKind.NOT_FOUND || e.statusCode == 404) {
+                false to null
+            } else {
+                throw e
+            }
+        }
+    }
+
+    suspend fun markAllBulletinsRead(
+        clearSessionOn401: Boolean = false
+    ): Pair<Boolean, Int?> {
+        return try {
+            val json = httpClient.postJson(
+                path = HrpBulletinContract.MARK_ALL_READ_PATH,
+                bodyJson = JSONObject(),
+                requireOkTrue = false,
+                clearSessionOn401 = clearSessionOn401
+            )
+            val raw = json.toString()
+            val ok = HrpBulletinContract.parseMarkReadResponse(raw)
+            val unread = HrpBulletinContract.parseMarkReadUnreadCount(raw) ?: if (ok) 0 else null
+            ok to unread
+        } catch (e: BackendApiException) {
+            if (e.kind == BackendFailureKind.NOT_FOUND || e.statusCode == 404) {
+                false to null
+            } else {
+                throw e
+            }
+        }
+    }
+
+    suspend fun ensureAttachmentLocalFile(
+        context: Context,
+        attachment: HrpBulletinAttachment
+    ): File = HrpBulletinContract.ensureAttachmentLocalFile(
+        context = context,
+        attachment = attachment,
+        httpClient = httpClient
+    )
+}
+
+/**
  * Manages per-user (`appUserId`) bulletin read state in local `SharedPreferences`
- * and provides reactive bulletin items + unread counts while `BULLETIN_REMOTE_API_ENABLED == false`
- * (and seamlessly merges remote items when enabled in the future).
+ * and provides reactive bulletin items + unread counts (combining with remote API items).
  */
 class HrpBulletinManager(
     context: Context,
@@ -1056,10 +1268,13 @@ class HrpBulletinManager(
         }
     }
 
+    private fun defaultSeedItemsForMode(): List<HrpBulletinItem> =
+        if (BULLETIN_REMOTE_API_ENABLED) emptyList() else HrpBulletinContract.defaultMockupItems
+
     fun getBulletinsForActor(
         appUserId: String?,
         category: HrpBulletinCategory = HrpBulletinCategory.ALL,
-        seedItems: List<HrpBulletinItem> = HrpBulletinContract.defaultMockupItems
+        seedItems: List<HrpBulletinItem> = defaultSeedItemsForMode()
     ): List<HrpBulletinItem> {
         val readIds = getReadBulletinIds(appUserId)
         val merged = HrpBulletinContract.sortBulletins(
@@ -1076,7 +1291,7 @@ class HrpBulletinManager(
 
     fun unreadCountForActor(
         appUserId: String?,
-        seedItems: List<HrpBulletinItem> = HrpBulletinContract.defaultMockupItems
+        seedItems: List<HrpBulletinItem> = defaultSeedItemsForMode()
     ): Int {
         val readIds = getReadBulletinIds(appUserId)
         return seedItems.count { !it.isRead && !readIds.contains(it.bulletinId) }
@@ -1085,14 +1300,23 @@ class HrpBulletinManager(
     fun markBulletinRead(appUserId: String?, bulletinId: String) {
         val cleanId = bulletinId.trim()
         if (cleanId.isEmpty()) return
+        markAllBulletinsRead(appUserId, listOf(cleanId))
+    }
+
+    fun markAllBulletinsRead(appUserId: String?, bulletinIds: Collection<String>) {
+        val cleanIds = bulletinIds.map { it.trim() }.filter { it.isNotEmpty() }
+        if (cleanIds.isEmpty()) return
         val readKey = prefKeyForUser(appUserId)
         val notifiedKey = notifiedPrefKeyForUser(appUserId)
         synchronized(lock) {
             val existingRead = prefs.getStringSet(readKey, emptySet()).orEmpty().toMutableSet()
             val existingNotified = prefs.getStringSet(notifiedKey, emptySet()).orEmpty().toMutableSet()
-            val changedRead = existingRead.add(cleanId)
-            val changedNotified = existingNotified.add(cleanId)
-            if (changedRead || changedNotified) {
+            var changed = false
+            for (id in cleanIds) {
+                if (existingRead.add(id)) changed = true
+                if (existingNotified.add(id)) changed = true
+            }
+            if (changed) {
                 prefs.edit()
                     .putStringSet(readKey, existingRead)
                     .putStringSet(notifiedKey, existingNotified)
@@ -1110,8 +1334,9 @@ class HrpBulletinManager(
      */
     fun notifyNewBulletinsIfNeeded(
         appUserId: String?,
-        seedItems: List<HrpBulletinItem> = HrpBulletinContract.defaultMockupItems,
-        postSystemNotification: Boolean = true
+        seedItems: List<HrpBulletinItem> = defaultSeedItemsForMode(),
+        postSystemNotification: Boolean = true,
+        totalUnreadCount: Int? = null
     ): List<HrpBulletinItem> {
         val newlyDetected: List<HrpBulletinItem>
         val shouldPost: Boolean
@@ -1139,7 +1364,8 @@ class HrpBulletinManager(
             shouldPost = postSystemNotification && enabled
         }
         if (shouldPost && newlyDetected.isNotEmpty()) {
-            postNewBulletinNotification(appContext, newlyDetected)
+            val badgeCount = maxOf(totalUnreadCount ?: newlyDetected.size, newlyDetected.size)
+            postNewBulletinNotification(appContext, newlyDetected, badgeCount)
         }
         return newlyDetected
     }
@@ -1167,7 +1393,8 @@ class HrpBulletinManager(
         private const val KEY_NOTIFY_NEW_BULLETINS_ENABLED = "notify_new_bulletins_enabled"
         const val ACTION_OPEN_BULLETIN = "vn.hrpartner.bi.ACTION_OPEN_BULLETIN"
         const val EXTRA_BULLETIN_ID = "extra_bulletin_id"
-        const val NOTIFICATION_CHANNEL_ID = "hrp_bulletin_new_channel"
+        const val LEGACY_NOTIFICATION_CHANNEL_ID = "hrp_bulletin_new_channel"
+        const val NOTIFICATION_CHANNEL_ID = "hrp_bulletin_channel_v2"
         const val NOTIFICATION_ID_NEW_BULLETIN = 20261113
 
         @Volatile
@@ -1179,25 +1406,112 @@ class HrpBulletinManager(
             }
         }
 
+        fun syncLauncherAppBadge(
+            context: Context,
+            unreadCount: Int,
+            notification: android.app.Notification? = null
+        ) {
+            val safeCount = unreadCount.coerceAtLeast(0)
+            val appContext = context.applicationContext
+            if (safeCount <= 0) {
+                runCatching {
+                    val nm = appContext.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+                    nm?.cancel(NOTIFICATION_ID_NEW_BULLETIN)
+                }
+            }
+
+            // Xiaomi HyperOS / MIUI launcher badge via extraNotification.setMessageCount(...)
+            if (notification != null) {
+                runCatching {
+                    val extraNotifField = notification.javaClass.getDeclaredField("extraNotification")
+                    extraNotifField.isAccessible = true
+                    val extraNotif = extraNotifField.get(notification)
+                    val setCountMethod = extraNotif?.javaClass?.getDeclaredMethod(
+                        "setMessageCount",
+                        Int::class.javaPrimitiveType
+                    )
+                    setCountMethod?.invoke(extraNotif, safeCount)
+                }
+            }
+
+            val pkgName = appContext.packageName
+            val launcherClassName = runCatching {
+                appContext.packageManager.getLaunchIntentForPackage(pkgName)?.component?.className
+            }.getOrNull().orEmpty().ifBlank { MainActivity::class.java.name }
+
+            // Samsung OneUI badge broadcast
+            runCatching {
+                val samsungIntent = Intent("android.intent.action.BADGE_COUNT_UPDATE").apply {
+                    putExtra("badge_count", safeCount)
+                    putExtra("badge_count_package_name", pkgName)
+                    putExtra("badge_count_class_name", launcherClassName)
+                }
+                appContext.sendBroadcast(samsungIntent)
+            }
+
+            // OPPO / ColorOS badge broadcast + content provider
+            runCatching {
+                val oppoIntent = Intent("com.oppo.unsettledevent").apply {
+                    putExtra("pakeageName", pkgName)
+                    putExtra("packageName", pkgName)
+                    putExtra("number", safeCount)
+                    putExtra("upgradeNumber", safeCount)
+                }
+                appContext.sendBroadcast(oppoIntent)
+            }
+            runCatching {
+                val extras = android.os.Bundle().apply {
+                    putInt("app_badge_count", safeCount)
+                }
+                appContext.contentResolver.call(
+                    android.net.Uri.parse("content://com.android.badge/badge"),
+                    "setAppBadgeCount",
+                    null,
+                    extras
+                )
+            }
+
+            // Huawei / Honor launcher badge content provider
+            runCatching {
+                val extras = android.os.Bundle().apply {
+                    putString("package", pkgName)
+                    putString("class", launcherClassName)
+                    putInt("badgenumber", safeCount)
+                }
+                appContext.contentResolver.call(
+                    android.net.Uri.parse("content://com.huawei.android.launcher.settings/badge/"),
+                    "change_badge",
+                    null,
+                    extras
+                )
+            }
+        }
+
         internal fun postNewBulletinNotification(
             context: Context,
-            newItems: List<HrpBulletinItem>
+            newItems: List<HrpBulletinItem>,
+            unreadCount: Int = newItems.size
         ) {
             if (newItems.isEmpty()) return
+            val safeUnreadCount = maxOf(unreadCount, newItems.size).coerceAtLeast(1)
             runCatching {
                 val appContext = context.applicationContext
                 val notificationManager =
                     appContext.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
 
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    runCatching {
+                        notificationManager.deleteNotificationChannel(LEGACY_NOTIFICATION_CHANNEL_ID)
+                    }
                     val existing = notificationManager.getNotificationChannel(NOTIFICATION_CHANNEL_ID)
-                    if (existing == null) {
+                    if (existing == null || !existing.canShowBadge()) {
                         val channel = NotificationChannel(
                             NOTIFICATION_CHANNEL_ID,
-                            "Bản tin HRPartner",
+                            "Thông báo",
                             NotificationManager.IMPORTANCE_HIGH
                         ).apply {
                             description = "Thông báo khi có bản tin nội bộ, lịch nghỉ lễ hoặc quy định mới từ HRPartner"
+                            setShowBadge(true)
                             enableVibration(true)
                         }
                         notificationManager.createNotificationChannel(channel)
@@ -1218,9 +1532,9 @@ class HrpBulletinManager(
                 )
 
                 val titleText = if (newItems.size == 1) {
-                    "Bản tin HRPartner mới · ${primaryItem.categoryDisplay}"
+                    "Thông báo · ${primaryItem.categoryDisplay}"
                 } else {
-                    "Bản tin HRPartner (${newItems.size} tin mới)"
+                    "Thông báo (${newItems.size} tin mới)"
                 }
                 val summaryText = primaryItem.title
                 val expandedBody = if (newItems.size == 1) {
@@ -1234,12 +1548,15 @@ class HrpBulletinManager(
                     .setContentTitle(titleText)
                     .setContentText(summaryText)
                     .setStyle(NotificationCompat.BigTextStyle().bigText(expandedBody))
+                    .setNumber(safeUnreadCount)
+                    .setBadgeIconType(NotificationCompat.BADGE_ICON_SMALL)
                     .setPriority(NotificationCompat.PRIORITY_HIGH)
                     .setCategory(NotificationCompat.CATEGORY_MESSAGE)
                     .setAutoCancel(true)
                     .setContentIntent(tapPendingIntent)
                     .build()
 
+                syncLauncherAppBadge(appContext, safeUnreadCount, notification)
                 notificationManager.notify(NOTIFICATION_ID_NEW_BULLETIN, notification)
             }
         }

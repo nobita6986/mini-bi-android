@@ -2671,4 +2671,157 @@ class DirectEntryAndWorkerContractTest {
         }
         assertTrue(threwFloatMoney)
     }
+
+    @Test
+    fun `cccd 2021 cyan guilloche filter, portrait corner crops, and icao 9303 mrz with vietnamese ocr fallback`() {
+        val samplePayload = "026198004355|135998877|Đỗ Thị Lan Anh|18121998|Nữ|Thôn Bầu, Kim Chung, Đông Anh, Hà Nội|04072023"
+        val writer = com.google.zxing.qrcode.QRCodeWriter()
+        val hints = mapOf(
+            com.google.zxing.EncodeHintType.CHARACTER_SET to "UTF-8",
+            com.google.zxing.EncodeHintType.MARGIN to 2
+        )
+
+        // 1. Verify Green-Blue max(G, B) filter strips 2021 cyan guilloche while preserving dark QR ink
+        val cyanMatrix = writer.encode(samplePayload, com.google.zxing.BarcodeFormat.QR_CODE, 220, 220, hints)
+        val cyanBitmap = Bitmap.createBitmap(220, 220, Bitmap.Config.ARGB_8888)
+        for (y in 0 until 220) {
+            for (x in 0 until 220) {
+                val isQrBlack = cyanMatrix.get(x, y)
+                val color = if (isQrBlack) {
+                    android.graphics.Color.rgb(0x18, 0x1E, 0x1E)
+                } else if ((x + y) % 4 == 0) {
+                    android.graphics.Color.rgb(0x28, 0xD4, 0xCE)
+                } else {
+                    android.graphics.Color.rgb(0xF5, 0xFA, 0xFA)
+                }
+                cyanBitmap.setPixel(x, y, color)
+            }
+        }
+        val gbSample = com.example.data.CccdQrDecoder.buildGreenBlueStretchedPixels(
+            intArrayOf(
+                android.graphics.Color.rgb(0x18, 0x1E, 0x1E),
+                android.graphics.Color.rgb(0x28, 0xD4, 0xCE),
+                android.graphics.Color.rgb(0xF5, 0xFA, 0xFA)
+            )
+        )
+        assertTrue("Dark ink must remain <= 30 after max(G,B) stretch", (gbSample[0] and 0xFF) <= 30)
+        assertTrue("Cyan pattern must lift >= 200 after max(G,B) stretch", (gbSample[1] and 0xFF) >= 200)
+        assertTrue("Light background must lift >= 250", (gbSample[2] and 0xFF) >= 250)
+
+        val decodedCyan = com.example.data.CccdQrDecoder.decodeFromBitmap(cyanBitmap)
+        assertNotNull(decodedCyan)
+        assertEquals("026198004355", decodedCyan!!.cccd12)
+        assertEquals("Đỗ Thị Lan Anh", decodedCyan.fullName)
+        assertEquals("04/07/2023", decodedCyan.issueDateUi)
+
+        // 2. Verify Bottom-Right and Bottom-Left portrait crops on sideways/Zalo images
+        val smallMatrix = writer.encode(samplePayload, com.google.zxing.BarcodeFormat.QR_CODE, 140, 140, hints)
+        fun createPortraitCornerBitmap(offsetX: Int, offsetY: Int): Bitmap {
+            val canvasBmp = Bitmap.createBitmap(700, 1100, Bitmap.Config.ARGB_8888)
+            canvasBmp.eraseColor(android.graphics.Color.WHITE)
+            for (y in 0 until 140) {
+                for (x in 0 until 140) {
+                    if (smallMatrix.get(x, y)) {
+                        canvasBmp.setPixel(offsetX + x, offsetY + y, android.graphics.Color.BLACK)
+                    }
+                }
+            }
+            return canvasBmp
+        }
+        val bottomRightDecoded = com.example.data.CccdQrDecoder.decodeFromBitmap(createPortraitCornerBitmap(470, 720))
+        assertNotNull("Bottom-Right corner QR must decode", bottomRightDecoded)
+        assertEquals("026198004355", bottomRightDecoded!!.cccd12)
+
+        val bottomLeftDecoded = com.example.data.CccdQrDecoder.decodeFromBitmap(createPortraitCornerBitmap(60, 720))
+        assertNotNull("Bottom-Left corner QR must decode", bottomLeftDecoded)
+        assertEquals("026198004355", bottomLeftDecoded!!.cccd12)
+
+        // 3. ICAO Doc 9303 Modulo-10 Check Digit helper + pure MRZ decode
+        assertEquals(7, com.example.data.CccdQrDecoder.computeMrzCheckDigit("198004355"))
+        assertEquals(3, com.example.data.CccdQrDecoder.computeMrzCheckDigit("981218"))
+
+        val pureMrzText = """
+            IDVNM1980043557026198004355<<9
+            9812183F3812181VNM<<<<<<<<<<<8
+            DO<<THI<LAN<ANH<<<<<<<<<<<<<<<
+        """.trimIndent()
+        val decodedPureMrz = com.example.data.CccdQrDecoder.parseCccdFromRecognizedText(pureMrzText, requireMrz = true)
+        assertNotNull(decodedPureMrz)
+        assertEquals("026198004355", decodedPureMrz!!.cccd12)
+        assertEquals("DO THI LAN ANH", decodedPureMrz.fullName)
+        assertEquals("18/12/1998", decodedPureMrz.dateOfBirthUi)
+        assertEquals("FEMALE", decodedPureMrz.genderCanonical)
+        assertEquals("Nữ", decodedPureMrz.genderUi)
+
+        // 4. Derive 2000s century and gender from 4th CCCD digit ('2' -> 20YY + Nam)
+        assertEquals(3, com.example.data.CccdQrDecoder.computeMrzCheckDigit("201001234"))
+        assertEquals(4, com.example.data.CccdQrDecoder.computeMrzCheckDigit("050315"))
+        val born2005MaleMrz = """
+            IDVNM2010012343001201001234<<1
+            0503154M4503152VNM<<<<<<<<<<<4
+            NGUYEN<<VAN<NAM<<<<<<<<<<<<<<<
+        """.trimIndent()
+        val decoded2005Male = com.example.data.CccdQrDecoder.parseCccdFromRecognizedText(born2005MaleMrz, requireMrz = true)
+        assertNotNull(decoded2005Male)
+        assertEquals("001201001234", decoded2005Male!!.cccd12)
+        assertEquals("15/03/2005", decoded2005Male.dateOfBirthUi)
+        assertEquals("MALE", decoded2005Male.genderCanonical)
+        assertEquals("Nam", decoded2005Male.genderUi)
+
+        // 5. Combined MRZ + Front/Back Vietnamese OCR prefers accented Vietnamese full name + issue date + address
+        val combinedOcrText = """
+            CỘNG HÒA XÃ HỘI CHỦ NGHĨA VIỆT NAM
+            CĂN CƯỚC CÔNG DÂN
+            Số / No.: 026198004355
+            Họ và tên / Full name:
+            ĐỖ THỊ LAN ANH
+            Ngày sinh / Date of birth: 18/12/1998
+            Giới tính / Sex: Nữ
+            Nơi thường trú / Place of residence:
+            Thôn Bầu, Kim Chung, Đông Anh, Hà Nội
+            Ngày, tháng, năm / Date, month, year: 04/07/2023
+            IDVNM1980043557026198004355<<9
+            9812183F3812181VNM<<<<<<<<<<<8
+            DO<<THI<LAN<ANH<<<<<<<<<<<<<<<
+        """.trimIndent()
+        val decodedCombined = com.example.data.CccdQrDecoder.parseCccdFromRecognizedText(combinedOcrText)
+        assertNotNull(decodedCombined)
+        assertEquals("026198004355", decodedCombined!!.cccd12)
+        assertEquals("ĐỖ THỊ LAN ANH", decodedCombined.fullName)
+        assertEquals("18/12/1998", decodedCombined.dateOfBirthUi)
+        assertEquals("Nữ", decodedCombined.genderUi)
+        assertEquals("Thôn Bầu, Kim Chung, Đông Anh, Hà Nội", decodedCombined.address)
+        assertEquals("04/07/2023", decodedCombined.issueDateUi)
+
+        // 6. Invalid MRZ checksums must return null
+        val badLine1Mrz = """
+            IDVNM1980043558026198004355<<9
+            9812183F3812181VNM<<<<<<<<<<<8
+            DO<<THI<LAN<ANH<<<<<<<<<<<<<<<
+        """.trimIndent()
+        assertNull("Invalid Line 1 checksum must return null", com.example.data.CccdQrDecoder.parseCccdFromRecognizedText(badLine1Mrz))
+
+        val badLine2Mrz = """
+            IDVNM1980043557026198004355<<9
+            9812184F3812181VNM<<<<<<<<<<<8
+            DO<<THI<LAN<ANH<<<<<<<<<<<<<<<
+        """.trimIndent()
+        assertNull("Invalid Line 2 DOB checksum must return null", com.example.data.CccdQrDecoder.parseCccdFromRecognizedText(badLine2Mrz))
+
+        // 7. Attachment auto-fill overwriteExisting = false only fills blank fields
+        val partiallyFilledDraft = DirectEntryContract.createDefaultWorkerDraft().copy(
+            cccd = "026198004355",
+            fullName = "Tên Đã Nhập Tay"
+        )
+        val nonOverwritingDraft = com.example.data.CccdQrDecoder.applyQrPayloadToDraft(
+            draft = partiallyFilledDraft,
+            qr = decodedCombined,
+            overwriteExisting = false
+        )
+        assertEquals("Tên Đã Nhập Tay", nonOverwritingDraft.fullName)
+        assertEquals("18/12/1998", nonOverwritingDraft.birthDateUi)
+        assertEquals("Nữ", nonOverwritingDraft.genderUi)
+        assertEquals("04/07/2023", nonOverwritingDraft.cccdIssueDateUi)
+        assertEquals("Thôn Bầu, Kim Chung, Đông Anh, Hà Nội", nonOverwritingDraft.address)
+    }
 }

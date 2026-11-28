@@ -9283,15 +9283,22 @@ class WorkerUiAuthorizationRobolectricTest {
     }
 
     @Test
-    fun `hrp bulletin topbar button opens sheet filters categories marks read and makes zero network calls when remote flag disabled`() {
+    fun `hrp bulletin topbar button loads remote bulletins handles category filter pagination detail read and read-all plus 404 empty fallback`() {
         val app = ApplicationProvider.getApplicationContext<Application>()
         val actorUserId = "11111111-2222-4333-8444-555555555555"
-        val recordedPaths = java.util.Collections.synchronizedList(mutableListOf<String>())
+        val bulHrId = "10000000-0000-4000-8000-000000000101"
+        val bulHolidayId = "10000000-0000-4000-8000-000000000102"
+        val bulPolicyId = "10000000-0000-4000-8000-000000000103"
+        val bulPage2Id = "10000000-0000-4000-8000-000000000104"
+        val recordedRequests = java.util.Collections.synchronizedList(mutableListOf<String>())
+        var simulate404 = false
+        val readIdsOnServer = java.util.Collections.synchronizedSet(mutableSetOf<String>())
         val server = MockWebServer()
         server.dispatcher = object : Dispatcher() {
             override fun dispatch(request: RecordedRequest): MockResponse {
                 val path = request.path.orEmpty()
-                recordedPaths.add(path)
+                val method = request.method.orEmpty()
+                recordedRequests.add("$method:$path")
                 return when {
                     path.startsWith("/api/auth/session") || path.startsWith("/api/direct-entry/session") ->
                         MockResponse()
@@ -9311,6 +9318,167 @@ class WorkerUiAuthorizationRobolectricTest {
                                 }
                                 """.trimIndent()
                             )
+                    path.startsWith("/api/bulletins") && simulate404 ->
+                        MockResponse()
+                            .setResponseCode(404)
+                            .setHeader("Content-Type", "application/json")
+                            .setBody("""{"ok":false,"code":"NOT_FOUND"}""")
+                    path == "/api/bulletins/read-all" && method == "POST" -> {
+                        readIdsOnServer.addAll(listOf(bulHrId, bulHolidayId, bulPolicyId, bulPage2Id))
+                        MockResponse()
+                            .setResponseCode(200)
+                            .setHeader("Content-Type", "application/json")
+                            .setBody("""{"ok":true,"data":{"unread_count":0}}""")
+                    }
+                    path == "/api/bulletins/$bulHolidayId/read" && method == "POST" -> {
+                        readIdsOnServer.add(bulHolidayId)
+                        MockResponse()
+                            .setResponseCode(200)
+                            .setHeader("Content-Type", "application/json")
+                            .setBody("""{"ok":true,"data":{"unread_count":2}}""")
+                    }
+                    path == "/api/bulletins/$bulHolidayId" && method == "GET" -> {
+                        MockResponse()
+                            .setResponseCode(200)
+                            .setHeader("Content-Type", "application/json")
+                            .setBody(
+                                """
+                                {
+                                  "ok": true,
+                                  "data": {
+                                    "item": {
+                                      "bulletin_id": "$bulHolidayId",
+                                      "title": "Lịch nghỉ lễ ngày Văn hóa Việt Nam",
+                                      "category": "HOLIDAY_SCHEDULE",
+                                      "badge_text": "Lịch nghỉ lễ",
+                                      "is_pinned": true,
+                                      "is_read": ${bulHolidayId in readIdsOnServer},
+                                      "published_at": "2026-11-28T07:30:00Z",
+                                      "author_display": "Phòng Hành chính - Nhân sự HRPartner",
+                                      "summary": "Thông báo lịch nghỉ lễ chính thức từ máy chủ.",
+                                      "content_sections": [
+                                        "Mục 1: Nghỉ lễ theo quy định hiện hành.",
+                                        "Mục 2: Bố trí trực ca tại KCN."
+                                      ],
+                                      "attachments": []
+                                    }
+                                  }
+                                }
+                                """.trimIndent()
+                            )
+                    }
+                    path.startsWith("/api/bulletins?") -> {
+                        val unreadNow = listOf(bulHrId, bulHolidayId, bulPolicyId).count { it !in readIdsOnServer }
+                        when {
+                            path.contains("category=HOLIDAY_SCHEDULE") -> MockResponse()
+                                .setResponseCode(200)
+                                .setHeader("Content-Type", "application/json")
+                                .setBody(
+                                    """
+                                    {
+                                      "ok": true,
+                                      "data": {
+                                        "unread_count": $unreadNow,
+                                        "page_size": 10,
+                                        "has_more": false,
+                                        "next_cursor": null,
+                                        "items": [
+                                          {
+                                            "bulletin_id": "$bulHolidayId",
+                                            "title": "Lịch nghỉ lễ ngày Văn hóa Việt Nam",
+                                            "category": "HOLIDAY_SCHEDULE",
+                                            "badge_text": "Lịch nghỉ lễ",
+                                            "is_pinned": true,
+                                            "is_read": ${bulHolidayId in readIdsOnServer},
+                                            "published_at": "2026-11-28T07:30:00Z",
+                                            "author_display": "Phòng Hành chính",
+                                            "summary": "Thông báo lịch nghỉ lễ."
+                                          }
+                                        ]
+                                      }
+                                    }
+                                    """.trimIndent()
+                                )
+                            path.contains("cursor=page2") -> MockResponse()
+                                .setResponseCode(200)
+                                .setHeader("Content-Type", "application/json")
+                                .setBody(
+                                    """
+                                    {
+                                      "ok": true,
+                                      "data": {
+                                        "unread_count": $unreadNow,
+                                        "page_size": 10,
+                                        "has_more": false,
+                                        "next_cursor": null,
+                                        "items": [
+                                          {
+                                            "bulletin_id": "$bulPage2Id",
+                                            "title": "Bản tin trang 2 từ Server",
+                                            "category": "HR_NEWS",
+                                            "is_pinned": false,
+                                            "is_read": true,
+                                            "published_at": "2026-11-26T08:00:00Z",
+                                            "author_display": "Ban Nhân sự",
+                                            "summary": "Nội dung trang 2."
+                                          }
+                                        ]
+                                      }
+                                    }
+                                    """.trimIndent()
+                                )
+                            else -> MockResponse()
+                                .setResponseCode(200)
+                                .setHeader("Content-Type", "application/json")
+                                .setBody(
+                                    """
+                                    {
+                                      "ok": true,
+                                      "data": {
+                                        "unread_count": $unreadNow,
+                                        "page_size": 10,
+                                        "has_more": true,
+                                        "next_cursor": "page2",
+                                        "items": [
+                                          {
+                                            "bulletin_id": "$bulHrId",
+                                            "title": "Tin nhân sự ngày 28-11-2026",
+                                            "category": "HR_NEWS",
+                                            "badge_text": "Mới",
+                                            "is_pinned": true,
+                                            "is_read": ${bulHrId in readIdsOnServer},
+                                            "published_at": "2026-11-28T08:00:00Z",
+                                            "author_display": "Ban Nhân sự",
+                                            "summary": "Tóm tắt bản tin thật trên BI2."
+                                          },
+                                          {
+                                            "bulletin_id": "$bulHolidayId",
+                                            "title": "Lịch nghỉ lễ ngày Văn hóa Việt Nam",
+                                            "category": "HOLIDAY_SCHEDULE",
+                                            "badge_text": "Lịch nghỉ lễ",
+                                            "is_pinned": true,
+                                            "is_read": ${bulHolidayId in readIdsOnServer},
+                                            "published_at": "2026-11-28T07:30:00Z",
+                                            "author_display": "Phòng Hành chính",
+                                            "summary": "Thông báo lịch nghỉ lễ."
+                                          },
+                                          {
+                                            "bulletin_id": "$bulPolicyId",
+                                            "title": "Quy định vận hành tuần cuối tháng 11",
+                                            "category": "INTERNAL_POLICY",
+                                            "is_pinned": false,
+                                            "is_read": ${bulPolicyId in readIdsOnServer},
+                                            "published_at": "2026-11-27T09:00:00Z",
+                                            "author_display": "Ban Vận hành",
+                                            "summary": "Tóm tắt quy định vận hành."
+                                          }
+                                        ]
+                                      }
+                                    }
+                                    """.trimIndent()
+                                )
+                        }
+                    }
                     else ->
                         MockResponse()
                             .setResponseCode(200)
@@ -9359,69 +9527,100 @@ class WorkerUiAuthorizationRobolectricTest {
                 }
             }
 
-            composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            composeTestRule.waitUntil(timeoutMillis = 8_000) {
                 org.robolectric.shadows.ShadowLooper.idleMainLooper()
-                !vm.sessionBootstrapping.value && vm.currentActor.value != null
+                !vm.sessionBootstrapping.value &&
+                    vm.currentActor.value != null &&
+                    vm.bulletins.value.isNotEmpty()
             }
             composeTestRule.waitForIdle()
 
-            // 1. Top bar displays bulletin button next to bell reminder button with unread badge = 3
+            // 1. Top bar displays remote unread badge = 3 and notifies 3 new bulletins once
             composeTestRule.onNodeWithTag("topbar_bulletin_button").assertIsDisplayed()
             composeTestRule.onNodeWithTag("topbar_bell_reminder_button").assertIsDisplayed()
             composeTestRule.onNodeWithTag("topbar_bulletin_badge", useUnmergedTree = true).assertIsDisplayed()
-            assertEquals(3, bulletinManager.unreadCountForActor(actorUserId))
+            assertEquals(3, vm.bulletinUnreadCount.value)
+            assertEquals(3, bulletinManager.getNotifiedBulletinIds(actorUserId).size)
 
-            // 2. Tap bulletin button -> opens "Bản tin HRPartner" dialog with mockup banner & 3 items
+            // 2. Tap bulletin button -> opens real list without mockup banner
             composeTestRule.onNodeWithTag("topbar_bulletin_button").performClick()
             composeTestRule.waitForIdle()
 
             composeTestRule.onNodeWithTag("hrp_bulletin_dialog").assertIsDisplayed()
-            composeTestRule.onNodeWithText("Bản tin HRPartner").assertIsDisplayed()
-            composeTestRule.onNodeWithTag("bulletin_notification_toggle_button").assertIsDisplayed()
-            composeTestRule.onNodeWithTag("bulletin_mockup_banner").assertIsDisplayed()
-            assertEquals(3, bulletinManager.getNotifiedBulletinIds(actorUserId).size)
-            composeTestRule.onNodeWithText("Tin nhân sự ngày 13-11-2026").assertIsDisplayed()
-            composeTestRule.onNodeWithText("Lịch nghỉ lễ ngày Văn hóa Việt Nam").assertIsDisplayed()
-            composeTestRule.onNodeWithText("Hướng dẫn rà soát bảng công & giải trình chấm công tháng 11-2026").assertIsDisplayed()
+            composeTestRule.onNodeWithTag("bulletin_dialog_title").assertIsDisplayed()
+            composeTestRule.onNodeWithText("Thông báo").assertIsDisplayed()
+            composeTestRule.onNodeWithText("Bản tin HRPartner").assertDoesNotExist()
+            composeTestRule.onNodeWithText("Thông báo, lịch nghỉ lễ & vận hành nội bộ").assertDoesNotExist()
+            composeTestRule.onNodeWithTag("bulletin_mockup_banner").assertDoesNotExist()
+            composeTestRule.onNodeWithTag("bulletin_mark_all_read_button").assertIsDisplayed()
+            composeTestRule.onNodeWithText("Tin nhân sự ngày 28-11-2026").assertIsDisplayed()
 
-            // 3. Filter by category chips
+            // 3. Filter by category hits GET /api/bulletins?category=HOLIDAY_SCHEDULE&page_size=10
             composeTestRule.onNodeWithTag("bulletin_category_chip_HOLIDAY_SCHEDULE").performClick()
+            composeTestRule.waitUntil(timeoutMillis = 5_000) {
+                org.robolectric.shadows.ShadowLooper.idleMainLooper()
+                recordedRequests.any { it.contains("category=HOLIDAY_SCHEDULE") } && !vm.bulletinsLoading.value
+            }
             composeTestRule.waitForIdle()
             composeTestRule.onNodeWithText("Lịch nghỉ lễ ngày Văn hóa Việt Nam").assertIsDisplayed()
-            composeTestRule.onNodeWithText("Tin nhân sự ngày 13-11-2026").assertDoesNotExist()
+            composeTestRule.onNodeWithText("Tin nhân sự ngày 28-11-2026").assertDoesNotExist()
 
-            composeTestRule.onNodeWithTag("bulletin_category_chip_INTERNAL_POLICY").performClick()
-            composeTestRule.waitForIdle()
-            composeTestRule.onNodeWithText("Hướng dẫn rà soát bảng công & giải trình chấm công tháng 11-2026").assertIsDisplayed()
-            composeTestRule.onNodeWithText("Lịch nghỉ lễ ngày Văn hóa Việt Nam").assertDoesNotExist()
-
+            // Switch back to ALL and load page 2 via "Tải thêm"
             composeTestRule.onNodeWithTag("bulletin_category_chip_ALL").performClick()
+            composeTestRule.waitUntil(timeoutMillis = 5_000) {
+                org.robolectric.shadows.ShadowLooper.idleMainLooper()
+                vm.bulletins.value.size == 3 && !vm.bulletinsLoading.value
+            }
             composeTestRule.waitForIdle()
-
-            // 4. Open holiday bulletin detail -> marks as read, decrements unread count from 3 to 2, shows PDF & image attachments
-            composeTestRule.onNodeWithTag("bulletin_card_hrp-bulletin-2026-11-13-holiday-vn-culture").performClick()
+            composeTestRule.onNodeWithTag("bulletin_load_more_button").performScrollTo().performClick()
+            composeTestRule.waitUntil(timeoutMillis = 5_000) {
+                org.robolectric.shadows.ShadowLooper.idleMainLooper()
+                vm.bulletins.value.any { it.bulletinId == bulPage2Id }
+            }
             composeTestRule.waitForIdle()
+            composeTestRule.onNodeWithText("Bản tin trang 2 từ Server").performScrollTo().assertIsDisplayed()
 
+            // 4. Open unread item detail -> fetches detail + calls POST /read, empty attachments hidden cleanly
+            composeTestRule.onNodeWithTag("bulletin_card_$bulHolidayId").performScrollTo().performClick()
+            composeTestRule.waitUntil(timeoutMillis = 5_000) {
+                org.robolectric.shadows.ShadowLooper.idleMainLooper()
+                recordedRequests.any { it == "GET:/api/bulletins/$bulHolidayId" } &&
+                    recordedRequests.any { it == "POST:/api/bulletins/$bulHolidayId/read" } &&
+                    !vm.bulletinDetailLoading.value
+            }
+            composeTestRule.waitForIdle()
             composeTestRule.onNodeWithTag("bulletin_detail_view").assertIsDisplayed()
-            composeTestRule.onNodeWithTag("bulletin_attachment_att-holiday-vn-culture-pdf-2026").performScrollTo().assertIsDisplayed()
-            composeTestRule.onNodeWithTag("bulletin_open_pdf_att-holiday-vn-culture-pdf-2026", useUnmergedTree = true).assertIsDisplayed()
-            assertEquals(2, bulletinManager.unreadCountForActor(actorUserId))
+            composeTestRule.onNodeWithText("Mục 1: Nghỉ lễ theo quy định hiện hành.").assertIsDisplayed()
+            composeTestRule.onNodeWithText("Tệp đính kèm", substring = true).assertDoesNotExist()
+            assertEquals(2, vm.bulletinUnreadCount.value)
 
-            // 5. Return to list -> unread dot for opened item is gone, then close dialog
+            // 5. Return to list -> unread dot gone -> tap "Đánh dấu tất cả đã đọc" -> calls POST /read-all & badge clears
             composeTestRule.onNodeWithTag("bulletin_detail_back_button").performClick()
             composeTestRule.waitForIdle()
-            composeTestRule.onNodeWithTag("bulletin_unread_dot_hrp-bulletin-2026-11-13-holiday-vn-culture", useUnmergedTree = true).assertDoesNotExist()
-            composeTestRule.onNodeWithTag("bulletin_unread_dot_hrp-bulletin-2026-11-13-hr-news", useUnmergedTree = true).assertIsDisplayed()
+            composeTestRule.onNodeWithTag("bulletin_unread_dot_$bulHolidayId", useUnmergedTree = true).assertDoesNotExist()
+            composeTestRule.onNodeWithTag("bulletin_mark_all_read_button").performClick()
+            composeTestRule.waitUntil(timeoutMillis = 5_000) {
+                org.robolectric.shadows.ShadowLooper.idleMainLooper()
+                recordedRequests.any { it == "POST:/api/bulletins/read-all" } &&
+                    !vm.bulletinMarkingAllRead.value
+            }
+            composeTestRule.waitForIdle()
+            assertEquals(0, vm.bulletinUnreadCount.value)
+            composeTestRule.onNodeWithTag("bulletin_mark_all_read_button").assertDoesNotExist()
 
+            // 6. Verify HTTP 404 fallback renders empty state "Chưa có bản tin mới" without showing mockup cards
+            simulate404 = true
+            composeTestRule.onNodeWithTag("bulletin_refresh_button").performClick()
+            composeTestRule.waitUntil(timeoutMillis = 5_000) {
+                org.robolectric.shadows.ShadowLooper.idleMainLooper()
+                !vm.bulletinsLoading.value && vm.bulletins.value.isEmpty()
+            }
+            composeTestRule.waitForIdle()
+            composeTestRule.onNodeWithTag("bulletin_empty_state").assertIsDisplayed()
+            composeTestRule.onNodeWithText("Chưa có bản tin mới").assertIsDisplayed()
             composeTestRule.onNodeWithTag("bulletin_close_button").performClick()
             composeTestRule.waitForIdle()
-            composeTestRule.onNodeWithTag("hrp_bulletin_dialog").assertDoesNotExist()
-
-            // 6. Verify ZERO HTTP calls were made to /api/bulletins while BULLETIN_REMOTE_API_ENABLED == false
-            assertFalse(
-                "No HTTP request to /api/bulletins may be sent when BULLETIN_REMOTE_API_ENABLED is false",
-                recordedPaths.any { it.contains("/api/bulletins") }
-            )
+            composeTestRule.onNodeWithTag("topbar_bulletin_badge", useUnmergedTree = true).assertDoesNotExist()
         } finally {
             bulletinManager.clearAllForTest()
         }

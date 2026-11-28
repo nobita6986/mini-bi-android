@@ -22,6 +22,7 @@ import com.example.data.AttendanceMyExplanationsOverviewProjection
 import com.example.data.AttendanceTimeContract
 import com.example.data.BackendApiException
 import com.example.data.BackendFailureKind
+import com.example.data.BULLETIN_REMOTE_API_ENABLED
 import com.example.data.BiBucketItem
 import com.example.data.CapturedAttendanceTime
 import com.example.data.CccdReviewQueueItem
@@ -35,6 +36,11 @@ import com.example.data.DirectEntryCatalog
 import com.example.data.DirectEntryContract
 import com.example.data.DuplicateCccdGroupItem
 import com.example.data.GeneralOverviewSnapshot
+import com.example.data.HrpBulletinAttachment
+import com.example.data.HrpBulletinCategory
+import com.example.data.HrpBulletinContract
+import com.example.data.HrpBulletinItem
+import com.example.data.HrpBulletinManager
 import com.example.data.LeaveApprovalInboxProjection
 import com.example.data.LeaveContract
 import com.example.data.LeaveDraftDayInput
@@ -744,6 +750,48 @@ class MiniBiViewModel internal constructor(
     private var recruitmentPostDetailFetchJob: Job? = null
     private var recruitmentPostDetailFetchToken: Long = 0L
 
+    // HRPartner Bulletins (Remote API when BULLETIN_REMOTE_API_ENABLED == true)
+    private val _bulletins = MutableStateFlow<List<HrpBulletinItem>>(emptyList())
+    val bulletins: StateFlow<List<HrpBulletinItem>> = _bulletins.asStateFlow()
+
+    private val _bulletinUnreadCount = MutableStateFlow(0)
+    val bulletinUnreadCount: StateFlow<Int> = _bulletinUnreadCount.asStateFlow()
+
+    private val _bulletinsLoading = MutableStateFlow(false)
+    val bulletinsLoading: StateFlow<Boolean> = _bulletinsLoading.asStateFlow()
+
+    private val _bulletinsLoadingMore = MutableStateFlow(false)
+    val bulletinsLoadingMore: StateFlow<Boolean> = _bulletinsLoadingMore.asStateFlow()
+
+    private val _bulletinsError = MutableStateFlow<String?>(null)
+    val bulletinsError: StateFlow<String?> = _bulletinsError.asStateFlow()
+
+    private val _bulletinHasMore = MutableStateFlow(false)
+    val bulletinHasMore: StateFlow<Boolean> = _bulletinHasMore.asStateFlow()
+
+    private val _bulletinNextCursor = MutableStateFlow<String?>(null)
+    val bulletinNextCursor: StateFlow<String?> = _bulletinNextCursor.asStateFlow()
+
+    private val _selectedBulletinCategory = MutableStateFlow(HrpBulletinCategory.ALL)
+    val selectedBulletinCategory: StateFlow<HrpBulletinCategory> = _selectedBulletinCategory.asStateFlow()
+
+    private val _selectedBulletinDetail = MutableStateFlow<HrpBulletinItem?>(null)
+    val selectedBulletinDetail: StateFlow<HrpBulletinItem?> = _selectedBulletinDetail.asStateFlow()
+
+    private val _bulletinDetailLoading = MutableStateFlow(false)
+    val bulletinDetailLoading: StateFlow<Boolean> = _bulletinDetailLoading.asStateFlow()
+
+    private val _bulletinDetailError = MutableStateFlow<String?>(null)
+    val bulletinDetailError: StateFlow<String?> = _bulletinDetailError.asStateFlow()
+
+    private val _bulletinMarkingAllRead = MutableStateFlow(false)
+    val bulletinMarkingAllRead: StateFlow<Boolean> = _bulletinMarkingAllRead.asStateFlow()
+
+    private var bulletinsFetchJob: Job? = null
+    private var bulletinsFetchToken: Long = 0L
+    private var bulletinDetailFetchJob: Job? = null
+    private var bulletinDetailFetchToken: Long = 0L
+
     private var salaryAdvanceWorkersFetchJob: Job? = null
     private var salaryAdvanceWorkersFetchToken: Long = 0L
     private var salaryAdvanceRequestsFetchJob: Job? = null
@@ -912,6 +960,12 @@ class MiniBiViewModel internal constructor(
         ++recruitmentPostDetailFetchToken
         recruitmentPostDetailFetchJob?.cancel()
         recruitmentPostDetailFetchJob = null
+        ++bulletinsFetchToken
+        bulletinsFetchJob?.cancel()
+        bulletinsFetchJob = null
+        ++bulletinDetailFetchToken
+        bulletinDetailFetchJob?.cancel()
+        bulletinDetailFetchJob = null
         ++openEntryDetailToken
         openEntryDetailExpectedEntryId = null
         openEntryDetailJob?.cancel()
@@ -998,6 +1052,14 @@ class MiniBiViewModel internal constructor(
                         forceTimeAnchor = false
                     )
                     resolveActorFullNameIfHandle(resolvedActor, expectedGen)
+                    if (BULLETIN_REMOTE_API_ENABLED) {
+                        loadBulletins(
+                            category = HrpBulletinCategory.ALL,
+                            reset = true,
+                            actorOverride = resolvedActor,
+                            notifyNewIfAll = true
+                        )
+                    }
                 } else {
                     _sessionBootstrapping.value = false
                 }
@@ -1174,6 +1236,7 @@ class MiniBiViewModel internal constructor(
                         historyLoadedUserIds.clear()
                         resetSalaryAdvanceAllState()
                         resetRecruitmentPostsState()
+                        resetBulletinsState()
                     }
                     val postResetGen = sessionGeneration
                     val resolvedActor = repository.syncDirectEntrySession(actor)
@@ -1201,6 +1264,14 @@ class MiniBiViewModel internal constructor(
                         forceTimeAnchor = true
                     )
                     resolveActorFullNameIfHandle(resolvedActor, postResetGen)
+                    if (BULLETIN_REMOTE_API_ENABLED) {
+                        loadBulletins(
+                            category = HrpBulletinCategory.ALL,
+                            reset = true,
+                            actorOverride = resolvedActor,
+                            notifyNewIfAll = true
+                        )
+                    }
                 }.onFailure { err ->
                     err.rethrowIfCancelled()
                     if (sessionGeneration == loginGen) {
@@ -1478,6 +1549,7 @@ class MiniBiViewModel internal constructor(
         _explanationInboxErrorCode.value = null
         resetSalaryAdvanceAllState()
         resetRecruitmentPostsState()
+        resetBulletinsState()
     }
 
     fun logout() {
@@ -7520,6 +7592,279 @@ class MiniBiViewModel internal constructor(
         _selectedRecruitmentPostDetail.value = null
         _recruitmentPostDetailBriefId.value = null
     }
+
+    // =========================================================================
+    // HRPartner Bulletins (Remote API: list, detail, read, read-all, attachments)
+    // =========================================================================
+
+    fun resetBulletinsState() {
+        ++bulletinsFetchToken
+        bulletinsFetchJob?.cancel()
+        bulletinsFetchJob = null
+        ++bulletinDetailFetchToken
+        bulletinDetailFetchJob?.cancel()
+        bulletinDetailFetchJob = null
+        _bulletins.value = emptyList()
+        _bulletinUnreadCount.value = 0
+        _bulletinsLoading.value = false
+        _bulletinsLoadingMore.value = false
+        _bulletinsError.value = null
+        _bulletinHasMore.value = false
+        _bulletinNextCursor.value = null
+        _selectedBulletinCategory.value = HrpBulletinCategory.ALL
+        _selectedBulletinDetail.value = null
+        _bulletinDetailLoading.value = false
+        _bulletinDetailError.value = null
+        _bulletinMarkingAllRead.value = false
+        HrpBulletinManager.syncLauncherAppBadge(getApplication(), 0)
+    }
+
+    fun clearSelectedBulletinDetail() {
+        ++bulletinDetailFetchToken
+        bulletinDetailFetchJob?.cancel()
+        bulletinDetailFetchJob = null
+        _bulletinDetailLoading.value = false
+        _bulletinDetailError.value = null
+        _selectedBulletinDetail.value = null
+    }
+
+    fun loadBulletins(
+        category: HrpBulletinCategory = _selectedBulletinCategory.value,
+        reset: Boolean = true,
+        actorOverride: AppActor? = null,
+        notifyNewIfAll: Boolean = false
+    ) {
+        if (!BULLETIN_REMOTE_API_ENABLED) return
+        val actor = resolveSessionActor(actorOverride) ?: return
+        val expectedGen = bindActorGeneration(actor)
+        val expectedUserId = actor.appUserId
+        val cursorToUse = if (reset) {
+            null
+        } else {
+            val nextCur = _bulletinNextCursor.value?.trim().orEmpty()
+            if (!_bulletinHasMore.value || nextCur.isEmpty()) return
+            if (_bulletinsLoadingMore.value || _bulletinsLoading.value) return
+            nextCur
+        }
+
+        val token = ++bulletinsFetchToken
+        bulletinsFetchJob?.cancel()
+
+        _selectedBulletinCategory.value = category
+        if (reset) {
+            _bulletinsLoading.value = true
+            _bulletinsLoadingMore.value = false
+            if (!notifyNewIfAll) {
+                _bulletinsError.value = null
+            }
+        } else {
+            _bulletinsLoadingMore.value = true
+        }
+
+        bulletinsFetchJob = viewModelScope.launch {
+            try {
+                val res = repository.hrpBulletinService.fetchBulletins(
+                    category = category,
+                    pageSize = HrpBulletinContract.DEFAULT_PAGE_SIZE,
+                    cursor = cursorToUse,
+                    clearSessionOn401 = false
+                )
+                if (token != bulletinsFetchToken || !isSessionValid(expectedGen, expectedUserId)) {
+                    return@launch
+                }
+                val mergedItems = if (reset) {
+                    res.items
+                } else {
+                    val byId = LinkedHashMap<String, HrpBulletinItem>()
+                    _bulletins.value.forEach { byId[it.bulletinId] = it }
+                    res.items.forEach { byId[it.bulletinId] = it }
+                    HrpBulletinContract.sortBulletins(byId.values.toList())
+                }
+                _bulletins.value = mergedItems
+                _bulletinUnreadCount.value = res.unreadCount
+                _bulletinHasMore.value = res.hasMore
+                _bulletinNextCursor.value = res.nextCursor
+                _bulletinsError.value = null
+
+                if (reset && category == HrpBulletinCategory.ALL && res.items.isNotEmpty()) {
+                    HrpBulletinManager.getInstance(getApplication()).notifyNewBulletinsIfNeeded(
+                        appUserId = expectedUserId,
+                        seedItems = res.items,
+                        totalUnreadCount = res.unreadCount
+                    )
+                }
+                if (category == HrpBulletinCategory.ALL || res.unreadCount <= 0) {
+                    HrpBulletinManager.syncLauncherAppBadge(getApplication(), res.unreadCount)
+                }
+            } catch (e: Exception) {
+                e.rethrowIfCancelled()
+                if (token != bulletinsFetchToken || !isSessionValid(expectedGen, expectedUserId)) {
+                    return@launch
+                }
+                if (!notifyNewIfAll) {
+                    _bulletinsError.value = (e as? BackendApiException)?.message
+                        ?: e.message
+                        ?: "Không thể tải danh sách bản tin."
+                }
+            } finally {
+                if (token == bulletinsFetchToken && isSessionValid(expectedGen, expectedUserId)) {
+                    _bulletinsLoading.value = false
+                    _bulletinsLoadingMore.value = false
+                }
+            }
+        }
+    }
+
+    fun loadMoreBulletins(actorOverride: AppActor? = null) {
+        loadBulletins(
+            category = _selectedBulletinCategory.value,
+            reset = false,
+            actorOverride = actorOverride,
+            notifyNewIfAll = false
+        )
+    }
+
+    fun openBulletinDetail(
+        bulletinId: String,
+        actorOverride: AppActor? = null
+    ) {
+        val cleanId = bulletinId.trim()
+        if (cleanId.isEmpty() || !BULLETIN_REMOTE_API_ENABLED) return
+        val actor = resolveSessionActor(actorOverride) ?: return
+        val expectedGen = bindActorGeneration(actor)
+        val expectedUserId = actor.appUserId
+        val token = ++bulletinDetailFetchToken
+        bulletinDetailFetchJob?.cancel()
+
+        val existing = _bulletins.value.firstOrNull { it.bulletinId == cleanId }
+        val triggeredReadEarly = existing != null && !existing.isRead
+        if (existing != null) {
+            _selectedBulletinDetail.value = existing
+        }
+        _bulletinDetailError.value = null
+        _bulletinDetailLoading.value = true
+
+        if (triggeredReadEarly) {
+            markBulletinRead(cleanId, actorOverride = actor)
+        }
+
+        bulletinDetailFetchJob = viewModelScope.launch {
+            try {
+                val detail = repository.hrpBulletinService.fetchBulletinDetail(
+                    bulletinId = cleanId,
+                    clearSessionOn401 = false
+                )
+                if (token != bulletinDetailFetchToken || !isSessionValid(expectedGen, expectedUserId)) {
+                    return@launch
+                }
+                if (detail != null) {
+                    val alreadyUnread = !detail.isRead && !triggeredReadEarly
+                    val resolvedDetail = detail.copy(isRead = true)
+                    _selectedBulletinDetail.value = resolvedDetail
+                    _bulletins.value = _bulletins.value.map { cur ->
+                        if (cur.bulletinId == cleanId) resolvedDetail else cur
+                    }
+                    if (alreadyUnread) {
+                        markBulletinRead(cleanId, actorOverride = actor)
+                    }
+                } else if (existing == null) {
+                    _bulletinDetailError.value = "Không tìm thấy nội dung bản tin này."
+                }
+            } catch (e: Exception) {
+                e.rethrowIfCancelled()
+                if (token != bulletinDetailFetchToken || !isSessionValid(expectedGen, expectedUserId)) {
+                    return@launch
+                }
+                if (_selectedBulletinDetail.value == null) {
+                    _bulletinDetailError.value = (e as? BackendApiException)?.message
+                        ?: e.message
+                        ?: "Không thể tải chi tiết bản tin."
+                }
+            } finally {
+                if (token == bulletinDetailFetchToken && isSessionValid(expectedGen, expectedUserId)) {
+                    _bulletinDetailLoading.value = false
+                }
+            }
+        }
+    }
+
+    fun markBulletinRead(
+        bulletinId: String,
+        actorOverride: AppActor? = null
+    ) {
+        val cleanId = bulletinId.trim()
+        if (cleanId.isEmpty()) return
+        val actor = resolveSessionActor(actorOverride) ?: return
+        val expectedGen = bindActorGeneration(actor)
+        val expectedUserId = actor.appUserId
+
+        val wasUnread = _bulletins.value.firstOrNull { it.bulletinId == cleanId }?.isRead == false ||
+            _selectedBulletinDetail.value?.let { it.bulletinId == cleanId && !it.isRead } == true
+        if (wasUnread) {
+            _bulletins.value = _bulletins.value.map { item ->
+                if (item.bulletinId == cleanId) item.copy(isRead = true) else item
+            }
+            _selectedBulletinDetail.value?.let { detail ->
+                if (detail.bulletinId == cleanId) {
+                    _selectedBulletinDetail.value = detail.copy(isRead = true)
+                }
+            }
+            _bulletinUnreadCount.value = (_bulletinUnreadCount.value - 1).coerceAtLeast(0)
+            HrpBulletinManager.syncLauncherAppBadge(getApplication(), _bulletinUnreadCount.value)
+        }
+        HrpBulletinManager.getInstance(getApplication()).markBulletinRead(expectedUserId, cleanId)
+
+        if (!BULLETIN_REMOTE_API_ENABLED) return
+        viewModelScope.launch {
+            runCatching {
+                val (ok, serverUnread) = repository.hrpBulletinService.markBulletinRead(
+                    bulletinId = cleanId,
+                    clearSessionOn401 = false
+                )
+                if (ok && serverUnread != null && isSessionValid(expectedGen, expectedUserId)) {
+                    _bulletinUnreadCount.value = serverUnread
+                    HrpBulletinManager.syncLauncherAppBadge(getApplication(), serverUnread)
+                }
+            }.onFailure { it.rethrowIfCancelled() }
+        }
+    }
+
+    fun markAllBulletinsRead(actorOverride: AppActor? = null) {
+        val actor = resolveSessionActor(actorOverride) ?: return
+        if (_bulletinMarkingAllRead.value) return
+        val expectedGen = bindActorGeneration(actor)
+        val expectedUserId = actor.appUserId
+
+        val currentIds = _bulletins.value.map { it.bulletinId }
+        _bulletins.value = _bulletins.value.map { it.copy(isRead = true) }
+        _selectedBulletinDetail.value = _selectedBulletinDetail.value?.copy(isRead = true)
+        _bulletinUnreadCount.value = 0
+        HrpBulletinManager.getInstance(getApplication()).markAllBulletinsRead(expectedUserId, currentIds)
+        HrpBulletinManager.syncLauncherAppBadge(getApplication(), 0)
+
+        if (!BULLETIN_REMOTE_API_ENABLED) return
+        _bulletinMarkingAllRead.value = true
+        viewModelScope.launch {
+            try {
+                val (ok, serverUnread) = repository.hrpBulletinService.markAllBulletinsRead(
+                    clearSessionOn401 = false
+                )
+                if (ok && serverUnread != null && isSessionValid(expectedGen, expectedUserId)) {
+                    _bulletinUnreadCount.value = serverUnread
+                    HrpBulletinManager.syncLauncherAppBadge(getApplication(), serverUnread)
+                }
+            } catch (e: Exception) {
+                e.rethrowIfCancelled()
+            } finally {
+                if (isSessionValid(expectedGen, expectedUserId)) {
+                    _bulletinMarkingAllRead.value = false
+                }
+            }
+        }
+    }
+
+    suspend fun ensureBulletinAttachmentFile(attachment: HrpBulletinAttachment): File =
+        repository.hrpBulletinService.ensureAttachmentLocalFile(getApplication(), attachment)
 
     companion object {
         internal const val BANNER_AUTO_DISMISS_MS = 5_000L

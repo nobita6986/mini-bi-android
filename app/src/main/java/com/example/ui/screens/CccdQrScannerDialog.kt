@@ -78,20 +78,26 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.example.data.CccdDecodedQrPayload
 import com.example.data.CccdQrDecoder
+import com.google.android.gms.tasks.Tasks
 import com.google.mlkit.vision.barcode.BarcodeScanner
 import com.google.mlkit.vision.common.InputImage
+import com.google.mlkit.vision.text.TextRecognizer
 import kotlinx.coroutines.launch
 import java.util.concurrent.Executor
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 
 @androidx.annotation.OptIn(ExperimentalGetImage::class)
 private fun analyzeCameraFrame(
     imageProxy: ImageProxy,
     mlKitScanner: BarcodeScanner?,
+    mlKitTextRecognizer: TextRecognizer?,
+    frameCounter: AtomicInteger,
     resolvedOnce: AtomicBoolean,
     inFlight: AtomicBoolean,
+    analysisExecutor: Executor,
     mainExecutor: Executor,
     onDecoded: (CccdDecodedQrPayload) -> Unit
 ) {
@@ -100,34 +106,119 @@ private fun analyzeCameraFrame(
         return
     }
 
+    val frameIndex = frameCounter.incrementAndGet()
     val rotationDegrees = imageProxy.imageInfo.rotationDegrees
     val mediaImage = imageProxy.image
+
+    fun runFallbackAndRelease() {
+        val rawBmp = if (!resolvedOnce.get() && frameIndex % 4 == 0) {
+            runCatching { imageProxy.toBitmap() }.getOrNull()
+        } else {
+            null
+        }
+        runCatching { imageProxy.close() }
+
+        try {
+            if (rawBmp == null || resolvedOnce.get()) return
+            val oriented = if (rotationDegrees != 0) {
+                (CccdQrDecoder.rotateBitmap(rawBmp, rotationDegrees.toFloat()) ?: rawBmp).also {
+                    if (it !== rawBmp) rawBmp.recycle()
+                }
+            } else {
+                rawBmp
+            }
+            try {
+                // 1. Center-crop green-blue filter + ZXing / ML Kit for small 2021 CCCD QR on teal guilloche
+                val centerCrop = CccdQrDecoder.cropAndScale(oriented, 0.15f, 0.15f, 0.70f, 0.70f, 1100)
+                if (centerCrop != null) {
+                    try {
+                        val zxingDecoded = CccdQrDecoder.tryDecodeBitmapPass(centerCrop, intArrayOf(120, 145))
+                        if (zxingDecoded != null && resolvedOnce.compareAndSet(false, true)) {
+                            mainExecutor.execute { onDecoded(zxingDecoded) }
+                            return
+                        }
+                        if (mlKitScanner != null && !resolvedOnce.get()) {
+                            val gbBmp = CccdQrDecoder.createGreenBlueEnhancedBitmap(centerCrop)
+                            if (gbBmp != null) {
+                                try {
+                                    val gbInput = runCatching { InputImage.fromBitmap(gbBmp, 0) }.getOrNull()
+                                    val barcodes = if (gbInput != null) {
+                                        runCatching {
+                                            Tasks.await(mlKitScanner.process(gbInput), 1200, TimeUnit.MILLISECONDS)
+                                        }.getOrNull().orEmpty()
+                                    } else {
+                                        emptyList()
+                                    }
+                                    for (barcode in barcodes) {
+                                        val decoded = CccdQrDecoder.parseFromMlKitBarcode(barcode)
+                                        if (decoded != null && resolvedOnce.compareAndSet(false, true)) {
+                                            mainExecutor.execute { onDecoded(decoded) }
+                                            return
+                                        }
+                                    }
+                                } finally {
+                                    gbBmp.recycle()
+                                }
+                            }
+                        }
+                    } finally {
+                        if (centerCrop !== oriented) centerCrop.recycle()
+                    }
+                }
+
+                // 2. Periodic strict ICAO 9303 MRZ OCR fallback when camera points at back IDVNM lines
+                if (frameIndex % 12 == 0 && mlKitTextRecognizer != null && !resolvedOnce.get()) {
+                    val textInput = runCatching { InputImage.fromBitmap(oriented, 0) }.getOrNull()
+                    val recognized = if (textInput != null) {
+                        runCatching {
+                            Tasks.await(mlKitTextRecognizer.process(textInput), 1500, TimeUnit.MILLISECONDS)
+                        }.getOrNull()
+                    } else {
+                        null
+                    }
+                    val mrzDecoded = recognized?.text?.let {
+                        CccdQrDecoder.parseCccdFromRecognizedText(it, requireMrz = true)
+                    }
+                    if (mrzDecoded != null && resolvedOnce.compareAndSet(false, true)) {
+                        mainExecutor.execute { onDecoded(mrzDecoded) }
+                    }
+                }
+            } finally {
+                oriented.recycle()
+            }
+        } finally {
+            inFlight.set(false)
+        }
+    }
 
     if (mlKitScanner != null && mediaImage != null) {
         val fullInput = runCatching { InputImage.fromMediaImage(mediaImage, rotationDegrees) }.getOrNull()
         if (fullInput != null) {
             mlKitScanner.process(fullInput)
-                .addOnSuccessListener { barcodes ->
-                    if (!resolvedOnce.get()) {
-                        for (barcode in barcodes) {
+                .addOnCompleteListener(analysisExecutor) { task ->
+                    if (task.isSuccessful && !resolvedOnce.get()) {
+                        for (barcode in task.result.orEmpty()) {
                             val decoded = CccdQrDecoder.parseFromMlKitBarcode(barcode)
                             if (decoded != null && resolvedOnce.compareAndSet(false, true)) {
+                                runCatching { imageProxy.close() }
+                                inFlight.set(false)
                                 mainExecutor.execute { onDecoded(decoded) }
-                                break
+                                return@addOnCompleteListener
                             }
                         }
                     }
-                }
-                .addOnCompleteListener {
-                    inFlight.set(false)
-                    runCatching { imageProxy.close() }
+                    runFallbackAndRelease()
                 }
             return
         }
     }
 
-    inFlight.set(false)
-    runCatching { imageProxy.close() }
+    runCatching {
+        analysisExecutor.execute { runFallbackAndRelease() }
+    }.onFailure {
+        runCatching { imageProxy.close() }
+        inFlight.set(false)
+    }
 }
 
 @Composable
@@ -146,15 +237,16 @@ fun CccdQrScannerDialog(
         )
     }
     var statusMessage by remember {
-        mutableStateOf("Đưa mã QR trên thẻ CCCD/Căn cước vào khung xanh (giữ cách 12–18 cm để lấy nét rõ) hoặc chọn ảnh từ Album.")
+        mutableStateOf("Đưa mã QR (hoặc 3 dòng chữ IDVNM... mặt sau nếu QR mờ) vào khung xanh, hoặc chọn ảnh từ Album.")
     }
     var isError by remember { mutableStateOf(false) }
     var decodingFromGallery by remember { mutableStateOf(false) }
     var boundCamera by remember { mutableStateOf<Camera?>(null) }
-    var selectedZoomRatio by remember { mutableFloatStateOf(1.5f) }
+    var selectedZoomRatio by remember { mutableFloatStateOf(2.0f) }
     var torchEnabled by remember { mutableStateOf(false) }
     val resolvedOnce = remember { AtomicBoolean(false) }
     val inFlight = remember { AtomicBoolean(false) }
+    val frameCounter = remember { AtomicInteger(0) }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
@@ -172,7 +264,7 @@ fun CccdQrScannerDialog(
         if (uri != null) {
             decodingFromGallery = true
             isError = false
-            statusMessage = "Đang phân tích mã QR từ ảnh đã chọn…"
+            statusMessage = "Đang phân tích mã QR / OCR từ ảnh đã chọn…"
             scope.launch {
                 val decoded = CccdQrDecoder.decodeFromUri(context, uri)
                 decodingFromGallery = false
@@ -182,7 +274,7 @@ fun CccdQrScannerDialog(
                     }
                 } else {
                     isError = true
-                    statusMessage = "Không tìm thấy mã QR CCCD hợp lệ trong ảnh đã chọn. Hãy chọn ảnh rõ nét hơn hoặc quét trực tiếp."
+                    statusMessage = "Không đọc được mã QR hoặc thông tin CCCD hợp lệ trong ảnh đã chọn. Hãy chọn ảnh rõ nét hơn hoặc quét trực tiếp."
                 }
             }
         }
@@ -251,6 +343,7 @@ fun CccdQrScannerDialog(
                 if (hasCameraPermission) {
                     val analysisExecutor = remember { Executors.newSingleThreadExecutor() }
                     val mlKitScanner = remember { CccdQrDecoder.createMlKitScannerOrNull() }
+                    val mlKitTextRecognizer = remember { CccdQrDecoder.createMlKitTextRecognizerOrNull() }
                     val previewView = remember {
                         PreviewView(context).apply {
                             implementationMode = PreviewView.ImplementationMode.PERFORMANCE
@@ -270,7 +363,7 @@ fun CccdQrScannerDialog(
                                 val resolutionSelector = ResolutionSelector.Builder()
                                     .setResolutionStrategy(
                                         ResolutionStrategy(
-                                            Size(1280, 720),
+                                            Size(1920, 1080),
                                             ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER
                                         )
                                     )
@@ -284,8 +377,11 @@ fun CccdQrScannerDialog(
                                     analyzeCameraFrame(
                                         imageProxy = imageProxy,
                                         mlKitScanner = mlKitScanner,
+                                        mlKitTextRecognizer = mlKitTextRecognizer,
+                                        frameCounter = frameCounter,
                                         resolvedOnce = resolvedOnce,
                                         inFlight = inFlight,
+                                        analysisExecutor = analysisExecutor,
                                         mainExecutor = mainExecutor,
                                         onDecoded = onDecoded
                                     )
@@ -300,21 +396,21 @@ fun CccdQrScannerDialog(
                                 )
                                 boundCamera = camera
 
-                                // Apply 1.5x initial zoom so user can hold CCCD at optimal 12-18cm focus distance
+                                // Apply 2.0x initial zoom so user can hold CCCD at optimal 15-20cm focus distance
                                 runCatching {
-                                    val maxZoom = camera.cameraInfo.zoomState.value?.maxZoomRatio ?: 2.0f
+                                    val maxZoom = camera.cameraInfo.zoomState.value?.maxZoomRatio ?: 3.0f
                                     val targetZoom = selectedZoomRatio.coerceIn(1.0f, maxZoom)
                                     camera.cameraControl.setZoomRatio(targetZoom)
                                 }
 
-                                // Continuous center auto-focus on the QR viewfinder box
+                                // Lock continuous center auto-focus & auto-exposure on the QR viewfinder box
                                 runCatching {
                                     val factory = SurfaceOrientedMeteringPointFactory(1f, 1f)
                                     val centerPoint = factory.createPoint(0.5f, 0.5f)
                                     val focusAction = FocusMeteringAction.Builder(
                                         centerPoint,
                                         FocusMeteringAction.FLAG_AF or FocusMeteringAction.FLAG_AE
-                                    ).setAutoCancelDuration(3, TimeUnit.SECONDS).build()
+                                    ).disableAutoCancel().build()
                                     camera.cameraControl.startFocusAndMetering(focusAction)
                                 }
                             }.onFailure {
@@ -333,6 +429,7 @@ fun CccdQrScannerDialog(
                             }
                             runCatching { analysisExecutor.shutdownNow() }
                             runCatching { mlKitScanner?.close() }
+                            runCatching { mlKitTextRecognizer?.close() }
                         }
                     }
 
@@ -355,7 +452,7 @@ fun CccdQrScannerDialog(
                                         val focusAction = FocusMeteringAction.Builder(
                                             centerPoint,
                                             FocusMeteringAction.FLAG_AF or FocusMeteringAction.FLAG_AE
-                                        ).setAutoCancelDuration(3, TimeUnit.SECONDS).build()
+                                        ).disableAutoCancel().build()
                                         cam.cameraControl.startFocusAndMetering(focusAction)
                                     }
                                 }
@@ -385,7 +482,7 @@ fun CccdQrScannerDialog(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                listOf(1.0f to "1x", 1.5f to "1.5x", 2.0f to "2x").forEach { (ratio, label) ->
+                                listOf(1.0f to "1x", 2.0f to "2x", 3.0f to "3x").forEach { (ratio, label) ->
                                     val selected = kotlin.math.abs(selectedZoomRatio - ratio) < 0.1f
                                     Surface(
                                         shape = RoundedCornerShape(8.dp),
@@ -398,7 +495,7 @@ fun CccdQrScannerDialog(
                                             selectedZoomRatio = ratio
                                             boundCamera?.let { cam ->
                                                 runCatching {
-                                                    val maxZoom = cam.cameraInfo.zoomState.value?.maxZoomRatio ?: 2.0f
+                                                    val maxZoom = cam.cameraInfo.zoomState.value?.maxZoomRatio ?: 3.0f
                                                     cam.cameraControl.setZoomRatio(ratio.coerceIn(1.0f, maxZoom))
                                                 }
                                             }

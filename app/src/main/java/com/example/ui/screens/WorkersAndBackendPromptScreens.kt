@@ -172,6 +172,7 @@ import org.json.JSONObject
 import java.io.File
 import java.text.Normalizer
 import java.util.Locale
+import kotlinx.coroutines.launch
 
 private val ENTRY_STATUS_OPTIONS = listOf("Đang làm", "Đang chờ việc")
 private val GENDER_OPTIONS = DirectEntryContract.DIRECT_ENTRY_GENDER_OPTIONS
@@ -320,6 +321,7 @@ fun DirectEntryNewWorkersScreen(
 
     var showBatchHistoryDialog by remember { mutableStateOf(false) }
     var scanningQrRowId by remember { mutableStateOf<String?>(null) }
+    val coroutineScope = rememberCoroutineScope()
 
     val draftRows = remember(viewModel) {
         viewModel.ensureInitialNewWorkerDraftRow(catalog)
@@ -382,6 +384,25 @@ fun DirectEntryNewWorkersScreen(
                 }
             }
         )
+        if (documentType == "CCCD_FRONT" || documentType == "CCCD_BACK") {
+            coroutineScope.launch {
+                val decoded = runCatching { CccdQrDecoder.decodeFromUri(context, uri) }.getOrNull()
+                    ?: return@launch
+                val currentIdx = draftRows.indexOfFirst { it.localId == rowId }
+                if (currentIdx < 0) return@launch
+                val before = draftRows[currentIdx]
+                val after = CccdQrDecoder.applyQrPayloadToDraft(
+                    draft = before,
+                    qr = decoded,
+                    overwriteExisting = false
+                )
+                if (after != before) {
+                    draftRows[currentIdx] = after
+                    val docLabel = if (documentType == "CCCD_FRONT") "CCCD mặt trước" else "CCCD mặt sau"
+                    viewModel.showBanner("Đã tự động đọc $docLabel (${decoded.cccd12}) và điền các trường còn trống.")
+                }
+            }
+        }
     }
 
     fun attachMultiImagesAsPdfToRow(rowId: String, documentType: String, uris: List<Uri>) {

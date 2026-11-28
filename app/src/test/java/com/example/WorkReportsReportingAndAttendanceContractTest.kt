@@ -2581,9 +2581,17 @@ class WorkReportsReportingAndAttendanceContractTest {
 
     @Test
     fun `hrp bulletin contract parses list detail mark-read sorts pinned first and verifies sha256 session cache`() {
-        assertFalse(
-            "BULLETIN_REMOTE_API_ENABLED must remain false while backend /api/bulletins is not yet live",
+        assertTrue(
+            "BULLETIN_REMOTE_API_ENABLED must be true so Android fetches live /api/bulletins data",
             com.example.data.BULLETIN_REMOTE_API_ENABLED
+        )
+        assertEquals(
+            "/api/bulletins/read-all",
+            com.example.data.HrpBulletinContract.MARK_ALL_READ_PATH
+        )
+        assertEquals(
+            2,
+            com.example.data.HrpBulletinContract.parseMarkReadUnreadCount("""{"ok":true,"data":{"unread_count":2}}""")
         )
         assertEquals(
             "/api/bulletins?page_size=10",
@@ -2949,6 +2957,283 @@ class WorkReportsReportingAndAttendanceContractTest {
                     "Trưởng bộ phận (Phòng Pháp chế & Tuân thủ)",
                     LeaveContract.leaveRouteKindLabel(summary.routing.routeKind, summary.routing.teamName, summary.routing.unitKind)
                 )
+            } finally {
+                repo.closeForTest()
+                db.close()
+                cookieFile.delete()
+                prefsFile.delete()
+            }
+        } finally {
+            server.shutdown()
+        }
+    }
+
+    @Test
+    fun `hrp bulletin service calls all 5 remote endpoints handles 404 fallback and prunes 14d 50MB LRU cache`(): Unit = runBlocking {
+        val server = MockWebServer()
+        val recordedRequests = java.util.Collections.synchronizedList(mutableListOf<Triple<String, String, String>>())
+        val attachmentBytes = "PDF_REAL_CONTENT_BYTES_1234567890".toByteArray(Charsets.UTF_8)
+        val attachmentSha = com.example.data.HrpBulletinContract.computeSha256Hex(attachmentBytes)
+        val bulId = "11111111-aaaa-4111-8111-111111111111"
+        val attId = "22222222-bbbb-4222-8222-222222222222"
+
+        var force404 = false
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val path = request.path.orEmpty()
+                val body = request.body.readUtf8()
+                recordedRequests.add(Triple(request.method.orEmpty(), path, body))
+                if (force404) {
+                    return MockResponse()
+                        .setResponseCode(404)
+                        .setHeader("Content-Type", "application/json")
+                        .setBody("""{"ok":false,"code":"NOT_FOUND"}""")
+                }
+                return when {
+                    path.startsWith("/api/bulletins?") -> MockResponse()
+                        .setResponseCode(200)
+                        .setHeader("Content-Type", "application/json")
+                        .setBody(
+                            """
+                            {
+                              "ok": true,
+                              "data": {
+                                "unread_count": 2,
+                                "page_size": 10,
+                                "has_more": true,
+                                "next_cursor": "cur-2",
+                                "items": [
+                                  {
+                                    "bulletin_id": "$bulId",
+                                    "title": "Thông báo điều phối KCN Khai Quang",
+                                    "category": "HR_NEWS",
+                                    "is_pinned": true,
+                                    "is_read": false,
+                                    "published_at": "2026-11-28T03:00:00Z",
+                                    "author_display": "Ban Nhân sự",
+                                    "summary": "Tóm tắt bản tin thật",
+                                    "attachment_summary": { "image_count": 0, "pdf_count": 1 }
+                                  }
+                                ]
+                              }
+                            }
+                            """.trimIndent()
+                        )
+                    path == "/api/bulletins/$bulId" -> MockResponse()
+                        .setResponseCode(200)
+                        .setHeader("Content-Type", "application/json")
+                        .setBody(
+                            """
+                            {
+                              "ok": true,
+                              "data": {
+                                "item": {
+                                  "bulletin_id": "$bulId",
+                                  "title": "Thông báo điều phối KCN Khai Quang",
+                                  "category": "HR_NEWS",
+                                  "is_pinned": true,
+                                  "is_read": false,
+                                  "published_at": "2026-11-28T03:00:00Z",
+                                  "author_display": "Ban Nhân sự",
+                                  "summary": "Tóm tắt bản tin thật",
+                                  "content_sections": ["Nội dung mục 1", "Nội dung mục 2"],
+                                  "attachments": [
+                                    {
+                                      "attachment_id": "$attId",
+                                      "kind": "PDF",
+                                      "file_name": "ke-hoach.pdf",
+                                      "title": "Kế hoạch PDF",
+                                      "mime_type": "application/pdf",
+                                      "file_size_bytes": ${attachmentBytes.size},
+                                      "url": "/api/bulletins/$bulId/attachments/$attId/content",
+                                      "sha256": "$attachmentSha"
+                                    }
+                                  ]
+                                }
+                              }
+                            }
+                            """.trimIndent()
+                        )
+                    path == "/api/bulletins/$bulId/read" && request.method == "POST" -> {
+                        assertEquals("{}", body)
+                        assertNotNull("POST must send Origin header", request.getHeader("Origin"))
+                        assertTrue("Cookie must be sent", request.getHeader("Cookie").orEmpty().contains("mini_bi_sid=bul_sid"))
+                        MockResponse()
+                            .setResponseCode(200)
+                            .setHeader("Content-Type", "application/json")
+                            .setBody("""{"ok":true,"data":{"unread_count":1}}""")
+                    }
+                    path == "/api/bulletins/read-all" && request.method == "POST" -> {
+                        assertEquals("{}", body)
+                        assertNotNull("POST must send Origin header", request.getHeader("Origin"))
+                        assertTrue("Cookie must be sent", request.getHeader("Cookie").orEmpty().contains("mini_bi_sid=bul_sid"))
+                        MockResponse()
+                            .setResponseCode(200)
+                            .setHeader("Content-Type", "application/json")
+                            .setBody("""{"ok":true,"data":{"unread_count":0}}""")
+                    }
+                    path == "/api/bulletins/$bulId/attachments/$attId/content" && request.method == "GET" -> {
+                        assertTrue("Attachment GET must send Cookie", request.getHeader("Cookie").orEmpty().contains("mini_bi_sid=bul_sid"))
+                        MockResponse()
+                            .setResponseCode(200)
+                            .setHeader("Content-Type", "application/pdf")
+                            .setBody(okio.Buffer().write(attachmentBytes))
+                    }
+                    else -> MockResponse().setResponseCode(404)
+                }
+            }
+        }
+        server.start()
+
+        try {
+            val db = Room.inMemoryDatabaseBuilder(context, MiniBiDatabase::class.java)
+                .allowMainThreadQueries()
+                .build()
+            val cookieFile = File(context.cacheDir, "bul_srv_cookie_${System.nanoTime()}.enc")
+            val prefsFile = File(context.cacheDir, "bul_srv_prefs_${System.nanoTime()}.preferences_pb")
+            val repo = MiniBiRepository(
+                context = context,
+                database = db,
+                defaultServerUrl = server.url("/").toString().trimEnd('/'),
+                allowDebugUrlOverride = true,
+                cookieStorageFile = cookieFile,
+                preferencesStorageFile = prefsFile,
+                cookieCipher = JvmAes256GcmCookieCipher()
+            )
+            repo.cookieJar.saveFromResponse(
+                server.url("/api/auth/session"),
+                listOf(
+                    okhttp3.Cookie.Builder()
+                        .name("mini_bi_sid")
+                        .value("bul_sid")
+                        .hostOnlyDomain(server.hostName)
+                        .path("/")
+                        .expiresAt(System.currentTimeMillis() + 3_600_000L)
+                        .build()
+                )
+            )
+            try {
+                // 1. GET list + attachment_summary parsing
+                val listRes = repo.hrpBulletinService.fetchBulletins(
+                    category = com.example.data.HrpBulletinCategory.HR_NEWS,
+                    pageSize = 10,
+                    cursor = "cur-1"
+                )
+                assertEquals(2, listRes.unreadCount)
+                assertTrue(listRes.hasMore)
+                assertEquals("cur-2", listRes.nextCursor)
+                assertEquals(1, listRes.items.single().pdfCount)
+
+                // 2. GET detail without query params
+                val detail = repo.hrpBulletinService.fetchBulletinDetail(bulId)
+                assertNotNull(detail)
+                assertEquals(2, detail!!.contentSections.size)
+                assertEquals(1, detail.attachments.size)
+                assertTrue(recordedRequests.any { it.first == "GET" && it.second == "/api/bulletins/$bulId" })
+
+                // 3. POST read without query params -> unread_count = 1
+                val (readOk, unreadAfterSingle) = repo.hrpBulletinService.markBulletinRead(bulId)
+                assertTrue(readOk)
+                assertEquals(1, unreadAfterSingle)
+
+                // 4. POST read-all without query params -> unread_count = 0
+                val (readAllOk, unreadAfterAll) = repo.hrpBulletinService.markAllBulletinsRead()
+                assertTrue(readAllOk)
+                assertEquals(0, unreadAfterAll)
+
+                // 5. Attachment binary download + SHA-256 verification
+                val cachedAttFile = repo.hrpBulletinService.ensureAttachmentLocalFile(context, detail.attachments.single())
+                assertTrue(cachedAttFile.exists())
+                assertEquals(attachmentSha, com.example.data.HrpBulletinContract.computeFileSha256Hex(cachedAttFile))
+
+                // 6. 404 fallback returns empty list & null detail gracefully
+                force404 = true
+                val emptyOn404 = repo.hrpBulletinService.fetchBulletins()
+                assertTrue(emptyOn404.items.isEmpty())
+                assertEquals(0, emptyOn404.unreadCount)
+                assertNull(repo.hrpBulletinService.fetchBulletinDetail(bulId))
+
+                // 7. Cache pruning removes > 14 days old files and evicts oldest by LRU over maxTotalBytes
+                val bulletinsCacheDir = File(context.cacheDir, "bulletins").apply { mkdirs() }
+                bulletinsCacheDir.listFiles()?.forEach { it.delete() }
+                val nowMs = 1_800_000_000_000L
+                val oldExpired = File(bulletinsCacheDir, "old_expired.bin").apply {
+                    writeBytes(ByteArray(30))
+                    setLastModified(nowMs - 15L * 86_400_000L)
+                }
+                val olderLru = File(bulletinsCacheDir, "older_lru.bin").apply {
+                    writeBytes(ByteArray(40))
+                    setLastModified(nowMs - 3L * 86_400_000L)
+                }
+                val newestKeep = File(bulletinsCacheDir, "newest_keep.bin").apply {
+                    writeBytes(ByteArray(40))
+                    setLastModified(nowMs - 1L * 86_400_000L)
+                }
+                val deletedCount = com.example.data.HrpBulletinContract.pruneBulletinAttachmentCache(
+                    context = context,
+                    maxAgeDays = 14,
+                    maxTotalBytes = 50L,
+                    nowMillis = nowMs
+                )
+                assertEquals(2, deletedCount)
+                assertFalse("Expired (>14d) file must be deleted", oldExpired.exists())
+                assertFalse("Older LRU file exceeding byte cap must be deleted", olderLru.exists())
+                assertTrue("Newest file fitting byte cap must remain", newestKeep.exists())
+                newestKeep.delete()
+
+                // 8. NotificationChannel v2 showBadge, short titles, setNumber, & launcher badge clear on 0
+                assertEquals("hrp_bulletin_channel_v2", com.example.data.HrpBulletinManager.NOTIFICATION_CHANNEL_ID)
+                assertEquals("hrp_bulletin_new_channel", com.example.data.HrpBulletinManager.LEGACY_NOTIFICATION_CHANNEL_ID)
+                val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                    nm.createNotificationChannel(
+                        android.app.NotificationChannel(
+                            com.example.data.HrpBulletinManager.LEGACY_NOTIFICATION_CHANNEL_ID,
+                            "Legacy Channel",
+                            android.app.NotificationManager.IMPORTANCE_HIGH
+                        )
+                    )
+                }
+                val shadowNm = org.robolectric.Shadows.shadowOf(nm)
+                com.example.data.HrpBulletinManager.postNewBulletinNotification(
+                    context = context,
+                    newItems = listOf(detail),
+                    unreadCount = 5
+                )
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                    assertNull(
+                        "Legacy notification channel must be deleted when v2 channel is registered",
+                        nm.getNotificationChannel(com.example.data.HrpBulletinManager.LEGACY_NOTIFICATION_CHANNEL_ID)
+                    )
+                    val v2Channel = nm.getNotificationChannel(com.example.data.HrpBulletinManager.NOTIFICATION_CHANNEL_ID)
+                    assertNotNull(v2Channel)
+                    assertTrue("v2 channel must enable showBadge", v2Channel!!.canShowBadge())
+                }
+                val singlePosted = shadowNm.getNotification(com.example.data.HrpBulletinManager.NOTIFICATION_ID_NEW_BULLETIN)
+                assertNotNull(singlePosted)
+                assertEquals(5, singlePosted!!.number)
+                assertEquals(
+                    "Thông báo · ${detail.categoryDisplay}",
+                    singlePosted.extras.getString(android.app.Notification.EXTRA_TITLE)
+                )
+
+                val secondBulletin = detail.copy(bulletinId = "bul-2", title = "Bản tin số 2")
+                com.example.data.HrpBulletinManager.postNewBulletinNotification(
+                    context = context,
+                    newItems = listOf(detail, secondBulletin),
+                    unreadCount = 2
+                )
+                val multiPosted = shadowNm.getNotification(com.example.data.HrpBulletinManager.NOTIFICATION_ID_NEW_BULLETIN)
+                assertNotNull(multiPosted)
+                assertEquals(2, multiPosted!!.number)
+                assertEquals(
+                    "Thông báo (2 tin mới)",
+                    multiPosted.extras.getString(android.app.Notification.EXTRA_TITLE)
+                )
+
+                // Clearing unread count to 0 must cancel notification & clear badge
+                com.example.data.HrpBulletinManager.syncLauncherAppBadge(context, 0)
+                assertNull(shadowNm.getNotification(com.example.data.HrpBulletinManager.NOTIFICATION_ID_NEW_BULLETIN))
             } finally {
                 repo.closeForTest()
                 db.close()

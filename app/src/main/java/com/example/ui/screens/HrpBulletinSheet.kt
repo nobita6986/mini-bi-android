@@ -54,6 +54,7 @@ import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.DoneAll
 import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Info
@@ -61,15 +62,18 @@ import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.NotificationsOff
 import androidx.compose.material.icons.filled.PictureAsPdf
 import androidx.compose.material.icons.filled.PushPin
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.VerifiedUser
 import androidx.compose.material.icons.filled.ZoomIn
 import androidx.compose.material.icons.filled.ZoomOut
 import androidx.compose.material.icons.outlined.Newspaper
+import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -111,6 +115,7 @@ import com.example.data.HrpBulletinCategory
 import com.example.data.HrpBulletinContract
 import com.example.data.HrpBulletinItem
 import com.example.data.HrpBulletinManager
+import com.example.ui.MiniBiViewModel
 import com.example.ui.components.HrpDesignTokens
 import com.example.ui.components.HrpHaptics
 import com.example.ui.components.HrpStatusBadge
@@ -120,6 +125,7 @@ import com.example.ui.theme.SemanticColors
 import com.example.ui.theme.tabularNums
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.io.File
 import kotlin.math.roundToInt
 
 private val HolidayCategoryColor = Color(0xFF0284C7)
@@ -152,6 +158,7 @@ private fun resolveBulletinCategoryIcon(category: HrpBulletinCategory): ImageVec
 fun HrpBulletinDialog(
     actor: AppActor,
     bulletinManager: HrpBulletinManager,
+    viewModel: MiniBiViewModel? = null,
     initialBulletinId: String? = null,
     onDismiss: () -> Unit
 ) {
@@ -183,28 +190,80 @@ fun HrpBulletinDialog(
     var activeImageAttachment by remember { mutableStateOf<HrpBulletinAttachment?>(null) }
     var activePdfAttachment by remember { mutableStateOf<HrpBulletinAttachment?>(null) }
 
-    val allItems = remember(actor.appUserId, readIdsVersion) {
-        bulletinManager.getBulletinsForActor(
-            appUserId = actor.appUserId,
-            category = HrpBulletinCategory.ALL
-        )
+    val useRemote = BULLETIN_REMOTE_API_ENABLED && viewModel != null
+    val remoteItems = viewModel?.bulletins?.collectAsStateWithLifecycle()?.value.orEmpty()
+    val remoteUnreadCount = viewModel?.bulletinUnreadCount?.collectAsStateWithLifecycle()?.value ?: 0
+    val remoteLoading = viewModel?.bulletinsLoading?.collectAsStateWithLifecycle()?.value ?: false
+    val remoteLoadingMore = viewModel?.bulletinsLoadingMore?.collectAsStateWithLifecycle()?.value ?: false
+    val remoteError = viewModel?.bulletinsError?.collectAsStateWithLifecycle()?.value
+    val remoteHasMore = viewModel?.bulletinHasMore?.collectAsStateWithLifecycle()?.value ?: false
+    val remoteDetail = viewModel?.selectedBulletinDetail?.collectAsStateWithLifecycle()?.value
+    val remoteDetailLoading = viewModel?.bulletinDetailLoading?.collectAsStateWithLifecycle()?.value ?: false
+    val remoteDetailError = viewModel?.bulletinDetailError?.collectAsStateWithLifecycle()?.value
+    val markingAllRead = viewModel?.bulletinMarkingAllRead?.collectAsStateWithLifecycle()?.value ?: false
+
+    val localMockupItems = remember(actor.appUserId, readIdsVersion) {
+        if (useRemote) {
+            emptyList()
+        } else {
+            bulletinManager.getBulletinsForActor(
+                appUserId = actor.appUserId,
+                category = HrpBulletinCategory.ALL
+            )
+        }
     }
-    val filteredItems = remember(allItems, selectedCategory) {
-        if (selectedCategory == HrpBulletinCategory.ALL) {
+    val allItems = if (useRemote) remoteItems else localMockupItems
+    val filteredItems = remember(allItems, selectedCategory, useRemote) {
+        if (useRemote || selectedCategory == HrpBulletinCategory.ALL) {
             allItems
         } else {
             allItems.filter { it.category == selectedCategory }
         }
     }
-    val selectedBulletin = remember(allItems, selectedBulletinId) {
+    val effectiveUnreadCount = remember(useRemote, remoteUnreadCount, allItems) {
+        if (useRemote) remoteUnreadCount else allItems.count { !it.isRead }
+    }
+    val selectedBulletin = remember(allItems, selectedBulletinId, remoteDetail, useRemote) {
         selectedBulletinId?.let { targetId ->
-            allItems.firstOrNull { it.bulletinId == targetId }
+            if (useRemote && remoteDetail?.bulletinId == targetId) {
+                remoteDetail
+            } else {
+                allItems.firstOrNull { it.bulletinId == targetId }
+            }
         }
     }
 
-    LaunchedEffect(selectedBulletin?.bulletinId, actor.appUserId) {
-        val currentId = selectedBulletin?.bulletinId ?: return@LaunchedEffect
-        bulletinManager.markBulletinRead(actor.appUserId, currentId)
+    LaunchedEffect(actor.appUserId, useRemote) {
+        if (useRemote) {
+            viewModel?.loadBulletins(
+                category = selectedCategory,
+                reset = true,
+                actorOverride = actor,
+                notifyNewIfAll = true
+            )
+        }
+    }
+
+    LaunchedEffect(initialBulletinId, actor.appUserId, useRemote) {
+        val targetId = initialBulletinId?.trim().orEmpty()
+        if (targetId.isNotEmpty()) {
+            selectedBulletinId = targetId
+            if (useRemote) {
+                viewModel?.openBulletinDetail(targetId, actorOverride = actor)
+            } else {
+                bulletinManager.markBulletinRead(actor.appUserId, targetId)
+            }
+        }
+    }
+
+    val loadAttachmentFile: suspend (HrpBulletinAttachment) -> File = remember(viewModel, context) {
+        { attachment ->
+            if (viewModel != null) {
+                viewModel.ensureBulletinAttachmentFile(attachment)
+            } else {
+                HrpBulletinContract.ensureAttachmentLocalFile(context, attachment)
+            }
+        }
     }
 
     Dialog(
@@ -212,7 +271,10 @@ fun HrpBulletinDialog(
             when {
                 activeImageAttachment != null -> activeImageAttachment = null
                 activePdfAttachment != null -> activePdfAttachment = null
-                selectedBulletinId != null -> selectedBulletinId = null
+                selectedBulletinId != null -> {
+                    selectedBulletinId = null
+                    viewModel?.clearSelectedBulletinDetail()
+                }
                 else -> onDismiss()
             }
         },
@@ -224,6 +286,7 @@ fun HrpBulletinDialog(
     ) {
         BackHandler(enabled = selectedBulletinId != null && activeImageAttachment == null && activePdfAttachment == null) {
             selectedBulletinId = null
+            viewModel?.clearSelectedBulletinDetail()
         }
 
         Surface(
@@ -264,7 +327,7 @@ fun HrpBulletinDialog(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    if (selectedBulletin != null) {
+                    if (selectedBulletinId != null) {
                         Surface(
                             shape = RoundedCornerShape(10.dp),
                             color = SemanticColors.SurfaceSubtle,
@@ -275,6 +338,7 @@ fun HrpBulletinDialog(
                                 .clickable {
                                     HrpHaptics.tick(hapticFeedback)
                                     selectedBulletinId = null
+                                    viewModel?.clearSelectedBulletinDetail()
                                 }
                                 .testTag("bulletin_detail_back_button")
                         ) {
@@ -317,27 +381,63 @@ fun HrpBulletinDialog(
                                     modifier = Modifier.size(20.dp)
                                 )
                             }
-                            Column {
-                                Text(
-                                    text = "Bản tin HRPartner",
-                                    style = MaterialTheme.typography.titleMedium,
-                                    fontWeight = FontWeight.ExtraBold,
-                                    color = MaterialTheme.colorScheme.onSurface
-                                )
-                                Text(
-                                    text = "Thông báo, lịch nghỉ lễ & vận hành nội bộ",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
+                            Text(
+                                text = "Thông báo",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.ExtraBold,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.testTag("bulletin_dialog_title")
+                            )
                         }
                     }
 
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        if (selectedBulletin == null) {
+                        if (selectedBulletinId == null) {
+                            if (useRemote) {
+                                Surface(
+                                    shape = CircleShape,
+                                    color = SemanticColors.SurfaceSubtle,
+                                    border = BorderStroke(1.dp, SemanticColors.SurfaceBorder),
+                                    modifier = Modifier
+                                        .size(36.dp)
+                                        .clip(CircleShape)
+                                        .clickable(enabled = !remoteLoading) {
+                                            HrpHaptics.tick(hapticFeedback)
+                                            viewModel?.loadBulletins(
+                                                category = selectedCategory,
+                                                reset = true,
+                                                actorOverride = actor,
+                                                notifyNewIfAll = false
+                                            )
+                                        }
+                                        .testTag("bulletin_refresh_button")
+                                ) {
+                                    Box(
+                                        modifier = Modifier.fillMaxSize(),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        if (remoteLoading) {
+                                            CircularProgressIndicator(
+                                                modifier = Modifier.size(16.dp),
+                                                strokeWidth = 2.dp
+                                            )
+                                        } else {
+                                            Icon(
+                                                imageVector = Icons.Default.Refresh,
+                                                contentDescription = "Làm mới bản tin",
+                                                tint = MaterialTheme.colorScheme.primary,
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+
                             Surface(
                                 shape = CircleShape,
                                 color = if (notificationEnabled) {
@@ -362,7 +462,10 @@ fun HrpBulletinDialog(
                                         bulletinManager.setNewBulletinNotificationEnabled(nextState)
                                         if (nextState) {
                                             ensureNotificationPermissionIfNeeded()
-                                            bulletinManager.notifyNewBulletinsIfNeeded(actor.appUserId)
+                                            bulletinManager.notifyNewBulletinsIfNeeded(
+                                                appUserId = actor.appUserId,
+                                                seedItems = allItems
+                                            )
                                         }
                                     }
                                     .testTag("bulletin_notification_toggle_button")
@@ -418,37 +521,118 @@ fun HrpBulletinDialog(
                 Spacer(modifier = Modifier.height(10.dp))
 
                 AnimatedContent(
-                    targetState = selectedBulletin,
+                    targetState = selectedBulletinId,
                     transitionSpec = { fadeIn() togetherWith fadeOut() },
                     label = "bulletin_sheet_view_transition",
                     modifier = Modifier.weight(1f)
-                ) { detailTarget ->
-                    if (detailTarget == null) {
+                ) { detailId ->
+                    if (detailId == null) {
                         BulletinListContent(
                             selectedCategory = selectedCategory,
                             items = filteredItems,
+                            unreadCount = effectiveUnreadCount,
+                            isLoading = useRemote && remoteLoading,
+                            isLoadingMore = useRemote && remoteLoadingMore,
+                            hasMore = useRemote && remoteHasMore,
+                            errorMessage = if (useRemote) remoteError else null,
+                            markingAllRead = markingAllRead,
                             onSelectCategory = { picked ->
                                 HrpHaptics.tick(hapticFeedback)
                                 selectedCategory = picked
+                                if (useRemote) {
+                                    viewModel?.loadBulletins(
+                                        category = picked,
+                                        reset = true,
+                                        actorOverride = actor,
+                                        notifyNewIfAll = false
+                                    )
+                                }
+                            },
+                            onRetry = {
+                                HrpHaptics.tick(hapticFeedback)
+                                viewModel?.loadBulletins(
+                                    category = selectedCategory,
+                                    reset = true,
+                                    actorOverride = actor,
+                                    notifyNewIfAll = false
+                                )
+                            },
+                            onMarkAllRead = {
+                                HrpHaptics.tick(hapticFeedback)
+                                viewModel?.markAllBulletinsRead(actorOverride = actor)
+                            },
+                            onLoadMore = {
+                                HrpHaptics.tick(hapticFeedback)
+                                viewModel?.loadMoreBulletins(actorOverride = actor)
                             },
                             onOpenBulletin = { item ->
                                 HrpHaptics.tick(hapticFeedback)
-                                bulletinManager.markBulletinRead(actor.appUserId, item.bulletinId)
                                 selectedBulletinId = item.bulletinId
+                                if (useRemote) {
+                                    viewModel?.openBulletinDetail(item.bulletinId, actorOverride = actor)
+                                } else {
+                                    bulletinManager.markBulletinRead(actor.appUserId, item.bulletinId)
+                                }
                             }
                         )
                     } else {
-                        BulletinDetailContent(
-                            item = detailTarget,
-                            onOpenImageAttachment = { att ->
-                                HrpHaptics.tick(hapticFeedback)
-                                activeImageAttachment = att
-                            },
-                            onOpenPdfAttachment = { att ->
-                                HrpHaptics.tick(hapticFeedback)
-                                activePdfAttachment = att
+                        val detailTarget = selectedBulletin
+                        when {
+                            detailTarget != null -> {
+                                BulletinDetailContent(
+                                    item = detailTarget,
+                                    isDetailRefreshing = useRemote && remoteDetailLoading && detailTarget.contentSections.isEmpty(),
+                                    loadAttachmentFile = loadAttachmentFile,
+                                    onOpenImageAttachment = { att ->
+                                        HrpHaptics.tick(hapticFeedback)
+                                        activeImageAttachment = att
+                                    },
+                                    onOpenPdfAttachment = { att ->
+                                        HrpHaptics.tick(hapticFeedback)
+                                        activePdfAttachment = att
+                                    }
+                                )
                             }
-                        )
+                            useRemote && remoteDetailLoading -> {
+                                Box(
+                                    modifier = Modifier.fillMaxSize(),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    CircularProgressIndicator()
+                                }
+                            }
+                            else -> {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .padding(24.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Column(
+                                        horizontalAlignment = Alignment.CenterHorizontally,
+                                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                                    ) {
+                                        Text(
+                                            text = remoteDetailError ?: "Không thể tải chi tiết bản tin.",
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            color = SemanticColors.ErrorText,
+                                            textAlign = TextAlign.Center
+                                        )
+                                        if (useRemote) {
+                                            OutlinedButton(
+                                                onClick = {
+                                                    HrpHaptics.tick(hapticFeedback)
+                                                    viewModel?.openBulletinDetail(detailId, actorOverride = actor)
+                                                },
+                                                modifier = Modifier.defaultMinSize(minHeight = 40.dp)
+                                            ) {
+                                                Text("Thử lại")
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -456,16 +640,16 @@ fun HrpBulletinDialog(
 
         activeImageAttachment?.let { imageAttachment ->
             BulletinFullScreenImageViewerDialog(
-                context = context,
                 attachment = imageAttachment,
+                loadAttachmentFile = loadAttachmentFile,
                 onDismiss = { activeImageAttachment = null }
             )
         }
 
         activePdfAttachment?.let { pdfAttachment ->
             BulletinNativePdfReaderDialog(
-                context = context,
                 attachment = pdfAttachment,
+                loadAttachmentFile = loadAttachmentFile,
                 onDismiss = { activePdfAttachment = null }
             )
         }
@@ -476,7 +660,16 @@ fun HrpBulletinDialog(
 private fun BulletinListContent(
     selectedCategory: HrpBulletinCategory,
     items: List<HrpBulletinItem>,
+    unreadCount: Int,
+    isLoading: Boolean,
+    isLoadingMore: Boolean,
+    hasMore: Boolean,
+    errorMessage: String?,
+    markingAllRead: Boolean,
     onSelectCategory: (HrpBulletinCategory) -> Unit,
+    onRetry: () -> Unit,
+    onMarkAllRead: () -> Unit,
+    onLoadMore: () -> Unit,
     onOpenBulletin: (HrpBulletinItem) -> Unit
 ) {
     Column(modifier = Modifier.fillMaxSize()) {
@@ -542,7 +735,54 @@ private fun BulletinListContent(
 
         Spacer(modifier = Modifier.height(10.dp))
 
-        // Mockup mode notice banner (automatically hidden when BULLETIN_REMOTE_API_ENABLED == true)
+        // Unread summary + "Đánh dấu tất cả đã đọc" quick bar
+        if (unreadCount > 0) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(
+                    text = "$unreadCount bản tin chưa đọc",
+                    style = MaterialTheme.typography.labelMedium.tabularNums(),
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.28f)),
+                    modifier = Modifier
+                        .defaultMinSize(minHeight = 40.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .clickable(enabled = !markingAllRead) { onMarkAllRead() }
+                        .testTag("bulletin_mark_all_read_button")
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.DoneAll,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Text(
+                            text = if (markingAllRead) "Đang cập nhật…" else "Đánh dấu tất cả đã đọc",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                }
+            }
+        }
+
+        // Mockup mode notice banner (hidden automatically when BULLETIN_REMOTE_API_ENABLED == true)
         if (!BULLETIN_REMOTE_API_ENABLED) {
             Row(
                 modifier = Modifier
@@ -568,35 +808,119 @@ private fun BulletinListContent(
             Spacer(modifier = Modifier.height(10.dp))
         }
 
-        if (items.isEmpty()) {
-            Box(
+        if (!errorMessage.isNullOrBlank()) {
+            Surface(
+                shape = RoundedCornerShape(10.dp),
+                color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.45f),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.3f)),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .weight(1f)
-                    .testTag("bulletin_empty_state"),
-                contentAlignment = Alignment.Center
+                    .padding(bottom = 10.dp)
+                    .testTag("bulletin_error_banner")
             ) {
-                Text(
-                    text = "Chưa có bản tin nào trong danh mục này.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    textAlign = TextAlign.Center
-                )
-            }
-        } else {
-            LazyColumn(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f)
-                    .testTag("bulletin_list_column"),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
-                contentPadding = PaddingValues(bottom = 12.dp)
-            ) {
-                items(items, key = { it.bulletinId }) { item ->
-                    BulletinCardItem(
-                        item = item,
-                        onClick = { onOpenBulletin(item) }
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        text = errorMessage,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = SemanticColors.ErrorText,
+                        modifier = Modifier.weight(1f)
                     )
+                    TextButton(
+                        onClick = onRetry,
+                        modifier = Modifier.defaultMinSize(minHeight = 40.dp)
+                    ) {
+                        Text("Thử lại", fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+        }
+
+        when {
+            isLoading && items.isEmpty() -> {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f)
+                        .testTag("bulletin_loading_state"),
+                    contentAlignment = Alignment.Center
+                ) {
+                    CircularProgressIndicator()
+                }
+            }
+
+            items.isEmpty() -> {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f)
+                        .testTag("bulletin_empty_state"),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = if (selectedCategory == HrpBulletinCategory.ALL) {
+                            "Chưa có bản tin mới"
+                        } else {
+                            "Chưa có bản tin nào trong danh mục này."
+                        },
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center
+                    )
+                }
+            }
+
+            else -> {
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f)
+                        .testTag("bulletin_list_column"),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                    contentPadding = PaddingValues(bottom = 12.dp)
+                ) {
+                    items(items, key = { it.bulletinId }) { item ->
+                        BulletinCardItem(
+                            item = item,
+                            onClick = { onOpenBulletin(item) }
+                        )
+                    }
+                    if (hasMore) {
+                        item(key = "bulletin_load_more_footer") {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 6.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                OutlinedButton(
+                                    onClick = onLoadMore,
+                                    enabled = !isLoadingMore,
+                                    shape = RoundedCornerShape(12.dp),
+                                    modifier = Modifier
+                                        .defaultMinSize(minHeight = 44.dp)
+                                        .testTag("bulletin_load_more_button")
+                                ) {
+                                    if (isLoadingMore) {
+                                        CircularProgressIndicator(
+                                            modifier = Modifier.size(16.dp),
+                                            strokeWidth = 2.dp
+                                        )
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                    }
+                                    Text(
+                                        text = if (isLoadingMore) "Đang tải thêm…" else "Tải thêm",
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -804,10 +1128,11 @@ private fun AttachmentCountPill(
 @Composable
 private fun BulletinDetailContent(
     item: HrpBulletinItem,
+    isDetailRefreshing: Boolean = false,
+    loadAttachmentFile: suspend (HrpBulletinAttachment) -> File,
     onOpenImageAttachment: (HrpBulletinAttachment) -> Unit,
     onOpenPdfAttachment: (HrpBulletinAttachment) -> Unit
 ) {
-    val context = LocalContext.current
     val categoryTint = resolveBulletinCategoryTint(item.category)
 
     Column(
@@ -863,6 +1188,16 @@ private fun BulletinDetailContent(
         )
 
         // Content sections on hrpMutedTile
+        if (isDetailRefreshing) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 12.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.dp)
+            }
+        }
         item.contentSections.forEachIndexed { idx, sectionText ->
             Box(
                 modifier = Modifier
@@ -879,7 +1214,7 @@ private fun BulletinDetailContent(
             }
         }
 
-        // Attachments section
+        // Attachments section (automatically hidden when attachments is empty)
         if (item.attachments.isNotEmpty()) {
             Spacer(modifier = Modifier.height(4.dp))
             Text(
@@ -893,8 +1228,8 @@ private fun BulletinDetailContent(
                 when (attachment.kind) {
                     HrpBulletinAttachmentKind.IMAGE -> {
                         BulletinImageAttachmentCard(
-                            context = context,
                             attachment = attachment,
+                            loadAttachmentFile = loadAttachmentFile,
                             onClick = { onOpenImageAttachment(attachment) }
                         )
                     }
@@ -913,8 +1248,8 @@ private fun BulletinDetailContent(
 
 @Composable
 private fun BulletinImageAttachmentCard(
-    context: android.content.Context,
     attachment: HrpBulletinAttachment,
+    loadAttachmentFile: suspend (HrpBulletinAttachment) -> File,
     onClick: () -> Unit
 ) {
     var thumbnailBitmap by remember(attachment.attachmentId) { mutableStateOf<Bitmap?>(null) }
@@ -922,7 +1257,7 @@ private fun BulletinImageAttachmentCard(
     LaunchedEffect(attachment.attachmentId) {
         thumbnailBitmap = withContext(Dispatchers.IO) {
             runCatching {
-                val file = HrpBulletinContract.ensureAttachmentLocalFile(context, attachment)
+                val file = loadAttachmentFile(attachment)
                 BitmapFactory.decodeFile(file.absolutePath)
             }.getOrNull()
         }
@@ -1110,8 +1445,8 @@ private fun BulletinPdfAttachmentCard(
 
 @Composable
 private fun BulletinFullScreenImageViewerDialog(
-    context: android.content.Context,
     attachment: HrpBulletinAttachment,
+    loadAttachmentFile: suspend (HrpBulletinAttachment) -> File,
     onDismiss: () -> Unit
 ) {
     var bitmap by remember(attachment.attachmentId) { mutableStateOf<Bitmap?>(null) }
@@ -1121,7 +1456,7 @@ private fun BulletinFullScreenImageViewerDialog(
     LaunchedEffect(attachment.attachmentId) {
         bitmap = withContext(Dispatchers.IO) {
             runCatching {
-                val file = HrpBulletinContract.ensureAttachmentLocalFile(context, attachment)
+                val file = loadAttachmentFile(attachment)
                 BitmapFactory.decodeFile(file.absolutePath)
             }.getOrNull()
         }
@@ -1268,8 +1603,8 @@ private fun BulletinFullScreenImageViewerDialog(
 
 @Composable
 private fun BulletinNativePdfReaderDialog(
-    context: android.content.Context,
     attachment: HrpBulletinAttachment,
+    loadAttachmentFile: suspend (HrpBulletinAttachment) -> File,
     onDismiss: () -> Unit
 ) {
     var pageBitmaps by remember(attachment.attachmentId) { mutableStateOf<List<Bitmap>>(emptyList()) }
@@ -1296,7 +1631,7 @@ private fun BulletinNativePdfReaderDialog(
         loadError = null
         val rendered = withContext(Dispatchers.IO) {
             runCatching {
-                val pdfFile = HrpBulletinContract.ensureAttachmentLocalFile(context, attachment)
+                val pdfFile = loadAttachmentFile(attachment)
                 val pfd = ParcelFileDescriptor.open(pdfFile, ParcelFileDescriptor.MODE_READ_ONLY)
                 pfd.use { descriptor ->
                     PdfRenderer(descriptor).use { renderer ->
