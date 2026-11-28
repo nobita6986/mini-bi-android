@@ -13,6 +13,7 @@ import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import kotlinx.coroutines.flow.Flow
+import java.util.Locale
 
 // 1. Canonical Server-Resolved Actor Session Model (Backend is sole authority)
 data class ActorScope(
@@ -249,12 +250,37 @@ data class CatalogLaborTypeOption(
     val sortOrder: Int
 )
 
+enum class WorkerSourceMode(val wireProviderType: String, val uiLabel: String) {
+    HRP_DIRECT("hrp", "HRP trực tiếp"),
+    VENDOR("vendor", "Vendor"),
+    CTV("hrp", "CTV");
+
+    companion object {
+        fun fromServer(providerType: String?, collaboratorId: String?): WorkerSourceMode {
+            val normalized = providerType?.trim()?.lowercase(Locale.ROOT).orEmpty()
+            return when {
+                normalized == "vendor" -> VENDOR
+                !collaboratorId.isNullOrBlank() -> CTV
+                else -> HRP_DIRECT
+            }
+        }
+    }
+}
+
+data class CatalogCollaboratorOption(
+    val collaboratorId: String,
+    val displayName: String,
+    val active: Boolean = true
+)
+
 data class DirectEntryCatalog(
     val effectiveDate: String,
     val projects: List<CatalogProjectOption>,
     val recruiters: List<CatalogRecruiterOption>,
     val banks: List<CatalogBankOption>,
-    val laborTypes: List<CatalogLaborTypeOption>
+    val laborTypes: List<CatalogLaborTypeOption>,
+    val collaborators: List<CatalogCollaboratorOption> = emptyList(),
+    val supportsCollaborators: Boolean = false
 )
 
 data class WorkerAllowedActions(
@@ -355,14 +381,31 @@ data class NewWorkerEntryDraft(
     val cccdIssueDateUi: String = "", // Free text <= 10 chars (e.g. DD/MM/YYYY)
     val address: String = "",
     val isExpanded: Boolean = true,
-    val showOptionalSection: Boolean = false
+    val showOptionalSection: Boolean = false,
+    val sourceMode: WorkerSourceMode? = null,
+    val collaboratorId: String = "",
+    val collaboratorDisplayName: String = ""
 ) {
+    val effectiveSourceMode: WorkerSourceMode?
+        get() {
+            if (sourceMode != null) return sourceMode
+            return when (providerType.trim().lowercase(Locale.ROOT)) {
+                "vendor" -> WorkerSourceMode.VENDOR
+                "hrp" -> if (collaboratorId.isNotBlank()) WorkerSourceMode.CTV else WorkerSourceMode.HRP_DIRECT
+                else -> null
+            }
+        }
+
+    val effectiveWireProviderType: String
+        get() = effectiveSourceMode?.wireProviderType ?: providerType.trim().lowercase(Locale.ROOT)
+
     val isValid: Boolean
         get() {
-            val providerNorm = providerType.trim().lowercase()
+            val resolvedMode = effectiveSourceMode
             return projectId.isNotBlank() &&
-                (providerNorm == "hrp" || providerNorm == "vendor") &&
+                resolvedMode != null &&
                 DirectEntryContract.isUuid(recruiterId) &&
+                (resolvedMode != WorkerSourceMode.CTV || DirectEntryContract.isValidSafeCatalogId(collaboratorId)) &&
                 laborTypeKey.isNotBlank() &&
                 DirectEntryContract.isValidUiOrIsoDate(firstWorkDateUi) &&
                 fullName.length <= 256 &&
@@ -385,8 +428,10 @@ data class NewWorkerEntryDraft(
 
     val isStarted: Boolean
         get() = projectId.isNotBlank() ||
+            sourceMode != null ||
             providerType.isNotBlank() ||
             recruiterId.isNotBlank() ||
+            collaboratorId.isNotBlank() ||
             fullName.isNotBlank() ||
             phone.isNotBlank() ||
             cccd.isNotBlank() ||
@@ -526,7 +571,10 @@ data class WorkerEntryDetail(
     val documents: List<EntryDocumentItem>,
     val rawBankName: String? = bankName,
     val workerDetailsStates: Map<String, String> = emptyMap(),
-    val fileVersions: Map<String, Int> = emptyMap()
+    val fileVersions: Map<String, Int> = emptyMap(),
+    val collaboratorId: String? = null,
+    val collaboratorDisplayName: String? = null,
+    val recruiterDisplay: String? = null
 )
 
 data class VietQrBankCatalogDefinition(
@@ -601,7 +649,10 @@ data class DirectEditFormInput(
     val bankId: String,
     val bankQueryText: String,
     val accountHolderName: String,
-    val reason: String = ""
+    val reason: String = "",
+    val sourceMode: WorkerSourceMode? = null,
+    val collaboratorId: String? = null,
+    val collaboratorDisplayName: String? = null
 )
 
 data class CccdDecodedQrPayload(
@@ -896,7 +947,10 @@ data class WorkerProfileEntity(
     val canViewPayment: Boolean = false,
     val canProposeChange: Boolean = false,
     val proposeChangeCode: String? = null,
-    val canDirectEdit: Boolean = false
+    val canDirectEdit: Boolean = false,
+    val providerType: String = "hrp",
+    val collaboratorId: String? = null,
+    val collaboratorDisplayName: String? = null
 ) {
     val allowedActions: WorkerAllowedActions
         get() = WorkerAllowedActions(
@@ -975,7 +1029,7 @@ interface MiniBiDao {
         WorkReportObligationEntity::class,
         WorkerProfileEntity::class
     ],
-    version = 6,
+    version = 7,
     exportSchema = false
 )
 abstract class MiniBiDatabase : RoomDatabase() {
@@ -1001,6 +1055,14 @@ abstract class MiniBiDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_6_7 = object : Migration(6, 7) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE cached_worker_directory_rows ADD COLUMN providerType TEXT NOT NULL DEFAULT 'hrp'")
+                db.execSQL("ALTER TABLE cached_worker_directory_rows ADD COLUMN collaboratorId TEXT")
+                db.execSQL("ALTER TABLE cached_worker_directory_rows ADD COLUMN collaboratorDisplayName TEXT")
+            }
+        }
+
         @Volatile
         private var INSTANCE: MiniBiDatabase? = null
 
@@ -1011,7 +1073,7 @@ abstract class MiniBiDatabase : RoomDatabase() {
                     MiniBiDatabase::class.java,
                     "mini_bi_hrpartner.db"
                 )
-                    .addMigrations(MIGRATION_4_5, MIGRATION_5_6)
+                    .addMigrations(MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7)
                     .fallbackToDestructiveMigration(true)
                     .build()
                 INSTANCE = instance

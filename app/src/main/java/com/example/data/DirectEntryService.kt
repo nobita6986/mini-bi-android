@@ -57,6 +57,7 @@ object DirectEntryContract {
     const val CONTRACT_VERSION_V1_1 = "worker-profile/1.1"
     const val CONTRACT_VERSION_V1_2 = "worker-profile/1.2"
     const val MAX_STAGE_BYTES = 10L * 1024L * 1024L
+    const val SYSTEM_VENDOR_COLLABORATOR_ID = "__system_vendor__"
 
     val ALLOWED_STAGE_DOCUMENT_TYPES = setOf(
         "WORKER_PORTRAIT",
@@ -70,6 +71,12 @@ object DirectEntryContract {
         "recruited",
         "team",
         "all"
+    )
+
+    val ALLOWED_WORKER_PROVIDER_FILTERS = setOf(
+        "hrp_direct",
+        "hrp_ctv",
+        "vendor"
     )
 
     val CANONICAL_CHANGE_TARGETS = setOf(
@@ -123,6 +130,54 @@ object DirectEntryContract {
     private val MULTI_SPACE_REGEX = Regex("\\s+")
 
     fun isUuid(raw: String): Boolean = UUID_REGEX.matches(raw.trim())
+
+    fun isValidSafeCatalogId(raw: String): Boolean {
+        val cleaned = raw.trim()
+        return cleaned.isNotEmpty() &&
+            cleaned != SYSTEM_VENDOR_COLLABORATOR_ID &&
+            SAFE_CATALOG_ID_REGEX.matches(cleaned)
+    }
+
+    fun workerSourceBadgeLabel(providerType: String?, collaboratorId: String?): String {
+        return when {
+            providerType?.trim()?.equals("vendor", ignoreCase = true) == true -> "Vendor"
+            !collaboratorId.isNullOrBlank() -> "CTV"
+            else -> "HRP"
+        }
+    }
+
+    fun formatWorkerSourceLabel(
+        providerType: String?,
+        collaboratorId: String?,
+        collaboratorDisplayName: String?
+    ): String {
+        val cleanProvider = providerType?.trim()?.lowercase(Locale.ROOT).orEmpty()
+        return when {
+            cleanProvider == "vendor" -> "Vendor"
+            !collaboratorId.isNullOrBlank() -> {
+                val ctvName = collaboratorDisplayName?.trim()?.ifEmpty { null } ?: collaboratorId.trim()
+                "CTV · $ctvName"
+            }
+            cleanProvider == "hrp" || cleanProvider.isEmpty() -> "HRP"
+            else -> providerType?.trim().orEmpty()
+        }
+    }
+
+    fun formatCollaboratorLabelForEdit(
+        collaboratorId: String?,
+        collaboratorDisplayName: String?,
+        catalog: DirectEntryCatalog?
+    ): String {
+        val cleanId = collaboratorId?.trim()?.ifEmpty { null } ?: return ""
+        val fallbackName = collaboratorDisplayName?.trim()?.ifEmpty { null } ?: cleanId
+        val matched = catalog?.collaborators?.firstOrNull { it.collaboratorId == cleanId }
+        return when {
+            matched != null && matched.active -> matched.displayName
+            matched != null && !matched.active -> "${matched.displayName} (Ngừng HĐ)"
+            catalog != null && catalog.supportsCollaborators -> "$fallbackName (Ngừng HĐ)"
+            else -> fallbackName
+        }
+    }
 
     fun isValidUiOrIsoDate(rawDate: String): Boolean =
         runCatching { uiDateToIsoDate(rawDate) }.isSuccess
@@ -436,6 +491,9 @@ object DirectEntryContract {
             val recruiterId = draft.recruiterId.trim()
             val laborType = draft.laborTypeKey.trim()
             val displayName = draft.fullName.trim()
+            val sourceMode = draft.effectiveSourceMode
+                ?: throw invalid("BATCH_INVALID", "Nguồn tuyển dụng phải là HRP trực tiếp, Vendor hoặc CTV.")
+            val collaboratorId = draft.collaboratorId.trim()
 
             if (!SAFE_CATALOG_ID_REGEX.matches(projectId) ||
                 !UUID_REGEX.matches(recruiterId) ||
@@ -445,12 +503,18 @@ object DirectEntryContract {
             ) {
                 throw invalid("BATCH_INVALID", "Vui lòng chọn đầy đủ Dự án, Người tuyển, Loại hình LĐ từ danh mục (Họ tên không bắt buộc, tối đa 256 ký tự).")
             }
+            if (sourceMode == WorkerSourceMode.CTV && !isValidSafeCatalogId(collaboratorId)) {
+                throw invalid("COLLABORATOR_INVALID", "Khi chọn nguồn CTV, vui lòng chọn Cộng tác viên hợp lệ từ danh mục.")
+            }
 
             val rowObj = JSONObject().apply {
                 put("project_id", projectId)
                 put("first_work_date", uiDateToIsoDate(draft.firstWorkDateUi))
-                put("provider_type", mapProviderType(draft.providerType))
+                put("provider_type", mapProviderType(sourceMode.wireProviderType))
                 put("recruiter_id", recruiterId)
+                if (sourceMode == WorkerSourceMode.CTV) {
+                    put("collaborator_id", collaboratorId)
+                }
                 put("labor_type", laborType)
                 put("display_name", displayName)
                 put(
@@ -538,6 +602,86 @@ object DirectEntryContract {
             .put("items", JSONArray().put(itemObj))
             .put("reason", normalizedReason ?: JSONObject.NULL)
             .put("idempotency_key", idempotencyKey)
+    }
+
+    fun buildEntryFieldChangeProposal(
+        baselineWorker: WorkerProfileEntity,
+        baselineDetail: WorkerEntryDetail?,
+        projectId: String,
+        firstWorkDateUi: String,
+        laborTypeKey: String,
+        displayName: String,
+        phone: String,
+        sourceMode: WorkerSourceMode? = null,
+        recruiterId: String? = null,
+        collaboratorId: String? = null
+    ): JSONObject {
+        return JSONObject().apply {
+            val baseProj = baselineDetail?.projectId ?: baselineWorker.projectId
+            if (projectId.isNotBlank() && projectId.trim() != baseProj) {
+                put("project_id", projectId.trim())
+            }
+            val isoFirst = uiDateToIsoDate(firstWorkDateUi)
+            val baseFirst = baselineDetail?.firstWorkDate ?: baselineWorker.firstWorkDate
+            if (isoFirst != baseFirst) {
+                put("first_work_date", isoFirst)
+            }
+            val baseLabor = baselineDetail?.laborType ?: baselineWorker.laborType
+            if (laborTypeKey.isNotBlank() && laborTypeKey.trim() != baseLabor) {
+                put("labor_type", laborTypeKey.trim())
+            }
+            val baseRecruiterId = (baselineDetail?.recruiterId ?: baselineWorker.recruiterId).trim()
+            if (recruiterId != null) {
+                val cleanRecruiterId = recruiterId.trim()
+                if (cleanRecruiterId != baseRecruiterId) {
+                    if (!UUID_REGEX.matches(cleanRecruiterId)) {
+                        throw invalid("WORKER_INVALID", "Người tuyển đã chọn không hợp lệ. Vui lòng chọn lại người tuyển từ danh sách.")
+                    }
+                    put("recruiter_id", cleanRecruiterId)
+                }
+            }
+            val baseCollabId = (baselineDetail?.collaboratorId ?: baselineWorker.collaboratorId)?.trim()?.ifEmpty { null }
+            when (sourceMode) {
+                WorkerSourceMode.CTV -> {
+                    val cleanCollabId = collaboratorId?.trim()?.ifEmpty { null }
+                        ?: throw invalid("WORKER_INVALID", "Khi chọn nguồn CTV, vui lòng chọn Cộng tác viên từ danh mục.")
+                    if (cleanCollabId != baseCollabId) {
+                        if (!isValidSafeCatalogId(cleanCollabId)) {
+                            throw invalid("WORKER_INVALID", "Cộng tác viên đã chọn không hợp lệ.")
+                        }
+                        put("collaborator_id", cleanCollabId)
+                    }
+                }
+                WorkerSourceMode.HRP_DIRECT, WorkerSourceMode.VENDOR -> {
+                    if (baseCollabId != null) {
+                        // Explicit JSONObject.NULL is mandatory in org.json.JSONObject to emit "collaborator_id":null
+                        put("collaborator_id", JSONObject.NULL)
+                    }
+                }
+                null -> Unit
+            }
+            if (baselineDetail != null &&
+                (displayName.trim() != baselineDetail.displayName || phone.trim() != baselineDetail.phone.orEmpty())
+            ) {
+                val cleanName = displayName.trim()
+                if (cleanName.isEmpty() || cleanName.length > 256) {
+                    throw IllegalArgumentException("Họ và tên NLĐ không được để trống (tối đa 256 ký tự).")
+                }
+                val safeNationalId = baselineDetail.nationalId?.trim()
+                    ?.takeIf { isCanonicalNationalId(it) }
+                    .orEmpty()
+                put(
+                    "worker_details",
+                    JSONObject().apply {
+                        put("display_name", cleanName)
+                        put("date_of_birth", optionalFreeDateField(baselineDetail.dateOfBirth.orEmpty()))
+                        put("national_id", optionalNationalIdField(safeNationalId))
+                        put("address", optionalTextField(baselineDetail.address.orEmpty(), maxLength = 1024))
+                        put("phone", optionalTextField(phone, maxLength = 64))
+                    }
+                )
+            }
+        }
     }
 
     fun buildPaymentChangeProposal(
@@ -1013,7 +1157,10 @@ object DirectEntryContract {
             bankId = if (paymentProvided) detail.bankId?.trim().orEmpty() else "",
             bankQueryText = initialDirectEditBankQueryText(detail, catalogBanks),
             accountHolderName = if (paymentProvided) detail.accountHolderName?.trim().orEmpty() else "",
-            reason = ""
+            reason = "",
+            sourceMode = WorkerSourceMode.fromServer(detail.providerType, detail.collaboratorId),
+            collaboratorId = detail.collaboratorId?.trim()?.ifEmpty { null },
+            collaboratorDisplayName = detail.collaboratorDisplayName?.trim()?.ifEmpty { null }
         )
     }
 
@@ -1385,6 +1532,27 @@ object DirectEntryContract {
             patch.put("recruiter_id", cleanRecruiterId)
         }
 
+        val baselineCollabId = baseline.collaboratorId?.trim()?.ifEmpty { null }
+        when (form.sourceMode) {
+            WorkerSourceMode.CTV -> {
+                val cleanCollabId = form.collaboratorId?.trim()?.ifEmpty { null }
+                    ?: throw invalid("WORKER_INVALID", "Khi chọn nguồn CTV, vui lòng chọn Cộng tác viên từ danh mục.")
+                if (cleanCollabId != baselineCollabId) {
+                    if (!isValidSafeCatalogId(cleanCollabId)) {
+                        throw invalid("WORKER_INVALID", "Cộng tác viên đã chọn không hợp lệ. Vui lòng chọn lại từ danh sách.")
+                    }
+                    patch.put("collaborator_id", cleanCollabId)
+                }
+            }
+            WorkerSourceMode.HRP_DIRECT, WorkerSourceMode.VENDOR -> {
+                if (baselineCollabId != null) {
+                    // Explicit JSONObject.NULL is mandatory in org.json.JSONObject to emit "collaborator_id":null
+                    patch.put("collaborator_id", JSONObject.NULL)
+                }
+            }
+            null -> Unit
+        }
+
         val cleanLaborType = form.laborType.trim()
         if (cleanLaborType != baseline.laborType.trim()) {
             if (!LABOR_TYPE_KEY_REGEX.matches(cleanLaborType)) {
@@ -1467,6 +1635,16 @@ object DirectEntryContract {
         val cleanRecruiterId = form.recruiterId.trim()
         if (cleanRecruiterId != baseline.recruiterId.trim() && !UUID_REGEX.matches(cleanRecruiterId)) {
             errors["recruiter_id"] = "Vui lòng chọn Người tuyển hợp lệ từ danh sách."
+        }
+
+        if (form.sourceMode == WorkerSourceMode.CTV) {
+            val cleanCollabId = form.collaboratorId?.trim().orEmpty()
+            val baseCollabId = baseline.collaboratorId?.trim().orEmpty()
+            if (cleanCollabId.isEmpty()) {
+                errors["collaborator_id"] = "Khi chọn nguồn CTV, vui lòng chọn Cộng tác viên đang hoạt động."
+            } else if (cleanCollabId != baseCollabId && !isValidSafeCatalogId(cleanCollabId)) {
+                errors["collaborator_id"] = "Mã Cộng tác viên không hợp lệ."
+            }
         }
 
         if (!isValidUiOrIsoDate(form.firstWorkDate.trim())) {
@@ -1577,9 +1755,9 @@ object DirectEntryContract {
             val codeVal = patch.optString("employee_code", "")
             hints.add("• Mã NLĐ (\"$codeVal\"): Phải đúng định dạng hrp-XXXX-XXXXXX (4 chữ số và 6 chữ số, ví dụ hrp-2026-001456).")
         }
-        if ("first_work_date" in keys || "project_id" in keys || "recruiter_id" in keys || "labor_type" in keys) {
+        if ("first_work_date" in keys || "project_id" in keys || "recruiter_id" in keys || "collaborator_id" in keys || "labor_type" in keys) {
             hints.add(
-                "• Thông tin công việc: Kiểm tra Ngày bắt đầu (DD/MM/YYYY), Dự án, Người tuyển và Loại hình lao động phải đang hoạt động hợp lệ tại ngày bắt đầu làm việc."
+                "• Thông tin công việc: Kiểm tra Ngày bắt đầu (DD/MM/YYYY), Dự án, Người tuyển, Cộng tác viên (CTV) và Loại hình lao động phải đang hoạt động hợp lệ tại ngày bắt đầu làm việc."
             )
         }
         if ("employment_status" in keys) {
@@ -1612,7 +1790,9 @@ object DirectEntryContract {
     fun applyDirectEditPatchToDetail(
         baseline: WorkerEntryDetail,
         patch: JSONObject,
-        newVersion: Int
+        newVersion: Int,
+        catalogCollaborators: List<CatalogCollaboratorOption> = emptyList(),
+        catalogRecruiters: List<CatalogRecruiterOption> = emptyList()
     ): WorkerEntryDetail {
         var next = baseline.copy(version = newVersion)
         if (patch.has("project_id") && !patch.isNull("project_id")) {
@@ -1625,7 +1805,26 @@ object DirectEntryContract {
             next = next.copy(employeeCode = patch.optString("employee_code", next.employeeCode))
         }
         if (patch.has("recruiter_id") && !patch.isNull("recruiter_id")) {
-            next = next.copy(recruiterId = patch.optString("recruiter_id", next.recruiterId))
+            val nextRecId = patch.optString("recruiter_id", next.recruiterId)
+            val matchedRec = catalogRecruiters.firstOrNull { it.recruiterId == nextRecId }
+            next = next.copy(
+                recruiterId = nextRecId,
+                providerType = matchedRec?.providerType ?: next.providerType,
+                recruiterDisplay = matchedRec?.label ?: next.recruiterDisplay
+            )
+        }
+        if (patch.has("collaborator_id")) {
+            next = if (patch.isNull("collaborator_id")) {
+                next.copy(collaboratorId = null, collaboratorDisplayName = null)
+            } else {
+                val cid = patch.optString("collaborator_id", "").trim().ifEmpty { null }
+                val matchedCollab = cid?.let { id -> catalogCollaborators.firstOrNull { it.collaboratorId == id } }
+                next.copy(
+                    collaboratorId = cid,
+                    collaboratorDisplayName = matchedCollab?.displayName
+                        ?: if (cid == baseline.collaboratorId) baseline.collaboratorDisplayName else null
+                )
+            }
         }
         if (patch.has("labor_type") && !patch.isNull("labor_type")) {
             next = next.copy(laborType = patch.optString("labor_type", next.laborType))
@@ -1771,12 +1970,34 @@ object DirectEntryContract {
             }
         }.sortedBy { it.sortOrder }
 
+        val supportsCollaborators = catObj.has("collaborators") && !catObj.isNull("collaborators")
+        val collaborators = if (supportsCollaborators) {
+            val collabArr = catObj.optJSONArray("collaborators") ?: throw contractInvalid("CATALOG_COLLABORATORS_INVALID")
+            buildList {
+                for (i in 0 until collabArr.length()) {
+                    val c = collabArr.optJSONObject(i) ?: throw contractInvalid("CATALOG_COLLABORATOR_INVALID")
+                    val id = c.optString("collaborator_id", "").trim()
+                    if (id == SYSTEM_VENDOR_COLLABORATOR_ID) continue
+                    val name = c.optString("display_name", "").trim()
+                    val active = c.optBoolean("active", true)
+                    if (!SAFE_CATALOG_ID_REGEX.matches(id) || name.isEmpty()) {
+                        throw contractInvalid("CATALOG_COLLABORATOR_INVALID")
+                    }
+                    add(CatalogCollaboratorOption(collaboratorId = id, displayName = name, active = active))
+                }
+            }
+        } else {
+            emptyList()
+        }
+
         return DirectEntryCatalog(
             effectiveDate = effectiveDate,
             projects = projects,
             recruiters = recruiters,
             banks = banks,
-            laborTypes = laborTypes
+            laborTypes = laborTypes,
+            collaborators = collaborators,
+            supportsCollaborators = supportsCollaborators
         )
     }
 
@@ -1906,7 +2127,10 @@ object DirectEntryContract {
                         canViewPayment = actionsObj.optBoolean("view_payment", false),
                         canProposeChange = actionsObj.optBoolean("propose_change", false),
                         proposeChangeCode = actionsObj.optNullableString("propose_change_code"),
-                        canDirectEdit = actionsObj.optBoolean("direct_edit", false)
+                        canDirectEdit = actionsObj.optBoolean("direct_edit", false),
+                        providerType = item.optString("provider_type", "hrp").trim().lowercase(Locale.ROOT).ifEmpty { "hrp" },
+                        collaboratorId = item.optNullableString("collaborator_id"),
+                        collaboratorDisplayName = item.optNullableString("collaborator_display_name")
                     )
                 )
             }
@@ -2125,7 +2349,10 @@ object DirectEntryContract {
             portraitDownloadPath = portraitDownloadPath,
             documents = documents,
             workerDetailsStates = workerDetailsStates,
-            fileVersions = fileVersions
+            fileVersions = fileVersions,
+            collaboratorId = entry.optNullableString("collaborator_id"),
+            collaboratorDisplayName = entry.optNullableString("collaborator_display_name"),
+            recruiterDisplay = entry.optNullableString("recruiter_display")
         )
     }
 
@@ -3515,7 +3742,8 @@ class DirectEntryService(
         search: String? = null,
         projectId: String? = null,
         recruiterId: String? = null,
-        employmentStatus: String? = null
+        employmentStatus: String? = null,
+        providerType: String? = null
     ): WorkerDirectoryPageResult = withContext(Dispatchers.IO) {
         if (scope !in DirectEntryContract.ALLOWED_WORKER_SCOPES) {
             throw BackendApiException(
@@ -3534,6 +3762,10 @@ class DirectEntryService(
         projectId?.trim()?.takeIf { it.isNotEmpty() }?.let { urlBuilder.addQueryParameter("project_id", it) }
         recruiterId?.trim()?.takeIf { it.isNotEmpty() }?.let { urlBuilder.addQueryParameter("recruiter_id", it) }
         employmentStatus?.trim()?.takeIf { it.isNotEmpty() }?.let { urlBuilder.addQueryParameter("employment_status", it) }
+        val normalizedProviderType = providerType?.trim()?.lowercase(Locale.ROOT)?.takeIf {
+            it in DirectEntryContract.ALLOWED_WORKER_PROVIDER_FILTERS
+        }
+        normalizedProviderType?.let { urlBuilder.addQueryParameter("provider_type", it) }
 
         val built = urlBuilder.build()
         val pathWithQuery = built.encodedPath + (built.encodedQuery?.let { "?$it" } ?: "")
@@ -3542,7 +3774,13 @@ class DirectEntryService(
         val page = DirectEntryContract.parseWorkerDirectoryPage(json, requestedScope = scope)
 
         // Update Room read-cache when loading initial unfiltered page
-        if (cursor == null && search.isNullOrBlank() && projectId.isNullOrBlank() && recruiterId.isNullOrBlank() && employmentStatus.isNullOrBlank()) {
+        if (cursor == null &&
+            search.isNullOrBlank() &&
+            projectId.isNullOrBlank() &&
+            recruiterId.isNullOrBlank() &&
+            employmentStatus.isNullOrBlank() &&
+            normalizedProviderType == null
+        ) {
             dao.clearCachedWorkersByScope(scope)
             if (page.items.isNotEmpty()) {
                 dao.insertCachedWorkers(page.items)

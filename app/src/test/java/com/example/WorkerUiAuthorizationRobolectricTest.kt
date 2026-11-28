@@ -965,7 +965,7 @@ class WorkerUiAuthorizationRobolectricTest {
 
         // 3. Searchable Recruiter Picker with Vietnamese diacritic-insensitive quick filtering
         composeTestRule.onNodeWithTag("row_1_provider").performClick()
-        composeTestRule.onNodeWithText("HRP").performClick()
+        composeTestRule.onNodeWithText("HRP trực tiếp").performClick()
 
         composeTestRule.onNodeWithTag("row_1_recruiter").performClick()
         composeTestRule.onNodeWithTag("row_1_recruiter_dialog").assertIsDisplayed()
@@ -2460,7 +2460,7 @@ class WorkerUiAuthorizationRobolectricTest {
         composeTestRule.onNodeWithTag("row_1_project").performClick()
         composeTestRule.onNodeWithText("Dự án 1").performClick()
         composeTestRule.onNodeWithTag("row_1_provider").performClick()
-        composeTestRule.onNodeWithText("HRP").performClick()
+        composeTestRule.onNodeWithText("HRP trực tiếp").performClick()
         composeTestRule.waitForIdle()
 
         composeTestRule.onNodeWithTag("save_valid_workers_button").assertIsNotEnabled()
@@ -9844,5 +9844,438 @@ class WorkerUiAuthorizationRobolectricTest {
             vm.proposeChangeTarget.value != null
         }
         assertEquals(entryId, vm.proposeChangeTarget.value?.first?.entryId)
+    }
+
+    @Test
+    @Config(qualifiers = "w480dp-h2400dp")
+    fun `collaborator new entry source switching preserves HRP recruiter, enforces active CTV, and retains draft attachments on 400 failure`() {
+        val hrpRec1 = "aaaaaaaa-bbbb-4ccc-8ddd-111111111111"
+        val hrpRec2 = "aaaaaaaa-bbbb-4ccc-8ddd-333333333333"
+        val vendorRec = "aaaaaaaa-bbbb-4ccc-8ddd-222222222222"
+        val submittedBodies = mutableListOf<String>()
+        val server = MockWebServer()
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val path = request.path.orEmpty()
+                return when {
+                    path.startsWith("/api/direct-entry/catalog") -> MockResponse()
+                        .setResponseCode(200)
+                        .setHeader("Content-Type", "application/json")
+                        .setBody(
+                            """
+                            {
+                              "ok": true,
+                              "catalog": {
+                                "effective_date": "2026-11-28",
+                                "projects": [{"project_id": "PRJ_01", "display_name": "Dự án CTV"}],
+                                "recruiters": [
+                                  {"recruiter_id": "$hrpRec1", "display_name": "Nguyễn HRP 1", "personnel_code": "HRP01", "provider_type": "hrp"},
+                                  {"recruiter_id": "$hrpRec2", "display_name": "Trần HRP 2", "personnel_code": "HRP02", "provider_type": "hrp"},
+                                  {"recruiter_id": "$vendorRec", "display_name": "Vendor A", "personnel_code": "VND01", "provider_type": "vendor"}
+                                ],
+                                "banks": [{"bank_id": "VCB", "display_name": "Vietcombank"}],
+                                "labor_types": [{"labor_type_key": "TEMPORARY", "display_name": "Thời vụ", "sort_order": 1}],
+                                "collaborators": [
+                                  {"collaborator_id": "CTV_ACTIVE", "display_name": "CTV Hoạt Động", "active": true},
+                                  {"collaborator_id": "CTV_INACTIVE", "display_name": "CTV Ngừng", "active": false}
+                                ]
+                              }
+                            }
+                            """.trimIndent()
+                        )
+                    path.startsWith("/api/direct-entry/submissions") -> MockResponse()
+                        .setResponseCode(200)
+                        .setHeader("Content-Type", "application/json")
+                        .setBody("""{"ok":true,"items":[],"page_size":20,"has_more":false,"next_cursor":null}""")
+                    path.startsWith("/api/direct-entry/batches/full-profile") -> {
+                        submittedBodies.add(request.body.readUtf8())
+                        MockResponse()
+                            .setResponseCode(400)
+                            .setHeader("Content-Type", "application/json")
+                            .setBody("""{"ok":false,"code":"BATCH_INVALID","message":"Môi trường chưa bật CTV"}""")
+                    }
+                    else -> MockResponse().setResponseCode(200).setBody("""{"ok":true}""")
+                }
+            }
+        }
+        server.start()
+
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val db = buildTestDb(app)
+        val cookieFile = File(app.cacheDir, "ctv_new_entry_cookie_${System.nanoTime()}.enc")
+        val prefsFile = File(app.cacheDir, "ctv_new_entry_prefs_${System.nanoTime()}.preferences_pb")
+        val repo = MiniBiRepository(
+            context = app,
+            database = db,
+            defaultServerUrl = server.url("/").toString().trimEnd('/'),
+            allowDebugUrlOverride = true,
+            cookieStorageFile = cookieFile,
+            preferencesStorageFile = prefsFile,
+            cookieCipher = JvmAes256GcmCookieCipher()
+        )
+        val vm = MiniBiViewModel(app, repo)
+        registerTestResourcesCleanup(vm, db, server, cookieFile, prefsFile)
+
+        val actor = AppActor(
+            appUserId = "11111111-2222-4333-8444-555555555555",
+            displayName = "Tuyển dụng HRP",
+            capabilities = listOf("entry_create", "submission_create"),
+            scopes = listOf(ActorScope("own", "self", "2026-01-01", null)),
+            selfRecruiterSuggestion = hrpRec1,
+            allowedWorkerTabs = listOf("uploader")
+        )
+
+        composeTestRule.setContent {
+            MyApplicationTheme {
+                DirectEntryNewWorkersScreen(
+                    actor = actor,
+                    viewModel = vm,
+                    onNavigateToWorkersList = {},
+                    onBackToDashboard = {}
+                )
+            }
+        }
+
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            vm.catalog.value != null
+        }
+
+        // Select project + CTV source -> collaborator dropdown appears, Save stays disabled until CTV is picked
+        composeTestRule.onNodeWithTag("row_1_project").performScrollTo().performClick()
+        composeTestRule.onNodeWithText("Dự án CTV").performClick()
+        composeTestRule.onNodeWithTag("row_1_provider").performScrollTo().performClick()
+        composeTestRule.onNodeWithText("CTV").performClick()
+        composeTestRule.onNodeWithTag("row_1_cccd").performScrollTo().performTextInput("079095008811")
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("direct_entry_new_workers_lazy_column")
+            .performScrollToNode(hasTestTag("save_valid_workers_button"))
+        composeTestRule.onNodeWithTag("save_valid_workers_button").assertIsNotEnabled()
+
+        // Collaborator dropdown shows active only, not inactive
+        composeTestRule.onNodeWithTag("direct_entry_new_workers_lazy_column")
+            .performScrollToNode(hasTestTag("row_1_collaborator"))
+        composeTestRule.onNodeWithTag("row_1_collaborator").performClick()
+        composeTestRule.onNodeWithTag("row_1_collaborator_option_CTV_INACTIVE").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("row_1_collaborator_option_CTV_ACTIVE").assertIsDisplayed().performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("direct_entry_new_workers_lazy_column")
+            .performScrollToNode(hasTestTag("save_valid_workers_button"))
+        composeTestRule.onNodeWithTag("save_valid_workers_button").assertIsEnabled()
+
+        // Switch CTV -> HRP trực tiếp clears CTV while preserving HRP recruiter; switch back to CTV & re-pick CTV -> Vendor clears both
+        composeTestRule.onNodeWithTag("direct_entry_new_workers_lazy_column")
+            .performScrollToNode(hasTestTag("row_1_provider"))
+        composeTestRule.onNodeWithTag("row_1_provider").performClick()
+        composeTestRule.onNodeWithText("HRP trực tiếp").performClick()
+        composeTestRule.waitForIdle()
+        assertEquals("", vm.newWorkerDraftRows.first().collaboratorId)
+        assertEquals(hrpRec1, vm.newWorkerDraftRows.first().recruiterId)
+
+        composeTestRule.onNodeWithTag("row_1_provider").performClick()
+        composeTestRule.onNodeWithText("Vendor").performClick()
+        composeTestRule.waitForIdle()
+        assertEquals("", vm.newWorkerDraftRows.first().collaboratorId)
+        assertEquals(vendorRec, vm.newWorkerDraftRows.first().recruiterId)
+
+        // Pick CTV again with HRP recruiter 2 + local attachment, trigger 400 failure -> draft + CTV + attachment remain 100% intact
+        composeTestRule.onNodeWithTag("row_1_provider").performClick()
+        composeTestRule.onNodeWithText("CTV").performClick()
+        composeTestRule.onNodeWithTag("row_1_recruiter").performClick()
+        composeTestRule.onNodeWithTag("row_1_recruiter_option_$hrpRec2").performClick()
+        composeTestRule.onNodeWithTag("row_1_collaborator").performClick()
+        composeTestRule.onNodeWithTag("row_1_collaborator_option_CTV_ACTIVE").performClick()
+        vm.newWorkerDraftRows[0] = vm.newWorkerDraftRows[0].copy(
+            portraitStage = com.example.data.StagedDocumentRef(
+                stageId = "",
+                documentType = "WORKER_PORTRAIT",
+                fileName = "portrait.jpg",
+                mimeType = "image/jpeg",
+                sizeBytes = 1024L,
+                localFilePath = "/tmp/portrait.jpg"
+            )
+        )
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("direct_entry_new_workers_lazy_column")
+            .performScrollToNode(hasTestTag("save_valid_workers_button"))
+        composeTestRule.onNodeWithTag("save_valid_workers_button").performClick()
+
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            !vm.workerMutationBusy.value && vm.workerMutationError.value != null
+        }
+        assertEquals(1, submittedBodies.size)
+        assertTrue(submittedBodies.first().contains("\"collaborator_id\":\"CTV_ACTIVE\""))
+        assertTrue(vm.workerMutationError.value!!.contains("CTV"))
+        assertEquals("CTV_ACTIVE", vm.newWorkerDraftRows.first().collaboratorId)
+        assertEquals(hrpRec2, vm.newWorkerDraftRows.first().recruiterId)
+        assertTrue(vm.newWorkerDraftRows.first().portraitStage != null)
+    }
+
+    @Test
+    @Config(qualifiers = "w480dp-h2400dp")
+    fun `worker directory source filters and detail card render CTV while edit and propose dialogs handle inactive CTV and clear to null`() {
+        val entryId = "66666666-7777-4888-9999-aaaaaaaaaaaa"
+        val hrpRec1 = "aaaaaaaa-bbbb-4ccc-8ddd-111111111111"
+        val queriedPaths = mutableListOf<String>()
+        val editPatchBodies = mutableListOf<String>()
+        var currentCollaboratorId: String? = "CTV_OLD"
+        var currentCollaboratorName: String? = "CTV Ngừng Hoạt Động"
+        var currentVersion = 2
+        val server = MockWebServer()
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val path = request.path.orEmpty()
+                queriedPaths.add(path)
+                return when {
+                    path.startsWith("/api/auth/login") -> MockResponse()
+                        .setResponseCode(200)
+                        .setHeader("Content-Type", "application/json")
+                        .addHeader("Set-Cookie", "mini_bi_sid=sid_ctv_test; Path=/; HttpOnly")
+                        .setBody(
+                            """
+                            {
+                              "ok": true,
+                              "actor": {
+                                "app_user_id": "11111111-2222-4333-8444-555555555555",
+                                "display_name": "Admin Toàn Quyền",
+                                "capabilities": ["entry_admin", "entry_privileged_edit", "change_request_create"],
+                                "scopes": [{"kind": "all", "reference": "ALL", "valid_from": "2026-01-01", "valid_to": null}],
+                                "self_recruiter_suggestion": "$hrpRec1"
+                              }
+                            }
+                            """.trimIndent()
+                        )
+                    path.startsWith("/api/direct-entry/session") -> MockResponse()
+                        .setResponseCode(200)
+                        .setHeader("Content-Type", "application/json")
+                        .setBody(
+                            """
+                            {
+                              "ok": true,
+                              "actor": {
+                                "app_user_id": "11111111-2222-4333-8444-555555555555",
+                                "allowed_worker_tabs": ["all"]
+                              }
+                            }
+                            """.trimIndent()
+                        )
+                    path.startsWith("/api/direct-entry/entries/$entryId/privileged-edit") -> {
+                        val rawBody = request.body.readUtf8()
+                        editPatchBodies.add(rawBody)
+                        val patchObj = org.json.JSONObject(rawBody).getJSONObject("patch")
+                        if (patchObj.has("collaborator_id")) {
+                            if (patchObj.isNull("collaborator_id")) {
+                                currentCollaboratorId = null
+                                currentCollaboratorName = null
+                            } else {
+                                currentCollaboratorId = patchObj.getString("collaborator_id")
+                                currentCollaboratorName = "CTV Đang Chạy"
+                            }
+                        }
+                        currentVersion += 1
+                        MockResponse()
+                            .setResponseCode(200)
+                            .setHeader("Content-Type", "application/json")
+                            .setBody("""{"ok":true,"entry_id":"$entryId","version":$currentVersion}""")
+                    }
+                    path.startsWith("/api/direct-entry/workers") -> MockResponse()
+                        .setResponseCode(200)
+                        .setHeader("Content-Type", "application/json")
+                        .setBody(
+                            """
+                            {
+                              "ok": true,
+                              "scope": "all",
+                              "page_size": 25,
+                              "has_more": false,
+                              "next_cursor": null,
+                              "authorization_date": "2026-11-28",
+                              "summary": {"total_workers": 1, "project_count": 1, "recruiter_count": 1},
+                              "items": [
+                                {
+                                  "entry_id": "$entryId",
+                                  "entry_version": 2,
+                                  "submission_state": "SUBMITTED",
+                                  "employee_code": "hrp-2026-000888",
+                                  "display_name": "Lê Thị Nguồn CTV",
+                                  "project_id": "PRJ_01",
+                                  "project_display": "Dự án Alpha",
+                                  "first_work_date": "2026-11-15",
+                                  "labor_type": "TEMPORARY",
+                                  "labor_type_display": "Thời vụ",
+                                  "employment_status": "ON",
+                                  "recruiter_id": "$hrpRec1",
+                                  "recruiter_display": "Nguyễn HRP",
+                                  "provider_type": "hrp",
+                                  "collaborator_id": "CTV_OLD",
+                                  "collaborator_display_name": "CTV Ngừng Hoạt Động",
+                                  "is_project_manager": false,
+                                  "allowed_actions": {"view": true, "propose_change": true, "direct_edit": true}
+                                }
+                              ]
+                            }
+                            """.trimIndent()
+                        )
+                    path.startsWith("/api/direct-entry/entries/$entryId") -> MockResponse()
+                        .setResponseCode(200)
+                        .setHeader("Content-Type", "application/json")
+                        .setBody(
+                            """
+                            {
+                              "ok": true,
+                              "entry": {
+                                "entry_id": "$entryId",
+                                "submission_id": "77777777-8888-4999-8aaa-bbbbbbbbbbbb",
+                                "version": $currentVersion,
+                                "project_id": "PRJ_01",
+                                "first_work_date": "2026-11-15",
+                                "employee_code": "hrp-2026-000888",
+                                "recruiter_id": "$hrpRec1",
+                                "recruiter_display": "Nguyễn HRP",
+                                "team_id": "TEAM_1",
+                                "provider_type": "hrp",
+                                "collaborator_id": ${if (currentCollaboratorId != null) "\"$currentCollaboratorId\"" else "null"},
+                                "collaborator_display_name": ${if (currentCollaboratorName != null) "\"$currentCollaboratorName\"" else "null"},
+                                "labor_type": "TEMPORARY",
+                                "labor_type_display": "Thời vụ",
+                                "worker_details": {"display_name": "Lê Thị Nguồn CTV", "phone": {"state": "provided", "value": "0901234567"}},
+                                "employment_status": {"status": "ON", "effective_date": "2026-11-15", "version": 1}
+                              }
+                            }
+                            """.trimIndent()
+                        )
+                    path.startsWith("/api/direct-entry/catalog") -> MockResponse()
+                        .setResponseCode(200)
+                        .setHeader("Content-Type", "application/json")
+                        .setBody(
+                            """
+                            {
+                              "ok": true,
+                              "catalog": {
+                                "effective_date": "2026-11-28",
+                                "projects": [{"project_id": "PRJ_01", "display_name": "Dự án Alpha"}],
+                                "recruiters": [{"recruiter_id": "$hrpRec1", "display_name": "Nguyễn HRP", "personnel_code": "HRP01", "provider_type": "hrp"}],
+                                "banks": [{"bank_id": "VCB", "display_name": "Vietcombank"}],
+                                "labor_types": [{"labor_type_key": "TEMPORARY", "display_name": "Thời vụ", "sort_order": 1}],
+                                "collaborators": [
+                                  {"collaborator_id": "CTV_ACTIVE", "display_name": "CTV Đang Chạy", "active": true},
+                                  {"collaborator_id": "CTV_OLD", "display_name": "CTV Ngừng Hoạt Động", "active": false}
+                                ]
+                              }
+                            }
+                            """.trimIndent()
+                        )
+                    else -> MockResponse().setResponseCode(200).setBody("""{"ok":true}""")
+                }
+            }
+        }
+        server.start()
+
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val db = buildTestDb(app)
+        val cookieFile = File(app.cacheDir, "ctv_dir_cookie_${System.nanoTime()}.enc")
+        val prefsFile = File(app.cacheDir, "ctv_dir_prefs_${System.nanoTime()}.preferences_pb")
+        val repo = MiniBiRepository(
+            context = app,
+            database = db,
+            defaultServerUrl = server.url("/").toString().trimEnd('/'),
+            allowDebugUrlOverride = true,
+            cookieStorageFile = cookieFile,
+            preferencesStorageFile = prefsFile,
+            cookieCipher = JvmAes256GcmCookieCipher()
+        )
+        val vm = MiniBiViewModel(app, repo)
+        registerTestResourcesCleanup(vm, db, server, cookieFile, prefsFile)
+
+        val adminActor = AppActor(
+            appUserId = "11111111-2222-4333-8444-555555555555",
+            displayName = "Admin Toàn Quyền",
+            capabilities = listOf("entry_admin", "entry_privileged_edit", "change_request_create"),
+            scopes = listOf(ActorScope("all", "ALL", "2026-01-01", null)),
+            selfRecruiterSuggestion = hrpRec1,
+            allowedWorkerTabs = listOf("all")
+        )
+
+        vm.login("admin_ctv@hrpartner.vn", "pass123", rememberAccount = false)
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            !vm.loginBusy.value && vm.currentActor.value?.appUserId == adminActor.appUserId
+        }
+
+        composeTestRule.setContent {
+            MyApplicationTheme {
+                WorkersAndDirectEntryScreen(
+                    actor = adminActor,
+                    viewModel = vm,
+                    onBackToDashboard = {}
+                )
+            }
+        }
+
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            vm.workerRows.value.isNotEmpty()
+        }
+
+        // Source badge + CTV name + HRP recruiter rendered on row card
+        composeTestRule.onNodeWithText("Lê Thị Nguồn CTV").assertIsDisplayed()
+        composeTestRule.onAllNodesWithText("CTV").onFirst().assertIsDisplayed()
+        composeTestRule.onNodeWithText("CTV: CTV Ngừng Hoạt Động · NT: Nguyễn HRP · Vào: 2026-11-15").assertIsDisplayed()
+
+        // Source filter chips dispatch provider_type query params
+        composeTestRule.onNodeWithTag("worker_source_filter_hrp_ctv").performClick()
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            queriedPaths.any { it.contains("provider_type=hrp_ctv") }
+        }
+        composeTestRule.onNodeWithTag("worker_source_filter_hrp_direct").performClick()
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            queriedPaths.any { it.contains("provider_type=hrp_direct") }
+        }
+
+        // Open detail dialog -> shows CTV source, historical CTV name, and HRP recruiter
+        composeTestRule.onNodeWithTag("worker_detail_$entryId").performClick()
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            vm.selectedEntryDetail.value != null
+        }
+        composeTestRule.onNodeWithText("Cộng tác viên").assertIsDisplayed()
+        composeTestRule.onNodeWithText("CTV Ngừng Hoạt Động").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Đóng").performClick()
+        composeTestRule.waitForIdle()
+
+        // Open direct edit on inactive historical CTV -> shows (Ngừng HĐ), editing unrelated phone omits collaborator_id
+        composeTestRule.onNodeWithTag("worker_direct_edit_$entryId").performClick()
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            vm.directEditTarget.value != null && vm.catalog.value != null
+        }
+        composeTestRule.onNodeWithTag("direct_edit_collaborator_dropdown").performScrollTo()
+        composeTestRule.onNodeWithText("CTV Ngừng Hoạt Động (Ngừng HĐ)").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("direct_edit_phone_input").performScrollTo().performTextReplacement("0907776666")
+        composeTestRule.onNodeWithTag("direct_edit_save_button").performClick()
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            editPatchBodies.size == 1 && vm.directEditTarget.value == null
+        }
+        assertFalse(editPatchBodies[0].contains("collaborator_id"))
+
+        // Re-open direct edit & switch source CTV -> HRP trực tiếp -> emits explicit "collaborator_id":null
+        composeTestRule.onNodeWithTag("worker_direct_edit_$entryId").performClick()
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            vm.directEditTarget.value != null
+        }
+        composeTestRule.onNodeWithTag("direct_edit_source_dropdown").performScrollTo().performClick()
+        val hrpDirectOptionNodes = composeTestRule.onAllNodesWithText("HRP trực tiếp")
+        hrpDirectOptionNodes[hrpDirectOptionNodes.fetchSemanticsNodes().lastIndex].performClick()
+        composeTestRule.onNodeWithTag("direct_edit_save_button").performClick()
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            editPatchBodies.size == 2 && vm.directEditTarget.value == null
+        }
+        assertTrue(editPatchBodies[1].contains("\"collaborator_id\":null"))
     }
 }
