@@ -6,12 +6,19 @@ import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import com.example.data.BackendApiException
 import com.example.data.BackendFailureKind
+import com.example.data.CatalogBankOption
+import com.example.data.CatalogCollaboratorOption
 import com.example.data.CatalogLaborTypeOption
+import com.example.data.CatalogProjectOption
+import com.example.data.CatalogRecruiterOption
 import com.example.data.DirectEntryCatalog
 import com.example.data.DirectEntryContract
 import com.example.data.MiniBiDatabase
 import com.example.data.MiniBiRepository
 import com.example.data.NewWorkerEntryDraft
+import com.example.data.WorkerEntryDetail
+import com.example.data.WorkerProfileEntity
+import com.example.data.WorkerSourceMode
 import com.example.ui.MiniBiViewModel
 import com.example.ui.screens.DropdownOptionItem
 import com.example.ui.screens.filterDropdownOptions
@@ -2823,5 +2830,376 @@ class DirectEntryAndWorkerContractTest {
         assertEquals("Nữ", nonOverwritingDraft.genderUi)
         assertEquals("04/07/2023", nonOverwritingDraft.cccdIssueDateUi)
         assertEquals("Thôn Bầu, Kim Chung, Đông Anh, Hà Nội", nonOverwritingDraft.address)
+    }
+
+    @Test
+    fun `collaborator catalog parsing supports active inactive system vendor filter empty array and legacy fallback`() {
+        val baseProjects = """[{"project_id":"PRJ_01","display_name":"Dự án Alpha"}]"""
+        val baseRecruiters = """[
+            {"recruiter_id":"aaaaaaaa-bbbb-4ccc-8ddd-111111111111","display_name":"Nguyễn HRP","personnel_code":"HRP01","provider_type":"hrp"},
+            {"recruiter_id":"aaaaaaaa-bbbb-4ccc-8ddd-222222222222","display_name":"Vendor X","personnel_code":"VND01","provider_type":"vendor"}
+        ]"""
+        val baseBanks = """[{"bank_id":"VCB","display_name":"Vietcombank"}]"""
+        val baseLaborTypes = """[{"labor_type_key":"TEMPORARY","display_name":"Thời vụ","sort_order":1}]"""
+
+        val fullJson = JSONObject(
+            """
+            {
+              "ok": true,
+              "catalog": {
+                "effective_date": "2026-11-28",
+                "projects": $baseProjects,
+                "recruiters": $baseRecruiters,
+                "banks": $baseBanks,
+                "labor_types": $baseLaborTypes,
+                "collaborators": [
+                  {"collaborator_id": "CTV_ACTIVE_1", "display_name": "CTV Minh Anh", "active": true},
+                  {"collaborator_id": "CTV_OLD_1", "display_name": "CTV Cũ Ngừng", "active": false},
+                  {"collaborator_id": "__system_vendor__", "display_name": "System Vendor", "active": true}
+                ]
+              }
+            }
+            """.trimIndent()
+        )
+        val parsed = DirectEntryContract.parseCatalogResponse(fullJson)
+        assertTrue(parsed.supportsCollaborators)
+        assertEquals(2, parsed.collaborators.size)
+        assertFalse(parsed.collaborators.any { it.collaboratorId == DirectEntryContract.SYSTEM_VENDOR_COLLABORATOR_ID })
+        assertTrue(parsed.collaborators.first { it.collaboratorId == "CTV_ACTIVE_1" }.active)
+        assertFalse(parsed.collaborators.first { it.collaboratorId == "CTV_OLD_1" }.active)
+
+        val emptyCollabJson = JSONObject(
+            """
+            {
+              "ok": true,
+              "catalog": {
+                "effective_date": "2026-11-28",
+                "projects": $baseProjects,
+                "recruiters": $baseRecruiters,
+                "banks": $baseBanks,
+                "labor_types": $baseLaborTypes,
+                "collaborators": []
+              }
+            }
+            """.trimIndent()
+        )
+        val parsedEmpty = DirectEntryContract.parseCatalogResponse(emptyCollabJson)
+        assertTrue(parsedEmpty.supportsCollaborators)
+        assertTrue(parsedEmpty.collaborators.isEmpty())
+
+        val legacyJson = JSONObject(
+            """
+            {
+              "ok": true,
+              "catalog": {
+                "effective_date": "2026-11-28",
+                "projects": $baseProjects,
+                "recruiters": $baseRecruiters,
+                "banks": $baseBanks,
+                "labor_types": $baseLaborTypes
+              }
+            }
+            """.trimIndent()
+        )
+        val parsedLegacy = DirectEntryContract.parseCatalogResponse(legacyJson)
+        assertFalse(parsedLegacy.supportsCollaborators)
+        assertTrue(parsedLegacy.collaborators.isEmpty())
+    }
+
+    @Test
+    fun `full profile v1_2 payload omits collaborator_id for HRP_DIRECT and VENDOR and sends collaborator_id with hrp provider for CTV`() {
+        val hrpRec1 = "aaaaaaaa-bbbb-4ccc-8ddd-111111111111"
+        val hrpRec2 = "aaaaaaaa-bbbb-4ccc-8ddd-333333333333"
+        val vendorRec = "aaaaaaaa-bbbb-4ccc-8ddd-222222222222"
+
+        val hrpDirectDraft = NewWorkerEntryDraft(
+            localId = "d-hrp",
+            projectId = "PRJ_01",
+            sourceMode = WorkerSourceMode.HRP_DIRECT,
+            providerType = "hrp",
+            recruiterId = hrpRec1,
+            laborTypeKey = "TEMPORARY",
+            firstWorkDateUi = "28/11/2026",
+            cccd = "079095001122",
+            fullName = "Nguyễn HRP Trực Tiếp"
+        )
+        val vendorDraft = NewWorkerEntryDraft(
+            localId = "d-vendor",
+            projectId = "PRJ_01",
+            sourceMode = WorkerSourceMode.VENDOR,
+            providerType = "vendor",
+            recruiterId = vendorRec,
+            laborTypeKey = "TEMPORARY",
+            firstWorkDateUi = "28/11/2026",
+            cccd = "079095003344",
+            fullName = "Trần Vendor"
+        )
+        val ctvDraftSameCollabRec1 = NewWorkerEntryDraft(
+            localId = "d-ctv-1",
+            projectId = "PRJ_01",
+            sourceMode = WorkerSourceMode.CTV,
+            providerType = "hrp",
+            recruiterId = hrpRec1,
+            collaboratorId = "CTV_001",
+            collaboratorDisplayName = "Lê CTV",
+            laborTypeKey = "TEMPORARY",
+            firstWorkDateUi = "28/11/2026",
+            cccd = "079095005566",
+            fullName = "Phạm CTV 1"
+        )
+        val ctvDraftSameCollabRec2 = ctvDraftSameCollabRec1.copy(
+            localId = "d-ctv-2",
+            recruiterId = hrpRec2,
+            cccd = "079095007788",
+            fullName = "Phạm CTV 2"
+        )
+
+        assertTrue(hrpDirectDraft.isValid)
+        assertTrue(vendorDraft.isValid)
+        assertTrue(ctvDraftSameCollabRec1.isValid)
+        assertFalse(ctvDraftSameCollabRec1.copy(collaboratorId = "").isValid)
+        assertFalse(ctvDraftSameCollabRec1.copy(collaboratorId = DirectEntryContract.SYSTEM_VENDOR_COLLABORATOR_ID).isValid)
+
+        val nonCtvPayload = DirectEntryContract.buildFullProfileV12Payload(listOf(hrpDirectDraft, vendorDraft))
+        assertFalse("HRP_DIRECT and VENDOR must omit collaborator_id completely", nonCtvPayload.toString().contains("collaborator_id"))
+        val rowsNonCtv = nonCtvPayload.getJSONArray("rows")
+        assertEquals("hrp", rowsNonCtv.getJSONObject(0).getString("provider_type"))
+        assertFalse(rowsNonCtv.getJSONObject(0).has("collaborator_id"))
+        assertEquals("vendor", rowsNonCtv.getJSONObject(1).getString("provider_type"))
+        assertFalse(rowsNonCtv.getJSONObject(1).has("collaborator_id"))
+
+        val ctvBatchPayload = DirectEntryContract.buildFullProfileV12Payload(listOf(ctvDraftSameCollabRec1, ctvDraftSameCollabRec2))
+        val ctvRows = ctvBatchPayload.getJSONArray("rows")
+        assertEquals("hrp", ctvRows.getJSONObject(0).getString("provider_type"))
+        assertEquals(hrpRec1, ctvRows.getJSONObject(0).getString("recruiter_id"))
+        assertEquals("CTV_001", ctvRows.getJSONObject(0).getString("collaborator_id"))
+        assertEquals("hrp", ctvRows.getJSONObject(1).getString("provider_type"))
+        assertEquals(hrpRec2, ctvRows.getJSONObject(1).getString("recruiter_id"))
+        assertEquals("CTV_001", ctvRows.getJSONObject(1).getString("collaborator_id"))
+    }
+
+    @Test
+    fun `direct edit patch and change request ENTRY_FIELD serialize collaborator_id accurately using JSONObject NULL only on clear`() {
+        val entryId = "11111111-2222-4333-8444-555555555555"
+        val hrpRec1 = "aaaaaaaa-bbbb-4ccc-8ddd-111111111111"
+        val vendorRec = "aaaaaaaa-bbbb-4ccc-8ddd-222222222222"
+
+        val baselineCtvDetail = WorkerEntryDetail(
+            entryId = entryId,
+            submissionId = "22222222-3333-4444-8555-666666666666",
+            version = 3,
+            projectId = "PRJ_01",
+            firstWorkDate = "2026-11-20",
+            employeeCode = "hrp-2026-000101",
+            recruiterId = hrpRec1,
+            teamId = "TEAM_1",
+            providerType = "hrp",
+            laborType = "TEMPORARY",
+            laborTypeDisplay = "Thời vụ",
+            displayName = "Nguyễn Văn CTV",
+            gender = null,
+            dateOfBirth = null,
+            nationalId = "079095009900",
+            address = null,
+            phone = "0901112222",
+            generalNote = null,
+            paymentState = null,
+            bankId = null,
+            bankName = null,
+            accountNumber = null,
+            accountHolderName = null,
+            employmentStatus = "ON",
+            employmentEffectiveDate = "2026-11-20",
+            employmentStatusVersion = 1,
+            portraitPreviewPath = null,
+            portraitDownloadPath = null,
+            documents = emptyList(),
+            collaboratorId = "CTV_INACTIVE_OLD",
+            collaboratorDisplayName = "CTV Đã Ngừng"
+        )
+        val baselineWorker = WorkerProfileEntity(
+            cacheKey = "all:$entryId",
+            scopeKey = "all",
+            entryId = entryId,
+            entryVersion = 3,
+            submissionState = "SUBMITTED",
+            employeeCode = "hrp-2026-000101",
+            displayName = "Nguyễn Văn CTV",
+            projectId = "PRJ_01",
+            projectDisplay = "Dự án Alpha",
+            firstWorkDate = "2026-11-20",
+            laborType = "TEMPORARY",
+            laborTypeDisplay = "Thời vụ",
+            employmentStatus = "ON",
+            recruiterId = hrpRec1,
+            recruiterDisplay = "Nguyễn HRP",
+            paymentSummary = "",
+            pendingRequestSummary = "",
+            lastDecisionSummary = "",
+            isProjectManager = false,
+            canView = true,
+            canProposeChange = true,
+            canDirectEdit = true,
+            providerType = "hrp",
+            collaboratorId = "CTV_INACTIVE_OLD",
+            collaboratorDisplayName = "CTV Đã Ngừng"
+        )
+
+        // 1. Unchanged CTV (even inactive) while editing phone -> omit collaborator_id
+        val initialForm = DirectEntryContract.createInitialDirectEditFormInput(baselineCtvDetail)
+        assertEquals(WorkerSourceMode.CTV, initialForm.sourceMode)
+        assertEquals("CTV_INACTIVE_OLD", initialForm.collaboratorId)
+        val phoneOnlyPatch = DirectEntryContract.buildDirectEditPatch(
+            baseline = baselineCtvDetail,
+            form = initialForm.copy(phone = "0909998888")
+        )
+        assertFalse(phoneOnlyPatch.has("collaborator_id"))
+        assertFalse(phoneOnlyPatch.toString().contains("collaborator_id"))
+        val phoneOnlyProposal = DirectEntryContract.buildEntryFieldChangeProposal(
+            baselineWorker = baselineWorker,
+            baselineDetail = baselineCtvDetail,
+            projectId = "PRJ_01",
+            firstWorkDateUi = "20/11/2026",
+            laborTypeKey = "TEMPORARY",
+            displayName = "Nguyễn Văn CTV",
+            phone = "0909998888",
+            sourceMode = WorkerSourceMode.CTV,
+            recruiterId = hrpRec1,
+            collaboratorId = "CTV_INACTIVE_OLD"
+        )
+        assertFalse(phoneOnlyProposal.has("collaborator_id"))
+        assertFalse(phoneOnlyProposal.toString().contains("collaborator_id"))
+
+        // 2. Actively clear CTV -> HRP_DIRECT emits explicit "collaborator_id":null
+        val clearToHrpPatch = DirectEntryContract.buildDirectEditPatch(
+            baseline = baselineCtvDetail,
+            form = initialForm.copy(sourceMode = WorkerSourceMode.HRP_DIRECT, collaboratorId = null, collaboratorDisplayName = null)
+        )
+        assertTrue(clearToHrpPatch.has("collaborator_id"))
+        assertTrue(clearToHrpPatch.isNull("collaborator_id"))
+        assertTrue("Serialized JSON must explicitly contain \"collaborator_id\":null", clearToHrpPatch.toString().contains("\"collaborator_id\":null"))
+        val afterClearDetail = DirectEntryContract.applyDirectEditPatchToDetail(baselineCtvDetail, clearToHrpPatch, 4)
+        assertNull(afterClearDetail.collaboratorId)
+        assertNull(afterClearDetail.collaboratorDisplayName)
+
+        // 3. Actively clear CTV -> VENDOR updates recruiter_id and emits "collaborator_id":null
+        val clearToVendorProposal = DirectEntryContract.buildEntryFieldChangeProposal(
+            baselineWorker = baselineWorker,
+            baselineDetail = baselineCtvDetail,
+            projectId = "PRJ_01",
+            firstWorkDateUi = "20/11/2026",
+            laborTypeKey = "TEMPORARY",
+            displayName = "Nguyễn Văn CTV",
+            phone = "0901112222",
+            sourceMode = WorkerSourceMode.VENDOR,
+            recruiterId = vendorRec,
+            collaboratorId = null
+        )
+        assertEquals(vendorRec, clearToVendorProposal.getString("recruiter_id"))
+        assertTrue(clearToVendorProposal.has("collaborator_id"))
+        assertTrue(clearToVendorProposal.isNull("collaborator_id"))
+        assertTrue(clearToVendorProposal.toString().contains("\"collaborator_id\":null"))
+
+        // 4. Assign / change to active CTV
+        val reassignPatch = DirectEntryContract.buildDirectEditPatch(
+            baseline = baselineCtvDetail,
+            form = initialForm.copy(sourceMode = WorkerSourceMode.CTV, collaboratorId = "CTV_ACTIVE_2")
+        )
+        assertEquals("CTV_ACTIVE_2", reassignPatch.getString("collaborator_id"))
+        val afterAssignDetail = DirectEntryContract.applyDirectEditPatchToDetail(
+            baseline = baselineCtvDetail,
+            patch = reassignPatch,
+            newVersion = 5,
+            catalogCollaborators = listOf(CatalogCollaboratorOption("CTV_ACTIVE_2", "CTV Mới", active = true))
+        )
+        assertEquals("CTV_ACTIVE_2", afterAssignDetail.collaboratorId)
+        assertEquals("CTV Mới", afterAssignDetail.collaboratorDisplayName)
+    }
+
+    @Test
+    fun `worker directory parsing and listWorkers provider_type query filters work for hrp_ctv hrp_direct and vendor`(): Unit = runBlocking {
+        val entryCtvId = "11111111-2222-4333-8444-555555555501"
+        val entryHrpId = "11111111-2222-4333-8444-555555555502"
+        val recordedQueries = mutableListOf<String>()
+        server.dispatcher = object : okhttp3.mockwebserver.Dispatcher() {
+            override fun dispatch(request: okhttp3.mockwebserver.RecordedRequest): MockResponse {
+                recordedQueries.add(request.path.orEmpty())
+                return MockResponse().setResponseCode(200).setHeader("Content-Type", "application/json").setBody(
+                    """
+                    {
+                      "ok": true,
+                      "scope": "all",
+                      "page_size": 25,
+                      "has_more": false,
+                      "next_cursor": null,
+                      "authorization_date": "2026-11-28",
+                      "summary": {"total_workers": 2, "project_count": 1, "recruiter_count": 1},
+                      "items": [
+                        {
+                          "entry_id": "$entryCtvId",
+                          "entry_version": 2,
+                          "submission_state": "SUBMITTED",
+                          "employee_code": "hrp-2026-000201",
+                          "display_name": "Hồ CTV",
+                          "project_id": "PRJ_01",
+                          "project_display": "Dự án Alpha",
+                          "first_work_date": "2026-11-28",
+                          "labor_type": "TEMPORARY",
+                          "labor_type_display": "Thời vụ",
+                          "employment_status": "ON",
+                          "recruiter_id": "aaaaaaaa-bbbb-4ccc-8ddd-111111111111",
+                          "recruiter_display": "Nguyễn HRP",
+                          "provider_type": "hrp",
+                          "collaborator_id": "CTV_009",
+                          "collaborator_display_name": "CTV Minh",
+                          "is_project_manager": false,
+                          "allowed_actions": {"view": true, "propose_change": true, "direct_edit": true}
+                        },
+                        {
+                          "entry_id": "$entryHrpId",
+                          "entry_version": 1,
+                          "submission_state": "SUBMITTED",
+                          "employee_code": "hrp-2026-000202",
+                          "display_name": "Hồ HRP",
+                          "project_id": "PRJ_01",
+                          "project_display": "Dự án Alpha",
+                          "first_work_date": "2026-11-28",
+                          "labor_type": "TEMPORARY",
+                          "labor_type_display": "Thời vụ",
+                          "employment_status": "ON",
+                          "recruiter_id": "aaaaaaaa-bbbb-4ccc-8ddd-111111111111",
+                          "recruiter_display": "Nguyễn HRP",
+                          "provider_type": "hrp",
+                          "collaborator_id": null,
+                          "collaborator_display_name": null,
+                          "is_project_manager": false,
+                          "allowed_actions": {"view": true, "propose_change": true, "direct_edit": true}
+                        }
+                      ]
+                    }
+                    """.trimIndent()
+                )
+            }
+        }
+
+        val repo = createRepository()
+        val service = repo.directEntryService
+
+        val ctvPage = service.listWorkers(scope = "all", providerType = "hrp_ctv")
+        service.listWorkers(scope = "all", providerType = "hrp_direct")
+        service.listWorkers(scope = "all", providerType = "vendor")
+
+        assertTrue(recordedQueries.any { it.contains("provider_type=hrp_ctv") })
+        assertTrue(recordedQueries.any { it.contains("provider_type=hrp_direct") })
+        assertTrue(recordedQueries.any { it.contains("provider_type=vendor") })
+        val ctvRow = ctvPage.items.first { it.entryId == entryCtvId }
+        assertEquals("hrp", ctvRow.providerType)
+        assertEquals("CTV_009", ctvRow.collaboratorId)
+        assertEquals("CTV Minh", ctvRow.collaboratorDisplayName)
+        assertEquals("CTV", DirectEntryContract.workerSourceBadgeLabel(ctvRow.providerType, ctvRow.collaboratorId))
+        assertEquals("CTV · CTV Minh", DirectEntryContract.formatWorkerSourceLabel(ctvRow.providerType, ctvRow.collaboratorId, ctvRow.collaboratorDisplayName))
+        val hrpRow = ctvPage.items.first { it.entryId == entryHrpId }
+        assertNull(hrpRow.collaboratorId)
+        assertEquals("HRP", DirectEntryContract.workerSourceBadgeLabel(hrpRow.providerType, hrpRow.collaboratorId))
     }
 }

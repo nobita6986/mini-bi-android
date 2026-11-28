@@ -76,6 +76,7 @@ import com.example.data.WorkReportsContract
 import com.example.data.WorkerDirectorySummary
 import com.example.data.WorkerEntryDetail
 import com.example.data.WorkerProfileEntity
+import com.example.data.WorkerSourceMode
 import com.example.data.WorkforceDeepMetrics
 import com.example.ui.screens.resolveVisibleWorkerTabs
 import com.google.android.gms.location.LocationServices
@@ -378,6 +379,7 @@ class MiniBiViewModel internal constructor(
     private var lastFilterProjectId: String? = null
     private var lastFilterRecruiterId: String? = null
     private var lastFilterStatus: String? = null
+    private var lastFilterProviderType: String? = null
 
     // Work Reports States (Backend authority only; zero seed data)
     val workReports: StateFlow<List<WorkReportObligationEntity>> = repository.workReportsFlow
@@ -1225,6 +1227,7 @@ class MiniBiViewModel internal constructor(
                         lastFilterProjectId = null
                         lastFilterRecruiterId = null
                         lastFilterStatus = null
+                        lastFilterProviderType = null
                         _workerRows.value = emptyList()
                         _ownSubmissions.value = emptyList()
                         _workerSummary.value = null
@@ -1482,6 +1485,7 @@ class MiniBiViewModel internal constructor(
         lastFilterProjectId = null
         lastFilterRecruiterId = null
         lastFilterStatus = null
+        lastFilterProviderType = null
         _workerRows.value = emptyList()
         _ownSubmissions.value = emptyList()
         _workerSummary.value = null
@@ -3389,6 +3393,14 @@ class MiniBiViewModel internal constructor(
         onSubmittedSuccess: () -> Unit = {}
     ) {
         if (_workerMutationBusy.value) return
+        val hasCtvDraft = validDrafts.any { it.effectiveSourceMode == WorkerSourceMode.CTV }
+        val loadedCatalog = _catalog.value
+        if (hasCtvDraft && loadedCatalog != null && !loadedCatalog.supportsCollaborators) {
+            val msg = "Môi trường máy chủ hiện tại chưa hỗ trợ nguồn Cộng tác viên (CTV). Toàn bộ dòng hồ sơ, tệp đính kèm và lựa chọn CTV vẫn được giữ nguyên."
+            _workerMutationError.value = msg
+            showBanner(msg, isError = true)
+            return
+        }
         val sessionGuard = captureMutationSessionGuard()
         _workerMutationBusy.value = true
         _workerMutationError.value = null
@@ -3448,9 +3460,16 @@ class MiniBiViewModel internal constructor(
                             "Ảnh đính kèm đang chờ hồ sơ được tạo thành công trên máy chủ trước khi tải lên."
                     }
                 }
-                val msg = apiEx?.message
+                val baseMsg = apiEx?.message
                     ?: e.message
                     ?: "Không thể gửi hồ sơ lên máy chủ."
+                val msg = if (hasCtvDraft && apiEx != null && apiEx.statusCode == 400 &&
+                    apiEx.backendCode in setOf("BATCH_INVALID", "COLLABORATOR_INVALID", "CONTRACT_INVALID")
+                ) {
+                    "Gửi hồ sơ có Cộng tác viên (CTV) chưa thành công (máy chủ có thể chưa bật hỗ trợ CTV hoặc CTV không còn hiệu lực): $baseMsg. Các dòng hồ sơ, tệp đính kèm và CTV đã chọn vẫn được giữ nguyên."
+                } else {
+                    baseMsg
+                }
                 _workerMutationError.value = msg
                 showBanner(msg, isError = true)
             } finally {
@@ -3723,6 +3742,7 @@ class MiniBiViewModel internal constructor(
             projectId = lastFilterProjectId,
             recruiterId = lastFilterRecruiterId,
             employmentStatus = lastFilterStatus,
+            providerType = lastFilterProviderType,
             actorOverride = actor
         )
     }
@@ -3733,6 +3753,7 @@ class MiniBiViewModel internal constructor(
         projectId: String? = lastFilterProjectId,
         recruiterId: String? = lastFilterRecruiterId,
         employmentStatus: String? = lastFilterStatus,
+        providerType: String? = lastFilterProviderType,
         actorOverride: AppActor? = null
     ) {
         val cleanKey = tabKey.trim()
@@ -3774,7 +3795,7 @@ class MiniBiViewModel internal constructor(
         }
 
         val expectedGen = bindActorGeneration(effectiveActor)
-        val signature = "g$expectedGen:${effectiveActor.appUserId.lowercase(Locale.ROOT)}:$cleanKey:$search:${projectId.orEmpty()}:${recruiterId.orEmpty()}:${employmentStatus.orEmpty()}"
+        val signature = "g$expectedGen:${effectiveActor.appUserId.lowercase(Locale.ROOT)}:$cleanKey:$search:${projectId.orEmpty()}:${recruiterId.orEmpty()}:${employmentStatus.orEmpty()}:${providerType.orEmpty()}"
         if (_workerLoading.value && workerFetchJob?.isActive == true && lastWorkerFetchSignature == signature) {
             return
         }
@@ -3784,6 +3805,7 @@ class MiniBiViewModel internal constructor(
         lastFilterProjectId = projectId
         lastFilterRecruiterId = recruiterId
         lastFilterStatus = employmentStatus
+        lastFilterProviderType = providerType
         lastWorkerFetchSignature = signature
 
         val fetchToken = ++workerFetchToken
@@ -3824,7 +3846,8 @@ class MiniBiViewModel internal constructor(
                         search = search,
                         projectId = projectId,
                         recruiterId = recruiterId,
-                        employmentStatus = employmentStatus
+                        employmentStatus = employmentStatus,
+                        providerType = providerType
                     )
                     if (workerFetchToken == fetchToken && isSessionValid(expectedGen, expectedActorId)) {
                         _workerRows.value = page.items
@@ -3934,6 +3957,7 @@ class MiniBiViewModel internal constructor(
             val expectedProjectId = lastFilterProjectId
             val expectedRecruiterId = lastFilterRecruiterId
             val expectedStatus = lastFilterStatus
+            val expectedProviderType = lastFilterProviderType
             viewModelScope.launch {
                 _workerLoading.value = true
                 try {
@@ -3944,7 +3968,8 @@ class MiniBiViewModel internal constructor(
                         search = expectedSearch,
                         projectId = expectedProjectId,
                         recruiterId = expectedRecruiterId,
-                        employmentStatus = expectedStatus
+                        employmentStatus = expectedStatus,
+                        providerType = expectedProviderType
                     )
                     if (!isSessionValid(expectedGen, expectedActorId) ||
                         workerFetchToken != expectedFetchToken ||
@@ -3953,7 +3978,8 @@ class MiniBiViewModel internal constructor(
                         lastSearchQuery != expectedSearch ||
                         lastFilterProjectId != expectedProjectId ||
                         lastFilterRecruiterId != expectedRecruiterId ||
-                        lastFilterStatus != expectedStatus
+                        lastFilterStatus != expectedStatus ||
+                        lastFilterProviderType != expectedProviderType
                     ) {
                         return@launch
                     }
@@ -3970,7 +3996,8 @@ class MiniBiViewModel internal constructor(
                         lastSearchQuery != expectedSearch ||
                         lastFilterProjectId != expectedProjectId ||
                         lastFilterRecruiterId != expectedRecruiterId ||
-                        lastFilterStatus != expectedStatus
+                        lastFilterStatus != expectedStatus ||
+                        lastFilterProviderType != expectedProviderType
                     ) {
                         return@launch
                     }

@@ -148,6 +148,7 @@ import com.example.data.SalaryAdvanceWorkerOption
 import com.example.data.StagedDocumentRef
 import com.example.data.WorkerEntryDetail
 import com.example.data.WorkerProfileEntity
+import com.example.data.WorkerSourceMode
 import com.example.ui.MainDestination
 import com.example.ui.MiniBiViewModel
 import com.example.ui.components.HrpDesignTokens
@@ -834,7 +835,7 @@ fun DirectEntryNewWorkersScreen(
 
                 if (validCount == 0) {
                     Text(
-                        text = "Điền các trường có dấu * từ danh mục máy chủ (Dự án, HRP/Vendor, Người tuyển, Loại hình LĐ, Ngày bắt đầu DD/MM/YYYY, Số CCCD 12 chữ số) để bật nút Lưu.",
+                        text = "Điền các trường có dấu * từ danh mục máy chủ (Dự án, Nguồn tuyển, Người tuyển, CTV nếu chọn CTV, Loại hình LĐ, Ngày bắt đầu DD/MM/YYYY, Số CCCD 12 chữ số) để bật nút Lưu.",
                         style = MaterialTheme.typography.bodySmall,
                         color = SemanticColors.TextSecondary
                     )
@@ -1182,13 +1183,19 @@ private fun WorkerMultiEntryCard(
             )
         }.orEmpty()
     }
-    val providerOptions = listOf(
-        DropdownOptionItem("hrp", "HRP"),
-        DropdownOptionItem("vendor", "Vendor")
-    )
-    val recruiterOptions = remember(catalog, draft.providerType) {
+    val sourceOptions = remember(catalog, draft.effectiveSourceMode) {
+        buildList {
+            add(DropdownOptionItem(WorkerSourceMode.HRP_DIRECT.name, WorkerSourceMode.HRP_DIRECT.uiLabel))
+            add(DropdownOptionItem(WorkerSourceMode.VENDOR.name, WorkerSourceMode.VENDOR.uiLabel))
+            if (catalog == null || catalog.supportsCollaborators || draft.effectiveSourceMode == WorkerSourceMode.CTV) {
+                add(DropdownOptionItem(WorkerSourceMode.CTV.name, WorkerSourceMode.CTV.uiLabel))
+            }
+        }
+    }
+    val wireProviderType = draft.effectiveWireProviderType
+    val recruiterOptions = remember(catalog, wireProviderType) {
         catalog?.recruiters
-            ?.filter { it.providerType == draft.providerType }
+            ?.filter { it.providerType == wireProviderType }
             ?.map { rec ->
                 val metaParts = listOfNotNull(
                     rec.personnelCode.takeIf { it.isNotBlank() },
@@ -1204,6 +1211,18 @@ private fun WorkerMultiEntryCard(
                         rec.teamDisplayName,
                         rec.label
                     ).joinToString(" ")
+                )
+            }
+            .orEmpty()
+    }
+    val collaboratorOptions = remember(catalog) {
+        catalog?.collaborators
+            ?.filter { it.active }
+            ?.map { col ->
+                DropdownOptionItem(
+                    id = col.collaboratorId,
+                    label = col.displayName,
+                    searchKeywords = "${col.displayName} ${col.collaboratorId}"
                 )
             }
             .orEmpty()
@@ -1317,23 +1336,43 @@ private fun WorkerMultiEntryCard(
                     )
 
                     KeyedSelectDropdownField(
-                        label = "HRP/Vendor *",
-                        selectedLabel = when (draft.providerType) {
-                            "hrp" -> "HRP"
-                            "vendor" -> "Vendor"
-                            else -> ""
-                        },
+                        label = "Nguồn tuyển *",
+                        selectedLabel = draft.effectiveSourceMode?.uiLabel.orEmpty(),
                         placeholder = "Chọn nguồn tuyển",
-                        options = providerOptions,
+                        options = sourceOptions,
                         onSelect = { opt ->
-                            val matchingRecruiters = catalog?.recruiters?.filter { it.providerType == opt.id }.orEmpty()
-                            val suggested = matchingRecruiters.firstOrNull { it.recruiterId == selfRecruiterId }
-                                ?: matchingRecruiters.firstOrNull()
+                            val newMode = WorkerSourceMode.valueOf(opt.id)
+                            val prevMode = draft.effectiveSourceMode
+                            val keepExistingHrpRecruiter =
+                                (prevMode == WorkerSourceMode.HRP_DIRECT || prevMode == WorkerSourceMode.CTV) &&
+                                    (newMode == WorkerSourceMode.HRP_DIRECT || newMode == WorkerSourceMode.CTV) &&
+                                    draft.recruiterId.isNotBlank() &&
+                                    catalog?.recruiters?.any {
+                                        it.recruiterId == draft.recruiterId && it.providerType == "hrp"
+                                    } != false
+                            val (nextRecId, nextRecDisplay) = if (keepExistingHrpRecruiter) {
+                                draft.recruiterId to draft.recruiterDisplay
+                            } else {
+                                val matchingRecruiters = catalog?.recruiters
+                                    ?.filter { it.providerType == newMode.wireProviderType }
+                                    .orEmpty()
+                                val suggested = matchingRecruiters.firstOrNull { it.recruiterId == selfRecruiterId }
+                                    ?: matchingRecruiters.firstOrNull()
+                                suggested?.recruiterId.orEmpty() to suggested?.label.orEmpty()
+                            }
+                            val (nextCollabId, nextCollabName) = if (newMode == WorkerSourceMode.CTV) {
+                                draft.collaboratorId to draft.collaboratorDisplayName
+                            } else {
+                                "" to ""
+                            }
                             onUpdate(
                                 draft.copy(
-                                    providerType = opt.id,
-                                    recruiterId = suggested?.recruiterId.orEmpty(),
-                                    recruiterDisplay = suggested?.label.orEmpty()
+                                    sourceMode = newMode,
+                                    providerType = newMode.wireProviderType,
+                                    recruiterId = nextRecId,
+                                    recruiterDisplay = nextRecDisplay,
+                                    collaboratorId = nextCollabId,
+                                    collaboratorDisplayName = nextCollabName
                                 )
                             )
                         },
@@ -1341,17 +1380,60 @@ private fun WorkerMultiEntryCard(
                     )
 
                     SearchableSelectDropdownField(
-                        label = "Người tuyển / Vendor *",
+                        label = if (draft.effectiveSourceMode == WorkerSourceMode.VENDOR) {
+                            "Vendor tuyển *"
+                        } else {
+                            "NVTD HRP *"
+                        },
                         selectedLabel = draft.recruiterDisplay,
-                        placeholder = if (draft.providerType.isBlank()) "Chọn HRP/Vendor trước" else "Chọn hoặc nhập tên người tuyển",
+                        placeholder = if (draft.effectiveSourceMode == null) {
+                            "Chọn Nguồn tuyển trước"
+                        } else {
+                            "Chọn hoặc nhập tên người tuyển"
+                        },
                         searchPlaceholder = "Nhập tên, mã nhân sự hoặc nhóm để tìm nhanh…",
                         options = recruiterOptions,
-                        enabled = draft.providerType.isNotBlank() && recruiterOptions.isNotEmpty(),
+                        enabled = draft.effectiveSourceMode != null && recruiterOptions.isNotEmpty(),
                         onSelect = { opt ->
                             onUpdate(draft.copy(recruiterId = opt.id, recruiterDisplay = opt.label))
                         },
                         testTag = "row_${rowNumber}_recruiter"
                     )
+
+                    if (draft.effectiveSourceMode == WorkerSourceMode.CTV) {
+                        val selectedCollabLabel = draft.collaboratorDisplayName.ifBlank { draft.collaboratorId }
+                        SearchableSelectDropdownField(
+                            label = "Cộng tác viên (CTV) *",
+                            selectedLabel = selectedCollabLabel,
+                            placeholder = when {
+                                catalog != null && !catalog.supportsCollaborators ->
+                                    "Máy chủ hiện tại chưa hỗ trợ CTV"
+                                collaboratorOptions.isEmpty() ->
+                                    "Chưa có CTV đang hoạt động"
+                                else ->
+                                    "Chọn hoặc nhập tên CTV"
+                            },
+                            searchPlaceholder = "Nhập tên CTV để tìm nhanh…",
+                            options = collaboratorOptions,
+                            enabled = collaboratorOptions.isNotEmpty(),
+                            onSelect = { opt ->
+                                onUpdate(
+                                    draft.copy(
+                                        collaboratorId = opt.id,
+                                        collaboratorDisplayName = opt.label
+                                    )
+                                )
+                            },
+                            testTag = "row_${rowNumber}_collaborator"
+                        )
+                        if (catalog != null && !catalog.supportsCollaborators) {
+                            Text(
+                                text = "Máy chủ hiện tại chưa bật danh mục CTV. Vui lòng chọn HRP trực tiếp/Vendor hoặc giữ nháp.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = SemanticColors.ErrorText
+                            )
+                        }
+                    }
 
                     KeyedSelectDropdownField(
                         label = "Loại hình LĐ *",
@@ -2378,6 +2460,7 @@ fun WorkersAndDirectEntryScreen(
     onBackToDashboard: () -> Unit,
     onSelectScopeTab: ((scopeKey: String) -> Unit)? = null,
     onSearchAndFilterChange: ((search: String, projectId: String?, status: String?) -> Unit)? = null,
+    onProviderTypeFilterChange: ((providerType: String?) -> Unit)? = null,
     onExportWorkersExcel: ((scopeKey: String, projectId: String?, status: String?) -> Unit)? = null,
     onOpenEntryDetail: ((entryId: String) -> Unit)? = null,
     onCloseEntryDetail: (() -> Unit)? = null,
@@ -2423,6 +2506,7 @@ fun WorkersAndDirectEntryScreen(
     var selectedProjectId by remember(actor.appUserId) { mutableStateOf<String?>(null) }
     var selectedRecruiterId by remember(actor.appUserId) { mutableStateOf<String?>(null) }
     var selectedStatusCode by remember(actor.appUserId) { mutableStateOf<String?>(null) }
+    var selectedProviderTypeFilter by remember(actor.appUserId) { mutableStateOf<String?>(null) }
 
     LaunchedEffect(actor.appUserId, actor.safeAllowedWorkerTabs) {
         if (visibleTabs.isEmpty()) {
@@ -2442,10 +2526,11 @@ fun WorkersAndDirectEntryScreen(
             projectId = selectedProjectId,
             recruiterId = selectedRecruiterId,
             employmentStatus = selectedStatusCode,
+            providerType = selectedProviderTypeFilter,
             actorOverride = actor
         )
     }
-    val effectiveFilterChange: (String, String?, String?, String?) -> Unit = { q, proj, rec, status ->
+    val effectiveFilterChange: (String, String?, String?, String?, String?) -> Unit = { q, proj, rec, status, prov ->
         if (onSearchAndFilterChange != null) {
             onSearchAndFilterChange(q, proj, status)
         } else if (activeScopeKey.isNotBlank()) {
@@ -2455,6 +2540,7 @@ fun WorkersAndDirectEntryScreen(
                 projectId = proj,
                 recruiterId = rec,
                 employmentStatus = status,
+                providerType = prov,
                 actorOverride = actor
             )
         }
@@ -2660,7 +2746,7 @@ fun WorkersAndDirectEntryScreen(
                         value = searchQuery,
                         onValueChange = { q ->
                             searchQuery = q
-                            effectiveFilterChange(q, selectedProjectId, selectedRecruiterId, selectedStatusCode)
+                            effectiveFilterChange(q, selectedProjectId, selectedRecruiterId, selectedStatusCode, selectedProviderTypeFilter)
                         },
                         leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
                         label = { Text("Tìm theo họ tên, mã NLĐ…") },
@@ -2678,11 +2764,47 @@ fun WorkersAndDirectEntryScreen(
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
+                        listOf(
+                            null to "Tất cả",
+                            "hrp_direct" to "HRP trực tiếp",
+                            "hrp_ctv" to "CTV",
+                            "vendor" to "Vendor"
+                        ).forEach { (code, label) ->
+                            val tagSuffix = code ?: "all"
+                            FilterChip(
+                                selected = selectedProviderTypeFilter == code,
+                                onClick = {
+                                    selectedProviderTypeFilter = code
+                                    if (onProviderTypeFilterChange != null) {
+                                        onProviderTypeFilterChange(code)
+                                    } else {
+                                        effectiveFilterChange(
+                                            searchQuery,
+                                            selectedProjectId,
+                                            selectedRecruiterId,
+                                            selectedStatusCode,
+                                            code
+                                        )
+                                    }
+                                },
+                                label = { Text(label) },
+                                modifier = Modifier.testTag("worker_source_filter_$tagSuffix")
+                            )
+                        }
+                    }
+
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
                         FilterChip(
                             selected = selectedStatusCode == null,
                             onClick = {
                                 selectedStatusCode = null
-                                effectiveFilterChange(searchQuery, selectedProjectId, selectedRecruiterId, null)
+                                effectiveFilterChange(searchQuery, selectedProjectId, selectedRecruiterId, null, selectedProviderTypeFilter)
                             },
                             label = { Text("Mọi trạng thái") }
                         )
@@ -2692,7 +2814,7 @@ fun WorkersAndDirectEntryScreen(
                                 onClick = {
                                     val next = if (selectedStatusCode == code) null else code
                                     selectedStatusCode = next
-                                    effectiveFilterChange(searchQuery, selectedProjectId, selectedRecruiterId, next)
+                                    effectiveFilterChange(searchQuery, selectedProjectId, selectedRecruiterId, next, selectedProviderTypeFilter)
                                 },
                                 label = { Text(label) }
                             )
@@ -2703,7 +2825,7 @@ fun WorkersAndDirectEntryScreen(
                                 onClick = {
                                     val next = if (selectedProjectId == proj.projectId) null else proj.projectId
                                     selectedProjectId = next
-                                    effectiveFilterChange(searchQuery, next, selectedRecruiterId, selectedStatusCode)
+                                    effectiveFilterChange(searchQuery, next, selectedRecruiterId, selectedStatusCode, selectedProviderTypeFilter)
                                 },
                                 label = { Text(proj.displayName) }
                             )
@@ -2714,19 +2836,26 @@ fun WorkersAndDirectEntryScreen(
                                 onClick = {
                                     val next = if (selectedRecruiterId == rec.recruiterId) null else rec.recruiterId
                                     selectedRecruiterId = next
-                                    effectiveFilterChange(searchQuery, selectedProjectId, next, selectedStatusCode)
+                                    effectiveFilterChange(searchQuery, selectedProjectId, next, selectedStatusCode, selectedProviderTypeFilter)
                                 },
                                 label = { Text("NT: ${rec.displayName}") }
                             )
                         }
-                        if (selectedStatusCode != null || selectedProjectId != null || selectedRecruiterId != null || searchQuery.isNotBlank()) {
+                        if (selectedStatusCode != null ||
+                            selectedProjectId != null ||
+                            selectedRecruiterId != null ||
+                            selectedProviderTypeFilter != null ||
+                            searchQuery.isNotBlank()
+                        ) {
                             TextButton(
                                 onClick = {
                                     selectedStatusCode = null
                                     selectedProjectId = null
                                     selectedRecruiterId = null
+                                    selectedProviderTypeFilter = null
                                     searchQuery = ""
-                                    effectiveFilterChange("", null, null, null)
+                                    onProviderTypeFilterChange?.invoke(null)
+                                    effectiveFilterChange("", null, null, null, null)
                                 }
                             ) {
                                 Icon(Icons.Default.FilterAltOff, contentDescription = null, modifier = Modifier.size(16.dp))
@@ -2839,6 +2968,7 @@ fun WorkersAndDirectEntryScreen(
     selectedDetail?.let { detail ->
         WorkerEntryDetailDialog(
             detail = detail,
+            catalog = catalog,
             serverBaseUrl = serverUrl,
             onDismiss = effectiveCloseDetail,
             onDownloadDocument = { downloadPath ->
@@ -3060,9 +3190,21 @@ internal fun WorkerOperationsRowCard(
         else -> SemanticColors.ErrorBg to SemanticColors.ErrorText
     }
 
+    val sourceBadgeLabel = DirectEntryContract.workerSourceBadgeLabel(worker.providerType, worker.collaboratorId)
+    val (sourceBg, sourceFg) = when (sourceBadgeLabel) {
+        "CTV" -> SemanticColors.InfoBg to SemanticColors.InfoText
+        "Vendor" -> SemanticColors.WarningBg to SemanticColors.WarningText
+        else -> SemanticColors.SurfaceSubtle to SemanticColors.TextSecondary
+    }
+    val ctvPart = if (!worker.providerType.equals("vendor", ignoreCase = true) && !worker.collaboratorId.isNullOrBlank()) {
+        val ctvName = worker.collaboratorDisplayName?.trim()?.ifEmpty { null } ?: worker.collaboratorId.trim()
+        "CTV: $ctvName"
+    } else {
+        null
+    }
     val recruiterPart = worker.recruiterDisplay.trim().takeIf { it.isNotEmpty() }?.let { "NT: $it" }
     val datePart = worker.firstWorkDate.trim().takeIf { it.isNotEmpty() }?.let { "Vào: $it" }
-    val metaLine = listOfNotNull(recruiterPart, datePart).joinToString(" · ")
+    val metaLine = listOfNotNull(ctvPart, recruiterPart, datePart).joinToString(" · ")
 
     Column(
         modifier = Modifier
@@ -3092,8 +3234,8 @@ internal fun WorkerOperationsRowCard(
                 modifier = Modifier.weight(1f),
                 verticalArrangement = Arrangement.spacedBy(3.dp)
             ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
+                FlowRow(
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     Text(
@@ -3105,6 +3247,20 @@ internal fun WorkerOperationsRowCard(
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f, fill = false)
                     )
+                    Surface(
+                        shape = RoundedCornerShape(999.dp),
+                        color = sourceBg
+                    ) {
+                        Text(
+                            text = sourceBadgeLabel,
+                            style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                            fontWeight = FontWeight.SemiBold,
+                            color = sourceFg,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 1.dp)
+                        )
+                    }
                     if (worker.laborTypeDisplay.isNotBlank()) {
                         Surface(
                             shape = RoundedCornerShape(999.dp),
@@ -3138,7 +3294,7 @@ internal fun WorkerOperationsRowCard(
                         text = metaLine,
                         style = MaterialTheme.typography.labelSmall.tabularNums(),
                         color = SemanticColors.TextSecondary.copy(alpha = 0.85f),
-                        maxLines = 1,
+                        maxLines = 2,
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -3276,6 +3432,7 @@ internal fun WorkerOperationsRowCard(
 @Composable
 internal fun WorkerEntryDetailDialog(
     detail: WorkerEntryDetail,
+    catalog: DirectEntryCatalog? = null,
     serverBaseUrl: String = "",
     onDismiss: () -> Unit,
     onDownloadDocument: ((downloadPath: String) -> Unit)? = null
@@ -3380,14 +3537,23 @@ internal fun WorkerEntryDetailDialog(
                 WorkerDetailGroupTile(title = "Dự án & Tuyển dụng") {
                     DetailItemRow("Ngày đầu đi làm", detail.firstWorkDate.trim().ifEmpty { "—" }, tabular = true)
                     DetailItemRow("Loại hình LĐ", detail.laborTypeDisplay.trim().ifEmpty { "—" })
+                    val sourceBadge = DirectEntryContract.workerSourceBadgeLabel(detail.providerType, detail.collaboratorId)
                     DetailItemRow(
                         "Nguồn tuyển",
-                        when (detail.providerType.trim().lowercase(Locale.ROOT)) {
-                            "hrp" -> "HRP"
-                            "vendor" -> "Vendor"
-                            else -> detail.providerType.trim().ifEmpty { "—" }
-                        }
+                        sourceBadge.ifEmpty { "—" }
                     )
+                    if (!detail.providerType.equals("vendor", ignoreCase = true) && !detail.collaboratorId.isNullOrBlank()) {
+                        DetailItemRow(
+                            "Cộng tác viên",
+                            detail.collaboratorDisplayName?.trim()?.ifEmpty { null } ?: detail.collaboratorId.trim()
+                        )
+                    }
+                    val resolvedRecruiterName = detail.recruiterDisplay?.trim()?.ifEmpty { null }
+                        ?: catalog?.recruiters?.firstOrNull { it.recruiterId == detail.recruiterId }?.label
+                        ?: catalog?.recruiters?.firstOrNull { it.recruiterId == detail.recruiterId }?.displayName
+                    if (!resolvedRecruiterName.isNullOrBlank()) {
+                        DetailItemRow("Người tuyển", resolvedRecruiterName)
+                    }
                     DetailItemRow(
                         "Trạng thái",
                         "$statusLabel (${detail.employmentEffectiveDate.trim()})",
@@ -3532,6 +3698,23 @@ internal fun WorkerProposeChangeDialog(
     var phone by remember(worker.entryId) {
         mutableStateOf(baselineDetail?.phone.orEmpty())
     }
+    var sourceMode by remember(worker.entryId) {
+        mutableStateOf(
+            WorkerSourceMode.fromServer(
+                baselineDetail?.providerType ?: worker.providerType,
+                baselineDetail?.collaboratorId ?: worker.collaboratorId
+            )
+        )
+    }
+    var recruiterId by remember(worker.entryId) {
+        mutableStateOf(baselineDetail?.recruiterId ?: worker.recruiterId)
+    }
+    var collaboratorId by remember(worker.entryId) {
+        mutableStateOf(baselineDetail?.collaboratorId ?: worker.collaboratorId)
+    }
+    var collaboratorDisplayName by remember(worker.entryId) {
+        mutableStateOf(baselineDetail?.collaboratorDisplayName ?: worker.collaboratorDisplayName)
+    }
 
     // PAYMENT fields
     var bankId by remember(worker.entryId) {
@@ -3554,6 +3737,10 @@ internal fun WorkerProposeChangeDialog(
             laborTypeKey = baselineDetail.laborType
             displayName = baselineDetail.displayName
             phone = baselineDetail.phone.orEmpty()
+            sourceMode = WorkerSourceMode.fromServer(baselineDetail.providerType, baselineDetail.collaboratorId)
+            recruiterId = baselineDetail.recruiterId
+            collaboratorId = baselineDetail.collaboratorId
+            collaboratorDisplayName = baselineDetail.collaboratorDisplayName
             bankId = baselineDetail.bankId ?: catalog?.banks?.firstOrNull()?.bankId.orEmpty()
             accountNumber = baselineDetail.accountNumber.orEmpty()
             accountHolderName = baselineDetail.accountHolderName ?: worker.displayName
@@ -3656,6 +3843,90 @@ internal fun WorkerProposeChangeDialog(
                                 onSelect = { laborTypeKey = it.id },
                                 testTag = "propose_labor_type_dropdown"
                             )
+                        }
+                        if (catalog != null) {
+                            val proposeSourceOptions = buildList {
+                                add(DropdownOptionItem(WorkerSourceMode.HRP_DIRECT.name, WorkerSourceMode.HRP_DIRECT.uiLabel))
+                                add(DropdownOptionItem(WorkerSourceMode.VENDOR.name, WorkerSourceMode.VENDOR.uiLabel))
+                                if (catalog.supportsCollaborators || sourceMode == WorkerSourceMode.CTV) {
+                                    add(DropdownOptionItem(WorkerSourceMode.CTV.name, WorkerSourceMode.CTV.uiLabel))
+                                }
+                            }
+                            KeyedSelectDropdownField(
+                                label = "Nguồn tuyển",
+                                selectedLabel = sourceMode.uiLabel,
+                                placeholder = "Chọn nguồn tuyển",
+                                options = proposeSourceOptions,
+                                onSelect = { opt ->
+                                    val newMode = WorkerSourceMode.valueOf(opt.id)
+                                    val prevMode = sourceMode
+                                    val keepRecruiter =
+                                        (prevMode == WorkerSourceMode.HRP_DIRECT || prevMode == WorkerSourceMode.CTV) &&
+                                            (newMode == WorkerSourceMode.HRP_DIRECT || newMode == WorkerSourceMode.CTV) &&
+                                            catalog.recruiters.any { it.recruiterId == recruiterId && it.providerType == "hrp" }
+                                    sourceMode = newMode
+                                    if (!keepRecruiter) {
+                                        val firstMatch = catalog.recruiters.firstOrNull { it.providerType == newMode.wireProviderType }
+                                        recruiterId = firstMatch?.recruiterId.orEmpty()
+                                    }
+                                    if (newMode != WorkerSourceMode.CTV) {
+                                        collaboratorId = null
+                                        collaboratorDisplayName = null
+                                    }
+                                },
+                                testTag = "propose_source_dropdown"
+                            )
+                            val matchingRecruiters = catalog.recruiters.filter { it.providerType == sourceMode.wireProviderType }
+                            if (matchingRecruiters.isNotEmpty()) {
+                                val selectedRec = matchingRecruiters.firstOrNull { it.recruiterId == recruiterId }
+                                    ?: catalog.recruiters.firstOrNull { it.recruiterId == recruiterId }
+                                SearchableSelectDropdownField(
+                                    label = if (sourceMode == WorkerSourceMode.VENDOR) "Vendor tuyển" else "NVTD HRP",
+                                    selectedLabel = selectedRec?.label ?: selectedRec?.displayName ?: recruiterId,
+                                    placeholder = "Chọn người tuyển",
+                                    options = matchingRecruiters.map { rec ->
+                                        DropdownOptionItem(
+                                            id = rec.recruiterId,
+                                            label = rec.label.ifBlank { rec.displayName },
+                                            subtitle = listOfNotNull(
+                                                rec.personnelCode.takeIf { it.isNotBlank() },
+                                                rec.teamDisplayName?.takeIf { it.isNotBlank() }
+                                            ).joinToString(" · "),
+                                            searchKeywords = "${rec.displayName} ${rec.personnelCode}"
+                                        )
+                                    },
+                                    onSelect = { recruiterId = it.id },
+                                    testTag = "propose_recruiter_dropdown"
+                                )
+                            }
+                            if (sourceMode == WorkerSourceMode.CTV) {
+                                val activeCollabs = catalog.collaborators.filter { it.active }
+                                val collabLabel = DirectEntryContract.formatCollaboratorLabelForEdit(
+                                    collaboratorId = collaboratorId,
+                                    collaboratorDisplayName = collaboratorDisplayName
+                                        ?: baselineDetail?.collaboratorDisplayName
+                                        ?: worker.collaboratorDisplayName,
+                                    catalog = catalog
+                                )
+                                SearchableSelectDropdownField(
+                                    label = "Cộng tác viên (CTV) *",
+                                    selectedLabel = collabLabel,
+                                    placeholder = if (activeCollabs.isEmpty()) "Chưa có CTV đang hoạt động" else "Chọn Cộng tác viên",
+                                    options = activeCollabs.map { col ->
+                                        DropdownOptionItem(
+                                            id = col.collaboratorId,
+                                            label = col.displayName,
+                                            searchKeywords = "${col.displayName} ${col.collaboratorId}"
+                                        )
+                                    },
+                                    enabled = activeCollabs.isNotEmpty(),
+                                    onSelect = {
+                                        collaboratorId = it.id
+                                        collaboratorDisplayName = it.label
+                                    },
+                                    testTag = "propose_collaborator_dropdown"
+                                )
+                            }
                         }
                         OutlinedTextField(
                             value = firstWorkDateUi,
@@ -3793,44 +4064,18 @@ internal fun WorkerProposeChangeDialog(
                             localError = null
                             try {
                                 val proposal = when (selectedTargetKind) {
-                                    "ENTRY_FIELD" -> {
-                                        JSONObject().apply {
-                                            val baseProj = baselineDetail?.projectId ?: worker.projectId
-                                            if (projectId.isNotBlank() && projectId != baseProj) {
-                                                put("project_id", projectId.trim())
-                                            }
-                                            val isoFirst = DirectEntryContract.uiDateToIsoDate(firstWorkDateUi)
-                                            val baseFirst = baselineDetail?.firstWorkDate ?: worker.firstWorkDate
-                                            if (isoFirst != baseFirst) {
-                                                put("first_work_date", isoFirst)
-                                            }
-                                            val baseLabor = baselineDetail?.laborType ?: worker.laborType
-                                            if (laborTypeKey.isNotBlank() && laborTypeKey != baseLabor) {
-                                                put("labor_type", laborTypeKey.trim())
-                                            }
-                                            if (baselineDetail != null &&
-                                                (displayName.trim() != baselineDetail.displayName || phone.trim() != baselineDetail.phone.orEmpty())
-                                            ) {
-                                                val cleanName = displayName.trim()
-                                                if (cleanName.isEmpty() || cleanName.length > 256) {
-                                                    throw IllegalArgumentException("Họ và tên NLĐ không được để trống (tối đa 256 ký tự).")
-                                                }
-                                                val safeNationalId = baselineDetail.nationalId?.trim()
-                                                    ?.takeIf { DirectEntryContract.isCanonicalNationalId(it) }
-                                                    .orEmpty()
-                                                put(
-                                                    "worker_details",
-                                                    JSONObject().apply {
-                                                        put("display_name", cleanName)
-                                                        put("date_of_birth", DirectEntryContract.optionalFreeDateField(baselineDetail.dateOfBirth.orEmpty()))
-                                                        put("national_id", DirectEntryContract.optionalNationalIdField(safeNationalId))
-                                                        put("address", DirectEntryContract.optionalTextField(baselineDetail.address.orEmpty(), maxLength = 1024))
-                                                        put("phone", DirectEntryContract.optionalTextField(phone, maxLength = 64))
-                                                    }
-                                                )
-                                            }
-                                        }
-                                    }
+                                    "ENTRY_FIELD" -> DirectEntryContract.buildEntryFieldChangeProposal(
+                                        baselineWorker = worker,
+                                        baselineDetail = baselineDetail,
+                                        projectId = projectId,
+                                        firstWorkDateUi = firstWorkDateUi,
+                                        laborTypeKey = laborTypeKey,
+                                        displayName = displayName,
+                                        phone = phone,
+                                        sourceMode = sourceMode,
+                                        recruiterId = recruiterId,
+                                        collaboratorId = collaboratorId
+                                    )
                                     "PAYMENT" -> DirectEntryContract.buildPaymentChangeProposal(
                                         state = "provided",
                                         accountNumber = accountNumber,
@@ -4199,13 +4444,63 @@ internal fun WorkerPrivilegedEditDialog(
                                 )
                             }
 
+                            val editSourceMode = form.sourceMode ?: WorkerSourceMode.fromServer(
+                                baselineDetail.providerType,
+                                baselineDetail.collaboratorId
+                            )
+                            val editSourceOptions = buildList {
+                                add(DropdownOptionItem(WorkerSourceMode.HRP_DIRECT.name, WorkerSourceMode.HRP_DIRECT.uiLabel))
+                                add(DropdownOptionItem(WorkerSourceMode.VENDOR.name, WorkerSourceMode.VENDOR.uiLabel))
+                                if (catalog == null || catalog.supportsCollaborators || editSourceMode == WorkerSourceMode.CTV) {
+                                    add(DropdownOptionItem(WorkerSourceMode.CTV.name, WorkerSourceMode.CTV.uiLabel))
+                                }
+                            }
+                            KeyedSelectDropdownField(
+                                label = "Nguồn tuyển",
+                                selectedLabel = editSourceMode.uiLabel,
+                                placeholder = "Chọn nguồn tuyển",
+                                options = editSourceOptions,
+                                onSelect = { opt ->
+                                    val newMode = WorkerSourceMode.valueOf(opt.id)
+                                    val keepRecruiter =
+                                        (editSourceMode == WorkerSourceMode.HRP_DIRECT || editSourceMode == WorkerSourceMode.CTV) &&
+                                            (newMode == WorkerSourceMode.HRP_DIRECT || newMode == WorkerSourceMode.CTV) &&
+                                            catalog?.recruiters?.any {
+                                                it.recruiterId == form.recruiterId && it.providerType == "hrp"
+                                            } != false
+                                    val nextRecruiterId = if (keepRecruiter) {
+                                        form.recruiterId
+                                    } else {
+                                        ""
+                                    }
+                                    val (nextCollabId, nextCollabName) = if (newMode == WorkerSourceMode.CTV) {
+                                        form.collaboratorId to form.collaboratorDisplayName
+                                    } else {
+                                        null to null
+                                    }
+                                    form = form.copy(
+                                        sourceMode = newMode,
+                                        recruiterId = nextRecruiterId,
+                                        collaboratorId = nextCollabId,
+                                        collaboratorDisplayName = nextCollabName
+                                    )
+                                },
+                                testTag = "direct_edit_source_dropdown"
+                            )
+
                             if (catalog != null && catalog.recruiters.isNotEmpty()) {
-                                val selectedRecruiter = catalog.recruiters.firstOrNull { it.recruiterId == form.recruiterId }
+                                val matchingRecruiters = catalog.recruiters.filter {
+                                    it.providerType == editSourceMode.wireProviderType
+                                }
+                                val selectedRecruiter = matchingRecruiters.firstOrNull { it.recruiterId == form.recruiterId }
+                                    ?: catalog.recruiters.firstOrNull {
+                                        it.recruiterId == form.recruiterId && it.providerType == editSourceMode.wireProviderType
+                                    }
                                 SearchableSelectDropdownField(
-                                    label = "Người tuyển",
+                                    label = if (editSourceMode == WorkerSourceMode.VENDOR) "Vendor tuyển" else "NVTD HRP",
                                     selectedLabel = selectedRecruiter?.label ?: selectedRecruiter?.displayName ?: form.recruiterId,
                                     placeholder = "Chọn người tuyển",
-                                    options = catalog.recruiters.map { rec ->
+                                    options = matchingRecruiters.map { rec ->
                                         DropdownOptionItem(
                                             id = rec.recruiterId,
                                             label = rec.label.ifBlank { rec.displayName },
@@ -4219,6 +4514,13 @@ internal fun WorkerPrivilegedEditDialog(
                                     onSelect = { form = form.copy(recruiterId = it.id) },
                                     testTag = "direct_edit_recruiter_dropdown"
                                 )
+                                fieldErrors["recruiter_id"]?.let { errMsg ->
+                                    Text(
+                                        text = errMsg,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.error
+                                    )
+                                }
                             } else {
                                 OutlinedTextField(
                                     value = form.recruiterId,
@@ -4226,11 +4528,58 @@ internal fun WorkerPrivilegedEditDialog(
                                         form = form.copy(recruiterId = sanitizeSingleLineInput(it, 64))
                                     },
                                     label = { Text("Mã người tuyển (UUID) *") },
+                                    isError = fieldErrors.containsKey("recruiter_id"),
+                                    supportingText = fieldErrors["recruiter_id"]?.let { msg ->
+                                        { Text(msg) }
+                                    },
                                     singleLine = true,
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .testTag("direct_edit_recruiter_id_input")
                                 )
+                            }
+
+                            if (editSourceMode == WorkerSourceMode.CTV) {
+                                val activeCollabs = catalog?.collaborators?.filter { it.active }.orEmpty()
+                                val selectedCollabLabel = DirectEntryContract.formatCollaboratorLabelForEdit(
+                                    collaboratorId = form.collaboratorId,
+                                    collaboratorDisplayName = form.collaboratorDisplayName ?: baselineDetail.collaboratorDisplayName,
+                                    catalog = catalog
+                                )
+                                SearchableSelectDropdownField(
+                                    label = "Cộng tác viên (CTV) *",
+                                    selectedLabel = selectedCollabLabel,
+                                    placeholder = when {
+                                        catalog != null && !catalog.supportsCollaborators ->
+                                            "Máy chủ chưa hỗ trợ danh mục CTV"
+                                        activeCollabs.isEmpty() ->
+                                            "Chưa có CTV đang hoạt động"
+                                        else ->
+                                            "Chọn Cộng tác viên"
+                                    },
+                                    options = activeCollabs.map { col ->
+                                        DropdownOptionItem(
+                                            id = col.collaboratorId,
+                                            label = col.displayName,
+                                            searchKeywords = "${col.displayName} ${col.collaboratorId}"
+                                        )
+                                    },
+                                    enabled = activeCollabs.isNotEmpty(),
+                                    onSelect = {
+                                        form = form.copy(
+                                            collaboratorId = it.id,
+                                            collaboratorDisplayName = it.label
+                                        )
+                                    },
+                                    testTag = "direct_edit_collaborator_dropdown"
+                                )
+                                fieldErrors["collaborator_id"]?.let { errMsg ->
+                                    Text(
+                                        text = errMsg,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.error
+                                    )
+                                }
                             }
 
                             OutlinedTextField(
