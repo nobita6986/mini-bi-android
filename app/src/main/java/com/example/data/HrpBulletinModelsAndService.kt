@@ -1335,7 +1335,8 @@ class HrpBulletinManager(
     fun notifyNewBulletinsIfNeeded(
         appUserId: String?,
         seedItems: List<HrpBulletinItem> = defaultSeedItemsForMode(),
-        postSystemNotification: Boolean = true
+        postSystemNotification: Boolean = true,
+        totalUnreadCount: Int? = null
     ): List<HrpBulletinItem> {
         val newlyDetected: List<HrpBulletinItem>
         val shouldPost: Boolean
@@ -1363,7 +1364,8 @@ class HrpBulletinManager(
             shouldPost = postSystemNotification && enabled
         }
         if (shouldPost && newlyDetected.isNotEmpty()) {
-            postNewBulletinNotification(appContext, newlyDetected)
+            val badgeCount = maxOf(totalUnreadCount ?: newlyDetected.size, newlyDetected.size)
+            postNewBulletinNotification(appContext, newlyDetected, badgeCount)
         }
         return newlyDetected
     }
@@ -1391,7 +1393,8 @@ class HrpBulletinManager(
         private const val KEY_NOTIFY_NEW_BULLETINS_ENABLED = "notify_new_bulletins_enabled"
         const val ACTION_OPEN_BULLETIN = "vn.hrpartner.bi.ACTION_OPEN_BULLETIN"
         const val EXTRA_BULLETIN_ID = "extra_bulletin_id"
-        const val NOTIFICATION_CHANNEL_ID = "hrp_bulletin_new_channel"
+        const val LEGACY_NOTIFICATION_CHANNEL_ID = "hrp_bulletin_new_channel"
+        const val NOTIFICATION_CHANNEL_ID = "hrp_bulletin_channel_v2"
         const val NOTIFICATION_ID_NEW_BULLETIN = 20261113
 
         @Volatile
@@ -1403,25 +1406,112 @@ class HrpBulletinManager(
             }
         }
 
+        fun syncLauncherAppBadge(
+            context: Context,
+            unreadCount: Int,
+            notification: android.app.Notification? = null
+        ) {
+            val safeCount = unreadCount.coerceAtLeast(0)
+            val appContext = context.applicationContext
+            if (safeCount <= 0) {
+                runCatching {
+                    val nm = appContext.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+                    nm?.cancel(NOTIFICATION_ID_NEW_BULLETIN)
+                }
+            }
+
+            // Xiaomi HyperOS / MIUI launcher badge via extraNotification.setMessageCount(...)
+            if (notification != null) {
+                runCatching {
+                    val extraNotifField = notification.javaClass.getDeclaredField("extraNotification")
+                    extraNotifField.isAccessible = true
+                    val extraNotif = extraNotifField.get(notification)
+                    val setCountMethod = extraNotif?.javaClass?.getDeclaredMethod(
+                        "setMessageCount",
+                        Int::class.javaPrimitiveType
+                    )
+                    setCountMethod?.invoke(extraNotif, safeCount)
+                }
+            }
+
+            val pkgName = appContext.packageName
+            val launcherClassName = runCatching {
+                appContext.packageManager.getLaunchIntentForPackage(pkgName)?.component?.className
+            }.getOrNull().orEmpty().ifBlank { MainActivity::class.java.name }
+
+            // Samsung OneUI badge broadcast
+            runCatching {
+                val samsungIntent = Intent("android.intent.action.BADGE_COUNT_UPDATE").apply {
+                    putExtra("badge_count", safeCount)
+                    putExtra("badge_count_package_name", pkgName)
+                    putExtra("badge_count_class_name", launcherClassName)
+                }
+                appContext.sendBroadcast(samsungIntent)
+            }
+
+            // OPPO / ColorOS badge broadcast + content provider
+            runCatching {
+                val oppoIntent = Intent("com.oppo.unsettledevent").apply {
+                    putExtra("pakeageName", pkgName)
+                    putExtra("packageName", pkgName)
+                    putExtra("number", safeCount)
+                    putExtra("upgradeNumber", safeCount)
+                }
+                appContext.sendBroadcast(oppoIntent)
+            }
+            runCatching {
+                val extras = android.os.Bundle().apply {
+                    putInt("app_badge_count", safeCount)
+                }
+                appContext.contentResolver.call(
+                    android.net.Uri.parse("content://com.android.badge/badge"),
+                    "setAppBadgeCount",
+                    null,
+                    extras
+                )
+            }
+
+            // Huawei / Honor launcher badge content provider
+            runCatching {
+                val extras = android.os.Bundle().apply {
+                    putString("package", pkgName)
+                    putString("class", launcherClassName)
+                    putInt("badgenumber", safeCount)
+                }
+                appContext.contentResolver.call(
+                    android.net.Uri.parse("content://com.huawei.android.launcher.settings/badge/"),
+                    "change_badge",
+                    null,
+                    extras
+                )
+            }
+        }
+
         internal fun postNewBulletinNotification(
             context: Context,
-            newItems: List<HrpBulletinItem>
+            newItems: List<HrpBulletinItem>,
+            unreadCount: Int = newItems.size
         ) {
             if (newItems.isEmpty()) return
+            val safeUnreadCount = maxOf(unreadCount, newItems.size).coerceAtLeast(1)
             runCatching {
                 val appContext = context.applicationContext
                 val notificationManager =
                     appContext.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
 
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    runCatching {
+                        notificationManager.deleteNotificationChannel(LEGACY_NOTIFICATION_CHANNEL_ID)
+                    }
                     val existing = notificationManager.getNotificationChannel(NOTIFICATION_CHANNEL_ID)
-                    if (existing == null) {
+                    if (existing == null || !existing.canShowBadge()) {
                         val channel = NotificationChannel(
                             NOTIFICATION_CHANNEL_ID,
-                            "Bản tin HRPartner",
+                            "Thông báo",
                             NotificationManager.IMPORTANCE_HIGH
                         ).apply {
                             description = "Thông báo khi có bản tin nội bộ, lịch nghỉ lễ hoặc quy định mới từ HRPartner"
+                            setShowBadge(true)
                             enableVibration(true)
                         }
                         notificationManager.createNotificationChannel(channel)
@@ -1442,9 +1532,9 @@ class HrpBulletinManager(
                 )
 
                 val titleText = if (newItems.size == 1) {
-                    "Bản tin HRPartner mới · ${primaryItem.categoryDisplay}"
+                    "Thông báo · ${primaryItem.categoryDisplay}"
                 } else {
-                    "Bản tin HRPartner (${newItems.size} tin mới)"
+                    "Thông báo (${newItems.size} tin mới)"
                 }
                 val summaryText = primaryItem.title
                 val expandedBody = if (newItems.size == 1) {
@@ -1458,12 +1548,15 @@ class HrpBulletinManager(
                     .setContentTitle(titleText)
                     .setContentText(summaryText)
                     .setStyle(NotificationCompat.BigTextStyle().bigText(expandedBody))
+                    .setNumber(safeUnreadCount)
+                    .setBadgeIconType(NotificationCompat.BADGE_ICON_SMALL)
                     .setPriority(NotificationCompat.PRIORITY_HIGH)
                     .setCategory(NotificationCompat.CATEGORY_MESSAGE)
                     .setAutoCancel(true)
                     .setContentIntent(tapPendingIntent)
                     .build()
 
+                syncLauncherAppBadge(appContext, safeUnreadCount, notification)
                 notificationManager.notify(NOTIFICATION_ID_NEW_BULLETIN, notification)
             }
         }

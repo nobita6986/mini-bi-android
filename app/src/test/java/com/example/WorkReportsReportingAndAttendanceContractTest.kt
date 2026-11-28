@@ -3180,6 +3180,60 @@ class WorkReportsReportingAndAttendanceContractTest {
                 assertFalse("Older LRU file exceeding byte cap must be deleted", olderLru.exists())
                 assertTrue("Newest file fitting byte cap must remain", newestKeep.exists())
                 newestKeep.delete()
+
+                // 8. NotificationChannel v2 showBadge, short titles, setNumber, & launcher badge clear on 0
+                assertEquals("hrp_bulletin_channel_v2", com.example.data.HrpBulletinManager.NOTIFICATION_CHANNEL_ID)
+                assertEquals("hrp_bulletin_new_channel", com.example.data.HrpBulletinManager.LEGACY_NOTIFICATION_CHANNEL_ID)
+                val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                    nm.createNotificationChannel(
+                        android.app.NotificationChannel(
+                            com.example.data.HrpBulletinManager.LEGACY_NOTIFICATION_CHANNEL_ID,
+                            "Legacy Channel",
+                            android.app.NotificationManager.IMPORTANCE_HIGH
+                        )
+                    )
+                }
+                val shadowNm = org.robolectric.Shadows.shadowOf(nm)
+                com.example.data.HrpBulletinManager.postNewBulletinNotification(
+                    context = context,
+                    newItems = listOf(detail),
+                    unreadCount = 5
+                )
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                    assertNull(
+                        "Legacy notification channel must be deleted when v2 channel is registered",
+                        nm.getNotificationChannel(com.example.data.HrpBulletinManager.LEGACY_NOTIFICATION_CHANNEL_ID)
+                    )
+                    val v2Channel = nm.getNotificationChannel(com.example.data.HrpBulletinManager.NOTIFICATION_CHANNEL_ID)
+                    assertNotNull(v2Channel)
+                    assertTrue("v2 channel must enable showBadge", v2Channel!!.canShowBadge())
+                }
+                val singlePosted = shadowNm.getNotification(com.example.data.HrpBulletinManager.NOTIFICATION_ID_NEW_BULLETIN)
+                assertNotNull(singlePosted)
+                assertEquals(5, singlePosted!!.number)
+                assertEquals(
+                    "Thông báo · ${detail.categoryDisplay}",
+                    singlePosted.extras.getString(android.app.Notification.EXTRA_TITLE)
+                )
+
+                val secondBulletin = detail.copy(bulletinId = "bul-2", title = "Bản tin số 2")
+                com.example.data.HrpBulletinManager.postNewBulletinNotification(
+                    context = context,
+                    newItems = listOf(detail, secondBulletin),
+                    unreadCount = 2
+                )
+                val multiPosted = shadowNm.getNotification(com.example.data.HrpBulletinManager.NOTIFICATION_ID_NEW_BULLETIN)
+                assertNotNull(multiPosted)
+                assertEquals(2, multiPosted!!.number)
+                assertEquals(
+                    "Thông báo (2 tin mới)",
+                    multiPosted.extras.getString(android.app.Notification.EXTRA_TITLE)
+                )
+
+                // Clearing unread count to 0 must cancel notification & clear badge
+                com.example.data.HrpBulletinManager.syncLauncherAppBadge(context, 0)
+                assertNull(shadowNm.getNotification(com.example.data.HrpBulletinManager.NOTIFICATION_ID_NEW_BULLETIN))
             } finally {
                 repo.closeForTest()
                 db.close()

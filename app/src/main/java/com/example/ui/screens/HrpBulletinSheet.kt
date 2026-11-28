@@ -381,19 +381,15 @@ fun HrpBulletinDialog(
                                     modifier = Modifier.size(20.dp)
                                 )
                             }
-                            Column {
-                                Text(
-                                    text = "Bản tin HRPartner",
-                                    style = MaterialTheme.typography.titleMedium,
-                                    fontWeight = FontWeight.ExtraBold,
-                                    color = MaterialTheme.colorScheme.onSurface
-                                )
-                                Text(
-                                    text = "Thông báo, lịch nghỉ lễ & vận hành nội bộ",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
+                            Text(
+                                text = "Thông báo",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.ExtraBold,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.testTag("bulletin_dialog_title")
+                            )
                         }
                     }
 

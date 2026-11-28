@@ -349,6 +349,10 @@ fun MiniBiAppRoot(
         }
     }
 
+    LaunchedEffect(unreadBulletinCount) {
+        HrpBulletinManager.syncLauncherAppBadge(context, unreadBulletinCount)
+    }
+
     LaunchedEffect(pendingBulletinId, authenticatedActor.appUserId) {
         val targetId = pendingBulletinId?.trim().orEmpty()
         if (targetId.isNotEmpty()) {
@@ -756,7 +760,7 @@ fun MiniBiAppRoot(
                                     ) {
                                         Icon(
                                             imageVector = Icons.Outlined.Newspaper,
-                                            contentDescription = "Bản tin HRPartner",
+                                            contentDescription = "Thông báo",
                                             tint = MaterialTheme.colorScheme.primary,
                                             modifier = Modifier.size(19.dp)
                                         )

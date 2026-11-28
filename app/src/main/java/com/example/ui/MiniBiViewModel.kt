@@ -7616,6 +7616,7 @@ class MiniBiViewModel internal constructor(
         _bulletinDetailLoading.value = false
         _bulletinDetailError.value = null
         _bulletinMarkingAllRead.value = false
+        HrpBulletinManager.syncLauncherAppBadge(getApplication(), 0)
     }
 
     fun clearSelectedBulletinDetail() {
@@ -7688,8 +7689,12 @@ class MiniBiViewModel internal constructor(
                 if (reset && category == HrpBulletinCategory.ALL && res.items.isNotEmpty()) {
                     HrpBulletinManager.getInstance(getApplication()).notifyNewBulletinsIfNeeded(
                         appUserId = expectedUserId,
-                        seedItems = res.items
+                        seedItems = res.items,
+                        totalUnreadCount = res.unreadCount
                     )
+                }
+                if (category == HrpBulletinCategory.ALL || res.unreadCount <= 0) {
+                    HrpBulletinManager.syncLauncherAppBadge(getApplication(), res.unreadCount)
                 }
             } catch (e: Exception) {
                 e.rethrowIfCancelled()
@@ -7805,6 +7810,7 @@ class MiniBiViewModel internal constructor(
                 }
             }
             _bulletinUnreadCount.value = (_bulletinUnreadCount.value - 1).coerceAtLeast(0)
+            HrpBulletinManager.syncLauncherAppBadge(getApplication(), _bulletinUnreadCount.value)
         }
         HrpBulletinManager.getInstance(getApplication()).markBulletinRead(expectedUserId, cleanId)
 
@@ -7817,6 +7823,7 @@ class MiniBiViewModel internal constructor(
                 )
                 if (ok && serverUnread != null && isSessionValid(expectedGen, expectedUserId)) {
                     _bulletinUnreadCount.value = serverUnread
+                    HrpBulletinManager.syncLauncherAppBadge(getApplication(), serverUnread)
                 }
             }.onFailure { it.rethrowIfCancelled() }
         }
@@ -7833,6 +7840,7 @@ class MiniBiViewModel internal constructor(
         _selectedBulletinDetail.value = _selectedBulletinDetail.value?.copy(isRead = true)
         _bulletinUnreadCount.value = 0
         HrpBulletinManager.getInstance(getApplication()).markAllBulletinsRead(expectedUserId, currentIds)
+        HrpBulletinManager.syncLauncherAppBadge(getApplication(), 0)
 
         if (!BULLETIN_REMOTE_API_ENABLED) return
         _bulletinMarkingAllRead.value = true
@@ -7843,6 +7851,7 @@ class MiniBiViewModel internal constructor(
                 )
                 if (ok && serverUnread != null && isSessionValid(expectedGen, expectedUserId)) {
                     _bulletinUnreadCount.value = serverUnread
+                    HrpBulletinManager.syncLauncherAppBadge(getApplication(), serverUnread)
                 }
             } catch (e: Exception) {
                 e.rethrowIfCancelled()

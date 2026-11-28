@@ -9547,6 +9547,10 @@ class WorkerUiAuthorizationRobolectricTest {
             composeTestRule.waitForIdle()
 
             composeTestRule.onNodeWithTag("hrp_bulletin_dialog").assertIsDisplayed()
+            composeTestRule.onNodeWithTag("bulletin_dialog_title").assertIsDisplayed()
+            composeTestRule.onNodeWithText("Thông báo").assertIsDisplayed()
+            composeTestRule.onNodeWithText("Bản tin HRPartner").assertDoesNotExist()
+            composeTestRule.onNodeWithText("Thông báo, lịch nghỉ lễ & vận hành nội bộ").assertDoesNotExist()
             composeTestRule.onNodeWithTag("bulletin_mockup_banner").assertDoesNotExist()
             composeTestRule.onNodeWithTag("bulletin_mark_all_read_button").assertIsDisplayed()
             composeTestRule.onNodeWithText("Tin nhân sự ngày 28-11-2026").assertIsDisplayed()
